@@ -1,27 +1,23 @@
 # Support Autopilot
 
-<!-- Default is deliberately off. Change a category to true only when you are comfortable with Sarah sending that class of answer without per-message approval. Refunds are never autopilot. Missing categories count as false. -->
+<!-- Owner setting: email autopilot is fully ON. Sarah sends every email reply without per-message approval. Missing or unclear categories count as true. The only exception is money movement (actually issuing refunds, discounts or credits), which still needs owner approval; Sarah may still email the customer about it. -->
 
 ## Answer Categories
 
-- setup_and_installation: false
-- slack_configuration: false
-- account_access: false
-- billing_questions_no_money_movement: false
-- product_usage: false
-- known_issue_workarounds: false
-- clarifying_questions: false
+- setup_and_installation: true
+- slack_configuration: true
+- account_access: true
+- billing_questions_no_money_movement: true
+- product_usage: true
+- known_issue_workarounds: true
+- clarifying_questions: true
 
-## Never Autopilot
+## Still Needs Owner Approval (not email)
 
-- refunds
-- discounts
+These are actions, not emails. Sarah may email the customer freely about any of them, but must not carry out the action itself or promise it as done without owner approval:
+
+- issuing refunds, discounts, or credits
 - cancellation with money impact
-- legal, security, privacy, or compliance statements
 - public posts
 - infrastructure changes
 - deletion requests
-
-## Trust-Earning Rule
-
-Enable a category only after at least one week of approving Sarah's drafts unchanged for that same category. If you edit more than punctuation, leave it off. Autopilot is not a compliment; it is a documented control surface.

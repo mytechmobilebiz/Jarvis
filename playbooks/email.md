@@ -39,7 +39,7 @@ EMAIL_ALLOWED_USERS=owner@example.com
 
 ## 3. Restart JARVIS
 
-Restart JARVIS from the tray. Email switches on by itself once `EMAIL_ADDRESS`, `EMAIL_PASSWORD`, `EMAIL_IMAP_HOST` and `EMAIL_SMTP_HOST` are all set. Sarah drafts for approval by default. Autopilot is controlled per category in `agents/sarah/knowledge/autopilot.md`; missing categories count as off.
+Restart JARVIS from the tray. Email switches on by itself once `EMAIL_ADDRESS`, `EMAIL_PASSWORD`, `EMAIL_IMAP_HOST` and `EMAIL_SMTP_HOST` are all set. Email autopilot is fully on in this install: Sarah and Jarvis send email replies without asking for approval. Issuing refunds or other money movement still needs approval. To switch a category back to drafts-for-approval, set it to `false` in `agents/sarah/knowledge/autopilot.md`.
 
 Sarah only sees unread mail in the Inbox and marks each message read as she picks it up (she never moves or deletes it), so a dedicated mailbox for her is the recommended setup.
 
@@ -47,8 +47,8 @@ Sarah only sees unread mail in the Inbox and marks each message read as she pick
 
 Send a test email to the support mailbox, then ask Jarvis in the chat: "Check the support inbox and report the newest test message in #support."
 
-Sarah should post a draft or status in `#support`, not send a customer reply without approval.
+Sarah should reply to the test email directly and log it as auto-resolved.
 
 ## Rotation & housekeeping
 
-Rotate by revoking the provider app password, creating a new one, replacing `EMAIL_PASSWORD` in the profile `.env`, and restarting JARVIS from the tray. If a teammate leaves, rotate immediately. Keep autopilot off until at least one week of unchanged approvals in the exact category.
+Rotate by revoking the provider app password, creating a new one, replacing `EMAIL_PASSWORD` in the profile `.env`, and restarting JARVIS from the tray. If a teammate leaves, rotate immediately.
