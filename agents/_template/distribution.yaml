@@ -1,0 +1,17 @@
+name: "<role-name>"
+version: 1.0.0
+description: "<one-sentence role description in the role's own voice>"
+hermes_requires: ">=0.18.0"
+author: "JARVIS"
+license: "Proprietary — licensed to the purchaser"
+
+# Add only the environment variables this role directly needs.
+# Leave this empty for roles that only read files and report locally.
+env_requires: []
+
+# Example:
+# env_requires:
+#   - name: SLACK_BOT_TOKEN
+#     description: "Slack Bot User OAuth token used by the shared post-as skill."
+#     required: false
+#     default: ""

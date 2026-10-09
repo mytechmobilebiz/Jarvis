@@ -1,0 +1,1308 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JARVIS SETUP</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --void: #02060e;
+        --bg: #07090f;
+        --panel: rgba(6, 17, 32, 0.78);
+        --panel-2: rgba(8, 24, 39, 0.72);
+        --line: #12304a;
+        --line-bright: #1d4a6e;
+        --cyan: #35c6ff;
+        --teal: #35ffd5;
+        --ice: #bfe9ff;
+        --white: #f3f8ff;
+        --dim: #5f88a8;
+        --muted: #365b75;
+        --gold: #ffb64d;
+        --red: #ff5d73;
+        --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+        --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --top-h: 52px;
+        --gutter: 28px;
+        background: var(--void);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        min-height: 100%;
+        margin: 0;
+      }
+
+      body {
+        min-height: 100vh;
+        overflow: hidden;
+        background: var(--void);
+        color: var(--ice);
+        font-family: var(--mono);
+        font-size: 14px;
+        line-height: 1.45;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        pointer-events: none;
+        background:
+          radial-gradient(ellipse 90% 70% at 50% 42%, rgba(53, 198, 255, 0.09), transparent 58%),
+          radial-gradient(ellipse 80% 80% at 50% 120%, rgba(53, 255, 213, 0.045), transparent 55%),
+          repeating-linear-gradient(0deg, transparent 0 47px, rgba(53, 198, 255, 0.045) 47px 48px),
+          repeating-linear-gradient(90deg, transparent 0 47px, rgba(53, 198, 255, 0.045) 47px 48px),
+          linear-gradient(180deg, #040812 0%, #02060e 100%);
+      }
+
+      body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        pointer-events: none;
+        background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.16) 0 1px, transparent 1px 3px);
+        mix-blend-mode: overlay;
+        opacity: 0.36;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      button {
+        color: inherit;
+      }
+
+      :focus-visible {
+        outline: 1px solid var(--cyan);
+        outline-offset: 3px;
+      }
+
+      .topbar {
+        position: fixed;
+        z-index: 30;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: var(--top-h);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 0 var(--gutter);
+        border-bottom: 1px solid var(--line);
+        background: rgba(2, 6, 14, 0.86);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+      }
+
+      .brand,
+      .top-right {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+      }
+
+      .brand {
+        color: var(--white);
+        letter-spacing: 0.32em;
+        white-space: nowrap;
+      }
+
+      .brand span.sub {
+        color: var(--dim);
+        font-size: 11px;
+        letter-spacing: 0.24em;
+      }
+
+      .brand-dot {
+        width: 7px;
+        height: 7px;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        background: var(--cyan);
+        box-shadow: 0 0 10px var(--cyan);
+        animation: blink 2.4s ease-in-out infinite;
+      }
+
+      .top-right {
+        justify-content: flex-end;
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        white-space: nowrap;
+      }
+
+      .status {
+        color: var(--gold);
+        text-shadow: 0 0 12px rgba(255, 182, 77, 0.42);
+      }
+
+      .status.done {
+        color: var(--teal);
+        text-shadow: 0 0 12px rgba(53, 255, 213, 0.36);
+      }
+
+      .status.failed {
+        color: var(--red);
+        text-shadow: none;
+      }
+
+      .badge {
+        color: var(--dim);
+      }
+
+      .corner {
+        position: fixed;
+        z-index: 31;
+        width: 20px;
+        height: 20px;
+        pointer-events: none;
+        border-color: var(--line-bright);
+      }
+
+      .corner.tl {
+        top: calc(var(--top-h) + 8px);
+        left: 8px;
+        border-top: 1px solid;
+        border-left: 1px solid;
+      }
+
+      .corner.tr {
+        top: calc(var(--top-h) + 8px);
+        right: 8px;
+        border-top: 1px solid;
+        border-right: 1px solid;
+      }
+
+      .corner.bl {
+        bottom: 8px;
+        left: 8px;
+        border-bottom: 1px solid;
+        border-left: 1px solid;
+      }
+
+      .corner.br {
+        right: 8px;
+        bottom: 8px;
+        border-right: 1px solid;
+        border-bottom: 1px solid;
+      }
+
+      .setup-grid {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: minmax(240px, 330px) minmax(440px, 1fr);
+        gap: 26px;
+        height: 100vh;
+        padding: calc(var(--top-h) + 26px) var(--gutter) 28px;
+      }
+
+      .rail {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .section-label {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        height: 28px;
+        flex: 0 0 auto;
+        margin-bottom: 12px;
+        color: var(--dim);
+        font-size: 11px;
+        letter-spacing: 0.24em;
+        white-space: nowrap;
+      }
+
+      .section-label b {
+        color: var(--cyan);
+        font-weight: 400;
+      }
+
+      .section-label::after {
+        content: "";
+        height: 1px;
+        flex: 1;
+        background: linear-gradient(90deg, var(--line), transparent);
+      }
+
+      .steps {
+        min-height: 0;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        overflow: auto;
+        padding-right: 4px;
+      }
+
+      .steps::-webkit-scrollbar,
+      .log::-webkit-scrollbar,
+      .output pre::-webkit-scrollbar {
+        width: 7px;
+      }
+
+      .steps::-webkit-scrollbar-thumb,
+      .log::-webkit-scrollbar-thumb,
+      .output pre::-webkit-scrollbar-thumb {
+        border-radius: 8px;
+        background: rgba(53, 198, 255, 0.18);
+      }
+
+      .step {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex: 0 0 auto;
+        padding: 12px 13px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background:
+          linear-gradient(90deg, rgba(53, 198, 255, 0.05), transparent 44%),
+          var(--panel);
+      }
+
+      .step-index {
+        color: var(--muted);
+        font-size: 10px;
+        letter-spacing: 0.16em;
+      }
+
+      .step-title {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        color: var(--ice);
+        font-size: 12px;
+        letter-spacing: 0.16em;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .chip {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--muted);
+        font-size: 9px;
+        letter-spacing: 0.16em;
+      }
+
+      .chip i {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+        box-shadow: 0 0 10px currentColor;
+        opacity: 0.5;
+      }
+
+      .step.current {
+        border-color: rgba(53, 198, 255, 0.55);
+        box-shadow: inset 0 0 28px rgba(53, 198, 255, 0.05);
+      }
+
+      .step.current .step-title {
+        color: var(--white);
+      }
+
+      .chip.running {
+        color: var(--gold);
+      }
+
+      .chip.running i {
+        opacity: 1;
+        animation: blink 1.1s ease-in-out infinite;
+      }
+
+      .chip.done {
+        color: var(--teal);
+      }
+
+      .chip.skipped {
+        color: var(--gold);
+      }
+
+      .chip.failed {
+        color: var(--red);
+      }
+
+      .chip.done i,
+      .chip.skipped i,
+      .chip.failed i {
+        opacity: 1;
+      }
+
+      .transcript {
+        position: relative;
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .log {
+        min-height: 0;
+        flex: 1;
+        overflow: auto;
+        padding: 20px 22px 24px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      .line {
+        margin-bottom: 15px;
+      }
+
+      .speaker {
+        color: var(--cyan);
+        font-size: 10px;
+        letter-spacing: 0.3em;
+      }
+
+      .speaker.you {
+        color: var(--gold);
+      }
+
+      .line p {
+        max-width: 78ch;
+        margin: 6px 0 0;
+        color: var(--ice);
+        font-family: var(--sans);
+        font-size: 13.5px;
+      }
+
+      .line.warn p {
+        color: var(--gold);
+      }
+
+      .line.error p {
+        color: var(--red);
+      }
+
+      .line a {
+        color: var(--cyan);
+        text-decoration: none;
+        border-bottom: 1px solid rgba(53, 198, 255, 0.45);
+        cursor: pointer;
+      }
+
+      .divider {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin: 22px 0 14px;
+        color: var(--dim);
+        font-size: 10px;
+        letter-spacing: 0.28em;
+      }
+
+      .divider b {
+        color: var(--cyan);
+        font-weight: 400;
+      }
+
+      .divider::after {
+        content: "";
+        height: 1px;
+        flex: 1;
+        background: linear-gradient(90deg, var(--line), transparent);
+      }
+
+      .prompt {
+        max-width: 78ch;
+        margin: 4px 0 18px;
+        padding: 15px;
+        border: 1px solid var(--line-bright);
+        border-radius: 8px;
+        background: rgba(6, 17, 32, 0.72);
+      }
+
+      .prompt.answered {
+        border-color: var(--line);
+        opacity: 0.42;
+      }
+
+      /* Secret prompts get a wider panel so more of a long key is on screen. */
+      .prompt.wide {
+        max-width: 96ch;
+      }
+
+      .prompt-message {
+        margin: 0 0 12px;
+        color: var(--white);
+        font-family: var(--sans);
+        font-size: 13.5px;
+      }
+
+      .options {
+        display: grid;
+        gap: 8px;
+      }
+
+      .option {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        padding: 11px 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: rgba(6, 17, 32, 0.82);
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .option:hover:enabled {
+        border-color: var(--cyan);
+        color: var(--cyan);
+        box-shadow: 0 0 16px rgba(53, 198, 255, 0.14);
+      }
+
+      .option .hotkey {
+        color: var(--cyan);
+        font-size: 11px;
+      }
+
+      .option .option-label {
+        color: var(--white);
+        font-size: 13px;
+        letter-spacing: 0.06em;
+      }
+
+      .option .option-desc {
+        color: var(--dim);
+        font-size: 11px;
+      }
+
+      .prompt-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .prompt-row .field {
+        min-width: 0;
+        flex: 1 1 240px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      /* An Anthropic key is ~108 characters; only ~62 fit beside the SUBMIT
+         button, which reads as the field running out of space. Secret prompts
+         take the whole row and push the buttons underneath. */
+      .prompt-row.stacked .field {
+        flex: 1 1 100%;
+      }
+
+      .prompt-row input {
+        width: 100%;
+        min-width: 0;
+        height: 36px;
+        padding: 0 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: rgba(6, 17, 32, 0.75);
+        color: var(--white);
+      }
+
+      .prompt-row.stacked input {
+        font-size: 12px;
+        letter-spacing: 0;
+      }
+
+      .prompt-row input::placeholder {
+        color: var(--muted);
+      }
+
+      .field-hint {
+        min-height: 15px;
+        margin: 0;
+        color: var(--dim);
+        font-family: var(--mono);
+        font-size: 11px;
+        word-break: break-all;
+      }
+
+      /* Muted like the finish panel's support line: help, not an instruction. */
+      .field-guide {
+        margin: 0;
+        color: var(--dim);
+        font-family: var(--sans);
+        font-size: 12.5px;
+      }
+
+      .field-guide a {
+        color: var(--cyan);
+        text-decoration: none;
+        border-bottom: 1px solid rgba(53, 198, 255, 0.45);
+        cursor: pointer;
+      }
+
+      .text-btn {
+        height: 36px;
+        padding: 0 16px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: rgba(6, 17, 32, 0.82);
+        color: var(--ice);
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        cursor: pointer;
+      }
+
+      .text-btn:hover:enabled {
+        border-color: var(--cyan);
+        color: var(--cyan);
+      }
+
+      .text-btn.primary {
+        border-color: var(--cyan);
+        background: rgba(53, 198, 255, 0.14);
+        color: var(--cyan);
+      }
+
+      .text-btn:disabled,
+      .option:disabled {
+        cursor: default;
+        opacity: 0.55;
+      }
+
+      .output {
+        max-width: 78ch;
+        margin: 0 0 15px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(2, 6, 14, 0.62);
+      }
+
+      .output summary {
+        padding: 9px 12px;
+        color: var(--dim);
+        font-size: 10px;
+        letter-spacing: 0.22em;
+        cursor: pointer;
+      }
+
+      .output .cmd {
+        padding: 0 12px 8px;
+        color: var(--cyan);
+        font-size: 12px;
+        user-select: all;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+
+      .output pre {
+        max-height: 320px;
+        margin: 0;
+        padding: 0 12px 12px;
+        overflow: auto;
+        color: var(--muted);
+        font-size: 12px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .block {
+        max-width: 96ch;
+        margin: 0 0 16px;
+        padding: 14px 15px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel-2);
+      }
+
+      .block h2 {
+        margin: 0 0 10px;
+        color: var(--white);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.24em;
+      }
+
+      .block pre {
+        margin: 0;
+        overflow: auto;
+        color: var(--ice);
+        font-size: 12px;
+        white-space: pre;
+      }
+
+      .signin {
+        max-width: 78ch;
+        margin: 4px 0 16px;
+        padding: 16px 18px;
+        border: 1px solid var(--cyan);
+        border-radius: 8px;
+        background:
+          linear-gradient(90deg, rgba(53, 198, 255, 0.08), transparent 60%),
+          rgba(6, 17, 32, 0.82);
+      }
+
+      .signin h2 {
+        margin: 0 0 10px;
+        color: var(--white);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.24em;
+      }
+
+      .signin-message {
+        margin: 0 0 12px;
+        color: var(--ice);
+        font-family: var(--sans);
+        font-size: 13.5px;
+      }
+
+      .signin-url {
+        display: inline-block;
+        margin: 0 0 14px;
+        color: var(--cyan);
+        font-size: 13px;
+        text-decoration: none;
+        border-bottom: 1px solid rgba(53, 198, 255, 0.45);
+        cursor: pointer;
+        word-break: break-all;
+      }
+
+      .signin-code {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin: 0 0 12px;
+      }
+
+      .signin-code span {
+        color: var(--dim);
+        font-size: 11px;
+        letter-spacing: 0.24em;
+      }
+
+      .signin-code b {
+        color: var(--white);
+        font-size: 22px;
+        font-weight: 500;
+        letter-spacing: 0.12em;
+        user-select: text;
+      }
+
+      .signin.signed-in {
+        border-color: var(--green, #4ade80);
+      }
+
+      .signin.failed,
+      .signin.cancelled {
+        border-color: var(--dim);
+        opacity: 0.75;
+      }
+
+      .signin-waiting {
+        margin: 0;
+        color: var(--dim);
+        font-family: var(--sans);
+        font-size: 12.5px;
+      }
+
+      .finish {
+        max-width: 78ch;
+        margin: 4px 0 20px;
+        padding: 18px;
+        border: 1px solid var(--cyan);
+        border-radius: 8px;
+        background:
+          linear-gradient(90deg, rgba(53, 198, 255, 0.08), transparent 60%),
+          rgba(6, 17, 32, 0.82);
+      }
+
+      .finish.failed {
+        border-color: var(--red);
+        background:
+          linear-gradient(90deg, rgba(255, 93, 115, 0.08), transparent 60%),
+          rgba(6, 17, 32, 0.82);
+      }
+
+      .finish h2 {
+        margin: 0 0 8px;
+        color: var(--white);
+        font-size: 13px;
+        font-weight: 500;
+        letter-spacing: 0.22em;
+      }
+
+      .finish p {
+        margin: 0 0 14px;
+        color: var(--ice);
+        font-family: var(--sans);
+        font-size: 13.5px;
+      }
+
+      .finish ul {
+        margin: 0 0 14px;
+        padding-left: 18px;
+        color: var(--red);
+        font-family: var(--sans);
+        font-size: 13px;
+      }
+
+      .finish .support {
+        color: var(--dim);
+        font-size: 12.5px;
+      }
+
+      @keyframes blink {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.28;
+        }
+      }
+
+      /* ====================================================================
+         The Birth — setup → HUD transition overlay (TRANSITION-DESIGN.md).
+         Namespaced tr-/transition throughout so nothing collides; keyframe
+         values are verbatim from the landing page (the same organism).
+         z-index 35: over the wizard chrome (30/31), UNDER the scanline
+         body::after at 40, so the CRT texture stays over the birth.
+         ==================================================================== */
+
+      #transition {
+        position: fixed;
+        inset: 0;
+        z-index: 35;
+        opacity: 0;
+        background: radial-gradient(ellipse 90% 70% at 50% 44%, #071626 0%, var(--void) 65%);
+        font-family: var(--mono);
+        color: var(--ice);
+      }
+
+      #transition.on {
+        opacity: 1;
+        transition: opacity 0.4s ease;
+      }
+
+      /* RECEDE: the wizard surface bows out behind the overlay. */
+      .receded {
+        transition: filter 0.4s ease, transform 0.4s ease !important;
+        filter: brightness(0.35) blur(6px);
+        transform: scale(0.985);
+      }
+
+      /* Reduced motion dims via opacity only — no blur, no scale. */
+      .receded-quiet {
+        transition: opacity 0.4s ease !important;
+        opacity: 0.25;
+      }
+
+      .tr-stage {
+        position: absolute;
+        inset: 0;
+      }
+
+      /* SPARK: the first photon of the birth, at the orb's center. */
+      .tr-spark {
+        position: absolute;
+        left: 50%;
+        top: 44%;
+        width: 6px;
+        height: 6px;
+        translate: -50% -50%;
+        border-radius: 50%;
+        background: radial-gradient(circle, #eaf7ff 0%, rgba(53, 198, 255, 0.85) 40%, rgba(53, 198, 255, 0.1) 78%, transparent 100%);
+        opacity: 0;
+        transform: scale(0);
+      }
+
+      .t-spark .tr-spark {
+        opacity: 1;
+        transform: scale(15);
+        transition: transform 0.65s cubic-bezier(0.2, 0.7, 0.2, 1), opacity 0.2s ease;
+        animation: tr-corePulse 2.6s ease-in-out infinite;
+      }
+
+      /* The spark dissolves into the living core once the video plays. */
+      .orb-live .tr-spark {
+        opacity: 0 !important;
+        transition: opacity 0.4s ease;
+        animation: none;
+      }
+
+      /* ORB: positioned via the translate property so beat animations own
+         transform without fighting the centering. */
+      .tr-orbwrap {
+        position: absolute;
+        left: 50%;
+        top: 44%;
+        width: min(52vw, 46vh, 420px);
+        aspect-ratio: 1;
+        translate: -50% -50%;
+      }
+
+      .tr-orb {
+        position: absolute;
+        inset: -14%;
+        width: 128%;
+        height: 128%;
+        object-fit: cover;
+        mix-blend-mode: screen;
+        pointer-events: none;
+        filter: saturate(1.12);
+        -webkit-mask-image: radial-gradient(circle, #000 48%, transparent 72%);
+        mask-image: radial-gradient(circle, #000 48%, transparent 72%);
+        opacity: 0;
+        transform: scale(0.5);
+      }
+
+      .t-orb .tr-orb {
+        opacity: 1;
+        transform: scale(1);
+        transition: opacity 1.3s ease, transform 1.7s cubic-bezier(0.2, 0.7, 0.2, 1);
+      }
+
+      /* Video-fail insurance: the landing .init-ring recipe, same center. */
+      .tr-ring {
+        position: absolute;
+        inset: 28%;
+        border-radius: 50%;
+        border: 1px solid rgba(53, 198, 255, 0.55);
+        box-shadow: 0 0 44px rgba(53, 198, 255, 0.28), inset 0 0 26px rgba(53, 198, 255, 0.16);
+      }
+
+      .tr-ring::before {
+        content: "";
+        position: absolute;
+        inset: 10px;
+        border-radius: 50%;
+        border: 1px dashed rgba(53, 198, 255, 0.4);
+        animation: tr-spin 14s linear infinite;
+      }
+
+      .tr-ring::after {
+        content: "";
+        position: absolute;
+        inset: 34%;
+        border-radius: 50%;
+        background: radial-gradient(circle, #eaf7ff 0%, rgba(53, 198, 255, 0.85) 40%, rgba(53, 198, 255, 0.1) 78%, transparent 100%);
+        filter: blur(0.5px);
+        animation: tr-corePulse 2.6s ease-in-out infinite;
+      }
+
+      /* BEZEL: the six-layer instrument stack whips in and settles to cruise. */
+      .tr-bezel {
+        position: absolute;
+        inset: -9%;
+        pointer-events: none;
+        opacity: 0;
+      }
+
+      .t-bezel .tr-bezel {
+        opacity: 1;
+        animation: tr-hudBootSpin 2.6s cubic-bezier(0.15, 0.8, 0.25, 1) both;
+      }
+
+      #transition .hud-l {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+        overflow: visible;
+      }
+
+      #transition .hud-l text {
+        font-family: var(--mono);
+      }
+
+      .t-bezel .hud-r1 { animation: tr-spin 44s linear infinite; }
+      .t-bezel .hud-r2 { animation: tr-spinccw 62s linear infinite; }
+      .t-bezel .hud-r3 { animation: tr-spin 26s linear infinite; }
+      .t-bezel .hud-r4 { animation: tr-spinccw 34s linear infinite; }
+      .t-bezel .hud-r5 { animation: tr-spin 18s linear infinite; }
+      .t-bezel .hud-r6 { animation: tr-spinccw 130s linear infinite; }
+
+      #transition .hud-r2,
+      #transition .hud-r5 {
+        filter: drop-shadow(0 0 4px rgba(53, 198, 255, 0.5));
+      }
+
+      /* CAPTION: brand above the orb, the spoken line below it. */
+      .tr-brand {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: calc(44% - min(26vw, 23vh, 210px) - 84px);
+        text-align: center;
+        font-size: 15px;
+        letter-spacing: 0.2em;
+        text-indent: 0.52em;
+        color: var(--ice);
+        opacity: 0;
+      }
+
+      .tr-sub {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: calc(44% - min(26vw, 23vh, 210px) - 58px);
+        text-align: center;
+        font-size: 9px;
+        letter-spacing: 0.3em;
+        text-indent: 0.3em;
+        color: var(--dim);
+        opacity: 0;
+      }
+
+      .t-caption .tr-brand {
+        opacity: 1;
+        letter-spacing: 0.52em;
+        transition: opacity 0.5s ease, letter-spacing 0.5s cubic-bezier(0.2, 0.7, 0.2, 1);
+      }
+
+      .t-caption .tr-sub {
+        opacity: 1;
+        transition: opacity 0.5s ease 0.2s;
+      }
+
+      .tr-caption {
+        position: absolute;
+        left: 24px;
+        right: 24px;
+        top: calc(44% + min(26vw, 23vh, 210px) + 30px);
+        margin: 0;
+        text-align: center;
+        font-size: 15px;
+        letter-spacing: 0.06em;
+        color: var(--cyan);
+        text-shadow: 0 0 24px rgba(53, 198, 255, 0.5);
+        min-height: 1.5em;
+      }
+
+      /* ASSEMBLY: the tick row under the caption rides its ::after. */
+      .tr-caption::after {
+        content: "";
+        display: block;
+        margin: 18px auto 0;
+        width: 180px;
+        height: 6px;
+        background: repeating-linear-gradient(90deg, var(--line-bright) 0 1px, transparent 1px 12px);
+        opacity: 0;
+      }
+
+      .t-assembly .tr-caption::after {
+        opacity: 0.8;
+        transition: opacity 0.8s ease 0.48s;
+      }
+
+      /* ASSEMBLY: brackets fly in from outside their corners; rules slide in. */
+      #transition .tr-corner {
+        position: absolute;
+        width: 18px;
+        height: 18px;
+        border-color: var(--line-bright);
+        opacity: 0;
+      }
+
+      #transition .tr-corner.tl { top: 24px; left: 24px; border-top: 1px solid; border-left: 1px solid; transform: translate(-24px, -24px); }
+      #transition .tr-corner.tr { top: 24px; right: 24px; border-top: 1px solid; border-right: 1px solid; transform: translate(24px, -24px); }
+      #transition .tr-corner.bl { bottom: 24px; left: 24px; border-bottom: 1px solid; border-left: 1px solid; transform: translate(-24px, 24px); }
+      #transition .tr-corner.br { bottom: 24px; right: 24px; border-bottom: 1px solid; border-right: 1px solid; transform: translate(24px, 24px); }
+
+      .t-assembly .tr-corner {
+        opacity: 1;
+        transform: none;
+        transition: transform 0.8s cubic-bezier(0.2, 0.7, 0.2, 1), opacity 0.8s ease;
+      }
+
+      .t-assembly .tr-corner.tr { transition-delay: 0.08s; }
+      .t-assembly .tr-corner.bl { transition-delay: 0.16s; }
+      .t-assembly .tr-corner.br { transition-delay: 0.24s; }
+
+      .tr-rule {
+        position: absolute;
+        left: 0;
+        right: 0;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, var(--line-bright) 30%, var(--line-bright) 70%, transparent);
+        opacity: 0;
+        transform: scaleX(0);
+      }
+
+      .tr-rule.top { top: 64px; }
+      .tr-rule.bottom { bottom: 64px; }
+
+      .t-assembly .tr-rule {
+        opacity: 1;
+        transform: scaleX(1);
+        transition: transform 0.8s cubic-bezier(0.2, 0.7, 0.2, 1), opacity 0.8s ease;
+      }
+
+      .t-assembly .tr-rule.top { transition-delay: 0.32s; }
+      .t-assembly .tr-rule.bottom { transition-delay: 0.4s; }
+
+      /* HOLD: the composition breathes; stretches elastically until Td. */
+      .t-hold .tr-orbwrap {
+        animation: tr-orbBreathe 3.4s ease-in-out infinite;
+      }
+
+      /* DETONATE: surge, whip, flash → void. */
+      .t-detonate .tr-orbwrap {
+        animation: none;
+      }
+
+      .t-detonate .tr-orb,
+      .t-detonate .tr-ring {
+        animation: tr-orbWake 0.95s cubic-bezier(0.3, 0, 0.25, 1) forwards;
+      }
+
+      .t-detonate .tr-bezel {
+        animation: tr-hudRush 0.95s cubic-bezier(0.5, 0.02, 0.7, 0.35) forwards;
+      }
+
+      .t-detonate .tr-brand,
+      .t-detonate .tr-sub,
+      .t-detonate .tr-caption,
+      .t-detonate .tr-corner,
+      .t-detonate .tr-rule {
+        opacity: 0 !important;
+        transition: opacity 0.3s ease !important;
+      }
+
+      .tr-flash {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0;
+        background: radial-gradient(circle at 50% 44%, #eaf7ff, rgba(53, 198, 255, 0.55) 40%, transparent 75%);
+      }
+
+      .t-detonate .tr-flash {
+        animation: tr-flash 0.95s ease forwards;
+      }
+
+      /* DARK: the seam. Navigation always happens on this solid void frame. */
+      #transition.t-dark {
+        background: var(--void);
+      }
+
+      #transition.t-dark .tr-stage {
+        display: none;
+      }
+
+      .tr-wait {
+        position: absolute;
+        left: 24px;
+        right: 24px;
+        top: 50%;
+        margin: 0;
+        text-align: center;
+        color: var(--dim);
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        opacity: 0;
+      }
+
+      .tr-wait.on {
+        animation: tr-fadeIn 0.6s ease forwards;
+      }
+
+      /* SKIP: one class, everything → void in 300 ms. */
+      #transition.tr-skip {
+        background: var(--void);
+      }
+
+      #transition.tr-skip .tr-stage {
+        opacity: 0;
+        transition: opacity 0.3s ease;
+      }
+
+      #transition.tr-skip .tr-stage * {
+        animation-play-state: paused;
+      }
+
+      /* ABORT: the overlay bows out; the wizard (un-receded) is behind it. */
+      #transition.tr-abort {
+        opacity: 0;
+        transition: opacity 0.3s ease;
+      }
+
+      /* REDUCED MOTION: the dignified static build (§10). */
+      #transition.tr-reduced .tr-spark {
+        display: none;
+      }
+
+      #transition.tr-reduced .tr-orb {
+        opacity: 1;
+        transform: none;
+        transition: opacity 0.4s ease;
+      }
+
+      #transition.tr-reduced .tr-bezel {
+        opacity: 0.6;
+        animation: none;
+      }
+
+      #transition.tr-reduced .hud-l,
+      #transition.tr-reduced .tr-ring::before,
+      #transition.tr-reduced .tr-ring::after,
+      #transition.tr-reduced .tr-orbwrap {
+        animation: none !important;
+      }
+
+      #transition.tr-reduced .tr-brand,
+      #transition.tr-reduced .tr-sub,
+      #transition.tr-reduced .tr-caption {
+        opacity: 1;
+        transition: none;
+      }
+
+      #transition.tr-reduced .tr-corner,
+      #transition.tr-reduced .tr-rule {
+        opacity: 0.7;
+        transform: none;
+        transition: none;
+      }
+
+      #transition.tr-fade {
+        background: var(--void);
+      }
+
+      #transition.tr-fade .tr-stage {
+        opacity: 0;
+        transition: opacity 0.4s ease;
+      }
+
+      @keyframes tr-corePulse {
+        0%, 100% { opacity: 0.85; }
+        50% { opacity: 1; }
+      }
+
+      @keyframes tr-orbBreathe {
+        0%, 100% { transform: scale(0.93); }
+        50% { transform: scale(1.07); }
+      }
+
+      @keyframes tr-orbWake {
+        30% { transform: scale(1.22); filter: brightness(1.8); }
+        100% { transform: scale(2.7); filter: brightness(2.4); opacity: 0; }
+      }
+
+      @keyframes tr-hudBootSpin {
+        from { transform: rotate(-560deg) scale(0.55); }
+      }
+
+      @keyframes tr-hudRush {
+        to { transform: rotate(540deg) scale(1.12); }
+      }
+
+      /* Ported with the set (landing parity); unused by the timeline today. */
+      @keyframes tr-hudKick {
+        to { transform: rotate(360deg); }
+      }
+
+      @keyframes tr-spin {
+        to { transform: rotate(360deg); }
+      }
+
+      @keyframes tr-spinccw {
+        to { transform: rotate(-360deg); }
+      }
+
+      @keyframes tr-flash {
+        0% { opacity: 0; }
+        45% { opacity: 0.85; }
+        100% { opacity: 0; }
+      }
+
+      @keyframes tr-fadeIn {
+        to { opacity: 1; }
+      }
+
+      @media (max-width: 1100px) {
+        .setup-grid {
+          grid-template-columns: 1fr;
+          grid-template-rows: auto minmax(0, 1fr);
+        }
+
+        .steps {
+          flex-direction: row;
+          flex-wrap: wrap;
+          overflow: visible;
+        }
+
+        .step {
+          flex: 1 1 200px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-dot"></span><span>J.A.R.V.I.S.</span><span class="sub">// SETUP</span><span class="sub" id="app-version"></span>
+      </div>
+      <div class="top-right">
+        <span id="dry-run" class="badge" hidden>DRY RUN</span>
+        <span id="status" class="status">● SETUP</span>
+      </div>
+    </header>
+
+    <div class="corner tl"></div>
+    <div class="corner tr"></div>
+    <div class="corner bl"></div>
+    <div class="corner br"></div>
+
+    <main class="setup-grid">
+      <section class="rail" aria-label="Steps">
+        <div class="section-label"><b>01</b><span>SEQUENCE</span></div>
+        <div id="steps" class="steps"></div>
+      </section>
+
+      <section class="transcript" aria-label="Setup log">
+        <div class="section-label"><b>02</b><span>VOICE LOG</span></div>
+        <div id="log" class="log" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <!-- The Birth overlay: present from load, hidden until the finish fires.
+         video.src is assigned only when the overlay actually runs, so the
+         718 KB orb never loads for customers who exit setup another way. -->
+    <div id="transition" class="transition" hidden aria-hidden="true">
+      <div class="tr-stage">
+        <div class="tr-spark"></div>
+        <div class="tr-orbwrap">
+          <div class="tr-ring" hidden></div>
+          <video class="tr-orb" muted playsinline loop preload="none"
+                 poster="transition/poster-orb.jpg"></video>
+          <div class="tr-bezel"></div>
+        </div>
+        <div class="tr-brand">J.A.R.V.I.S.</div>
+        <div class="tr-sub">JUST A RATHER VERY INTELLIGENT SYSTEM</div>
+        <p class="tr-caption" aria-live="polite"></p>
+        <div class="tr-corner tl"></div><div class="tr-corner tr"></div>
+        <div class="tr-corner bl"></div><div class="tr-corner br"></div>
+        <div class="tr-rule top"></div><div class="tr-rule bottom"></div>
+      </div>
+      <div class="tr-flash"></div>
+      <p class="tr-wait" hidden>One moment, sir — starting the engine.</p>
+    </div>
+
+    <script type="module" src="../dist/setup-renderer.js"></script>
+  </body>
+</html>

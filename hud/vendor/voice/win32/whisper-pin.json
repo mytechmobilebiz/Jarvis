@@ -1,0 +1,37 @@
+{
+  "_comment": [
+    "The Windows whisper-cli.exe, FROZEN as a release asset instead of compiled per build.",
+    "",
+    "It is the one thing in the Windows build that needed MSVC: sherpa-onnx and",
+    "onnxruntime ship as pinned upstream downloads, but whisper-cli.exe was compiled",
+    "from source with cmake -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded so it",
+    "carries no Visual C++ redistributable dependency. macOS Docker cannot run MSVC,",
+    "and v1.4.0 moved Windows packaging off CI onto a local wine container (GitHub",
+    "Actions' free tier was exhausted in a day), so the binary is vendored here with",
+    "its provenance recorded rather than reproduced.",
+    "",
+    "Nothing about the integrity chain changes: fetch-voice-assets.mjs verifies this",
+    "sha256 before staging it, the voice manifest hashes it again, and the ASAR trust",
+    "anchor pins the manifest. What changes is that the build no longer PRODUCES it.",
+    "",
+    "TO CHANGE THE WHISPER PIN: this binary must be rebuilt on a real Windows machine",
+    "with MSVC (one windows-latest CI job on a pin change costs cents), and BOTH the",
+    "version and the sha256 below must move in the same commit as WHISPER_VERSION in",
+    "hud/scripts/fetch-voice-assets.mjs. A mismatch fails the build by design."
+  ],
+  "file": "whisper-cli.exe",
+  "sha256": "0d7d53a9f408bc96c562147a59b64b9a598ee16574a3f3f0421eb34016616075",
+  "bytes": 2488320,
+  "whisperVersion": "1.9.2",
+  "builtBy": "GitHub Actions run 31692680757 (windows-latest), commit e858fb1b",
+  "builtAt": "2026-08-13T11:01:00Z",
+  "cmakeFlags": [
+    "-A x64",
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
+    "-DCMAKE_POLICY_DEFAULT_CMP0091=NEW",
+    "-DBUILD_SHARED_LIBS=OFF",
+    "-DWHISPER_BUILD_TESTS=OFF",
+    "-DWHISPER_BUILD_SERVER=OFF"
+  ]
+}

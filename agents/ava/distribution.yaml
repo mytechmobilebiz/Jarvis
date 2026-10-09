@@ -1,0 +1,20 @@
+name: ava
+version: 1.0.0
+description: "Ava is JARVIS's content editor: fast hooks, spare captions, scheduled posts, and no decorative throat-clearing."
+hermes_requires: ">=0.18.0"
+author: "JARVIS"
+license: "Proprietary — licensed to the purchaser"
+
+env_requires:
+  - name: SLACK_BOT_TOKEN
+    description: "Slack Bot User OAuth token used by the shared post-as skill for #content updates."
+    required: false
+    default: ""
+  - name: POSTIZ_API_KEY
+    description: "Optional Postiz Public API key for approved scheduling; see playbooks/postiz.md."
+    required: false
+    default: ""
+  - name: POSTIZ_URL
+    description: "Optional backend base URL for self-hosted Postiz only; see playbooks/postiz.md."
+    required: false
+    default: ""

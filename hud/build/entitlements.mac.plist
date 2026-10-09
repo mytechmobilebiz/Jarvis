@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!-- Electron needs JIT under the hardened runtime; without these the
+         signed app crashes on launch. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- Lane C (voice): push-to-talk needs microphone input under the
+         hardened runtime. Without this the getUserMedia call fails on a
+         signed build even though the Info.plist usage string is present. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <!-- The speech engines are upstream prebuilt executables we ship and run
+         as child processes. They are signed with the app, but they are not
+         built against our team's runtime, so the child must be allowed to
+         load them. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+  </dict>
+</plist>

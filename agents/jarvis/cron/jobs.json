@@ -1,0 +1,21 @@
+{
+  "jobs": [
+    {
+      "id": "jarvis-morning-brief",
+      "name": "morning-brief",
+      "description": "I prepare your morning brief for 08:00 — revenue, ads, content, and support at a glance",
+      "prompt": "Compose today's morning brief per the morning-brief skill. Budget: keep this run under 20k tokens; if data gathering stalls, deliver the brief with what you have.",
+      "skills": [
+        "morning-brief"
+      ],
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 8 * * *",
+        "display": "daily at 08:00"
+      },
+      "schedule_display": "daily at 08:00",
+      "enabled": false,
+      "deliver": "slack"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "name": "jarvis",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "wizard": "pnpm --dir setup build && node setup/dist/cli.js",
+    "hud": "pnpm --dir hud build && pnpm --dir hud exec electron dist/main.js",
+    "install-app": "pnpm --dir setup build && pnpm --dir hud build && node setup/dist/install-app-cli.js"
+  },
+  "workspaces": [
+    "setup",
+    "hud"
+  ],
+  "pnpm": {
+    "supportedArchitectures": {
+      "os": [
+        "current",
+        "darwin",
+        "win32"
+      ],
+      "cpu": [
+        "current",
+        "arm64",
+        "x64"
+      ]
+    },
+    "overrides": {
+      "@electron/osx-sign>isbinaryfile": "5.0.7"
+    }
+  }
+}

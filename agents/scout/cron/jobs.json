@@ -1,0 +1,21 @@
+{
+  "jobs": [
+    {
+      "id": "scout-weekly",
+      "name": "weekly-sweep",
+      "description": "Scout runs a research sweep every Monday morning and reports what's worth testing",
+      "prompt": "Run the weekly-sweep skill. Budget: keep this run under 25k tokens; if collection or synthesis would exceed it, stop, write the partial report to workspace/reports/scout-YYYY-WW.md, and report the cap.",
+      "skills": [
+        "weekly-sweep"
+      ],
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 7 * * 1",
+        "display": "weekly on Monday at 07:00"
+      },
+      "schedule_display": "weekly on Monday at 07:00",
+      "enabled": false,
+      "deliver": "slack"
+    }
+  ]
+}

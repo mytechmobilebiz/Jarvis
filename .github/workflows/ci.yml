@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# One run per ref. A push and a manual re-dispatch of the same commit used to
+# run the FULL matrix twice, side by side, and macOS bills at 10x — ~325 billed
+# minutes went that way in a single day, 15% of the monthly quota, for two
+# copies of the same answer. The newest run is the one anyone is waiting for.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ONE job, on the cheapest runner. macOS and Windows builds left CI in
+  # v1.4.0: the free tier was exhausted in a day (macOS bills at 10x, Windows
+  # at 2x, and a full matrix run cost $1.21-1.65), and every artifact those
+  # jobs produced is now built locally — the mac DMG on the signing Mac, the
+  # Windows installer in a Docker container. What CI still owes us is the thing
+  # a local build cannot give: an always-on check that the workspace builds and
+  # its tests pass somewhere that is not one person's laptop.
+  #
+  # WHAT WE GAVE UP, stated plainly so nobody rediscovers it as a surprise: no
+  # win-x64 binary is executed anywhere in this pipeline any more. The offline
+  # install, the watchdog's kill behaviour, the voice binaries and the wizard's
+  # win32 code paths are now proven by a MANUAL smoke of the shipped installer
+  # (Windows 11 on ARM emulates x64, so Peter's VM can run it). See
+  # spec/v140/RELEASE-CHECKLIST.md — that manual run is a release gate now.
+  test:
+    name: build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable corepack (pinned pnpm)
+        run: corepack enable
+
+      - name: Install dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Build workspace
+        run: corepack pnpm -r build
+
+      # 468 setup tests + 250 HUD tests. Platform-specific behaviour is
+      # exercised through injected `platform` seams, not by running on the
+      # platform — which is why this job stays useful with the win32 and
+      # darwin runners gone.
+      - name: Setup wizard unit tests
+        run: corepack pnpm --dir setup test
+
+      - name: HUD unit tests
+        run: corepack pnpm --dir hud test

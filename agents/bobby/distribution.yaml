@@ -1,0 +1,16 @@
+name: bobby
+version: 1.0.0
+description: "Bobby - media buyer. Numbers first, vanity metrics last, with ad actions locked behind approval and hard spend caps."
+hermes_requires: ">=0.18.0"
+author: "JARVIS"
+license: "Proprietary - licensed to the purchaser"
+
+env_requires:
+  - name: SLACK_BOT_TOKEN
+    description: "Slack Bot User OAuth token used by the post-as skill for #ads delivery."
+    required: false
+    default: ""
+  - name: JARVIS_DEMO
+    description: "Set to 1 to read demo/ads-insights.json when Meta Ads MCP tools are not wired."
+    required: false
+    default: ""

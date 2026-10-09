@@ -1,0 +1,28 @@
+name: jarvis
+version: 1.0.0
+description: "JARVIS — your AI chief of staff. Runs the office, composes the morning brief, delegates to the staff, and never spends your money without asking."
+hermes_requires: ">=0.18.0"
+author: "JARVIS"
+license: "Proprietary — licensed to the purchaser"
+
+env_requires:
+  - name: ANTHROPIC_API_KEY
+    description: "AI provider key (Anthropic). OPENROUTER_API_KEY or OPENAI_API_KEY work too — set model.default accordingly."
+    required: false
+    default: ""
+  - name: SLACK_BOT_TOKEN
+    description: "Slack Bot User OAuth token (xoxb-…) — see playbooks/slack.md. Optional: skip for local-only mode."
+    required: false
+    default: ""
+  - name: SLACK_APP_TOKEN
+    description: "Slack app-level token (xapp-…) with connections:write — see playbooks/slack.md."
+    required: false
+    default: ""
+  - name: SLACK_ALLOWED_USERS
+    description: "Your Slack Member ID (U…). Only these users may command Jarvis."
+    required: false
+    default: ""
+  - name: API_SERVER_KEY
+    description: "Local key for the HUD chat pane (any string; the wizard generates one)."
+    required: false
+    default: ""

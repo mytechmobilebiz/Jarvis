@@ -1,0 +1,40 @@
+name: sarah
+version: 1.0.0
+description: "Sarah - warm, exacting customer support. She keeps the inbox calm, drafts replies customers can actually use, and brings every refund or edge case to the owner before a penny moves."
+hermes_requires: ">=0.18.0"
+author: "JARVIS"
+license: "Proprietary - licensed to the purchaser"
+
+env_requires:
+  - name: SLACK_BOT_TOKEN
+    description: "Slack Bot User OAuth token (xoxb-...) used by the post-as skill for support approvals and handoffs. Email transport is configured separately in playbooks/email.md."
+    required: false
+    default: ""
+  - name: EMAIL_ADDRESS
+    description: "Support mailbox address used by the Hermes email transport."
+    required: false
+    default: ""
+  - name: EMAIL_PASSWORD
+    description: "Provider app password used for IMAP and SMTP."
+    required: false
+    default: ""
+  - name: EMAIL_IMAP_HOST
+    description: "IMAP hostname without a port."
+    required: false
+    default: ""
+  - name: EMAIL_IMAP_PORT
+    description: "IMAP port, usually 993."
+    required: false
+    default: ""
+  - name: EMAIL_SMTP_HOST
+    description: "SMTP hostname without a port."
+    required: false
+    default: ""
+  - name: EMAIL_SMTP_PORT
+    description: "SMTP port, commonly 465 or 587."
+    required: false
+    default: ""
+  - name: EMAIL_ALLOWED_USERS
+    description: "Recommended allowlist of email addresses permitted to command Jarvis."
+    required: false
+    default: ""

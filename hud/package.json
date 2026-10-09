@@ -1,0 +1,210 @@
+{
+  "name": "@jarvis/hud",
+  "version": "1.7.4",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "pnpm --dir ../setup run build && tsc --project tsconfig.json",
+    "dev": "pnpm build && electron dist/main.js",
+    "dist": "electron-builder",
+    "dist:win": "node scripts/verify-vendor-payload.mjs --release --platform win32 --arch x64 && node scripts/fetch-voice-assets.mjs --check --platform=win32 && node scripts/verify-wizard-audio.mjs && electron scripts/wizard-window-smoke.cjs && electron scripts/sandbox-voice-smoke.cjs --clip generated && electron-builder --win --x64 && node scripts/verify-win-artifact.mjs && node scripts/verify-win-payload-archive.mjs && node scripts/verify-vendor-payload.mjs --release --platform win32 --arch x64 --packed dist-app/win-unpacked/resources && node scripts/fetch-voice-assets.mjs --check --out=dist-app/win-unpacked/resources/voice && electron scripts/wizard-window-smoke.cjs --packed dist-app/win-unpacked/resources && electron scripts/sandbox-voice-smoke.cjs --packed dist-app/win-unpacked/resources --clip generated",
+    "voice:assets": "node scripts/fetch-voice-assets.mjs",
+    "voice:assets:win": "node scripts/fetch-voice-assets.mjs --platform=win32",
+    "voice:check": "node scripts/fetch-voice-assets.mjs --check",
+    "test": "node --test dist/*.test.js",
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:setup": "electron scripts/setup-smoke.mjs",
+    "smoke:history": "electron scripts/history-smoke.mjs",
+    "smoke:input": "electron scripts/input-smoke.mjs",
+    "vendor:win": "node scripts/build-vendor-payload.mjs --platform win32 --arch x64 --clean",
+    "vendor:mac": "node scripts/build-vendor-payload.mjs --platform darwin --arch universal --clean",
+    "dist:mac:ci": "node scripts/verify-vendor-payload.mjs --release --allow-unsigned-payload --platform darwin --arch universal && node scripts/fetch-voice-assets.mjs --check --platform=darwin && node scripts/verify-mac-universal.mjs && node scripts/verify-wizard-audio.mjs && electron scripts/wizard-window-smoke.cjs && electron scripts/sandbox-voice-smoke.cjs && electron-builder --mac --universal && node scripts/verify-vendor-payload.mjs --release --allow-unsigned-payload --platform darwin --arch universal --packed \"dist-app/mac-universal/JARVIS HUD.app/Contents/Resources\" && node scripts/fetch-voice-assets.mjs --check --out=\"dist-app/mac-universal/JARVIS HUD.app/Contents/Resources/voice\" && electron scripts/wizard-window-smoke.cjs --packed \"dist-app/mac-universal/JARVIS HUD.app/Contents/Resources\" && electron scripts/sandbox-voice-smoke.cjs --packed \"dist-app/mac-universal/JARVIS HUD.app/Contents/Resources\"",
+    "dist:mac": "node scripts/verify-vendor-payload.mjs --release --platform darwin --arch universal && node scripts/fetch-voice-assets.mjs --check --platform=darwin && node scripts/verify-mac-universal.mjs && node scripts/verify-wizard-audio.mjs && electron scripts/wizard-window-smoke.cjs && electron scripts/sandbox-voice-smoke.cjs && electron-builder --mac --universal && node scripts/verify-vendor-payload.mjs --release --platform darwin --arch universal --packed \"dist-app/mac-universal/JARVIS HUD.app/Contents/Resources\" && node scripts/fetch-voice-assets.mjs --check --out=\"dist-app/mac-universal/JARVIS HUD.app/Contents/Resources/voice\" && electron scripts/wizard-window-smoke.cjs --packed \"dist-app/mac-universal/JARVIS HUD.app/Contents/Resources\" && electron scripts/sandbox-voice-smoke.cjs --packed \"dist-app/mac-universal/JARVIS HUD.app/Contents/Resources\"",
+    "verify:mac-universal": "node scripts/verify-mac-universal.mjs",
+    "smoke:wizard": "electron scripts/wizard-window-smoke.cjs",
+    "pretest": "pnpm run build",
+    "smoke:sandbox-voice": "electron scripts/sandbox-voice-smoke.cjs"
+  },
+  "dependencies": {
+    "@jarvis/setup": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.76",
+    "sherpa-onnx-node": "1.13.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "electron": "^37.2.0",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.7.2"
+  },
+  "build": {
+    "appId": "ai.jarvis.hud",
+    "productName": "JARVIS HUD",
+    "asar": true,
+    "extraResources": [
+      {
+        "from": "../agents",
+        "to": "jarvis-content/agents",
+        "filter": [
+          "**/*",
+          "!**/*.test.*",
+          "!**/__tests__/**"
+        ]
+      },
+      {
+        "from": "../playbooks",
+        "to": "jarvis-content/playbooks",
+        "filter": [
+          "**/*",
+          "!**/*.test.*",
+          "!**/__tests__/**"
+        ]
+      },
+      {
+        "from": "../demo",
+        "to": "jarvis-content/demo",
+        "filter": [
+          "**/*",
+          "!**/*.test.*",
+          "!**/__tests__/**"
+        ]
+      },
+      {
+        "from": "../examples",
+        "to": "jarvis-content/examples",
+        "filter": [
+          "**/*",
+          "!**/node_modules/**"
+        ]
+      },
+      {
+        "from": "../slack",
+        "to": "jarvis-content/slack",
+        "filter": [
+          "**/*",
+          "!**/*.test.*",
+          "!**/__tests__/**"
+        ]
+      },
+      {
+        "from": "build/jarvis-content.json",
+        "to": "jarvis-content/jarvis-content.json"
+      },
+      {
+        "from": "vendor/engine",
+        "to": "engine-vendor",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "voice-assets",
+        "to": "voice",
+        "filter": [
+          "**/*",
+          "!bin/**"
+        ]
+      }
+    ],
+    "mac": {
+      "x64ArchFiles": "**/{engine-vendor,sherpa-onnx-darwin-arm64,sherpa-onnx-darwin-x64}/{**,**/.*/**}",
+      "signIgnore": [
+        "/Contents/Resources/engine-vendor/"
+      ],
+      "target": "dmg",
+      "icon": "build/icon.png",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "JARVIS uses your microphone for push-to-talk. Speech recognition runs locally on this computer and no audio is sent anywhere."
+      },
+      "extraResources": [
+        {
+          "from": "voice-assets/bin/darwin",
+          "to": "voice/bin/darwin"
+        }
+      ],
+      "files": [
+        "dist/**/*",
+        "!**/*.test.js",
+        "!**/*.test.ts",
+        "!**/*.test.cts",
+        "!**/*.test.mts",
+        "!node_modules/@jarvis/setup/src/**/*",
+        "!node_modules/@jarvis/setup/scripts/**/*",
+        "!node_modules/@jarvis/setup/tsconfig.json",
+        "src/index.html",
+        "src/setup.html",
+        "src/wizard-audio/**",
+        "src/transition/**",
+        "build/icon.png",
+        "build/voice-manifest-digest.json",
+        "package.json",
+        "!node_modules/sherpa-onnx-{win,linux}-*/**/*"
+      ]
+    },
+    "linux": {
+      "target": "dir",
+      "executableName": "jarvis-hud",
+      "icon": "build/icon.png",
+      "files": [
+        "dist/**/*",
+        "!**/*.test.js",
+        "!**/*.test.ts",
+        "!**/*.test.cts",
+        "!**/*.test.mts",
+        "!node_modules/@jarvis/setup/src/**/*",
+        "!node_modules/@jarvis/setup/scripts/**/*",
+        "!node_modules/@jarvis/setup/tsconfig.json",
+        "src/index.html",
+        "src/setup.html",
+        "src/wizard-audio/**",
+        "src/transition/**",
+        "build/icon.png",
+        "build/voice-manifest-digest.json",
+        "package.json",
+        "!node_modules/sherpa-onnx-{darwin,win}-*/**/*"
+      ]
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.png",
+      "signtoolOptions": {
+        "sign": "scripts/win-no-sign.cjs"
+      },
+      "extraResources": [
+        {
+          "from": "voice-assets/bin/win32",
+          "to": "voice/bin/win32"
+        }
+      ],
+      "files": [
+        "dist/**/*",
+        "!**/*.test.js",
+        "!**/*.test.ts",
+        "!**/*.test.cts",
+        "!**/*.test.mts",
+        "!node_modules/@jarvis/setup/src/**/*",
+        "!node_modules/@jarvis/setup/scripts/**/*",
+        "!node_modules/@jarvis/setup/tsconfig.json",
+        "src/index.html",
+        "src/setup.html",
+        "src/wizard-audio/**",
+        "src/transition/**",
+        "build/icon.png",
+        "build/voice-manifest-digest.json",
+        "package.json",
+        "!node_modules/sherpa-onnx-{darwin,linux}-*/**/*"
+      ]
+    },
+    "directories": {
+      "output": "dist-app"
+    },
+    "asarUnpack": [
+      "node_modules/sherpa-onnx-*/**/*"
+    ]
+  }
+}

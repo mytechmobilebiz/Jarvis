@@ -1,0 +1,21 @@
+{
+  "jobs": [
+    {
+      "id": "bobby-nightly",
+      "name": "roas-report",
+      "description": "Bobby prepares your ad-performance report overnight, ready by 06:00",
+      "prompt": "Run Bobby's roas-report skill for yesterday's Meta Ads performance. Budget: keep this run under 20k tokens; if data gathering stalls, write the partial report, state the gap, and stop.",
+      "skills": [
+        "roas-report"
+      ],
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 6 * * *",
+        "display": "daily at 06:00"
+      },
+      "schedule_display": "daily at 06:00",
+      "enabled": false,
+      "deliver": "slack"
+    }
+  ]
+}

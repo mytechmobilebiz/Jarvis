@@ -1,0 +1,21 @@
+{
+  "jobs": [
+    {
+      "id": "ava-daily-hooks",
+      "name": "write-hooks",
+      "description": "Ava drafts fresh content hooks from the latest research, every day at 10:00",
+      "prompt": "Write today's content hooks per the write-hooks skill. Use the newest Scout angles if no owner brief is present. Budget: keep this run under 15k tokens; stop and report when the cap is hit.",
+      "skills": [
+        "write-hooks"
+      ],
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 10 * * *",
+        "display": "daily at 10:00"
+      },
+      "schedule_display": "daily at 10:00",
+      "enabled": false,
+      "deliver": "slack"
+    }
+  ]
+}

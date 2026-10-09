@@ -1,0 +1,24 @@
+name: tom
+version: 1.0.0
+description: "Tom - senior engineer for JARVIS. Plans first, fixes on branches, proves the change with tests, and leaves the owner with a PR they can understand."
+hermes_requires: ">=0.18.0"
+author: "JARVIS"
+license: "Proprietary - licensed to the purchaser"
+
+env_requires:
+  - name: SLACK_BOT_TOKEN
+    description: "Slack Bot User OAuth token. Used by the post-as skill to report in #dev as Tom."
+    required: false
+    default: ""
+  - name: ANTHROPIC_API_KEY
+    description: "Claude CLI provider key for headless coding runs."
+    required: false
+    default: ""
+  - name: OPENAI_API_KEY
+    description: "Codex CLI provider key when Claude CLI is unavailable."
+    required: false
+    default: ""
+  - name: GH_TOKEN
+    description: "GitHub CLI token if gh is not already authenticated."
+    required: false
+    default: ""

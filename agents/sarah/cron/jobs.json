@@ -1,0 +1,21 @@
+{
+  "jobs": [
+    {
+      "id": "sarah-inbox",
+      "name": "triage-inbox",
+      "description": "Sarah checks your support inbox every hour and drafts the replies",
+      "prompt": "Run Sarah's triage-inbox skill against the configured support inbox. Budget: keep this run under 15k tokens; stop after the current message and report partial status if the cap would be exceeded. Hermes ships cron disabled on install, so this job runs only after the owner enables cron.",
+      "skills": [
+        "triage-inbox"
+      ],
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 * * * *",
+        "display": "every hour"
+      },
+      "schedule_display": "every hour",
+      "enabled": false,
+      "deliver": "slack"
+    }
+  ]
+}

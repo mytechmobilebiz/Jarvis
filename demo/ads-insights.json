@@ -1,0 +1,15 @@
+{
+  "product": "Halo",
+  "date": "2026-07-06",
+  "totals": {"spend":309.9,"impressions":78900,"clicks":2704,"purchases":94,"blended_roas":2.2,"blended_cpa":3.3},
+  "creatives": [
+    {"name":"Morning Routine v2","spend":72.4,"impressions":18500,"clicks":862,"purchases":32,"roas":3.4,"cpa":2.26,"frequency":1.7},
+    {"name":"Guided Winddown v1","spend":46.2,"impressions":12000,"clicks":454,"purchases":15,"roas":2.3,"cpa":3.08,"frequency":1.5},
+    {"name":"Dark Room Demo","spend":41.75,"impressions":10200,"clicks":341,"purchases":12,"roas":2.0,"cpa":3.48,"frequency":1.6},
+    {"name":"Apple Watch Overlay","spend":38.9,"impressions":9800,"clicks":312,"purchases":11,"roas":2.1,"cpa":3.54,"frequency":1.8},
+    {"name":"Wake Score Hook","spend":35.6,"impressions":9100,"clicks":276,"purchases":9,"roas":1.8,"cpa":3.96,"frequency":2.0},
+    {"name":"Founder Voiceover","spend":31.5,"impressions":7600,"clicks":207,"purchases":8,"roas":1.6,"cpa":3.94,"frequency":2.2},
+    {"name":"White Noise Cutdown","spend":24.75,"impressions":6500,"clicks":169,"purchases":5,"roas":1.2,"cpa":4.95,"frequency":2.6},
+    {"name":"Testimonial Static","spend":18.8,"impressions":5200,"clicks":83,"purchases":2,"roas":0.8,"cpa":9.4,"frequency":4.2}
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "name": "@jarvis/setup",
+  "version": "1.7.4",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "jarvis-setup": "dist/cli.js",
+    "jarvis-reset": "dist/reset-cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/engine.d.ts",
+      "default": "./dist/engine.js"
+    },
+    "./engine": {
+      "types": "./dist/engine.d.ts",
+      "default": "./dist/engine.js"
+    },
+    "./hermes-root": {
+      "types": "./dist/hermes-root.d.ts",
+      "default": "./dist/hermes-root.js"
+    },
+    "./voice-assets": {
+      "types": "./dist/voice-assets.d.ts",
+      "default": "./dist/voice-assets.js"
+    },
+    "./voice-engine": {
+      "types": "./dist/voice-engine.d.ts",
+      "default": "./dist/voice-engine.js"
+    },
+    "./voice-load": {
+      "types": "./dist/voice-load.d.ts",
+      "default": "./dist/voice-load.js"
+    },
+    "./vendor": {
+      "types": "./dist/vendor.d.ts",
+      "default": "./dist/vendor.js"
+    },
+    "./code-signature": {
+      "types": "./dist/code-signature.d.ts",
+      "default": "./dist/code-signature.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "test": "node --test dist/*.test.js dist/steps/*.test.js"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.11.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

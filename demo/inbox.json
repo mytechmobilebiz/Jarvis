@@ -1,0 +1,16 @@
+[
+  {"from":"maya.chen@example.com","subject":"How do I change my bedtime goal?","body":"Hi Halo team, I set my bedtime goal too early during setup. Where do I change it without resetting the app? Thanks, Maya","category_hint":"faq_how_to"},
+  {"from":"nate.brooks@example.com","subject":"Apple Watch syncing question","body":"Halo tracked last night on my phone, but my Apple Watch sleep stages did not appear. Is there a setting I missed?","category_hint":"faq_how_to"},
+  {"from":"leah.morales@example.com","subject":"Can I export my sleep data?","body":"I want to send a CSV of my Halo sleep history to my doctor before an appointment next week. Is export supported?","category_hint":"faq_how_to"},
+  {"from":"omar.patel@example.com","subject":"Alarm volume","body":"The smart alarm is quieter than my normal iPhone alarm. How do I make sure Halo wakes me up?","category_hint":"faq_how_to"},
+  {"from":"jenna.kim@example.com","subject":"Sharing sleep score with my partner","body":"Is there a way to share last night's score or weekly report from Halo? I only see the chart in the app.","category_hint":"faq_how_to"},
+  {"from":"marcus.lee@example.com","subject":"What does restlessness mean?","body":"My report says 38 minutes restless. What is Halo measuring there and how should I read it?","category_hint":"faq_how_to"},
+  {"from":"anna.reed@example.com","subject":"Refund request - yearly plan","body":"I purchased Halo Annual on July 1 and realized my employer already covers another sleep app. Could you refund the charge? My Apple receipt ID ends in 7731.","category_hint":"refund_within_14_days"},
+  {"from":"colin.wright@example.com","subject":"Refund please","body":"I forgot to cancel after trying Halo in May. The renewal posted on May 10, and I only noticed today. Can you reverse it?","category_hint":"refund_outside_policy"},
+  {"from":"diego.ramos@example.com","subject":"Crash on opening Sleep Debt","body":"Halo crashes every time I tap Sleep Debt. Device: iPhone 15 Pro, iOS 18.5, Halo 2.4.1 build 2417. It started after the latest update. I attached the Apple crash report ID 9F2C-17A.","category_hint":"bug_crash"},
+  {"from":"tessa.nguyen@example.com","subject":"Android version?","body":"I love the idea but I am on a Pixel 9. Are you building an Android version of Halo?","category_hint":"duplicate_feature_request_android"},
+  {"from":"brandon.hall@example.com","subject":"Android app timeline","body":"Any ETA for Halo on Android? My wife has the iPhone app and I would like to use it too.","category_hint":"duplicate_feature_request_android"},
+  {"from":"Priya Shah <priya.shah@example.com>","subject":"Please make Halo for Android","body":"Adding another vote for Android. I keep seeing your sleep score videos but cannot install from Google Play.","category_hint":"duplicate_feature_request_android"},
+  {"from":"SEO Growth Team <blast@rankquick.example>","subject":"Guaranteed 50,000 app installs in 10 days","body":"We can place Halo in thousands of blogs and deliver guaranteed installs. Reply with your budget and we start today.","category_hint":"spam"},
+  {"from":"crypto desk <offers@chainpromo.example>","subject":"Sponsor sleep token launch","body":"Hello founder, partner your wellness app with our token presale. We pay in exposure and referral upside.","category_hint":"spam"}
+]

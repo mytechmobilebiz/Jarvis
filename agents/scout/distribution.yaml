@@ -1,0 +1,16 @@
+name: scout
+version: 1.0.0
+description: "Scout — research with receipts. Watches comments, competitors, and the market's muttering, then returns only angles that can survive a citation."
+hermes_requires: ">=0.18.0"
+author: "JARVIS"
+license: "Proprietary — licensed to the purchaser"
+
+env_requires:
+  - name: YOUTUBE_API_KEY
+    description: "YouTube Data API v3 key for commentThreads.list. Optional: Scout skips YouTube collection when unset."
+    required: false
+    default: ""
+  - name: SLACK_BOT_TOKEN
+    description: "Slack Bot User OAuth token (xoxb-…) used by the shared post-as skill for #research delivery."
+    required: false
+    default: ""

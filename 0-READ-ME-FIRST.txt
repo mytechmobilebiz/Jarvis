@@ -1,0 +1,33 @@
+JARVIS -- START HERE
+
+MAC
+  Use the Mac installer from your download page
+  (the link in your purchase email). It works on
+  Apple Silicon and Intel Macs (macOS 11 or
+  newer) with no security warnings. You do not
+  need this folder.
+
+WINDOWS
+  Easiest: use the Windows installer from your
+  download page. If Windows says "Windows
+  protected your PC": click "More info", then
+  "Run anyway". (The file is safe.)
+
+  From this folder instead: double-click
+  1-START-JARVIS-WINDOWS.bat
+
+LINUX / SERVERS / DEVELOPERS
+  Open a terminal in this folder and run:
+  bash start.sh
+
+WHAT HAPPENS NEXT
+  The first run from this folder downloads about
+  250 MB and needs about 1 GB of free disk space.
+  It usually takes 5-15 minutes. Then a setup
+  screen opens and walks you through the rest
+  (10-30 minutes). The installers skip the wait
+  and open the setup screen right away.
+
+STUCK?
+  Email jarvis.agent.tech@pm.me and we'll get
+  you running.

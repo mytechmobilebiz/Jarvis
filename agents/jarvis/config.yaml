@@ -1,0 +1,134 @@
+# JARVIS profile config — the Model step writes model.provider/model.default once
+# it has VERIFIED a working sign-in or key. Nothing is seeded here on purpose.
+#
+# A seeded `default: anthropic/claude-sonnet-5` was an active Anthropic route on
+# every machine from profile install onwards, before the Model step ran. On a
+# machine with Claude Code installed, a buyer who declined or failed the Model
+# step still resolved Anthropic — and with no ANTHROPIC_API_KEY the engine falls
+# through to the Claude-Code credential-replay adapter, the one path DECISION.md
+# forbids outright, using the customer's own Claude account. An unconfigured
+# profile must be inert, not quietly routed.
+#
+# v1.5.0 brain routes (support reference — the wizard writes the live values
+# under `model:` once a sign-in verifies; these are just the defaults):
+#
+#   The brain is the customer's OWN CLI. `model.provider` becomes `codex-cli`
+#   (ChatGPT/Codex) or `claude-cli` (Claude Code). Per-turn model + reasoning
+#   effort is chosen by TURN CLASS (agent/brain/tiers.py):
+#
+#     background    heartbeats, cron, the scheduled brief — nobody waiting.
+#                   CHEAP: codex gpt-5.6-luna low / claude sonnet-5 low.
+#     conversation  interactive chat (text or voice) — a human waits.
+#                   ONE TIER BELOW high so first-speech stays fast:
+#                   codex gpt-5.6-sol medium / claude opus-5 low.
+#     coding        playbook/delegated/code-writing work. HIGH:
+#                   codex gpt-5.6-sol high / claude opus-5 high.
+#
+#   Classification is by the SPAWNER: cron/heartbeat/brief runs set
+#   HERMES_TURN_CLASS=background; playbook/delegated runs set
+#   HERMES_TURN_CLASS=coding; an interactive gateway turn sets nothing and
+#   defaults to conversation. Override any cell with a `model.brain_tiers`
+#   map, e.g.:
+#     model:
+#       brain_tiers:
+#         codex-cli: { conversation: { model: gpt-5.6-sol, effort: medium } }
+#
+#   Rate limits: the ledger (agent/brain/ledger.py) tracks the customer's
+#   plan energy. At limit-hit Jarvis RESTS (honest message, queued work) and
+#   NEVER silently falls back to a paid key — `model.brain_api_key_fallback`
+#   is an explicit opt-in, default off.
+model: {}
+
+gateway:
+  # Include the local time in each message so JARVIS need not ask a tool.
+  message_timestamps:
+    enabled: true
+
+mcp_servers:
+  hud:
+    url: http://127.0.0.1:4870/mcp
+
+# The agent's working directory is PINNED to the profile root (F4,
+# ZIP-TRIAGE-260814). Without it, the engine's cwd is whatever directory the
+# gateway happened to be launched from — and a customer following SETUP.md
+# launches `hermes -p jarvis gateway run` from ~/.hermes/hermes-agent, whose
+# AGENTS.md is upstream's 70k-char CONTRIBUTOR guide. The engine injected it
+# into every prompt (truncated at the context cap, with a scary warning),
+# steering a consumer product with engine-development directives and burning
+# ~10-12k tokens per session. The gateway bridges this value to TERMINAL_CWD
+# (gateway/run.py config bridge, tilde-expanded), so it holds for every launch
+# mode on every platform — HUD-spawned, cron, and manual `gateway run` alike.
+# The profile root is deliberate: operations.md addresses `workspace/reports/`
+# and `workspace/briefs/` relative to it, and the profile dir ships no
+# AGENTS.md, so nothing foreign enters the prompt.
+# NOTE: this literal is the default-POSIX spelling. The wizard pins the
+# machine's ACTUAL profile directory over it (profile-migrate.ts,
+# migrateProfileTerminalCwd) — at profile install and on every setup run —
+# so Windows (%LOCALAPPDATA%\hermes) and custom-HERMES_HOME installs get the
+# real path, and existing profiles that never re-copy this seed do too.
+terminal:
+  cwd: ~/.hermes/profiles/jarvis
+
+# The engine reads `approvals.cron_mode` (tools/approval.py:1807 →
+# cfg_get(config, "approvals", "cron_mode", default="deny")). This block said
+# `security:` for one release, which the engine never looks at — we were
+# protected only by its default happening to be `deny`, while the comment here
+# claimed we had set it. A control you believe you set and do not is worse than
+# no control: the day upstream changes that default, this file would have gone
+# on saying otherwise.
+approvals:
+  cron_mode: deny            # headless cron may never auto-approve dangerous commands
+
+# Engine-side speech is OFF in the product (final review 2026-08-14, F8 —
+# both rounds). Voice is wholly HUD-owned — whisper.cpp in, Kokoro out, both
+# local — and the customer-facing promise says speech generation runs on this
+# machine. The engine's own text_to_speech machinery defaults to Edge TTS,
+# which streams every character to a Microsoft endpoint (no commercial
+# service grant); with edge-tts baked into the payload (Peter's order, same
+# day — it kills the first-run pip install) it would otherwise be armed on
+# every machine. THREE layers, because each alone has a hole:
+#
+# 1. `agent.disabled_toolsets` removes the model-callable tool (applied last,
+#    hermes_cli/setup.py:3030) — but gateway platform voice replies and
+#    voice-mode speech call the TTS machinery DIRECTLY, outside toolsets.
+# 2. `voice.auto_tts: false` turns voice-mode speech off by default — but an
+#    explicit /voice on (or a persisted voice session) overrides a default.
+# 3. `tts.provider` therefore points at a command provider that always fails.
+#    This is the actual kill switch: EVERY engine TTS path resolves the
+#    provider through the same config, command providers win the dispatch
+#    before the built-ins, and — critically — an UNKNOWN provider name would
+#    have silently fallen back to Edge (tts_tool.py's own comment: "unknown
+#    names hit the Edge TTS default at the bottom"), so the off-switch must
+#    be a RESOLVABLE provider that fails closed. `exit 1` fails in POSIX sh
+#    and Windows cmd alike; the customer-visible result is a text reply
+#    without audio, never an upload.
+agent:
+  disabled_toolsets: [tts]
+
+voice:
+  silence_duration: 1.2      # seconds of silence that end a PTT recording (default 3.0 is sluggish)
+  record_key: ctrl+b
+  auto_tts: false            # layer 2 of 3 — see the speech-off block above
+
+tts:
+  provider: jarvis-local-off # layer 3 of 3 — fail-closed; see the speech-off block above
+  providers:
+    jarvis-local-off:
+      type: command
+      command: "exit 1"
+
+stt:
+  enabled: true              # provider deliberately omitted so Hermes auto-detects: local faster-whisper first, then cloud keys; playbooks/voice-fast.md swaps in Parakeet
+
+group_sessions_per_user: true
+unauthorized_dm_behavior: "pair"
+
+slack:
+  require_mention: true
+
+platforms:
+  slack:
+    reply_to_mode: "first"
+    extra:
+      reply_in_thread: true
+      rich_blocks: true      # Block Kit tables for the ROAS report and brief
