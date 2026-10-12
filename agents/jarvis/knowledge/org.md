@@ -5,7 +5,7 @@
 | Role | Channel | Channel ID | Avatar URL | Beat |
 |---|---|---|---|---|
 | Jarvis | #jarvis-office | | | Chief of staff: brief, goals, delegation |
-| Sarah | #support | | | Inbox triage, replies (gated), refund cards, bug escalation |
+| Sarah | #support | | | Inbox triage, direct replies and lead follow-up, refund cards, bug escalation |
 | Tom | #dev | | | Plan-gated coding: worktree → tests → PR |
 | Bobby | #ads | | | Nightly ROAS report; actions only behind approval + caps |
 | Scout | #research | | | Weekly "5 angles worth testing" |

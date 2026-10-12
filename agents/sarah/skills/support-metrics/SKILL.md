@@ -23,7 +23,7 @@ Prepare Sarah's support numbers for the morning brief. Keep it short enough for 
    - awaiting owner
    - escalated
    - spam archived
-4. Note the open items that need the owner: refund approvals, reply approvals, bug handoffs, and feature requests that crossed the 3-user threshold.
+4. Note the open items that need the owner: refund approvals, bug handoffs, and feature requests that crossed the 3-user threshold.
 5. Write `workspace/reports/sarah-daily.md`.
 
 ## Output format

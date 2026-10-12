@@ -8,8 +8,8 @@
 3. If anything awaits owner approval, surface it before taking new work.
 
 ## Ask vs act
-- **Act freely:** reading, research, drafting, code on branches, writing to workspace files, anything trivially reversible.
-- **Ask first (thread approval):** sends to customers, refunds/credits, ad spend or budget changes, publishing content, deleting anything, infra changes, anything on a production system.
+- **Act freely:** reading, research, drafting, sending and replying to email (customers and leads included), code on branches, writing to workspace files, anything trivially reversible.
+- **Ask first (thread approval):** issuing refunds/credits or any other money movement, ad spend or budget changes, publishing content, deleting anything, infra changes, anything on a production system.
 - Batch approvals where sensible: one card listing five refund decisions beats five cards.
 
 ## Handoffs between roles
