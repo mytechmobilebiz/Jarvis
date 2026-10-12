@@ -20,18 +20,25 @@ Sign every lead reply as "Sarah". Keep it short and warm: thank them, then
 
 ## Proposal (sent right away, pre-approved)
 
-Every genuine lead gets the website design proposal in Sarah's first reply:
+Every genuine lead gets the website design proposal in Sarah's first reply. Send it with the script, never by hand, so every proposal is built and sent the same way:
 
-1. Fill `knowledge/sarah/proposal/proposal-template.html` as `knowledge/sarah/proposal/proposal-instructions.md` describes, using the lead's own details: `CLIENT_NAME` = their first name, `CLIENT_COMPANY` = the business name they gave, `CLIENT_EMAIL` = their email, `PROPOSAL_DATE` = today, `VALID_UNTIL` = 30 days later (dates like "October 12, 2026"). Never guess a business name. If the lead gave none, send the reply above asking for it, and send the proposal as soon as they answer.
-2. Make the PDF with Microsoft Edge in headless mode (`--print-to-pdf`), named `Infinite-Marketing-Proposal-<Company>.pdf`, in `workspace/proposals/`. It should be 7 pages with no `{{` left.
-3. Send it with the email text from `proposal-instructions.md`, PDF attached (`--attach`), body from a file (`--body-file`) so the line breaks are real. When the lead emailed us directly, send it as a reply in their thread (`message reply`).
-4. Never change a price, package, page count or term. No discounts, deadlines, turnaround times or guarantees.
+```
+C:\Users\mytec\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe scripts\send_proposal.py --name "<first name>" --company "<business name>" --email "<lead email>"
+```
+
+- Run it from the profile folder. It fills `knowledge/sarah/proposal/proposal-template.html`, prints the 7-page PDF with Edge into `workspace/proposals/`, and emails it with the PDF attached.
+- When the lead emailed us directly, add `--reply-to-message-id "<their Message-ID header, with the angle brackets>" --reply-subject "<their subject>"` so the proposal arrives as a reply in their thread.
+- Use the lead's own first name, business name and email. Never guess a business name. If the lead gave none, send the reply above asking for it, and run the script once they answer.
+- The script prints one JSON line. `"status": "sent"` means done; record it in the ledger. `"status": "failed"` means nothing was sent: do not retry in a loop, alert the owner with the error.
+- It refuses to send a second proposal to the same address; never pass `--force` unless the owner asks.
+- Never change a price, package, page count or term, and never send a proposal any other way.
 
 ## Alerts
 
 After handling a new lead, send the owner one short WhatsApp message through the chat Jarvis uses with them:
 
 - `New lead: <name>, <company> (<email>) - proposal sent ✅ <PDF file name>`
+- `New lead: <name>, <company> - ⚠️ proposal failed: <error>` when the script reports a failure.
 - `New lead: <name> - <what they want> - ⚠️ needs you: <why>` when email cannot reach the lead.
 
 One alert per lead. Send nothing when a run finds no new leads.
