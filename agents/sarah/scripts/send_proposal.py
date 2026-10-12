@@ -152,34 +152,47 @@ def find_edge():
     fail("Microsoft Edge (msedge.exe) was not found")
 
 
+# Inside the Codex sandbox Edge cannot start its own sandboxed GPU process
+# (access denied), and a separate GPU process is not needed to print a PDF.
+# Each set keeps GPU work in-process or in software and skips the GPU disk
+# cache; the first one that produces a PDF wins.
+EDGE_FLAG_SETS = [
+    ["--no-sandbox", "--disable-gpu", "--disable-gpu-sandbox", "--in-process-gpu",
+     "--disable-gpu-shader-disk-cache", "--disable-software-rasterizer"],
+    ["--no-sandbox", "--disable-gpu-sandbox", "--in-process-gpu", "--use-angle=swiftshader",
+     "--enable-unsafe-swiftshader", "--disable-gpu-shader-disk-cache"],
+    ["--no-sandbox", "--single-process", "--disable-gpu", "--disable-gpu-shader-disk-cache"],
+    ["--disable-gpu"],
+]
+
+
 def print_pdf(html_path, pdf_path):
     edge = find_edge()
-    if pdf_path.exists():
-        pdf_path.unlink()
-    with tempfile.TemporaryDirectory(dir=OUT_DIR, prefix="edge-", ignore_cleanup_errors=True) as profile_dir:
-        command = [
-            edge,
-            "--headless",
-            "--disable-gpu",
-            "--no-first-run",
-            "--no-pdf-header-footer",
-            f"--user-data-dir={profile_dir}",
-            f"--print-to-pdf={pdf_path}",
-            html_path.resolve().as_uri(),
-        ]
-        if os.environ.get("EDGE_NO_SANDBOX") == "1":
-            command.insert(1, "--no-sandbox")
-        try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=180)
-        except subprocess.TimeoutExpired:
-            fail("Edge did not finish printing the PDF within 3 minutes")
-    if not pdf_path.is_file():
-        detail = (result.stderr or result.stdout or "").strip()[-600:]
-        fail(f"Edge did not create the PDF (exit {result.returncode}): {detail}")
-    data = pdf_path.read_bytes()
-    if not data.startswith(b"%PDF") or len(data) < MIN_PDF_BYTES:
-        fail(f"the PDF looks wrong ({len(data)} bytes)")
-    return data
+    flag_sets = EDGE_FLAG_SETS
+    if os.environ.get("EDGE_FLAG_SET"):
+        flag_sets = [EDGE_FLAG_SETS[int(os.environ["EDGE_FLAG_SET"])]]
+    errors = []
+    for number, flags in enumerate(flag_sets, 1):
+        if pdf_path.exists():
+            pdf_path.unlink()
+        with tempfile.TemporaryDirectory(dir=OUT_DIR, prefix="edge-", ignore_cleanup_errors=True) as profile_dir:
+            command = [edge, "--headless", *flags, "--no-first-run", "--no-pdf-header-footer",
+                       f"--user-data-dir={profile_dir}", f"--print-to-pdf={pdf_path}", html_path.resolve().as_uri()]
+            if os.environ.get("EDGE_NO_SANDBOX") == "1" and "--no-sandbox" not in flags:
+                command.insert(1, "--no-sandbox")
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=180)
+                detail = (result.stderr or result.stdout or "").strip()[-300:]
+                outcome = f"exit {result.returncode}: {detail}"
+            except subprocess.TimeoutExpired:
+                outcome = "timed out after 3 minutes"
+        if pdf_path.is_file():
+            data = pdf_path.read_bytes()
+            if data.startswith(b"%PDF") and len(data) >= MIN_PDF_BYTES:
+                return data
+            outcome = f"made a PDF that looks wrong ({len(data)} bytes)"
+        errors.append(f"attempt {number}: {outcome}")
+    fail("Edge did not create the PDF. " + " | ".join(errors)[-1500:])
 
 
 def build_message(sender, name, company, email, valid_until, pdf_name, pdf_bytes, reply_id, reply_subject):
