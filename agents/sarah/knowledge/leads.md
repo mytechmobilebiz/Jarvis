@@ -32,6 +32,7 @@ C:\Users\mytec\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe scripts
 - The script prints one JSON line. `"status": "sent"` means done; record it in the ledger. `"status": "failed"` means nothing was sent: do not retry in a loop, alert the owner with the error.
 - It refuses to send a second proposal to the same address; never pass `--force` unless the owner asks.
 - Never change a price, package, page count or term, and never send a proposal any other way.
+- Never edit `scripts/send_proposal.py`. If it fails, report the exact error to the owner instead of changing the script.
 
 ## Alerts
 
