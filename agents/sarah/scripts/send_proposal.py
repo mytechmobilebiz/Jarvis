@@ -62,7 +62,12 @@ infinitemarketing.co | 678-935-6401
 """
 
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$")
-EDGE_CANDIDATES = [
+# Chrome first: it prints inside the Codex sandbox on the owner's PC; Edge is the fallback.
+BROWSER_CANDIDATES = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    # The owner's own per-user Chrome; the sandbox account has a different LOCALAPPDATA.
+    str(PROFILE.parents[2] / "Google" / "Chrome" / "Application" / "chrome.exe"),
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
     r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
 ]
@@ -139,17 +144,18 @@ def fill_template(name, company, email, today, valid_until):
     return page
 
 
-def find_edge():
+def find_browsers():
     override = os.environ.get("EDGE_PATH")
     if override:
-        return override
-    for candidate in EDGE_CANDIDATES:
-        if Path(candidate).is_file():
-            return candidate
-    found = shutil.which("msedge")
-    if found:
-        return found
-    fail("Microsoft Edge (msedge.exe) was not found")
+        return [override]
+    found = [candidate for candidate in BROWSER_CANDIDATES if Path(candidate).is_file()]
+    for name in ("chrome", "msedge"):
+        on_path = shutil.which(name)
+        if on_path and on_path not in found:
+            found.append(on_path)
+    if not found:
+        fail("neither Microsoft Edge nor Google Chrome was found")
+    return found
 
 
 # Inside the Codex sandbox Edge cannot start its own sandboxed GPU process
@@ -167,12 +173,12 @@ EDGE_FLAG_SETS = [
 
 
 def print_pdf(html_path, pdf_path):
-    edge = find_edge()
     flag_sets = EDGE_FLAG_SETS
     if os.environ.get("EDGE_FLAG_SET"):
         flag_sets = [EDGE_FLAG_SETS[int(os.environ["EDGE_FLAG_SET"])]]
+    attempts = [(browser, flags) for browser in find_browsers() for flags in flag_sets]
     errors = []
-    for number, flags in enumerate(flag_sets, 1):
+    for number, (edge, flags) in enumerate(attempts, 1):
         if pdf_path.exists():
             pdf_path.unlink()
         with tempfile.TemporaryDirectory(dir=OUT_DIR, prefix="edge-", ignore_cleanup_errors=True) as profile_dir:
@@ -191,8 +197,8 @@ def print_pdf(html_path, pdf_path):
             if data.startswith(b"%PDF") and len(data) >= MIN_PDF_BYTES:
                 return data
             outcome = f"made a PDF that looks wrong ({len(data)} bytes)"
-        errors.append(f"attempt {number}: {outcome}")
-    fail("Edge did not create the PDF. " + " | ".join(errors)[-1500:])
+        errors.append(f"attempt {number} ({Path(edge).name}): {outcome}")
+    fail("the browser did not create the PDF. " + " | ".join(errors)[-1500:])
 
 
 def build_message(sender, name, company, email, valid_until, pdf_name, pdf_bytes, reply_id, reply_subject):
@@ -251,8 +257,8 @@ def open_tunnel(proxy, host, port, timeout):
     return sock
 
 
-class TunnelSMTP(smtplib.SMTP_SSL):
-    """SMTP over implicit TLS, reached through an HTTP CONNECT proxy."""
+class TunnelSMTPSSL(smtplib.SMTP_SSL):
+    """SMTP over implicit TLS (port 465), reached through an HTTP CONNECT proxy."""
 
     def __init__(self, proxy, *args, **kwargs):
         self._proxy = proxy
@@ -263,13 +269,30 @@ class TunnelSMTP(smtplib.SMTP_SSL):
         return self.context.wrap_socket(raw, server_hostname=host)
 
 
+class TunnelSMTP(smtplib.SMTP):
+    """Plain SMTP (port 587, upgraded with STARTTLS), reached through an HTTP CONNECT proxy."""
+
+    def __init__(self, proxy, *args, **kwargs):
+        self._proxy = proxy
+        super().__init__(*args, **kwargs)
+
+    def _get_socket(self, host, port, timeout):
+        return open_tunnel(self._proxy, host, port, timeout)
+
+
 def send(message, sender, password, host, port):
     context = ssl.create_default_context()
     proxy = proxy_for(host)
-    if proxy:
-        client = TunnelSMTP(proxy, host, port, context=context, timeout=60)
+    if port == 465:
+        if proxy:
+            client = TunnelSMTPSSL(proxy, host, port, context=context, timeout=60)
+        else:
+            client = smtplib.SMTP_SSL(host, port, context=context, timeout=60)
     else:
-        client = smtplib.SMTP_SSL(host, port, context=context, timeout=60)
+        client = TunnelSMTP(proxy, host, port, timeout=60) if proxy else smtplib.SMTP(host, port, timeout=60)
+        client.ehlo()
+        client.starttls(context=context)
+        client.ehlo()
     try:
         client.login(sender, password)
         client.send_message(message)
@@ -334,8 +357,8 @@ def run(args):
         fail("EMAIL_PASSWORD is missing from the profile .env")
     host = os.environ.get("EMAIL_SMTP_HOST") or env.get("EMAIL_SMTP_HOST") or DEFAULT_SMTP_HOST
     port = int(os.environ.get("EMAIL_SMTP_PORT") or env.get("EMAIL_SMTP_PORT") or DEFAULT_SMTP_PORT)
-    if port != 465:
-        fail(f"only SMTP over implicit TLS on port 465 is supported, not port {port}")
+    if port not in (465, 587):
+        fail(f"SMTP port must be 465 (TLS) or 587 (STARTTLS), not {port}")
     send(message, sender, password, host, port)
     result.update(status="sent", sent_at=datetime.datetime.now().isoformat(timespec="seconds"))
     log_entry({k: result[k] for k in ("status", "sent_at", "to", "message_id", "pdf")} | {"email": email, "company": company})
