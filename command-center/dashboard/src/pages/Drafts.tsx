@@ -1,63 +1,8 @@
 import { useState } from "react";
 import { api, type Artifact } from "../api";
-import { useAuth } from "../App";
-import { Card, Empty, ErrorNote, JsonView, Markdown, Modal, Pill, Time } from "../components";
+import { Card, Empty, ErrorNote, Pill, Time } from "../components";
 import { usePoll } from "../hooks";
-
-function ArtifactView({ id, onClose, onChanged }: { id: number; onClose: () => void; onChanged: () => void }) {
-  const { canOperate } = useAuth();
-  const detail = usePoll(() => api.get<{ artifact: Artifact }>(`/api/artifacts/${id}`), 0, [id]);
-  const [error, setError] = useState<string | null>(null);
-  const a = detail.data?.artifact;
-
-  async function mark(status: string) {
-    setError(null);
-    try {
-      await api.patch(`/api/artifacts/${id}`, { status });
-      await detail.refresh();
-      onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  return (
-    <Modal title={a?.title ?? `Draft #${id}`} onClose={onClose} wide>
-      <ErrorNote error={detail.error ?? error} />
-      {a ? (
-        <>
-          <p className="muted small">
-            {a.kind} by {a.agent} · <Time iso={a.created_at} /> · <Pill value={a.status} />
-          </p>
-          {canOperate ? (
-            <div className="row-actions">
-              <button className="btn small" onClick={() => void mark("approved")}>
-                Mark reviewed
-              </button>
-              <button className="btn small" onClick={() => void mark("rejected")}>
-                Reject
-              </button>
-              <button className="btn small" onClick={() => void mark("archived")}>
-                Archive
-              </button>
-              <span className="muted small">Marking a draft reviewed does not publish or send it.</span>
-            </div>
-          ) : null}
-          {a.content_type === "text/html" ? (
-            // Rendered with no scripts, forms or same-origin access.
-            <iframe className="html-preview" title={a.title} sandbox="" srcDoc={a.content ?? ""} />
-          ) : a.content_type === "application/json" ? (
-            <JsonView value={(() => { try { return JSON.parse(a.content ?? "null"); } catch { return a.content; } })()} />
-          ) : (
-            <Markdown text={a.content ?? ""} />
-          )}
-        </>
-      ) : (
-        <p className="muted">Loading…</p>
-      )}
-    </Modal>
-  );
-}
+import { ArtifactView } from "../work";
 
 export default function Drafts() {
   const [kind, setKind] = useState("");

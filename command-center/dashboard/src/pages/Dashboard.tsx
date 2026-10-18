@@ -1,11 +1,11 @@
-import { ReactNode, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type Agent, type Approval, type CCEvent, type Site, type SupervisorRequest, type SystemStatus, type Task } from "../api";
 import { useAuth } from "../App";
 import TaskActivityChart, { type HourBucket } from "../charts/TaskActivityChart";
-import { Card, Empty, ErrorNote, Pill, SeverityIcon, Time } from "../components";
+import { Card, Empty, ErrorNote, Pill, SeverityIcon, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
-import { Icon, type IconName } from "../icons";
+import { Icon } from "../icons";
 import { serviceHealth } from "../shell/Sidebar";
 import "./Dashboard.css";
 
@@ -47,26 +47,6 @@ function useClock(): Date {
     return () => clearInterval(id);
   }, []);
   return now;
-}
-
-function Tile({ icon, tone, label, children, hint, to }: { icon: IconName; tone: string; label: string; children: ReactNode; hint?: ReactNode; to?: string }) {
-  return (
-    <section className={`tile tile-${tone}`} aria-label={label}>
-      <div className="tile-head">
-        <span className="tile-icon" aria-hidden>
-          <Icon name={icon} size={18} />
-        </span>
-        <span className="tile-label">{label}</span>
-        {to ? (
-          <Link className="tile-link" to={to} aria-label={`Open ${label}`}>
-            <Icon name="chevronRight" size={16} />
-          </Link>
-        ) : null}
-      </div>
-      <div className="tile-body">{children}</div>
-      {hint ? <div className="tile-hint">{hint}</div> : null}
-    </section>
-  );
 }
 
 function Sparkline({ values }: { values: number[] }) {

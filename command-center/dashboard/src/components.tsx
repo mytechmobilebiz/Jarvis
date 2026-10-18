@@ -1,5 +1,7 @@
 import { ReactNode, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import type { Finding, Risk, Severity } from "./api";
+import { Icon, type IconName } from "./icons";
 
 export function timeAgo(iso: string | null | undefined, now: number = Date.now()): string {
   if (!iso) return "never";
@@ -193,5 +195,26 @@ export function Modal({ title, onClose, children, wide }: { title: string; onClo
         <div className="modal-body">{children}</div>
       </div>
     </div>
+  );
+}
+
+/** A metric card (see tiles.css): icon, label, big value, optional hint and link. Tones: blue, purple, cyan, orange, green, warn, bad, muted. */
+export function Tile({ icon, tone, label, children, hint, to }: { icon: IconName; tone: string; label: string; children: ReactNode; hint?: ReactNode; to?: string }) {
+  return (
+    <section className={`tile tile-${tone}`} aria-label={label}>
+      <div className="tile-head">
+        <span className="tile-icon" aria-hidden>
+          <Icon name={icon} size={18} />
+        </span>
+        <span className="tile-label">{label}</span>
+        {to ? (
+          <Link className="tile-link" to={to} aria-label={`Open ${label}`}>
+            <Icon name="chevronRight" size={16} />
+          </Link>
+        ) : null}
+      </div>
+      <div className="tile-body">{children}</div>
+      {hint ? <div className="tile-hint">{hint}</div> : null}
+    </section>
   );
 }
