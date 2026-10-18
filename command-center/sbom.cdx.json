@@ -1,14 +1,14 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:4513b264-b50c-42e3-9a7a-91bfc3319720",
+  "serialNumber": "urn:uuid:c1c28e0d-8e81-415e-8c05-4d2ef3a747b8",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-18T08:03:02+00:00",
+    "timestamp": "2026-10-18T09:58:36+00:00",
     "component": {
       "type": "application",
       "name": "Infinite AI Command Center",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "licenses": [
         {
           "license": {
@@ -111,6 +111,26 @@
         }
       ],
       "purl": "pkg:pypi/asyncpg@0.32.0",
+      "scope": "required",
+      "properties": [
+        {
+          "name": "cc:scope",
+          "value": "runtime"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "asyncssh",
+      "version": "2.24.1",
+      "licenses": [
+        {
+          "license": {
+            "name": "EPL-2.0 OR GPL-2.0-or-later"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/asyncssh@2.24.1",
       "scope": "required",
       "properties": [
         {

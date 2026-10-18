@@ -30,22 +30,25 @@ Third-party components and licenses: [SBOM.md](SBOM.md).
                       addresses only)
 ```
 
-## The agents
+## The AI Supervisor and the seven agents
+
+The **AI Supervisor** plans requests (Claude or deterministic rules) and hands
+the work to the seven agents; it never acts on a site or server itself.
 
 | Agent | Does | Needs approval for |
 |---|---|---|
-| AI Supervisor | Plans requests (Claude or rules) and hands them to the agents below; summaries, daily briefing, health review | nothing (it only delegates) |
-| WordPress & Hosting Monitor | Read-only uptime, TLS, WordPress version and exposure checks; read-only server checks (DNS, TCP connect, TLS) | nothing (read-only) |
-| Sales & Proposals | Scores leads, drafts proposals from `templates/proposal-template.html` | sending a proposal (mock email) |
-| Client Support | Triages client messages, drafts replies | sending a reply (mock email) |
-| Content & Social | Drafts blog and social posts | publishing (mock WordPress / social) |
-| SEO & Research | Read-only on-page SEO audits; keyword and content briefs | nothing (read-only / drafts) |
-| Ads & Analytics | Ad performance report on **sample data** (no ad account connected) | any budget change (financial, mock) |
-| Credit Repair | Isolated module: compliance timing checks, dispute-letter drafts from an encrypted store | mailing a letter (mock); off until an admin enables it |
+| WordPress Security & Repair | Security scans (exposures, suspicious redirects, cloaking, injected scripts/spam, TLS), security reports, WP-CLI diagnosis over restricted SSH | every repair (restore home/siteurl, plugin deactivate/activate/update/reinstall, core reinstall, maintenance mode, cache flush, quarantine debug.log) |
+| SEO & Content | Read-only SEO audits, keyword briefs, blog drafts | publishing to WordPress (mock) |
+| Social Media & Marketing (Postonomous) | Social drafts; ad report on **sample data** | publishing via Postonomous (mock); budget changes (mock) |
+| VPS & Server Management (CWP/SSH) | Server overview and service checks through cc-gate | restarting an allowlisted service |
+| Email & Customer Communications | Lead scoring, proposals, client-message triage and reply drafts | sending email (mock) |
+| Website & Infrastructure Monitoring | Uptime (24 h / 7 d / 30 d), TLS, redirects, server reachability; read-only | nothing |
+| Credit Repair & Dispute Management | Isolated module: compliance timing checks, dispute-letter drafts | mailing a letter (mock); off until an admin enables it |
 
 "Mock" means the action is recorded in the **Outbox** page and nothing leaves
-the machine. Real integrations need your approval and credentials (see
-PROJECT_STATUS.md).
+the machine. Server and WordPress repairs are real: they run on your server
+through cc-gate after approval (production: an admin types the target's name).
+See [docs/SERVER_SETUP.md](docs/SERVER_SETUP.md).
 
 | Part | What it does |
 |---|---|
@@ -53,6 +56,8 @@ PROJECT_STATUS.md).
 | `backend/app/agents` | Agent framework (capabilities with declared risk), the read-only HTTP client, the agents |
 | `backend/app/credit_repair` | The Credit Repair store: its own database, login role, encryption key and access log |
 | `backend/app/integrations` | Outward integrations (all mocks in this build) and the n8n client |
+| `backend/app/ssh` | SSH to servers: key, pinned host keys, the allowlist, audit trail (cc-gate only) |
+| `server/` | What you install on a server: cc-gate, cc-site-helper, install-gate.sh, example config |
 | `backend/app/supervisor` | The AI supervisor: plans requests (Claude or rules), summarises, daily briefing, health review |
 | `backend/app/worker` | Runs tasks (PostgreSQL `SKIP LOCKED` queue), cron schedules, delivers events to n8n |
 | `backend/app/migrations` | The database schema, as plain SQL |
@@ -74,7 +79,13 @@ PROJECT_STATUS.md).
 - **Outward integrations are mocks** in this build and additionally refuse to
   run without an approval on the task.
 - **Monitoring is read-only**: the agents' HTTP client sends only GET/HEAD and
-  refuses private, loopback and metadata addresses (no SSRF into the stack).
+  refuses private, loopback and metadata addresses (no SSRF into the stack);
+  redirects to foreign domains are recorded, never followed by the checks.
+- **Servers only through cc-gate**: a non-root account whose key can run nothing
+  but an allowlist of operations; host keys pinned after a person compares the
+  fingerprint; every command audited; changes need approval, production changes
+  an admin who types the target's name; the server's own `allow_changes` switch
+  can refuse all changes.
 - **The n8n service token** can submit requests and acknowledge events; it
   cannot read dashboard data or approve anything.
 - **Model text is data**: agent output and fetched pages go to the summariser

@@ -7,7 +7,7 @@ network and volumes, so it does not touch XAMPP or other Docker projects
 
 | What | Where |
 |---|---|
-| Installation package | `InfiniteAI-CommandCenter-0.2.0-windows.zip` (in the GitHub repo at `command-center/releases/`, with a `.sha256` file) |
+| Installation package | `InfiniteAI-CommandCenter-0.3.0-windows.zip` (in the GitHub repo at `command-center/releases/`, with a `.sha256` file) |
 | Source | GitHub `mytechmobilebiz/Jarvis`, branch `ccr-eb27a2af-8u7i39`, folder `command-center/` |
 | Install location on the PC | `C:\InfiniteAI\InfiniteAI-CommandCenter` (outside `C:\xampp`) |
 | Dashboard | http://localhost:8090 (bound to 127.0.0.1 only) |
@@ -31,9 +31,9 @@ The scripts are run with `-ExecutionPolicy Bypass` for that one process only;
 the machine-wide execution policy is not changed. `preflight.ps1` and
 `status.ps1` are read-only; read any script first if you wish.
 
-1. Download `InfiniteAI-CommandCenter-0.2.0-windows.zip` and, optionally,
+1. Download `InfiniteAI-CommandCenter-0.3.0-windows.zip` and, optionally,
    check it against the `.sha256` file:
-   `Get-FileHash .\InfiniteAI-CommandCenter-0.2.0-windows.zip -Algorithm SHA256`
+   `Get-FileHash .\InfiniteAI-CommandCenter-0.3.0-windows.zip -Algorithm SHA256`
 2. Extract it to `C:\InfiniteAI` (you get `C:\InfiniteAI\InfiniteAI-CommandCenter`).
 3. Open PowerShell and run:
 
@@ -73,6 +73,10 @@ and run the same command from `Jarvis\command-center`.
 | `ANTHROPIC_API_KEY` (optional) | Deployment default for Claude; normally leave empty and enter your key on the dashboard's Settings page instead (stored encrypted) |
 | `DASHBOARD_PORT`, `N8N_PORT`, `TZ` | Local ports and time zone |
 
+Upgrading from 0.2.0 to 0.3.0 needs no new keys; follow "Updating" below. The
+first start renames the agents to the seven official ones and keeps all your
+data, switched-off agents included.
+
 Upgrading from 0.1.0: `install.ps1` adds the three keys introduced since
 then (`CC_SECRETS_KEY`, `CREDIT_REPAIR_DB_PASSWORD`, `CREDIT_REPAIR_DATA_KEY`)
 to your existing `.env` and changes nothing else in it. To do only that step:
@@ -85,6 +89,15 @@ the file exists, otherwise from a plain built-in template without prices.
 Put your own template there (placeholders such as `{{CLIENT_NAME}}` and
 `{{CLIENT_COMPANY}}`; see `templates\README.md`). The folder
 is read-only to the application and is not included in backups or git.
+
+## Servers and WordPress repairs (new in 0.3.0)
+
+The **Servers** page connects the Command Center to your CWP servers through a
+restricted, non-root SSH account that can only run an allowlist of operations
+(`cc-gate`). Setting a server up is something you do on the server yourself;
+follow [SERVER_SETUP.md](SERVER_SETUP.md). The `server` folder of this package
+holds what you copy there. Until you do, everything else works as before and no
+SSH connection is made.
 
 ## Credit Repair module
 
