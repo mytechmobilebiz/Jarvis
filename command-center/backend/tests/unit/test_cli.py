@@ -17,7 +17,7 @@ def test_valid_config_has_no_errors():
 
 def test_problems_are_reported():
     errors, _ = config_problems(
-        Settings(admin_email="nope", admin_password="short", CC_SERVICE_TOKEN="REPLACE_WITH_LONG_RANDOM_SECRET_VALUE")
+        Settings(admin_email="nope", admin_password="short", CC_SERVICE_TOKEN="REPLACE_WITH_LONG_RANDOM_SECRET_VALUE", n8n_webhook_secret="")
     )
     text = " ".join(errors)
     assert "ADMIN_EMAIL" in text and "ADMIN_PASSWORD" in text

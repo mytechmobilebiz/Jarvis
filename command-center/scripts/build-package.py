@@ -34,6 +34,7 @@ DEV_ONLY = (
     "scripts/build-package.py",
     "scripts/init-env.sh",
     "scripts/generate-sbom.py",
+    "releases/",
 )
 FORBIDDEN_NAMES = (".env", "id_rsa", "id_ed25519")
 FORBIDDEN_SUFFIXES = (".key", ".p12", ".pfx", ".dump", ".sqlite", ".pyc")
@@ -80,7 +81,7 @@ def check(files: list[str]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out", default=str(ROOT.parent / "release"))
+    parser.add_argument("--out", default=str(ROOT / "releases"))
     args = parser.parse_args()
     version = (ROOT / "VERSION").read_text().strip()
     files = candidate_files()

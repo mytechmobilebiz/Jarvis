@@ -53,5 +53,5 @@ if ($SkipSmokeTest) {
   if ($LASTEXITCODE -ne 0) { Fail "the smoke test failed; the system is running but not verified" }
 }
 
-Write-Host "`nInstalled. Sign-in details are in $root\.env (ADMIN_EMAIL / ADMIN_PASSWORD)." -ForegroundColor Green
+Write-Host "`nInstalled. Sign-in details are in $(Join-Path $root ".env") (ADMIN_EMAIL / ADMIN_PASSWORD)." -ForegroundColor Green
 Write-Host "Keep .env private and back up N8N_ENCRYPTION_KEY."

@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import Page, expect
 
+from .conftest import wait_task
+
 SHOTS = Path(os.environ.get("CC_SCREENSHOT_DIR", Path(__file__).parent / "screenshots"))
 
 
@@ -52,7 +54,9 @@ def test_supervisor_console(signed_in: Page):
     shot(page, "02-supervisor")
 
 
-def test_websites_page_and_site_detail(signed_in: Page):
+def test_websites_page_and_site_detail(signed_in: Page, api, test_site):
+    task = api.post(f"/api/sites/{test_site['id']}/check", json={"deep": True}).json()["task"]
+    wait_task(api, task["id"])
     page = signed_in
     page.get_by_role("link", name="Websites", exact=True).click()
     row = page.get_by_role("row", name="Local test WordPress")

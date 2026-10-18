@@ -7,53 +7,54 @@ network and volumes, so it does not touch XAMPP or other Docker projects
 
 | What | Where |
 |---|---|
+| Installation package | `InfiniteAI-CommandCenter-0.1.0-windows.zip` (in the GitHub repo at `command-center/releases/`, with a `.sha256` file) |
 | Source | GitHub `mytechmobilebiz/Jarvis`, branch `ccr-eb27a2af-8u7i39`, folder `command-center/` |
-| Suggested location on the PC | `C:\InfiniteAI\Jarvis\command-center` (outside `C:\xampp`) |
+| Install location on the PC | `C:\InfiniteAI\InfiniteAI-CommandCenter` (outside `C:\xampp`) |
 | Dashboard | http://localhost:8090 (bound to 127.0.0.1 only) |
 | n8n editor | http://localhost:5680 (bound to 127.0.0.1 only) |
 | Data | Docker volumes `infinite-command-center_pgdata` and `infinite-command-center_n8n_data` |
 
 Ports were chosen to avoid XAMPP (80, 443, 3306, Tomcat 8080) and an n8n
 already running on 5678. Change them in `.env` if the preflight reports a clash.
+No database port is published, so XAMPP's MySQL/MariaDB is never involved.
 
 ## Prerequisites
 
 - Windows 11 with Docker Desktop running, using the WSL 2 engine and Linux containers.
-- Git for Windows (or download the branch as a ZIP from GitHub).
 - About 5 GB free disk space and an internet connection for the first build
   (images and packages are downloaded from Docker Hub, PyPI and npm).
+- Nothing else: no Python, Node.js or Git is needed on the PC for the zip route.
 
 ## Install (PowerShell, as your normal user, no administrator needed)
 
 The scripts are run with `-ExecutionPolicy Bypass` for that one process only;
-the machine-wide execution policy is not changed. Read any script first if you
-wish: `preflight.ps1` and `status.ps1` are read-only.
+the machine-wide execution policy is not changed. `preflight.ps1` and
+`status.ps1` are read-only; read any script first if you wish.
+
+1. Download `InfiniteAI-CommandCenter-0.1.0-windows.zip` and, optionally,
+   check it against the `.sha256` file:
+   `Get-FileHash .\InfiniteAI-CommandCenter-0.1.0-windows.zip -Algorithm SHA256`
+2. Extract it to `C:\InfiniteAI` (you get `C:\InfiniteAI\InfiniteAI-CommandCenter`).
+3. Open PowerShell and run:
 
 ```powershell
-# 1. Get the code
-New-Item -ItemType Directory -Force C:\InfiniteAI | Out-Null
-Set-Location C:\InfiniteAI
-git clone --branch ccr-eb27a2af-8u7i39 https://github.com/mytechmobilebiz/Jarvis.git
-Set-Location C:\InfiniteAI\Jarvis\command-center
-
-# 2. Check the machine (changes nothing)
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\preflight.ps1
-
-# 3. Create .env with fresh random secrets (prints your sign-in passwords once)
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\init-env.ps1 -AdminEmail you@yourdomain.com
-
-# 4. Build and start (first run: 5-15 minutes)
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1
-
-# 5. Verify end to end
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke.ps1
+Set-Location C:\InfiniteAI\InfiniteAI-CommandCenter
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -AdminEmail you@yourdomain.com
 ```
 
-`smoke.ps1` must end with `SMOKE TEST PASSED`. Until it does on your PC, the
-application has not been verified there.
+`install.ps1` checks the machine, creates `.env` with fresh random secrets
+(and prints the dashboard and n8n passwords once), validates the
+configuration inside the application image, starts everything (the first
+start creates the database roles, databases and tables) and runs the smoke
+test. The first run takes 5-15 minutes. It must end with
+`SMOKE TEST PASSED`; until it does on your PC, the application has not been
+verified there. Re-running it is safe.
 
 Then open http://localhost:8090 and sign in with the email and password that
-`init-env.ps1` printed (they are also in `.env`).
+were printed (they are also in `.env`).
+
+Prefer Git? `git clone --branch ccr-eb27a2af-8u7i39 https://github.com/mytechmobilebiz/Jarvis.git`
+and run the same command from `Jarvis\command-center`.
 
 ## Environment variables
 
@@ -69,6 +70,17 @@ Then open http://localhost:8090 and sign in with the email and password that
 | `N8N_OWNER_PASSWORD` | n8n editor sign-in |
 | `ANTHROPIC_API_KEY` (optional) | Claude for planning and summaries; metered, capped by `LLM_DAILY_REQUEST_CAP` |
 | `DASHBOARD_PORT`, `N8N_PORT`, `TZ` | Local ports and time zone |
+
+## Uninstall
+
+```powershell
+.\scripts\uninstall.ps1               # removes containers and images, KEEPS your data
+.\scripts\uninstall.ps1 -DeleteData   # also deletes the data, after taking a final backup
+```
+
+Only the project `infinite-command-center` is touched. Shared base images
+(postgres, n8n, nginx) are left in place for other projects; remove them in
+Docker Desktop if nothing else uses them.
 
 ## Day to day
 
@@ -86,17 +98,25 @@ Never run `docker compose down -v` unless you intend to delete all data.
 
 ## Updating
 
+Your data lives in Docker volumes and your settings in `.env`, so an update
+only replaces the program files:
+
 ```powershell
-Set-Location C:\InfiniteAI\Jarvis\command-center
+Set-Location C:\InfiniteAI\InfiniteAI-CommandCenter
 .\scripts\backup.ps1
-git pull
-.\scripts\start.ps1      # rebuilds; database migrations apply automatically
-.\scripts\smoke.ps1
+# extract the new zip to C:\InfiniteAI\InfiniteAI-CommandCenter-new, then:
+Copy-Item .\.env ..\InfiniteAI-CommandCenter-new\.env
+Set-Location ..\InfiniteAI-CommandCenter-new
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1   # rebuilds; migrations apply automatically
 ```
+
+(With Git instead: `git pull`, then `install.ps1`.) Once the new folder is
+verified, the old one can be deleted; keep its `backups\` folder.
 
 ## Trying it against a throwaway WordPress
 
-The test overlay adds a disposable local WordPress the monitor can watch:
+The test overlay (in the Git repository, not in the zip) adds a disposable
+local WordPress the monitor can watch:
 
 ```powershell
 docker compose -f docker-compose.yml -f docker-compose.testing.yml up -d --build

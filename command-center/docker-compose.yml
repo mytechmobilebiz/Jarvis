@@ -65,7 +65,9 @@ services:
     networks: [internal]
 
   worker:
+    # Same image the api service builds; never pulled from a registry.
     image: infinite-command-center/backend:local
+    pull_policy: never
     restart: unless-stopped
     command: ["python", "-m", "app.worker"]
     environment: *api-env
