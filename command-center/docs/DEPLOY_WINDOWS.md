@@ -7,7 +7,7 @@ network and volumes, so it does not touch XAMPP or other Docker projects
 
 | What | Where |
 |---|---|
-| Installation package | `InfiniteAI-CommandCenter-0.3.0-windows.zip` (in the GitHub repo at `command-center/releases/`, with a `.sha256` file) |
+| Installation package | `InfiniteAI-CommandCenter-0.4.0-windows.zip` (in the GitHub repo at `command-center/releases/`, with a `.sha256` file) |
 | Source | GitHub `mytechmobilebiz/Jarvis`, branch `ccr-eb27a2af-8u7i39`, folder `command-center/` |
 | Install location on the PC | `C:\InfiniteAI\InfiniteAI-CommandCenter` (outside `C:\xampp`) |
 | Dashboard | http://localhost:8090 (bound to 127.0.0.1 only) |
@@ -31,9 +31,9 @@ The scripts are run with `-ExecutionPolicy Bypass` for that one process only;
 the machine-wide execution policy is not changed. `preflight.ps1` and
 `status.ps1` are read-only; read any script first if you wish.
 
-1. Download `InfiniteAI-CommandCenter-0.3.0-windows.zip` and, optionally,
+1. Download `InfiniteAI-CommandCenter-0.4.0-windows.zip` and, optionally,
    check it against the `.sha256` file:
-   `Get-FileHash .\InfiniteAI-CommandCenter-0.3.0-windows.zip -Algorithm SHA256`
+   `Get-FileHash .\InfiniteAI-CommandCenter-0.4.0-windows.zip -Algorithm SHA256`
 2. Extract it to `C:\InfiniteAI` (you get `C:\InfiniteAI\InfiniteAI-CommandCenter`).
 3. Open PowerShell and run:
 
@@ -73,6 +73,10 @@ and run the same command from `Jarvis\command-center`.
 | `ANTHROPIC_API_KEY` (optional) | Deployment default for Claude; normally leave empty and enter your key on the dashboard's Settings page instead (stored encrypted) |
 | `DASHBOARD_PORT`, `N8N_PORT`, `TZ` | Local ports and time zone |
 
+Upgrading from 0.3.0 to 0.4.0 needs no new keys and changes no data: 0.4.0
+is the redesigned dashboard; the database, agents and approval rules are
+unchanged. Follow "Updating" below.
+
 Upgrading from 0.2.0 to 0.3.0 needs no new keys; follow "Updating" below. The
 first start renames the agents to the seven official ones and keeps all your
 data, switched-off agents included.
@@ -90,9 +94,26 @@ Put your own template there (placeholders such as `{{CLIENT_NAME}}` and
 `{{CLIENT_COMPANY}}`; see `templates\README.md`). The folder
 is read-only to the application and is not included in backups or git.
 
+## The dashboard (redesigned in 0.4.0)
+
+Type a request into the command input at the top of every page (or press
+<kbd>Ctrl</kbd>+<kbd>K</kbd>) and press **Execute**; it goes to the AI
+Supervisor with your sign-in and the usual approval rules. The answer appears
+under the input. The sidebar holds every area; the **Knowledge Base** page
+explains each one.
+
+The microphone button next to the input is optional voice dictation. It
+appears only in a browser that supports speech recognition (Chrome or Edge)
+when the dashboard is opened as `http://localhost:8090` (browsers allow the
+microphone only on secure addresses, and `localhost` counts as one). The first
+time, the dashboard asks for your consent and the browser asks for microphone
+permission. Chrome and Edge send the audio to Google or Microsoft to turn it
+into text. Dictation only fills the input; nothing runs until you press
+Execute.
+
 ## Servers and WordPress repairs (new in 0.3.0)
 
-The **Servers** page connects the Command Center to your CWP servers through a
+The **CWP / Servers** page connects the Command Center to your CWP servers through a
 restricted, non-root SSH account that can only run an allowlist of operations
 (`cc-gate`). Setting a server up is something you do on the server yourself;
 follow [SERVER_SETUP.md](SERVER_SETUP.md). The `server` folder of this package
@@ -169,6 +190,7 @@ followed by `docker volume rm infinite-command-center_wp_test_html`.
 
 ## Troubleshooting
 
+- **No microphone button**: open the dashboard as `http://localhost:8090` (not the PC's IP address) in Chrome or Edge, and sign in as an admin or operator; viewers cannot send commands. If the browser blocked the microphone, allow it from the padlock/site icon in the address bar.
 - **Port in use**: set `DASHBOARD_PORT` / `N8N_PORT` in `.env`, then `start.ps1`.
 - **`docker compose up` fails pulling images**: check Docker Desktop is signed in or that Docker Hub is reachable.
 - **n8n unhealthy**: `docker compose logs --tail=100 n8n`. First start takes about a minute.

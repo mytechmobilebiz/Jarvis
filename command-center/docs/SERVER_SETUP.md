@@ -20,7 +20,7 @@ and you decide when (or whether) changes are allowed.
 | Change operations (only if you set `allow_changes: true`) | database backup, restore home/siteurl to the URLs in **your** config, deactivate/activate/update a plugin, reinstall a WordPress.org plugin's files (refused for plugins that declare another update source), reinstall core files (same version), maintenance mode, cache and rewrite-rule flush, move debug.log into the backup folder, restart a service you listed as restartable |
 | Never | run arbitrary commands, edit files, delete anything, read wp-config.php or the database, touch sites you did not configure, use root, run a site as root or as the gate account |
 | Approvals | every change waits for a person's approval in the dashboard; for production sites or servers an **admin** must type the site or server name. The approval is checked again when it is decided and just before the change runs: if the site or server has been re-linked, renamed or moved to production since the request, the change is refused and must be requested again |
-| Audit | every request is recorded in the Command Center (Servers page) and in `/var/log/cc-gate/gate.log` on the server |
+| Audit | every request is recorded in the Command Center (CWP / Servers page) and in `/var/log/cc-gate/gate.log` on the server |
 | Time limits | each operation has a budget on the server (`timeout_seconds`, default 120 s; `slow_timeout_seconds`, default 600 s, for backups, downloads, checksum checks and debug.log moves). When it runs out, the program is asked to stop and then killed, and the change is reported as **outcome unknown** (critical event): check the site |
 
 WP-CLI runs as each site's own system user through `cc-wp`, a small root-owned
