@@ -233,29 +233,40 @@ class ReadOnlyHttpClient:
     async def fetch(
         self, url: str, *, max_bytes: int | None = None, headers: dict[str, str] | None = None, follow_redirects: bool = True
     ) -> FetchResult:
-        """GET a URL, keeping at most max_bytes of the body."""
+        """GET a URL, keeping at most max_bytes of the body.
+
+        The whole exchange must finish within a few timeouts: the per-read timeout
+        alone lets a server that trickles a byte at a time hold a check for hours.
+        """
         limit = max_bytes or self.settings.monitor_max_body_bytes
+        deadline = self.settings.monitor_timeout_seconds * 3
         started = time.perf_counter()
-        async with self._client.stream("GET", url, headers=headers, follow_redirects=follow_redirects) as response:
-            chunks: list[bytes] = []
-            size = 0
-            truncated = False
-            async for chunk in response.aiter_bytes():
-                chunks.append(chunk)
-                size += len(chunk)
-                if size >= limit:
-                    truncated = True
-                    break
-            body = b"".join(chunks)[:limit]
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            encoding = response.encoding or "utf-8"
-            return FetchResult(
-                url=url,
-                final_url=str(response.url),
-                status=response.status_code,
-                headers=response.headers,
-                text=body.decode(encoding, errors="replace"),
-                elapsed_ms=elapsed_ms,
-                truncated=truncated,
-                redirects=[str(r.url) for r in response.history],
-            )
+        try:
+            async with (
+                asyncio.timeout(deadline),
+                self._client.stream("GET", url, headers=headers, follow_redirects=follow_redirects) as response,
+            ):
+                chunks: list[bytes] = []
+                size = 0
+                truncated = False
+                async for chunk in response.aiter_bytes():
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size >= limit:
+                        truncated = True
+                        break
+                body = b"".join(chunks)[:limit]
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                encoding = response.encoding or "utf-8"
+                return FetchResult(
+                    url=url,
+                    final_url=str(response.url),
+                    status=response.status_code,
+                    headers=response.headers,
+                    text=body.decode(encoding, errors="replace"),
+                    elapsed_ms=elapsed_ms,
+                    truncated=truncated,
+                    redirects=[str(r.url) for r in response.history],
+                )
+        except TimeoutError:
+            raise httpx.ReadTimeout(f"no complete response within {deadline:g} seconds") from None

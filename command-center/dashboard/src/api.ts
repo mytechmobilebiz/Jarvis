@@ -197,13 +197,16 @@ export interface Diagnosis {
   at?: string;
   server?: string;
   core_version?: string;
-  site_urls?: { home: string; siteurl: string; expected: string; matches: boolean };
+  site_urls?: { home: string; siteurl: string; expected: string; expected_siteurl?: string; matches: boolean };
   plugins?: { name: string; status: string; version: string; update: string; update_version: string }[];
   themes?: { name: string; status: string; version: string; update: string }[];
   admins?: { ID: number; user_login: string; user_registered: string }[];
+  super_admins?: string[];
   maintenance?: { active: boolean };
-  debug_log?: { exists: boolean; bytes?: number };
-  core_verify?: { verified: boolean | null; detail?: string; files?: string[] };
+  debug_log?: { exists: boolean; bytes?: number; type?: string };
+  core_verify?: { verified: boolean | null; detail?: string; files?: string[]; extra_files?: string[] };
+  /** Parts the server could not answer, with the reason; the rest of the diagnosis still counts. */
+  errors?: Record<string, string>;
   findings?: Finding[];
 }
 

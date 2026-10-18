@@ -49,7 +49,7 @@ async def test_connection_through_the_gate_is_pinned_and_audited(admin, make_wor
         assert server["host_key_pinned"] and server["host_key_fingerprint"] == srv.fingerprint
         task = await run_task(admin, make_worker, "server_management", "test_connection", {"server_id": server["id"]})
         assert task["status"] == "succeeded", task["error"]
-        assert "cc-gate 1.0.0 as nobody" in task["summary"]
+        assert "cc-gate 1.1.0 as nobody" in task["summary"]
         overview = await run_task(admin, make_worker, "server_management", "server_overview", {"server_id": server["id"]})
         assert overview["status"] == "succeeded" and "up " in overview["summary"]
         services = await run_task(admin, make_worker, "server_management", "check_services", {"server_id": server["id"]})
@@ -204,3 +204,13 @@ async def test_names_used_for_typed_confirmation_are_trimmed_and_never_empty(adm
     r = await admin.post("/api/servers", json={"name": " cwp ", "host": "cwp.example", "username": "ccagent"})
     assert r.json()["server"]["name"] == "cwp"
     assert (await admin.patch(f"/api/servers/{r.json()['server']['id']}", json={"name": "  "})).status_code == 422
+
+
+async def test_an_outdated_gate_is_flagged(admin, make_worker):
+    key = await ssh_key(admin)
+    async with FakeGateServer(key["openssh"]) as srv:
+        gate = srv.dir / "cc-gate"
+        gate.write_text(gate.read_text().replace('GATE_VERSION = "1.1.0"', 'GATE_VERSION = "1.0.0"'))
+        server = await add_server(admin, srv)
+        task = await run_task(admin, make_worker, "server_management", "test_connection", {"server_id": server["id"]})
+        assert task["status"] == "succeeded" and "gate_outdated" in {f["code"] for f in task["result"]["findings"]}

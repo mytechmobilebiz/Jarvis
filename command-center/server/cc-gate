@@ -41,7 +41,7 @@ import subprocess
 import sys
 import time
 
-GATE_VERSION = "1.0.0"
+GATE_VERSION = "1.1.0"
 CONFIG_PATH = "/etc/cc-gate/config.json"
 # The configuration decides what the gate may do, so only root may be able to change it.
 REQUIRE_ROOT_OWNED_CONFIG = True
@@ -356,11 +356,12 @@ def op_wp_core_verify(args):
     # Extra files in wp-admin, wp-includes or the root are only warnings (exit 0) to WP-CLI,
     # but an unknown PHP file there is the usual place for a backdoor.
     extra = [line for line in warnings if "should not exist" in line][:200]
+    problems = [line for line in warnings if "should not exist" not in line][:200]
     if code == 0 and not extra:
         return {"verified": True, "extra_files": [], "detail": text[-4000:]}
-    if code != 0 and "checksums" in text.lower() and ("couldn't get" in text.lower() or "could not get" in text.lower()):
-        return {"verified": None, "detail": "checksums could not be downloaded from WordPress.org: " + text[-1000:]}
-    problems = [line for line in warnings if "should not exist" not in line][:200]
+    if code != 0 and not problems and not extra:
+        # No file was found wrong: the check itself failed (e.g. WordPress.org could not be reached).
+        return {"verified": None, "detail": "checksums could not be checked: " + text[-1000:]}
     return {"verified": False, "files": problems, "extra_files": extra, "detail": text[-4000:]}
 
 
@@ -460,7 +461,8 @@ def op_wp_plugin_reinstall(args):
     if not re.match(r"^[0-9][0-9A-Za-z.\-]{0,40}$", version):
         raise Failed("unexpected plugin version %r" % version)
     code, out, err = run(wp(SITE, "plugin", "verify-checksums", slug, "--version=" + version), CONFIG)
-    if code != 0 and "could not retrieve the checksums" in (out + err).lower():
+    # WP-CLI skips (exit 0) a plugin it has no checksums for.
+    if "could not retrieve the checksums" in (out + err).lower():
         raise Failed("WordPress.org has no checksums for %s %s (not a WordPress.org plugin, or WordPress.org could not be "
                      "reached); not reinstalling" % (slug, version))
     out = wp_ok(SITE, "plugin", "install", slug, "--force", "--version=" + version)

@@ -158,6 +158,34 @@ def test_cloaking_malware_is_found_and_the_plugin_deactivated(api, site):
     assert "conditional_redirect" not in {f["code"] for f in rescan["result"]["findings"]}
 
 
+def test_a_plugin_that_is_not_from_wordpress_org_is_never_reinstalled_from_there(api, site):
+    tamper("cloak")  # a local plugin WordPress.org has never heard of
+    done = approve(api, run(api, "wordpress_security", "repair_reinstall_plugin", {"site_id": site["id"], "slug": "cc-test-cloak"}))
+    assert done["status"] == "failed" and "no checksums" in done["error"], done["error"]
+    assert "cc-test-cloak.php" in sh("ls", "/var/www/html/wp-content/plugins/cc-test-cloak/")  # untouched
+    tamper("reset")
+
+
+def test_wp_cli_runs_with_a_clean_environment_as_the_site_user(api, site):
+    # A WP-CLI config in the site user's home runs code before every command (what malware on the site could plant).
+    home = sh("sh", "-c", "getent passwd www-data | cut -d: -f6").strip()
+    sh("sh", "-c", f"mkdir -p {home}/.wp-cli && printf 'require:\\n  - {home}/.wp-cli/evil.php\\n' > {home}/.wp-cli/config.yml "
+       f"&& echo '<?php file_put_contents(\"/tmp/cc-wp-poisoned\", \"x\");' > {home}/.wp-cli/evil.php && chown -R www-data {home}/.wp-cli")
+    poisoned = "test -e /tmp/cc-wp-poisoned && echo poisoned || echo clean"
+    try:
+        # Plain WP-CLI as that user does load it ...
+        sh("su", "-s", "/bin/sh", "-c", "cd /var/www/html && wp option get home", "www-data")
+        assert sh("sh", "-c", poisoned).strip() == "poisoned"
+        sh("rm", "-f", "/tmp/cc-wp-poisoned")
+        # ... the gate's WP-CLI does not.
+        diag = run(api, "wordpress_security", "wp_diagnose", {"site_id": site["id"]})
+        assert diag["status"] == "succeeded", diag["error"]
+        assert sh("sh", "-c", poisoned).strip() == "clean"
+        assert not diag["result"]["data"]["diagnosis"]["errors"]
+    finally:
+        sh("rm", "-rf", f"{home}/.wp-cli", "/tmp/cc-wp-poisoned")
+
+
 def test_hijacked_site_address_is_found_and_repaired(api, site):
     tamper("redirect")  # sets WordPress's home option to http://evil.invalid
     check = run(api, "monitoring", "check_site", {"site_id": site["id"], "deep": False})
@@ -182,7 +210,7 @@ def test_public_debug_log_is_quarantined(api, site):
     assert done["status"] == "succeeded", done["error"]
     assert "moved to /var/lib/cc-gate/backups/wp-repair/debug-" in done["summary"]
     listing = sh("ls", "/var/lib/cc-gate/backups/wp-repair/")
-    assert re.search(r"debug-\d{8}T\d{6}Z\.log", listing) and re.search(r"wp-repair-\d{8}T\d{6}Z\.sql", listing)
+    assert re.search(r"debug-\d{8}T\d{6}Z\.log", listing) and re.search(r"wp-repair-\d{8}T\d{6}Z-[0-9a-f]{8}\.sql", listing)
     assert "debug.log" not in sh("ls", "/var/www/html/wp-content/")
 
 

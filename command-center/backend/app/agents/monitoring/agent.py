@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import Field, field_validator
 from sqlalchemy import select
 
-from ... import uptime
+from ... import events, uptime
 from ...models import Site, SiteCheck
 from ..base import AgentContext, AgentResult, ArtifactSpec, BaseAgent, EventSpec, Finding, Intent, NoParams, Params, Risk, capability
 from ..http import BlockedTarget, open_public_connection
@@ -19,6 +20,10 @@ from .checks import SiteChecker, SiteReport
 
 _LATEST_CACHE: dict[str, tuple[float, str | None]] = {}
 _LATEST_TTL = 6 * 3600
+# Each site gets its own deadline (a multiple of MONITOR_TIMEOUT_SECONDS; a deep
+# check makes about twenty requests), so one slow site cannot use up a sweep.
+SITE_DEADLINE_FACTOR = {False: 6, True: 15}
+SWEEP_TIMEOUT_SECONDS = 1800
 
 
 def normalize_url(raw: str) -> str:
@@ -239,33 +244,30 @@ class MonitoringAgent(BaseAgent):
         description="Check every enabled monitored site and record the results.",
         params=CheckAllParams,
         examples=("Check all websites", "Run a security scan on every site"),
+        timeout_seconds=SWEEP_TIMEOUT_SECONDS,
     )
     async def check_all_sites(self, ctx: AgentContext, params: CheckAllParams) -> AgentResult:
         sites = (await ctx.session.scalars(select(Site).where(Site.enabled.is_(True)).order_by(Site.id))).all()
         if not sites:
             return AgentResult(summary="No sites are being monitored yet. Add one on the Websites page.")
-        latest = await latest_wordpress_version(ctx) if params.deep else None
-        checker = self._checker(ctx, latest)
-        sem = asyncio.Semaphore(4)
-
-        async def run(site: Site) -> SiteReport:
-            async with sem:
-                return await checker.check(site.url, deep=params.deep)
-
-        reports = await asyncio.gather(*(run(s) for s in sites))
-        events: list[EventSpec] = []
-        rows: list[dict[str, Any]] = []
-        for site, report in zip(sites, reports, strict=True):
-            events.extend(await self._record(ctx, site, params.deep, report))
-            rows.append({"site_id": site.id, "name": site.name, "url": site.url, "status": report.status, "summary": report.summary()})
-            ctx.log(report.summary())
-        counts = {s: sum(1 for r in reports if r.status == s) for s in ("up", "degraded", "down")}
+        checked, failed = await check_sites(ctx, sites, deep=params.deep)  # recorded, and their events emitted, as they finish
+        rows: list[dict[str, Any]] = [
+            {"site_id": site.id, "name": site.name, "url": site.url, "status": report.status, "summary": report.summary()}
+            for site, report in checked
+        ]
+        rows += [{"site_id": site.id, "name": site.name, "url": site.url, "status": "not checked", "summary": error}
+                 for site, error in failed]
+        counts = {s: sum(1 for _, r in checked if r.status == s) for s in ("up", "degraded", "down")}
         summary = f"Checked {len(sites)} site(s): {counts['up']} up, {counts['degraded']} degraded, {counts['down']} down."
+        if failed:
+            summary += f" {len(failed)} could not be checked."
         problems = [r for r in rows if r["status"] != "up"]
         if problems:
             summary += " Problems: " + "; ".join(f"{r['name']} ({r['status']})" for r in problems[:5])
-        findings = [f for r in reports for f in r.findings if f.severity != "info"]
-        return AgentResult(summary=summary, data={"counts": counts, "sites": rows}, findings=findings, events=events)
+        findings = [f for _, r in checked for f in r.findings if f.severity != "info"]
+        findings += [Finding(code="check_failed", severity="warning", title=f"{site.name} could not be checked: {error}"[:300])
+                     for site, error in failed]
+        return AgentResult(summary=summary, data={"counts": counts, "sites": rows}, findings=findings)
 
     @capability(
         risk=Risk.READ,
@@ -335,8 +337,8 @@ class MonitoringAgent(BaseAgent):
 # Findings that change a site's status (down or degraded); an alert headline names one of these first.
 STATUS_CAUSES = frozenset({
     "fetch_failed", "page_problem", "http_error", "page_notice", "slow_response", "tls_expired", "tls_invalid",
-    "redirect_offsite", "conditional_redirect", "cloaked_spam", "js_redirect_offsite", "meta_refresh_offsite",
-    "hidden_iframe", "hidden_spam",
+    "redirect_offsite", "conditional_redirect", "cloaked_spam", "cloaked_injection", "js_redirect_offsite",
+    "meta_refresh_offsite", "hidden_iframe", "hidden_spam", "check_timeout",
 })
 
 
@@ -372,13 +374,12 @@ def make_checker(ctx: AgentContext, latest: str | None) -> SiteChecker:
 
 
 async def previous_check(ctx: AgentContext, site_id: int, deep: bool) -> SiteCheck | None:
-    rows = await ctx.session.scalars(
-        select(SiteCheck).where(SiteCheck.site_id == site_id).order_by(SiteCheck.checked_at.desc()).limit(20)
+    # Filtered in the database: the nightly deep check is usually far behind dozens of quick ones.
+    deep_check = SiteCheck.details.contains({"deep": True})
+    return await ctx.session.scalar(
+        select(SiteCheck).where(SiteCheck.site_id == site_id, deep_check if deep else ~deep_check)
+        .order_by(SiteCheck.checked_at.desc()).limit(1)
     )
-    for row in rows:
-        if bool(row.details.get("deep")) == deep:
-            return row
-    return None
 
 
 def _compare_scripts(report: SiteReport, previous: SiteCheck | None) -> None:
@@ -422,6 +423,63 @@ async def record_check(ctx: AgentContext, site: Site, deep: bool, report: SiteRe
     return change_events(site, previous_status, previous, report)
 
 
+def _cut_short(report: SiteReport, seconds: float) -> None:
+    """A check that ran out of time: down if the home page never answered, else what it found so far."""
+    if report.http_status is None:
+        report.degrade("down")
+        report.add("check_timeout", "critical", f"Site could not be checked within {seconds:g} seconds")
+    else:
+        report.add("check_timeout", "warning", f"The check did not finish within {seconds:g} seconds; results are partial")
+
+
+async def check_sites(
+    ctx: AgentContext, sites: Sequence[Site], *, deep: bool, record: bool = True
+) -> tuple[list[tuple[Site, SiteReport]], list[tuple[Site, str]]]:
+    """Check sites four at a time, each within its own deadline.
+
+    With record, each result is stored, its state-change events are emitted and
+    the session is committed as soon as that site is done, so a later timeout
+    cannot discard it; the events are therefore not returned. Returns the
+    checked sites with their reports, and the sites whose check failed with an
+    error (nothing is recorded for those), both in the order given.
+    """
+    latest = await latest_wordpress_version(ctx) if deep else None
+    checker = make_checker(ctx, latest)
+    deadline = ctx.settings.monitor_timeout_seconds * SITE_DEADLINE_FACTOR[deep]
+    sem, db_lock = asyncio.Semaphore(4), asyncio.Lock()
+    results: dict[int, SiteReport | str] = {}
+
+    async def run(i: int, site: Site) -> None:
+        async with sem:
+            report = SiteReport(url=site.url)
+            try:
+                await asyncio.wait_for(checker.check(site.url, deep=deep, report=report), deadline)
+            except TimeoutError:
+                _cut_short(report, deadline)
+            except Exception as exc:  # noqa: BLE001 - one broken check must not stop the others
+                results[i] = f"{exc.__class__.__name__}: {exc}"
+                ctx.log(f"{site.name}: check failed: {results[i]}", "error")
+                return
+        if record:
+            async with db_lock:  # one session, so one site at a time
+                for spec in await record_check(ctx, site, deep, report):
+                    await events.emit(ctx.session, ctx.settings, kind=spec.kind, severity=spec.severity, title=spec.title,
+                                      source=ctx.agent_name or "monitoring", detail=spec.detail, task_id=ctx.task_id)
+                await ctx.session.commit()
+        results[i] = report
+        ctx.log(report.summary())
+
+    try:
+        async with asyncio.TaskGroup() as group:  # a database error stops the remaining checks
+            for i, site in enumerate(sites):
+                group.create_task(run(i, site))
+    except ExceptionGroup as exc:
+        raise exc.exceptions[0] from None
+    checked = [(site, r) for i, site in enumerate(sites) if isinstance(r := results.get(i), SiteReport)]
+    failed = [(site, r) for i, site in enumerate(sites) if isinstance(r := results.get(i), str)]
+    return checked, failed
+
+
 def change_events(site: Site, previous_status: str, previous: SiteCheck | None, report: SiteReport) -> list[EventSpec]:
     out: list[EventSpec] = []
     detail = {"site_id": site.id, "site": site.name, "url": site.url, "status": report.status}
@@ -435,7 +493,8 @@ def change_events(site: Site, previous_status: str, previous: SiteCheck | None, 
     old_codes = {f.get("code") for f in (previous.findings if previous else [])}
     new = [f for f in report.findings if f.severity != "info" and f.code not in old_codes]
     # Availability problems are already covered by the status-change event.
-    new = [f for f in new if f.code not in ("fetch_failed", "page_problem", "http_error", "page_notice", "slow_response")]
+    new = [f for f in new if f.code not in ("fetch_failed", "page_problem", "http_error", "page_notice", "slow_response",
+                                            "check_timeout")]
     if new:
         worst = "critical" if any(f.severity == "critical" for f in new) else "warning"
         out.append(

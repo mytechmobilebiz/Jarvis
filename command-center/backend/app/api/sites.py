@@ -79,6 +79,9 @@ async def create_site(
     body: SiteBody, request: Request, principal: Principal = Depends(require_operator),
     session: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings),
 ) -> dict:
+    if body.environment != "production" and principal.role != "admin":
+        # As in patch_site: the environment decides whether approved repairs count as production.
+        raise HTTPException(403, "only an admin can register a site as staging or test")
     ent = await licensing.current_entitlements(session, settings)
     count = await session.scalar(select(func.count()).select_from(Site))
     if ent.max_sites is not None and count >= ent.max_sites:
@@ -90,7 +93,8 @@ async def create_site(
         await session.flush()
     except IntegrityError:
         raise HTTPException(409, "that URL is already monitored") from None
-    await audit.record(session, principal.name, "site.created", "site", site.id, {"url": site.url}, ip=client_ip(request))
+    await audit.record(session, principal.name, "site.created", "site", site.id, {"url": site.url, "environment": site.environment},
+                       ip=client_ip(request))
     baseline = await _queue_baseline(session, settings, site, principal.name) if site.enabled else None
     await session.commit()
     return {"site": await _site_view(session, site), "baseline_task": to_dict(baseline) if baseline else None}

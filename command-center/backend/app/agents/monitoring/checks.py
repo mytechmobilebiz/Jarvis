@@ -11,7 +11,7 @@ import asyncio
 import json
 import re
 import ssl
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import urljoin, urlsplit
@@ -64,10 +64,14 @@ KNOWN_NAMESPACES = {
     "wpforms/v1": "WPForms",
     "updraftplus/v1": "UpdraftPlus",
 }
-GENERATOR_RE = re.compile(r"<meta[^>]+name=[\"']generator[\"'][^>]+content=[\"']WordPress\s*([\d.]+)?", re.I)
-GENERATOR_RE_ALT = re.compile(r"<meta[^>]+content=[\"']WordPress\s*([\d.]+)?[\"'][^>]+name=[\"']generator", re.I)
+# Matched on the attributes of one tag (integrity.META_RE, LINK_RE): see integrity.py on backtracking.
+GENERATOR_NAME_RE = re.compile(r"(?<![\w-])name\s*=\s*[\"']generator[\"']", re.I)
+GENERATOR_CONTENT_RE = re.compile(r"(?<![\w-])content\s*=\s*[\"']WordPress\s*([\d.]+)?", re.I)
 FEED_GENERATOR_RE = re.compile(r"<generator>\s*https?://wordpress\.org/\?v=([\d.]+)\s*</generator>", re.I)
-REST_LINK_RE = re.compile(r"<link[^>]+rel=[\"']https://api\.w\.org/[\"'][^>]+href=[\"']([^\"']+)", re.I)
+LINK_RE = re.compile(r"<link\b([^>]{0,1000}+)>", re.I)
+REST_REL_RE = re.compile(r"(?<![\w-])rel\s*=\s*[\"']https://api\.w\.org/[\"']", re.I)
+HREF_RE = re.compile(r"(?<![\w-])href\s*=\s*[\"']([^\"']+)", re.I)
+REST_LINK_HEADER_RE = re.compile(r"<([^>]{0,2000}+)>;\s*rel=\"https://api\.w\.org/\"")
 PLUGIN_RE = re.compile(r"/wp-content/plugins/([a-z0-9_.-]+)/", re.I)
 THEME_RE = re.compile(r"/wp-content/themes/([a-z0-9_.-]+)/", re.I)
 PHP_RE = re.compile(r"PHP/(\d+)\.(\d+)(?:\.(\d+))?", re.I)
@@ -146,6 +150,57 @@ def parse_version(v: str) -> tuple[int, ...]:
     return tuple(int(p) for p in re.findall(r"\d+", v)[:3])
 
 
+@dataclass
+class PageMarkers:
+    """WordPress signs in a home page (and its Link header)."""
+
+    markers: list[str] = field(default_factory=list)
+    version: str = ""
+    rest_url: str = ""  # as linked, not yet resolved or checked
+    plugins: set[str] = field(default_factory=set)
+    themes: list[str] = field(default_factory=list)
+
+
+def page_markers(html: str, link_header: str) -> PageMarkers:
+    page = PageMarkers()
+    for tag in integrity.META_RE.finditer(html):
+        content = GENERATOR_CONTENT_RE.search(tag.group(1)) if GENERATOR_NAME_RE.search(tag.group(1)) else None
+        if content:
+            page.markers.append("generator")
+            page.version = content.group(1) or ""
+            break
+    lower = html.lower()
+    if "/wp-content/" in lower or "/wp-includes/" in lower:
+        page.markers.append("wp-paths")
+    m = REST_LINK_HEADER_RE.search(link_header)
+    if m:
+        page.rest_url = m.group(1)
+        page.markers.append("rest-link-header")
+    else:
+        for tag in LINK_RE.finditer(html):
+            href = HREF_RE.search(tag.group(1)) if REST_REL_RE.search(tag.group(1)) else None
+            if href:
+                page.rest_url = href.group(1)
+                page.markers.append("rest-link")
+                break
+    page.plugins = set(PLUGIN_RE.findall(html))
+    page.themes = sorted(set(THEME_RE.findall(html)))
+    return page
+
+
+def _page_heading(lower: str) -> str:
+    """The <title> and first <h1> text of a lower-cased page, or all of a very short page."""
+    if len(lower) <= 3000:
+        return lower
+    parts = []
+    for tag in ("title", "h1"):
+        start = lower.find("<" + tag)
+        if start >= 0:
+            end = lower.find("</" + tag, start, start + 2000)
+            parts.append(lower[start:end if end >= 0 else start + 2000])
+    return " ".join(parts)
+
+
 async def probe_tls(host: str, port: int, timeout: float, context: ssl.SSLContext | None = None,
                     allowed_private: set[str] | frozenset[str] = frozenset()) -> TLSInfo:
     ctx = context or ssl.create_default_context()
@@ -197,14 +252,41 @@ class SiteChecker:
         self.tls_context = tls_context
         self.retry_delay = retry_delay
 
-    async def _fetch_home(self, url: str) -> tuple[FetchResult | None, str, str]:
-        """The home page, following redirects; on failure the error and the URL that failed."""
+    async def _walk(
+        self, url: str, *, headers: dict[str, str] | None = None, max_bytes: int | None = None, max_hops: int = 5,
+        hops: list[Hop] | None = None,
+    ) -> tuple[FetchResult, str]:
+        """GET url, following its redirects one hop at a time while they stay on the site's domain.
+
+        Returns the last response and, if a redirect points to another domain, that
+        target, which is not requested. Errors propagate; hops (if given) keeps the
+        redirects followed so far.
+        """
+        hops = [] if hops is None else hops
+        current, elapsed = url, 0
+        for _ in range(max_hops + 1):
+            res = await self.http.fetch(current, max_bytes=max_bytes, headers=headers, follow_redirects=False)
+            elapsed += res.elapsed_ms
+            location = res.headers.get("location", "") if res.status in integrity.REDIRECT_STATUSES else ""
+            nxt = integrity.resolve(current, location) if location else ""
+            last = replace(res, url=url, elapsed_ms=elapsed, redirects=[h.url for h in hops])
+            if not nxt:
+                return last, ""
+            hops.append(Hop(url=current, status=res.status, location=nxt))
+            if not integrity.same_site(url, nxt):
+                return last, nxt
+            current = nxt
+        raise httpx.TooManyRedirects(f"more than {max_hops} redirects")
+
+    async def _fetch_home(self, url: str) -> tuple[FetchResult | None, str, str, str]:
+        """The home page and any other-domain redirect target (not requested); on failure the error and the URL that failed."""
         error, failed_url = "", url
         for attempt in range(2):  # one retry, so a passing hiccup does not raise an alert
             try:
-                return await self.http.fetch(url), "", ""
+                home, offsite = await self._walk(url)
+                return home, offsite, "", ""
             except BlockedTarget as exc:
-                return None, describe_fetch_error(exc, self.settings.monitor_timeout_seconds), url
+                return None, "", describe_fetch_error(exc, self.settings.monitor_timeout_seconds), url
             except Exception as exc:  # noqa: BLE001 - every failure becomes a finding
                 error = describe_fetch_error(exc, self.settings.monitor_timeout_seconds)
                 try:
@@ -213,27 +295,24 @@ class SiteChecker:
                     failed_url = url
             if attempt == 0 and self.retry_delay:
                 await asyncio.sleep(self.retry_delay)
-        return None, error, failed_url
+        return None, "", error, failed_url
 
     async def _get(self, url: str, **kwargs: Any) -> FetchResult | None:
+        """A secondary probe; a redirect to another domain counts as no answer and is not followed."""
         try:
-            return await self.http.fetch(url, **kwargs)
+            res, offsite = await self._walk(url, **kwargs)
         except Exception:  # noqa: BLE001 - secondary probes are best effort
             return None
+        return None if offsite else res
 
-    async def check(self, url: str, *, deep: bool = True) -> SiteReport:
-        report = SiteReport(url=url)
+    async def check(self, url: str, *, deep: bool = True, report: SiteReport | None = None) -> SiteReport:
+        """Check a site; pass report to keep what was found so far if the check is cut short."""
+        report = SiteReport(url=url) if report is None else report
         report.details["deep"] = deep
-        home, error, failed_url = await self._fetch_home(url)
+        home, offsite_target, error, failed_url = await self._fetch_home(url)
         if home is None:
             report.status = "down"
-            if not integrity.same_site(url, failed_url):
-                # It failed after being redirected to another domain.
-                host = urlsplit(failed_url).hostname
-                report.add("redirect_offsite", "critical", f"Site redirects visitors to another domain ({host}), which cannot be reached",
-                           "A redirect to a foreign domain is a common sign of a hacked site.")
-                report.details["redirect_check"] = {"chain": [url, failed_url], "offsite": True}
-            elif failed_url.rstrip("/") != url.rstrip("/"):
+            if failed_url.rstrip("/") != url.rstrip("/"):
                 report.add("fetch_failed", "critical", f"Site {error} after redirecting to {failed_url}")
                 report.details["redirect_check"] = {"chain": [url, failed_url], "offsite": False}
             else:
@@ -242,24 +321,26 @@ class SiteChecker:
 
         report.http_status = home.status
         report.response_ms = home.elapsed_ms
-        report.final_url = home.final_url
+        report.final_url = offsite_target or home.final_url
         report.details["redirects"] = home.redirects
         body = home.text.lower()
         self._assess_availability(report, home, body)
         self._assess_headers(report, home)
-        offsite = self._assess_redirects(report, url, home)
+        offsite = self._assess_redirects(report, url, home, offsite_target)
         if urlsplit(home.final_url).scheme == "https":
-            await self._assess_tls(report, home.final_url)
+            if integrity.same_site(url, home.final_url):  # never probe another domain's server
+                await self._assess_tls(report, home.final_url)
         else:
             report.add("no_https", "warning", "Site is not served over HTTPS", f"final URL {home.final_url}")
         if offsite:
             return report  # the page served is not the site's own; nothing more to learn from it
 
-        integrity_findings = integrity.html_findings(url, home.final_url, home.text)
+        # Pattern matching on a large page is CPU work: keep it off the event loop.
+        integrity_findings = await asyncio.to_thread(integrity.html_findings, url, home.final_url, home.text)
         report.findings.extend(integrity_findings)
         if any(f.severity == "critical" for f in integrity_findings):
             report.degrade("degraded")
-        report.details["external_scripts"] = integrity.external_script_hosts(url, home.final_url, home.text)
+        report.details["external_scripts"] = await asyncio.to_thread(integrity.external_script_hosts, url, home.final_url, home.text)
         await self._assess_wordpress(report, home, deep=deep)
         if deep:
             await self._assess_cloaking(report, url, home)
@@ -269,32 +350,23 @@ class SiteChecker:
     async def trace(self, url: str, headers: dict[str, str] | None = None, max_hops: int = 6) -> Trace:
         """Walk the redirects from url one hop at a time; stop, without visiting it, at any other domain."""
         trace = Trace()
-        current = url
-        for _ in range(max_hops + 1):
-            try:
-                res = await self.http.fetch(current, headers=headers, follow_redirects=False)
-            except Exception as exc:  # noqa: BLE001 - recorded on the trace
-                trace.error = describe_fetch_error(exc, self.settings.monitor_timeout_seconds)
-                return trace
-            location = res.headers.get("location", "")
-            if res.status in integrity.REDIRECT_STATUSES and location:
-                nxt = urljoin(current, location)
-                trace.hops.append(Hop(url=current, status=res.status, location=nxt))
-                if not integrity.same_site(url, nxt):
-                    trace.offsite_target = nxt
-                    trace.final_url = nxt
-                    return trace
-                current = nxt
-                continue
-            trace.final_url, trace.final_status, trace.html = current, res.status, res.text
+        try:
+            res, offsite = await self._walk(url, headers=headers, max_hops=max_hops, hops=trace.hops)
+        except Exception as exc:  # noqa: BLE001 - recorded on the trace
+            trace.error = describe_fetch_error(exc, self.settings.monitor_timeout_seconds)
             return trace
-        trace.error = "too many redirects"
+        if offsite:
+            trace.offsite_target = trace.final_url = offsite
+        else:
+            trace.final_url, trace.final_status, trace.html = res.final_url, res.status, res.text
         return trace
 
-    def _assess_redirects(self, report: SiteReport, url: str, home: FetchResult) -> bool:
+    def _assess_redirects(self, report: SiteReport, url: str, home: FetchResult, offsite_target: str = "") -> bool:
         chain = [*home.redirects, home.final_url] if home.redirects else [home.final_url]
         if chain[0] != url and not home.redirects:
             chain = [url, home.final_url]
+        if offsite_target:
+            chain.append(offsite_target)
         findings = integrity.chain_findings(url, chain)
         report.findings.extend(findings)
         offsite = any(f.code == "redirect_offsite" for f in findings)
@@ -309,7 +381,7 @@ class SiteChecker:
             "arriving from Google on a phone": await self.trace(url, integrity.SEARCH_VISITOR),
             "identifying as Googlebot": await self.trace(url, integrity.CRAWLER),
         }
-        findings = integrity.cloaking_findings(url, normal, variants)
+        findings = await asyncio.to_thread(integrity.cloaking_findings, url, normal, variants)
         report.findings.extend(findings)
         if findings:
             report.degrade("degraded")
@@ -324,11 +396,12 @@ class SiteChecker:
             res = await self.http.fetch(plain, follow_redirects=False, max_bytes=4_000)
         except Exception:  # noqa: BLE001 - port 80 closed is fine
             return
-        location = urljoin(plain, res.headers.get("location", ""))
+        location = integrity.resolve(plain, res.headers.get("location", ""))
         if res.status == 200:
             report.add("no_https_redirect", "warning", "Plain http:// serves the site instead of redirecting to https://")
         elif res.status in integrity.REDIRECT_STATUSES and not location.startswith("https://"):
-            report.add("no_https_redirect", "warning", "http:// does not redirect to https://", f"redirects to {location}")
+            report.add("no_https_redirect", "warning", "http:// does not redirect to https://",
+                       f"redirects to {location or 'an invalid address'}")
 
     def _assess_availability(self, report: SiteReport, home: FetchResult, body: str) -> None:
         status = home.status
@@ -356,8 +429,9 @@ class SiteChecker:
         elif status >= 400:
             report.degrade("degraded")
             report.add("http_error", "warning", f"Site answers with an error (HTTP {status})")
+        heading = _page_heading(body)  # not the whole page: a footer may say "coming soon" about anything
         for needle, note in PAGE_NOTES:
-            if needle in body:
+            if needle in heading:
                 report.degrade("degraded")
                 report.add("page_notice", "warning", f"Site {note}")
                 break
@@ -426,31 +500,12 @@ class SiteChecker:
             report.add("tls_expiring", "warning", f"TLS certificate expires in {days} days")
 
     async def _assess_wordpress(self, report: SiteReport, home: FetchResult, *, deep: bool) -> None:
-        html = home.text
-        lower = html.lower()
-        version = ""
-        markers: list[str] = []
-        for regex in (GENERATOR_RE, GENERATOR_RE_ALT):
-            m = regex.search(html)
-            if m:
-                markers.append("generator")
-                version = m.group(1) or version
-                break
-        if "/wp-content/" in lower or "/wp-includes/" in lower:
-            markers.append("wp-paths")
-        link_header = home.headers.get("link", "")
-        rest_url = ""
-        m = re.search(r"<([^>]+)>;\s*rel=\"https://api\.w\.org/\"", link_header)
-        if m:
-            rest_url = m.group(1)
-            markers.append("rest-link-header")
-        else:
-            m = REST_LINK_RE.search(html)
-            if m:
-                rest_url = m.group(1)
-                markers.append("rest-link")
+        page = await asyncio.to_thread(page_markers, home.text, home.headers.get("link", ""))
+        version, markers = page.version, page.markers
         origin = f"{urlsplit(home.final_url).scheme}://{urlsplit(home.final_url).netloc}/"
-        rest_url = urljoin(home.final_url, rest_url) if rest_url else urljoin(origin, "wp-json/")
+        rest_url = integrity.resolve(home.final_url, page.rest_url) if page.rest_url else ""
+        if not rest_url or not integrity.same_site(report.url, rest_url):  # the page cannot send the probe elsewhere
+            rest_url = urljoin(origin, "wp-json/")
 
         namespaces: list[str] = []
         rest = await self._get(rest_url, max_bytes=400_000)
@@ -472,9 +527,8 @@ class SiteChecker:
         report.details["rest_url"] = rest_url
         report.details["rest_namespaces"] = namespaces
         plugins = sorted({KNOWN_NAMESPACES[n] for n in namespaces if n in KNOWN_NAMESPACES})
-        report.details["plugins_detected"] = sorted(set(plugins) | {p for p in PLUGIN_RE.findall(html)})
-        themes = sorted(set(THEME_RE.findall(html)))
-        report.details["themes_detected"] = themes
+        report.details["plugins_detected"] = sorted(set(plugins) | page.plugins)
+        report.details["themes_detected"] = page.themes
 
         if not deep:
             report.wp_version = version

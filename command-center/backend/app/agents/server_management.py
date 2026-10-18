@@ -19,6 +19,16 @@ from .base import AgentContext, AgentResult, BaseAgent, Finding, Params, Risk, c
 from .wp_server import server_binding
 
 
+MIN_GATE_VERSION = (1, 1, 0)  # runs WP-CLI through cc-wp
+
+
+def _version(value: Any) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in str(value).split("."))
+    except ValueError:
+        return (0,)
+
+
 class ServerParams(Params):
     server_id: int = Field(description="ID of a registered server (Servers page)")
 
@@ -71,6 +81,10 @@ class ServerManagementAgent(BaseAgent):
         findings = []
         if int(hello.get("uid", -1)) == 0:
             findings.append(Finding(code="gate_runs_as_root", severity="critical", title="cc-gate reports uid 0; use an unprivileged account"))
+        if _version(hello.get("gate_version")) < MIN_GATE_VERSION:
+            findings.append(Finding(code="gate_outdated", severity="warning",
+                                    title=f"cc-gate {hello.get('gate_version')} on this server is older than "
+                                          f"{'.'.join(map(str, MIN_GATE_VERSION))}; run install-gate.sh from this version's server folder"))
         if hello.get("allow_changes"):
             findings.append(Finding(code="changes_allowed", severity="info",
                                     title="The server allows approved changes (allow_changes is true in its cc-gate configuration)"))
@@ -123,7 +137,7 @@ class ServerManagementAgent(BaseAgent):
                            data={"services": states}, findings=findings)
 
     @capability(risk=Risk.CHANGE, description="Restart a service the server's cc-gate configuration lists as restartable (approval required).",
-                params=ServiceParams)
+                params=ServiceParams, timeout_seconds=360)
     async def restart_service(self, ctx: AgentContext, params: ServiceParams) -> AgentResult:
         server = await load_server(ctx, params.server_id)
         async with ctx.ssh.open(ctx, server) as gate:

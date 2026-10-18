@@ -137,21 +137,48 @@ function ServerSide({ site, onTask }: { site: Site; onTask: (t: Task) => void })
       <h3>
         Server-side (WP-CLI) {site.last_diagnosis_at ? <span className="muted small">(checked <Time iso={site.last_diagnosis_at} />)</span> : null}
       </h3>
-      {d.core_version ? (
+      {d.at ? (
         <dl className="kv">
           <dt>WordPress</dt>
           <dd>
-            {d.core_version} · core files{" "}
-            {d.core_verify?.verified === true ? "match the official checksums" : d.core_verify?.verified === false ? <strong>modified</strong> : "not checked"}
+            {d.core_version ?? "version not read"} · core files{" "}
+            {d.core_verify?.verified === true ? (
+              "match the official checksums"
+            ) : d.core_verify?.verified === false ? (
+              <strong>{d.core_verify.extra_files?.length ? `modified (${d.core_verify.extra_files.length} unexpected file(s))` : "modified"}</strong>
+            ) : (
+              "not checked"
+            )}
           </dd>
           <dt>home / siteurl</dt>
-          <dd>{d.site_urls?.matches ? "correct" : <strong>{`${d.site_urls?.home} / ${d.site_urls?.siteurl} (expected ${d.site_urls?.expected})`}</strong>}</dd>
+          <dd>
+            {!d.site_urls ? (
+              "not read"
+            ) : d.site_urls.matches ? (
+              "correct"
+            ) : (
+              <strong>{`${d.site_urls.home} / ${d.site_urls.siteurl} (expected ${d.site_urls.expected}${
+                d.site_urls.expected_siteurl && d.site_urls.expected_siteurl !== d.site_urls.expected ? ` / ${d.site_urls.expected_siteurl}` : ""
+              })`}</strong>
+            )}
+          </dd>
           <dt>Plugins</dt>
           <dd>
             {(d.plugins ?? []).map((p) => `${p.name} ${p.version}${p.status !== "active" ? ` (${p.status})` : ""}${p.update === "available" ? ` → ${p.update_version}` : ""}`).join(", ") || "none"}
           </dd>
           <dt>Administrators</dt>
-          <dd>{(d.admins ?? []).map((a) => a.user_login).join(", ") || "—"}</dd>
+          <dd>
+            {(d.admins ?? []).map((a) => a.user_login).join(", ") || "—"}
+            {d.super_admins?.length ? ` · super admins: ${d.super_admins.join(", ")}` : ""}
+          </dd>
+          {d.errors && Object.keys(d.errors).length ? (
+            <>
+              <dt>Not checked</dt>
+              <dd>
+                <strong>{Object.keys(d.errors).join(", ")}</strong> <span className="muted small">(the server could not answer)</span>
+              </dd>
+            </>
+          ) : null}
         </dl>
       ) : (
         <p className="muted small">No server-side check yet.</p>

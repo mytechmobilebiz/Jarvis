@@ -159,7 +159,7 @@ def test_servers_page_and_server_side_site_detail(signed_in: Page, api):
     page.get_by_role("row").filter(has_text="wp-repair-test").first.click()
     dialog = page.get_by_role("dialog")
     expect(dialog).to_contain_text("Command audit trail")
-    expect(dialog).to_contain_text("cc-gate 1.0.0 as ccagent")
+    expect(dialog).to_contain_text("cc-gate 1.1.0 as ccagent")
     shot(page, "12-servers")
     page.keyboard.press("Escape")
     nav(page, "Websites")

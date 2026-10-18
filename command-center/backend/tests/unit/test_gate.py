@@ -245,6 +245,12 @@ def test_extra_core_files_fail_verification(site):
     assert result["verified"] is False and result["extra_files"] == ["Warning: File should not exist: wp-includes/class-wp-cache-helper.php"]
     site.append((0, "Success: WordPress installation verifies against checksums.", ""))
     assert gate.op_wp_core_verify({})["verified"] is True
+    site.append((1, "", "Error: RuntimeException: Failed to get url 'https://api.wordpress.org/core/checksums/1.0/?version=6.9.4': "
+                 "cURL error 6: Could not resolve host"))
+    assert gate.op_wp_core_verify({})["verified"] is None  # not checked is not "modified"
+    site.append((1, "Warning: File doesn't verify against checksum: wp-includes/version.php\nError: WordPress installation doesn't verify "
+                 "against checksums.", ""))
+    assert gate.op_wp_core_verify({})["files"] == ["Warning: File doesn't verify against checksum: wp-includes/version.php"]
 
 
 def test_reinstall_only_replaces_plugins_from_wordpress_org(site, monkeypatch):
@@ -253,7 +259,8 @@ def test_reinstall_only_replaces_plugins_from_wordpress_org(site, monkeypatch):
     with pytest.raises(gate.Refused, match="not a WordPress.org plugin"):
         gate.op_wp_plugin_reinstall({"slug": "acme-forms"})
     header["update_uri"] = "https://wordpress.org/plugins/acme-forms/"
-    site.extend([(0, "1.0", ""), (1, "", "Warning: Could not retrieve the checksums for version 1.0 of plugin acme-forms, skipping.")])
+    site.extend([(0, "1.0", ""), (0, "Success: Verified 0 of 1 plugins (1 skipped).",
+                                  "Warning: Could not retrieve the checksums for version 1.0 of plugin acme-forms, skipping.")])
     with pytest.raises(gate.Failed, match="no checksums"):
         gate.op_wp_plugin_reinstall({"slug": "acme-forms"})
     header["update_uri"] = ""

@@ -91,3 +91,33 @@ describe("servers page", () => {
     expect(await screen.findByLabelText("authorized_keys line")).toHaveTextContent('command="/usr/local/bin/cc-gate",restrict');
   });
 });
+
+describe("server-side check on the website page", () => {
+  it("shows what could be read and what the server could not answer", async () => {
+    window.history.pushState({}, "", "/websites");
+    const site = {
+      id: 3, name: "Acme", url: "https://acme.example", client: "", notes: "", enabled: true, last_status: "up", last_checked_at: now,
+      last_check: null, environment: "test", server_id: 1, server_site_key: "acme", uptime: null,
+      last_diagnosis: {
+        at: now, server: "cwp-1", site_urls: { home: "https://acme.example", siteurl: "https://acme.example", expected: "https://acme.example", matches: true },
+        plugins: [{ name: "akismet", status: "active", version: "5.3", update: "none", update_version: "" }], admins: [{ ID: 1, user_login: "owner", user_registered: "" }],
+        core_verify: { verified: false, files: [], extra_files: ["Warning: File should not exist: wp-includes/x.php"] },
+        errors: { core_version: "wp-cli failed" }, findings: [],
+      },
+      last_diagnosis_at: now,
+    };
+    mockFetch({
+      "GET /api/system/status": status,
+      "GET /api/auth/me": { user: admin },
+      "GET /api/sites": { sites: [site] },
+      "GET /api/sites/3": { site },
+      "GET /api/sites/3/checks?limit=30": { checks: [] },
+      "GET /api/servers": { servers: [] },
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByText("Acme"));
+    expect(await screen.findByText("modified (1 unexpected file(s))")).toBeInTheDocument();
+    expect(screen.getByText(/version not read/)).toBeInTheDocument();
+    expect(screen.getByText("core_version")).toBeInTheDocument();
+  });
+});
