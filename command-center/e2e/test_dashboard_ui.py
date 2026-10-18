@@ -107,7 +107,7 @@ def test_sign_out(signed_in: Page):
 def test_settings_page_stores_key_without_showing_it(signed_in: Page, api):
     page = signed_in
     nav(page, "Settings")
-    expect(page.get_by_text("Developer (internal, not for sale)")).to_be_visible()
+    expect(page.get_by_text("Developer (internal, not for sale)", exact=True)).to_be_visible()
     fake = "sk-ant-e2e-placeholder-not-a-real-key-9z9z"
     page.get_by_label("New Anthropic API key").fill(fake)
     page.get_by_role("button", name="Save key").click()
@@ -159,7 +159,7 @@ def test_servers_page_and_server_side_site_detail(signed_in: Page, api):
     page.get_by_role("row").filter(has_text="wp-repair-test").first.click()
     dialog = page.get_by_role("dialog")
     expect(dialog).to_contain_text("Command audit trail")
-    expect(dialog).to_contain_text("cc-gate 1.1.0 as ccagent")
+    expect(dialog).to_contain_text(re.compile(r"cc-gate \d+\.\d+\.\d+ as ccagent"))  # from the last connection test
     shot(page, "12-servers")
     page.keyboard.press("Escape")
     nav(page, "Websites")

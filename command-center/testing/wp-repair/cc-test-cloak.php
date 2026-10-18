@@ -1,6 +1,7 @@
 <?php
 /**
  * Plugin Name: CC test cloak (disposable test fixture)
+ * Version: 1.0.0
  * Description: Imitates common malware for the Command Center's tests: redirects search
  *              visitors and Googlebot to a non-existent spam domain and prints an
  *              obfuscated (harmless) script. Only ever installed on the disposable test site.
