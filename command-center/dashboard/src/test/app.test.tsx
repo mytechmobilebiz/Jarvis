@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import { mockFetch } from "./fetchMock";
@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 describe("App", () => {
-  it("shows the sign-in form when not signed in, then the overview", async () => {
+  it("shows the sign-in form when not signed in, then the dashboard", async () => {
     const calls = mockFetch({
       ...common,
       "GET /api/auth/me": { status: 401, json: { detail: "not signed in" } },
@@ -45,9 +45,11 @@ describe("App", () => {
 
     fireEvent.change(screen.getByLabelText("Password"), { target: { value: "right" } });
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
-    expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening), Admin$/ })).toBeInTheDocument();
     expect(await screen.findByText("Broken is DOWN")).toBeInTheDocument();
-    expect(screen.getByText("2/3 up")).toBeInTheDocument();
+    const sites = screen.getByRole("region", { name: "Websites monitored" });
+    await waitFor(() => expect(within(sites).getByText("1 down")).toBeInTheDocument());
+    expect(within(sites).getByText("1", { selector: ".tile-value" })).toBeInTheDocument();
     const login = calls.find((c) => c.method === "POST" && c.path === "/api/auth/login");
     expect((login!.init.headers as Record<string, string>)["X-Requested-With"]).toBe("command-center");
   });
