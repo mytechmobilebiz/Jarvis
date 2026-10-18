@@ -48,7 +48,10 @@ done
 case "$ACCOUNT" in
   root|"") echo "the account must not be root" >&2; exit 1 ;;
 esac
-echo "$ACCOUNT" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || { echo "invalid account name: $ACCOUNT" >&2; exit 1; }
+NL=$(printf '\n_'); NL=${NL%_}; CR=$(printf '\r')
+# Exactly one line: the name goes into the sudo rules, where a second line would be a rule of its own.
+case $ACCOUNT in *"$NL"*|*"$CR"*|*\\*) echo "invalid account name" >&2; exit 1 ;; esac
+printf '%s\n' "$ACCOUNT" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || { echo "invalid account name: $ACCOUNT" >&2; exit 1; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 cd /  # nothing below may pick up files from the directory this was started in
 
@@ -71,7 +74,6 @@ for candidate in /usr/libexec/platform-python /usr/bin/python3 /usr/local/bin/py
 done
 [ -n "$PY" ] || { echo "Python 3.6 or newer is required (dnf install python3)" >&2; exit 1; }
 
-NL=$(printf '\n_'); NL=${NL%_}; CR=$(printf '\r')
 if [ "$MODE" = install ]; then
   if [ -n "$PUBKEY" ]; then
     # Exactly one line: a second line in authorized_keys would be a key without the forced command.
@@ -145,20 +147,38 @@ for key, s in sorted(c.get("sites", {}).items()):
     if re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", key) and re.match(r"^[a-z_][a-z0-9_.-]{0,31}$", s.get("user", "")):
         print(key, s["user"])
 ' "$CONF")
+ACCOUNT_UID=$(id -u "$ACCOUNT" 2>/dev/null) || { echo "account $ACCOUNT does not exist; run the install first" >&2; exit 1; }
+[ "$ACCOUNT_UID" != 0 ] || { echo "$ACCOUNT has uid 0; refusing" >&2; exit 1; }
+# The gate account holds the sudo rules for every site, so a site whose PHP runs as it (by name or uid)
+# could use them to run WP-CLI as every other site's user. Not a pipeline, so that exit ends the script.
+while read -r key user; do
+  [ -n "$key" ] && id "$user" >/dev/null 2>&1 || continue
+  if [ "$user" = "$ACCOUNT" ] || [ "$(id -u "$user")" = "$ACCOUNT_UID" ]; then
+    rm -f "$SUDOERS"
+    echo "site $key runs as the gate account $ACCOUNT; give the gate its own account. The sudo rules were removed until then." >&2
+    exit 1
+  fi
+done <<EOF
+$PAIRS
+EOF
 SITE_USERS=""
 for_each_site() {
   echo "$PAIRS" | while read -r key user; do
     [ -n "$key" ] || continue
     if ! id "$user" >/dev/null 2>&1; then echo "warning: site $key: user $user does not exist; skipped" >&2; continue; fi
     [ "$(id -u "$user")" != 0 ] || { echo "warning: site $key runs as root; skipped" >&2; continue; }
-    # The gate account holds the sudo rules for every site; a site must never run as it.
-    [ "$user" != "$ACCOUNT" ] || { echo "warning: site $key runs as the gate account $ACCOUNT; skipped" >&2; continue; }
     mkdir -p "$BACKUP_DIR/$key"; chown "$user" "$BACKUP_DIR/$key"; chmod 0700 "$BACKUP_DIR/$key"
     echo "$user"
   done
 }
 SITE_USERS=$(for_each_site | sort -u | tr '\n' ',' | sed 's/,$//')
 SYSTEMCTL=$("$PY" -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("systemctl", "/usr/bin/systemctl"))' "$CONF")
+case $SYSTEMCTL in
+  /*) ;; *) echo "systemctl must be an absolute path" >&2; exit 1 ;;
+esac
+case $SYSTEMCTL in
+  *[!A-Za-z0-9._/-]*) echo "systemctl may only contain letters, digits and . _ - /" >&2; exit 1 ;;
+esac
 RESTARTABLE=$("$PY" -I -c '
 import json, re, sys
 c = json.load(open(sys.argv[1]))
@@ -167,13 +187,13 @@ print(" ".join(s for s in c.get("restartable_services", []) if re.match(r"^[a-z0
 
 TMP_SUDO=$(mktemp)
 {
-  echo "# Written by install-gate.sh. $ACCOUNT can only reach these rules through cc-gate (SSH forced command)."
-  echo "Defaults:$ACCOUNT !requiretty"
+  printf '%s\n' "# Written by install-gate.sh. $ACCOUNT can only reach these rules through cc-gate (SSH forced command)."
+  printf '%s\n' "Defaults:$ACCOUNT !requiretty"
   if [ -n "$SITE_USERS" ]; then
-    echo "$ACCOUNT ALL=($SITE_USERS) NOPASSWD: $WP_RUNNER, $HELPER"
+    printf '%s\n' "$ACCOUNT ALL=($SITE_USERS) NOPASSWD: $WP_RUNNER, $HELPER"
   fi
   for svc in $RESTARTABLE; do
-    echo "$ACCOUNT ALL=(root) NOPASSWD: $SYSTEMCTL restart $svc"
+    printf '%s\n' "$ACCOUNT ALL=(root) NOPASSWD: $SYSTEMCTL restart $svc"
   done
 } > "$TMP_SUDO"
 if command -v visudo >/dev/null 2>&1; then

@@ -27,6 +27,7 @@ HELPER = REPO / "server" / "cc-site-helper"
 
 HARNESS = """
 import importlib.util
+import os
 import sys
 from importlib.machinery import SourceFileLoader
 loader = SourceFileLoader("cc_gate", sys.argv[1])
@@ -34,6 +35,8 @@ gate = importlib.util.module_from_spec(importlib.util.spec_from_loader("cc_gate"
 loader.exec_module(gate)
 gate.CONFIG_PATH = sys.argv[2]
 gate.REQUIRE_ROOT_OWNED_CONFIG = False  # the test config lives in a temp folder
+# The fake site (<temp folder>/wp) is not in daemon's home; the folder holding the temp folder stands in for it.
+gate.site_home = lambda site: os.path.dirname(os.path.dirname(sys.argv[2]))
 sys.exit(gate.main())
 """
 
@@ -52,12 +55,17 @@ case "$1 $2" in
   "plugin update")
     [ -f "$(dirname "$0")/update-fails" ] && { echo "Error: Download failed." >&2; exit 1; }
     echo 5.4 > "$(dirname "$0")/version-$3"; echo "Success: Updated 1 of 1 plugins." ;;
-  "super-admin list") echo "Error: This is not a multisite installation." >&2; exit 1 ;;
+  "super-admin list")
+    # A multisite network when a super-admins file (one login per line) exists; printed the way WP-CLI 2.12 does.
+    D="$(dirname "$0")"; [ -f "$D/super-admins" ] || { echo "Error: This is not a multisite installation." >&2; exit 1; }
+    awk 'BEGIN { printf "[" } { printf "%s{\"user_login\":\"%s\"}", (NR > 1 ? "," : ""), $0 } END { print "]" }' "$D/super-admins" ;;
   "plugin deactivate") echo inactive > "$(dirname "$0")/plugin-$3"; echo "Success: Deactivated 1 of 1 plugins." ;;
   "plugin activate") echo active > "$(dirname "$0")/plugin-$3"; echo "Success: Activated 1 of 1 plugins." ;;
   "theme list") echo '[{"name":"astra","status":"active","version":"4.0","update":"none","update_version":""}]' ;;
   "user list")
     [ -f "$(dirname "$0")/users-broken" ] && { echo "Error: Error establishing a database connection." >&2; exit 1; }
+    # Users found by capability (another role with administrator powers): from a capability-users file (a JSON list).
+    case "$*" in *--capability__in=*) [ -f "$(dirname "$0")/capability-users" ] && { cat "$(dirname "$0")/capability-users"; exit 0; } ;; esac
     echo '[{"ID":1,"user_login":"owner","user_registered":"2024-01-01 00:00:00"}]' ;;
   "option get") cat "$(dirname "$0")/option-$3" 2>/dev/null || echo "http://site.test" ;;
   "option update") printf '%s' "$4" > "$(dirname "$0")/option-$3"; echo "Success: Updated '$3' option." ;;

@@ -32,8 +32,12 @@ SPACE_MARGIN = 256 * 1024 * 1024  # keep this much free on the backup disk after
 HEADER_RE = re.compile(r"^(?:[ \t]*<\?php)?[ \t/*#@]*(Plugin Name|Update URI):(.*)$", re.M | re.I)
 
 
-def answer(ok, result=None, error=""):
-    sys.stdout.write(json.dumps({"ok": ok, "result": result, "error": error}, sort_keys=True) + "\n")
+def answer(ok, result=None, error="", unchanged=False):
+    """unchanged: the request was refused before anything was touched."""
+    payload = {"ok": ok, "result": result, "error": error}
+    if unchanged:
+        payload["unchanged"] = True
+    sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
     return 0 if ok else 1
 
 
@@ -107,13 +111,15 @@ def main(argv):
         kind = "symlink" if stat.S_ISLNK(info.st_mode) else "other"
         if op == "debug_log_status":
             return answer(True, {"exists": True, "type": kind, "bytes": 0, "modified": modified})
-        return answer(False, error="wp-content/debug.log is not a regular file (%s); not touching it" % kind)
+        return answer(False, error="wp-content/debug.log is not a regular file (%s); not touching it" % kind, unchanged=True)
     status = {"exists": True, "type": "file", "bytes": info.st_size, "modified": modified}
     if op == "debug_log_status":
         return answer(True, status)
     try:
         target = quarantine(log, info, os.path.join(config.get("backup_dir", "/var/lib/cc-gate/backups"), key))
-    except (OSError, RuntimeError) as exc:
+    except RuntimeError as exc:  # checked before anything was moved
+        return answer(False, error="debug.log was not moved: %s" % exc, unchanged=True)
+    except OSError as exc:
         return answer(False, error="debug.log was not moved: %s" % exc)
     return answer(True, dict(status, moved_to=target))
 

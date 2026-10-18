@@ -97,6 +97,7 @@ class AgentContext:
     task_id: int | None = None
     request_id: int | None = None
     approved_by: str = ""  # set only when a human approved this task
+    approved_target: dict[str, Any] | None = None  # what was approved (the approval's details: target, binding, production)
     logs: list[tuple[str, str]] = field(default_factory=list)
     ssh: Any = None  # app.ssh.gateway.SSHGateway: servers, only through cc-gate
     requested_by: str = ""

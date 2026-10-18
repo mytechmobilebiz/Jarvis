@@ -9,7 +9,7 @@ server.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from pydantic import Field
@@ -56,6 +56,8 @@ REMEDIATION: dict[str, tuple[str, str | None]] = {
     "http_error": ("Check the server and PHP error logs.", None),
     # From the server-side (WP-CLI) diagnosis:
     "site_url_mismatch": ("Set home/siteurl back to the site's address.", "repair_restore_site_url"),
+    "subdirectory_install_suspected": ("WordPress seems to live in its own folder: set \"siteurl\" for this site in the server's cc-gate "
+                                       "configuration, then run the server-side check again.", None),
     "core_modified": ("Replace the modified core files with the official ones.", "repair_reinstall_core"),
     "plugin_update_available": ("Update the plugin after a backup.", "repair_update_plugin"),
     "maintenance_on": ("Switch maintenance mode off if no update is running.", "repair_maintenance_mode"),
@@ -67,6 +69,8 @@ REMEDIATION: dict[str, tuple[str, str | None]] = {
     "site_worse_after_repair": ("Undo the last repair (for a plugin: repair_activate_plugin) and check the error log.", None),
     "site_down_after_repair": ("Undo the last repair (for a plugin: repair_activate_plugin) and check the error log.", None),
     # From the monitoring checks:
+    "cloaked_script": ("A script domain only some visitors (phones, search engines) get. Confirm someone added it (ads, analytics); "
+                       "otherwise review the active plugins, the theme and .htaccess.", None),
     "cloaked_injection": ("Code shown only to some visitors (phone, search engines). Review the active plugins, the theme and "
                           ".htaccess; verify the core files.", "repair_reinstall_core"),
     "hidden_iframe_noscript": ("Usually a tracking pixel; confirm someone added it.", None),
@@ -95,6 +99,18 @@ def rating(findings: list[dict[str, Any]]) -> str:
 
 def _fmt_pct(v: float | None) -> str:
     return "n/a" if v is None else f"{v:g}%"
+
+
+def _time(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _fmt_time(value: Any) -> str:
+    return str(value or "")[:16].replace("T", " ") + " UTC"
 
 
 class WordPressSecurityAgent(ServerSideCapabilities, BaseAgent):
@@ -164,7 +180,8 @@ class WordPressSecurityAgent(ServerSideCapabilities, BaseAgent):
                 events.extend(diag.events)
                 server_note = " Server-side check done."
             except Exception as exc:  # noqa: BLE001 - the HTTP scan stands on its own (TimeoutError included)
-                findings.append(Finding(code="server_check_failed", severity="warning", title=f"Server-side check failed: {exc}"[:300]))
+                reason = str(exc) or ("the check ran out of time" if isinstance(exc, TimeoutError) else exc.__class__.__name__)
+                findings.append(Finding(code="server_check_failed", severity="warning", title=f"Server-side check failed: {reason}"[:300]))
         serious = [f for f in findings if f.severity != "info"]
         summary = f"{site.name}: {rating([f.model_dump() for f in findings])}, {len(serious)} issue(s). " + report.summary() + server_note
         return AgentResult(summary=summary, data={"site_id": site.id, "status": report.status}, findings=findings, events=events)
@@ -259,23 +276,54 @@ class WordPressSecurityAgent(ServerSideCapabilities, BaseAgent):
                 lines.append("- Third-party script domains: " + (", ".join(scripts) if scripts else "none"))
             lines.append("")
         diag = site.last_diagnosis or {}
-        if diag:
+        failed = diag.get("last_failed_attempt") or {}
+        if diag.get("at"):
             server_findings = [f for f in diag.get("findings") or [] if f.get("severity") != "info"]
             verify = diag.get("core_verify") or {}
-            lines += [f"### Server-side checks (WP-CLI on {diag.get('server', 'the server')}, {str(diag.get('at', ''))[:16].replace('T', ' ')} UTC)", "",
+            errs = diag.get("errors") or {}
+            urls = diag.get("site_urls") or {}
+            if not urls or "site_urls" in errs:
+                urls_text = "could not be checked"
+            elif urls.get("matches"):
+                urls_text = "correct"
+            elif urls.get("subdirectory_install_suspected"):
+                urls_text = (f"siteurl {urls.get('suspected_siteurl') or urls.get('siteurl')}: WordPress in its own folder? "
+                             "(set \"siteurl\" in the cc-gate configuration)")
+            else:
+                want = urls.get("expected")
+                if urls.get("expected_siteurl") and urls.get("expected_siteurl") != want:
+                    want = f"{want} and {urls.get('expected_siteurl')}"
+                urls_text = f"**home {urls.get('home')}, siteurl {urls.get('siteurl')}** (expected {want})"
+
+            def read(part: str, text: str) -> str:
+                """A part the latest check could not read: the previous check's value (BASELINE_PARTS), or nothing."""
+                if part not in errs:
+                    return text
+                return f"{text} (could not be read; showing the previous check)" if part in diag else "could not be read"
+
+            lines += [f"### Server-side checks (WP-CLI on {diag.get('server', 'the server')}, {_fmt_time(diag.get('at'))})", "",
                       f"- WordPress {diag.get('core_version', '?')}; core files: "
                       + {True: "match the official checksums", False: "**modified**", None: "could not be checked"}.get(verify.get("verified"), "not checked"),
-                      "- home/siteurl: " + ("correct" if (diag.get("site_urls") or {}).get("matches") else
-                                             f"**{(diag.get('site_urls') or {}).get('home')}** (expected {(diag.get('site_urls') or {}).get('expected')})"),
-                      f"- Plugins: {len(diag.get('plugins') or [])}, updates available: "
-                      + (", ".join(p["name"] for p in diag.get("plugins") or [] if p.get("update") == "available") or "none"),
-                      f"- Administrator accounts: {len(diag.get('admins') or [])}", ""]
+                      "- home/siteurl: " + urls_text,
+                      "- Plugins: " + read("plugins", f"{len(diag.get('plugins') or [])}, updates available: "
+                                           + (", ".join(str(p.get("name")) for p in diag.get("plugins") or []  # stored by older versions unchecked
+                                                        if isinstance(p, dict) and p.get("update") == "available") or "none")),
+                      "- Administrator accounts: " + read("admins", str(len(diag.get("admins") or []))), ""]
+            done_at = _time(diag.get("at"))
+            if failed and done_at and (_time(failed.get("at")) or done_at) > done_at:
+                lines += [f"_The latest server-side check ({_fmt_time(failed.get('at'))}) failed: {failed.get('error') or 'unknown error'}; "
+                          f"these results are from {_fmt_time(diag.get('at'))}._", ""]
+            if done_at is None or datetime.now(UTC) - done_at > timedelta(hours=48):
+                lines += ["_These server-side results are not recent; run wp_diagnose or a security scan for current results._", ""]
             if server_findings:
                 lines += ["| Severity | Issue | What to do | Repair (needs approval) |", "|---|---|---|---|"]
                 for f in server_findings:
                     todo, repair = REMEDIATION.get(f.get("code", ""), ("Review this finding.", None))
                     lines.append(f"| {f.get('severity')} | {str(f.get('title', '')).replace('|', '/')} | {todo} | {repair or '-'} |")
                 lines.append("")
+        elif failed:
+            lines += ["### Server-side checks", "", f"_The server-side check ({_fmt_time(failed.get('at'))}) failed: "
+                      f"{failed.get('error') or 'unknown error'}; there are no server-side results yet._", ""]
         elif site.server_id:
             lines += ["_Linked to a server, but no server-side check yet: run wp_diagnose or a security scan._", ""]
         incidents = await uptime.incidents(ctx.session, site.id)

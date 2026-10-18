@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import pwd
+import shutil
 import signal
 import subprocess
 import sys
@@ -18,9 +19,12 @@ import pytest
 
 from app.ssh import ops as cc_ops
 
-from ..sshfake import GATE, HELPER, REPO
+from ..sshfake import FAKE_RUNNER, FAKE_SUDO, FAKE_WP, GATE, HELPER, REPO
 
 RUNNER = REPO / "server" / "cc-wp"
+INSTALLER = REPO / "server" / "install-gate.sh"
+# CC_TEST_SUDO=<path> runs the sudo test against another build (e.g. 1.9.5p2, the EL9 version).
+SUDO = os.environ.get("CC_TEST_SUDO", "/usr/bin/sudo")
 
 
 def load(path):
@@ -191,6 +195,31 @@ def test_a_program_that_ignores_the_stop_request_is_killed_and_orphans_do_not_bl
     assert time.monotonic() - started < 6
 
 
+def test_programs_run_in_their_own_session(budget):
+    # sudo 1.8/1.9 (EL8/EL9) drops a SIGTERM sent from its own process group, so sharing the gate's would
+    # mean stop() never reaches the command.
+    budget(20)
+    code, out, _ = gate.run([sys.executable, "-c", "import os; print(os.getsid(0), os.getpgrp())"], {"max_output_bytes": 1000})
+    sid, pgrp = (int(x) for x in out.split())
+    assert code == 0 and sid != os.getsid(0) and pgrp != os.getpgrp()
+
+
+@pytest.mark.skipif(os.geteuid() != 0 or not os.access(SUDO, os.X_OK), reason="needs root and sudo")
+def test_a_stop_request_reaches_the_command_through_sudo(tmp_path, budget, monkeypatch):
+    marker = tmp_path / "stopped"
+    os.chmod(tmp_path, 0o777)
+    tag = "cc-gate-test-%d" % os.getpid()
+    monkeypatch.setattr(gate, "CONFIG", {"sudo": SUDO})
+    argv = gate.as_site_user({"user": "daemon"}, ["/bin/sh", "-c", f"trap 'echo term > {marker}; exit 0' TERM; while :; do sleep 0.1; done", tag])
+    budget(1.5, grace=4)
+    try:
+        with pytest.raises(gate.TimedOut):
+            gate.run(argv, {"max_output_bytes": 1000})
+        assert marker.read_text().strip() == "term"
+    finally:
+        subprocess.run(["pkill", "-f", tag])
+
+
 def test_output_is_capped_but_drained(budget):
     budget(20)
     code, out, err = gate.run([sys.executable, "-c", "import sys; sys.stdout.write('x' * 5000000); sys.stderr.write('y' * 5000)"],
@@ -277,6 +306,113 @@ def test_a_separate_wordpress_folder_can_be_configured(site, monkeypatch):
     assert gate.op_wp_site_urls({})["matches"] is True
 
 
+@pytest.mark.parametrize("path, url, home, siteurl, configured, suspected, kept", [
+    # WordPress in its own folder without "siteurl" in the configuration: restoring siteurl would break wp-admin.
+    ("/home/acme/public_html/wp", "https://acme.com", "https://acme.com", "https://acme.com/wp", None, True, True),
+    ("/home/acme/public_html/blog/wp/", "https://acme.com/blog/", "https://acme.com/blog", "https://acme.com/blog/wp/", None, True, True),
+    # home changed too: a real mismatch (not suspected). home is restored, siteurl is not overwritten.
+    ("/home/acme/public_html/wp", "https://acme.com", "http://evil.example", "https://acme.com/wp", None, False, True),
+    ("/home/acme/public_html/wp", "https://acme.com", "https://acme.com", "http://evil.example/wp", None, False, False),
+    ("/home/acme/public_html", "https://acme.com", "https://acme.com", "https://acme.com/wp", None, False, False),  # files not there
+    ("/home/acme/public_html/mywp", "https://acme.com", "https://acme.com", "https://acme.com/wp", None, False, False),
+    ("/home/acme/public_html/wp", "https://acme.com", "https://acme.com", "https://acme.com/wp?x=/wp", None, False, False),
+    ("/home/acme/public_html/wp", "https://acme.com", "https://acme.com", "https://acme.com/wp", "https://acme.com", False, False),
+    # A root install: its path ends in public_html too, but its web root would be the home folder or above it.
+    ("/home/acme/public_html", "https://acme.com", "http://evil.example", "https://acme.com/public_html", None, False, False),
+    ("/home/acme/public_html", "https://acme.com", "https://acme.com", "https://acme.com/public_html", None, False, False),
+    ("/home/acme/public_html", "https://acme.com", "http://evil.example", "https://acme.com/acme/public_html", None, False, False),
+    ("/home/acme/public_html", "https://acme.com", "https://acme.com", "https://acme.com/home/acme/public_html", None, False, False),
+    # Not in the site user's home (/home/acme).
+    ("/srv/acme/wp", "https://acme.com", "https://acme.com", "https://acme.com/wp", None, False, False),
+    ("/home/acme2/public_html/wp", "https://acme.com", "https://acme.com", "https://acme.com/wp", None, False, False),
+])
+def test_a_probable_subdirectory_install_is_reported_and_its_siteurl_left_alone(site, monkeypatch, path, url, home, siteurl,
+                                                                                configured, suspected, kept):
+    monkeypatch.setattr(gate, "SITE", {"path": path, "user": "daemon", "url": url, "siteurl": configured})
+    monkeypatch.setattr(gate, "site_home", lambda s: "/home/acme")
+    answers = {"home": home, "siteurl": siteurl}
+    calls = []
+
+    def fake_run(argv, config):
+        calls.append(argv)
+        return 0, (answers[argv[-1]] if "get" in argv else "Success"), ""
+
+    monkeypatch.setattr(gate, "run", fake_run)
+    result = gate.op_wp_site_urls({})
+    assert result["matches"] is False and result["subdirectory_install_suspected"] is suspected
+    assert result.get("suspected_siteurl") == (siteurl.rstrip("/") if kept else None)  # also when home was changed
+    calls.clear()
+    if suspected:  # only siteurl differs, most likely because the configuration lacks "siteurl": nothing is written
+        with pytest.raises(gate.Refused, match='WordPress appears to live in /wp .*set "siteurl" for this site') as refused:
+            gate.op_wp_set_site_urls({})
+        assert "(%s if it has no folder of its own)" % url.rstrip("/") in str(refused.value)
+        assert not any("update" in argv for argv in calls)
+    else:  # the redirect is always undone
+        done = gate.op_wp_set_site_urls({})
+        assert [argv[-3:] for argv in calls if "update" in argv] == [["update", "home", url.rstrip("/")]] + (
+            [] if kept else [["update", "siteurl", configured or url.rstrip("/")]])
+        assert done["siteurl_kept"] is kept and done["after_siteurl"] == (siteurl if kept else configured or url.rstrip("/"))
+
+
+def test_the_site_users_home_comes_from_the_account_database(site, monkeypatch):
+    assert gate.site_home({"user": "daemon"}) == pwd.getpwnam("daemon").pw_dir.rstrip("/")
+    assert gate.site_home({"user": "no-such-user-cc"}) == ""
+    monkeypatch.setattr(gate, "SITE", {"path": "/home/acme/public_html/wp", "user": "daemon", "url": "https://acme.com"})
+    monkeypatch.setattr(gate, "site_home", lambda s: "")  # unknown, or "/"
+    assert gate.wordpress_folder("https://acme.com/wp") is None
+    monkeypatch.setattr(gate, "site_home", lambda s: "/home/acme")
+    assert gate.wordpress_folder("https://acme.com/wp") == "/wp"
+
+
+def admin_answers(monkeypatch, *answers):
+    queue, calls = list(answers), []
+    monkeypatch.setattr(gate, "run", lambda argv, config: (calls.append(argv), queue.pop(0))[1])
+    return calls
+
+
+def test_capability_holders_and_super_admins_are_listed_apart_from_admins(site, monkeypatch):
+    owner = '{"ID":1,"user_login":"owner","user_registered":"2024-01-01 00:00:00"}'
+    shadow = '{"ID":7,"user_login":"shadow","user_registered":"2026-10-01 00:00:00"}'
+    calls = admin_answers(monkeypatch, (0, f"[{owner}]", ""), (0, "6.8.3", ""), (0, f"[{owner},{shadow}]", ""),
+                          (0, '[{"user_login":"owner"},{"user_login":"netadmin"}]', ""))  # WP-CLI 2.12's super-admin JSON
+    result = gate.op_wp_admins({})
+    # A Command Center whose baseline has only "admins" must not see long-standing users of a custom role as new.
+    assert [a["user_login"] for a in result["admins"]] == ["owner"]
+    assert [a["user_login"] for a in result["capability_admins"]] == ["shadow"]  # not already listed (by ID)
+    assert result["super_admins"] == ["owner", "netadmin"]
+    assert "--capability__in=manage_options,promote_users" in calls[2] and "--role=administrator" not in calls[2]
+    # Plain names are taken too; a single site has none.
+    admin_answers(monkeypatch, (0, f"[{owner}]", ""), (0, "6.8.3", ""), (0, "[]", ""), (0, '["owner"]', ""))
+    assert gate.op_wp_admins({})["super_admins"] == ["owner"]
+    admin_answers(monkeypatch, (0, f"[{owner}]", ""), (0, "6.8.3", ""), (0, "[]", ""), (1, "", "Error: This is not a multisite installation."))
+    assert gate.op_wp_admins({})["super_admins"] == []
+
+
+def test_admin_capabilities_are_only_asked_from_wordpress_5_9(site, monkeypatch):
+    # Before 5.9 WordPress ignores capability__in, and the query would list every user.
+    calls = admin_answers(monkeypatch, (0, '[{"ID":1,"user_login":"owner"}]', ""), (0, "5.8.3", ""), (1, "", "Error: not a multisite"))
+    result = gate.op_wp_admins({})
+    assert [a["user_login"] for a in result["admins"]] == ["owner"]
+    assert "capability_admins" not in result  # not checked, which is not the same as none (no baseline before 5.9)
+    assert len(calls) == 3 and not any("--capability__in" in a for argv in calls for a in argv)
+    assert gate.version_at_least("5.9", (5, 9)) and gate.version_at_least("6.10-beta1", (5, 9))
+    assert not gate.version_at_least("5.8.12", (5, 9)) and not gate.version_at_least("unknown", (5, 9))
+
+
+def test_super_admins_through_the_fake_servers_wp_cli(tmp_path, budget, monkeypatch):
+    for name, body in (("wp-cli", FAKE_WP), ("cc-wp", FAKE_RUNNER), ("sudo", FAKE_SUDO)):
+        (tmp_path / name).write_text(body)
+        (tmp_path / name).chmod(0o755)
+    monkeypatch.setattr(gate, "CONFIG", {**CONFIG, "sudo": str(tmp_path / "sudo"), "wp_runner": str(tmp_path / "cc-wp"),
+                                         "max_output_bytes": 100000})
+    monkeypatch.setattr(gate, "SITE", CONFIG["sites"]["site-one"])
+    budget(20)
+    result = gate.op_wp_admins({})
+    assert result["super_admins"] == [] and result["capability_admins"] == []  # a single site; owner is already in "admins"
+    (tmp_path / "super-admins").write_text("owner\nnetadmin\n")  # a multisite network
+    assert gate.op_wp_admins({})["super_admins"] == ["owner", "netadmin"]
+
+
 # ------------------------------------------------------------------ cc-wp
 
 def run_runner(tmp_path, args, *, env=None):
@@ -303,8 +439,11 @@ def test_wp_cli_gets_an_environment_the_site_cannot_influence(tmp_path):
     assert proc.returncode == 0, err
     env = dict(line.split("=", 1) for line in out.splitlines() if "=" in line and not line.startswith("ARGS"))
     assert "evil" not in out and "PHPRC" not in env
-    assert env["HOME"].startswith("/tmp/cc-wp-") and env["WP_CLI_CONFIG_PATH"].startswith(env["HOME"])
-    assert env["WP_CLI_PACKAGES_DIR"].startswith(env["HOME"]) and env["WP_CLI_CACHE_DIR"].startswith(env["HOME"])
+    assert env["HOME"].startswith("/tmp/cc-wp-")
+    # Nothing WP-CLI reads lives in that home: the site user could plant a configuration or a cached download there.
+    assert not [k for k, v in env.items() if k != "HOME" and v.startswith(env["HOME"])]
+    assert env["WP_CLI_CONFIG_PATH"] == "/dev/null" and env["WP_CLI_CACHE_DIR"] == "/dev/null"
+    assert env["WP_CLI_PACKAGES_DIR"] == "/usr/local/lib/cc-gate/no-packages"
     assert "ARGS --skip-packages --path=/srv/s core version" in out and out.splitlines()[-1] == "/"
     assert not os.path.exists(env["HOME"])  # the private home is removed afterwards
     # Only paths configured for this very user.
@@ -402,3 +541,85 @@ def test_plugin_update_uri_is_read_from_the_plugin_header(helper_site, capsys):
     assert answer["result"] == {"found": True, "file": "acme-forms.php", "update_uri": "https://updates.acme.test/forms"}
     code, answer = helper_answer(helper, capsys, "plugin_update_uri", "site-one", "missing")
     assert answer["result"] == {"found": False}
+
+
+# ---------------------------------------------------------------- installer
+
+FAKE_ID = """#!/bin/sh
+# id, except that "alias" is a second name for uid 1 (daemon).
+case "$1 $2" in "-u alias") echo 1; exit 0 ;; "alias ") exit 0 ;; esac
+exec /usr/bin/id "$@"
+"""
+
+
+def sync_sites(tmp_path, sites, *args, systemctl="/usr/bin/systemctl"):
+    """install-gate.sh --sync-sites under dash, from a copy whose system paths point into tmp_path."""
+    text = INSTALLER.read_text()
+    for name, path in (("GATE", "/usr/local/bin/cc-gate"), ("HELPER_DIR", "/usr/local/lib/cc-gate"), ("CONF_DIR", "/etc/cc-gate"),
+                       ("SUDOERS", "/etc/sudoers.d/cc-gate"), ("LOG_DIR", "/var/log/cc-gate")):
+        assert f"\n{name}={path}\n" in text
+        text = text.replace(f"\n{name}={path}\n", f"\n{name}={tmp_path}{path}\n")
+    (tmp_path / "install-gate.sh").write_text(text)
+    for folder in ("etc/cc-gate", "etc/sudoers.d", "bin"):
+        (tmp_path / folder).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/cc-gate/config.json").write_text(json.dumps({
+        "sites": {key: {"path": f"/srv/{key}", "user": user, "url": f"https://{key}.test"} for key, user in sites.items()},
+        "backup_dir": str(tmp_path / "backups"), "services": ["httpd"], "restartable_services": ["httpd"], "systemctl": systemctl}))
+    (tmp_path / "bin/id").write_text(FAKE_ID)
+    (tmp_path / "bin/id").chmod(0o755)
+    done = subprocess.run(["dash", str(tmp_path / "install-gate.sh"), "--sync-sites", *args], capture_output=True, text=True,
+                          env={"PATH": f"{tmp_path}/bin:/usr/sbin:/usr/bin:/sbin:/bin"}, timeout=60)
+    return done, tmp_path / "etc/sudoers.d/cc-gate"
+
+
+needs_installer = pytest.mark.skipif(os.geteuid() != 0 or not shutil.which("dash") or not shutil.which("visudo"),
+                                     reason="needs root, dash and visudo")
+
+
+@needs_installer
+def test_installer_writes_sudo_rules_for_the_configured_site_users(tmp_path):
+    done, sudoers = sync_sites(tmp_path, {"one": "daemon", "two": "bin"}, "--user", "nobody")
+    assert done.returncode == 0, done.stderr
+    assert sudoers.read_text().splitlines()[1:] == [
+        "Defaults:nobody !requiretty",
+        f"nobody ALL=(bin,daemon) NOPASSWD: {tmp_path}/usr/local/lib/cc-gate/cc-wp, {tmp_path}/usr/local/lib/cc-gate/cc-site-helper",
+        "nobody ALL=(root) NOPASSWD: /usr/bin/systemctl restart httpd",
+    ]
+
+
+@needs_installer
+@pytest.mark.parametrize("site_user", ["daemon", "alias"])  # the gate account by name, or by uid under another name
+def test_installer_writes_no_sudo_rules_when_a_site_runs_as_the_gate_account(tmp_path, site_user):
+    # Its PHP would otherwise hold "sudo -u <every other site user> cc-wp <any WP-CLI arguments>", past cc-gate.
+    (tmp_path / "etc/sudoers.d").mkdir(parents=True)
+    (tmp_path / "etc/sudoers.d/cc-gate").write_text("# rules from an earlier run\n")
+    done, sudoers = sync_sites(tmp_path, {"one": site_user, "two": "bin"}, "--user", "daemon")
+    assert done.returncode == 1 and "site one runs as the gate account daemon" in done.stderr
+    assert not sudoers.exists() and not (tmp_path / "backups/two").exists()
+
+
+@needs_installer
+@pytest.mark.parametrize("account", ["nobody\nnobody ALL=(ALL) NOPASSWD: ALL", "nobody\rx", "nobody\\nx"])
+def test_installer_refuses_an_account_name_of_more_than_one_line(tmp_path, account):
+    done, sudoers = sync_sites(tmp_path, {"one": "daemon"}, "--user", account)
+    assert done.returncode == 1 and "invalid account name" in done.stderr
+    assert not sudoers.exists() and not (tmp_path / "backups").exists()
+
+
+@needs_installer
+def test_installer_refuses_a_systemctl_path_that_would_add_sudo_rules(tmp_path):
+    done, sudoers = sync_sites(tmp_path, {"one": "daemon"}, "--user", "nobody",
+                               systemctl="/usr/bin/systemctl x\nnobody ALL=(ALL) NOPASSWD: /bin/sh #")
+    assert done.returncode == 1 and "systemctl may only contain" in done.stderr and not sudoers.exists()
+
+
+def test_a_quarantine_refused_before_anything_moved_says_so(helper_site, capsys, monkeypatch):
+    helper, site_path, backups = helper_site
+    (site_path / "wp-content" / "debug.log").write_text("x")
+    backups.rmdir()  # no backup folder: checked before anything is moved
+    code, answer = helper_answer(helper, capsys, "debug_log_quarantine", "site-one")
+    assert code == 1 and answer["unchanged"] is True and "does not exist" in answer["error"]
+    monkeypatch.setattr(gate, "run", lambda argv, config: (1, json.dumps(answer), ""))
+    monkeypatch.setattr(gate, "CONFIG", {**CONFIG, "sudo": "/usr/bin/sudo", "site_helper": "/x/cc-site-helper", "max_output_bytes": 1000})
+    with pytest.raises(gate.Refused, match="does not exist"):  # a refusal: nothing on the site changed
+        gate.helper(CONFIG["sites"]["site-one"], "debug_log_quarantine", "site-one")

@@ -156,6 +156,8 @@ function ServerSide({ site, onTask }: { site: Site; onTask: (t: Task) => void })
               "not read"
             ) : d.site_urls.matches ? (
               "correct"
+            ) : d.site_urls.subdirectory_install_suspected ? (
+              `siteurl ${d.site_urls.suspected_siteurl ?? d.site_urls.siteurl}: WordPress in its own folder? (set "siteurl" in the cc-gate configuration)`
             ) : (
               <strong>{`${d.site_urls.home} / ${d.site_urls.siteurl} (expected ${d.site_urls.expected}${
                 d.site_urls.expected_siteurl && d.site_urls.expected_siteurl !== d.site_urls.expected ? ` / ${d.site_urls.expected_siteurl}` : ""
@@ -164,11 +166,13 @@ function ServerSide({ site, onTask }: { site: Site; onTask: (t: Task) => void })
           </dd>
           <dt>Plugins</dt>
           <dd>
-            {(d.plugins ?? []).map((p) => `${p.name} ${p.version}${p.status !== "active" ? ` (${p.status})` : ""}${p.update === "available" ? ` → ${p.update_version}` : ""}`).join(", ") || "none"}
+            {d.plugins
+              ? d.plugins.map((p) => `${p.name} ${p.version}${p.status !== "active" ? ` (${p.status})` : ""}${p.update === "available" ? ` → ${p.update_version}` : ""}`).join(", ") || "none"
+              : "not read"}
           </dd>
           <dt>Administrators</dt>
           <dd>
-            {(d.admins ?? []).map((a) => a.user_login).join(", ") || "—"}
+            {d.admins ? d.admins.map((a) => a.user_login).join(", ") || "—" : "not read"}
             {d.super_admins?.length ? ` · super admins: ${d.super_admins.join(", ")}` : ""}
           </dd>
           {d.errors && Object.keys(d.errors).length ? (
@@ -179,7 +183,20 @@ function ServerSide({ site, onTask }: { site: Site; onTask: (t: Task) => void })
               </dd>
             </>
           ) : null}
+          {d.last_failed_attempt ? (
+            <>
+              <dt>Latest check</dt>
+              <dd>
+                <strong>failed</strong> <Time iso={d.last_failed_attempt.at} />: {d.last_failed_attempt.error}{" "}
+                <span className="muted small">(the results above are older)</span>
+              </dd>
+            </>
+          ) : null}
         </dl>
+      ) : d.last_failed_attempt ? (
+        <p className="small">
+          <strong>The server-side check failed</strong> <Time iso={d.last_failed_attempt.at} />: {d.last_failed_attempt.error}
+        </p>
       ) : (
         <p className="muted small">No server-side check yet.</p>
       )}

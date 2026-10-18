@@ -13,10 +13,12 @@ the site's own system user. Diagnostics are read-only. Every repair:
 
 Repairs are "change" risk: always held for a human approval; for production
 sites (or sites on production servers), an admin must type the site's name.
-Only one repair or server-side check runs per site at a time. If a repair
-fails or cannot confirm its result after it started changing the site, the
-site is checked over HTTP and a critical repair.failed event says what
-happened and where the backup is.
+Only one repair or server-side check runs per WordPress install at a time;
+a task that finds its install busy goes back to the queue. Just before a
+repair opens the gate, its site and server are read again and compared with
+what was approved. If a repair fails or cannot confirm its result after it
+sent a change to the site, the site is checked over HTTP and a critical
+repair.failed event says what happened and where the backup is.
 
 What WP-CLI reports about a compromised site can be influenced by that site's
 own code (wp-config.php, must-use plugins and drop-ins run whenever WordPress
@@ -26,6 +28,7 @@ loads); core checksum verification runs before WordPress loads.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -34,9 +37,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import events
+from .. import tasks as task_service
 from ..db import session_scope
 from ..models import Server, Site
-from ..ssh.client import GateTimeout
+from ..ssh.client import OutcomeUnknown
 from ..ssh.gateway import GateFailed, GateRefused
 from .base import AgentContext, AgentResult, EventSpec, Finding, Params, Risk, capability
 from .monitoring.agent import make_checker
@@ -45,6 +49,12 @@ from .monitoring.agent import make_checker
 # (backup, download, verification) one after the other.
 REPAIR_TIMEOUT = 3000
 STATUS_RANK = {"up": 0, "degraded": 1, "down": 2}
+
+log = logging.getLogger(__name__)
+
+
+class SiteBusy(Exception):
+    """Another repair or server-side check is running for this WordPress install; the worker queues the task again."""
 
 
 class SiteParams(Params):
@@ -61,13 +71,14 @@ class MaintenanceParams(Params):
     on: bool = Field(description="true to switch maintenance mode on, false to switch it off")
 
 
-async def linked(ctx: AgentContext, site_id: int) -> tuple[Site, Server]:
-    site = await ctx.session.get(Site, site_id)
+async def linked(ctx: AgentContext, site_id: int, *, refresh: bool = False) -> tuple[Site, Server]:
+    """The site and its server; refresh=True reads them again rather than from this session's identity map."""
+    site = await ctx.session.get(Site, site_id, populate_existing=refresh)
     if site is None:
         raise ValueError(f"no monitored site with id {site_id}")
     if not site.server_id or not site.server_site_key:
         raise ValueError(f"{site.name} is not linked to a server yet (Websites page: server and site key)")
-    server = await ctx.session.get(Server, site.server_id)
+    server = await ctx.session.get(Server, site.server_id, populate_existing=refresh)
     if server is None:
         raise ValueError(f"the server linked to {site.name} no longer exists")
     if ctx.ssh is None:
@@ -76,8 +87,26 @@ async def linked(ctx: AgentContext, site_id: int) -> tuple[Site, Server]:
 
 
 async def lock_site(ctx: AgentContext, site: Site) -> None:
-    """One repair or server-side check per site at a time; held until the task ends (waits for the other one)."""
-    await ctx.session.execute(text("SELECT pg_advisory_xact_lock(hashtext('cc-site-server-work'), :id)"), {"id": site.id})
+    """One repair or server-side check per WordPress install at a time, held until the task ends.
+
+    Keyed on the install (server and site key), not the Site row, which several rows may share. Never waits:
+    raises SiteBusy instead, so a waiting task does not hold a worker slot or use up its own time.
+    """
+    got = await ctx.session.scalar(text("SELECT pg_try_advisory_xact_lock(hashtext('cc-site-server-work'), hashtext(:install))"),
+                                   {"install": f"{site.server_id}:{site.server_site_key}"})
+    if not got:
+        raise SiteBusy(f"another repair or server-side check is running for {site.name}")
+
+
+async def linked_as_approved(ctx: AgentContext, site_id: int) -> tuple[Site, Server]:
+    """The site and server, read again in this task's own session right before a change, and checked against the approval.
+
+    The worker checked the target too, but in an earlier transaction; this is the check that counts.
+    """
+    site, server = await linked(ctx, site_id, refresh=True)
+    # Computed from the rows just read (they are in the identity map now), which are the ones the gate is given.
+    task_service.check_target(ctx.approved_target or {}, await site_approval_context(ctx.session, site_id))
+    return site, server
 
 
 async def site_approval_context(session: AsyncSession, site_id: int | None, *, lock: bool = False) -> dict[str, Any]:
@@ -110,19 +139,34 @@ def server_binding(server: Server | None) -> dict[str, Any] | None:
     return {"server_id": server.id, "name": server.name, "host": server.host, "port": server.port, "username": server.username}
 
 
+# Lists the site's own code can fill with anything (WP-CLI loads it): each entry must be an object with this text field.
+OBJECT_LISTS = {"plugins": "name", "themes": "name", "admins": "user_login", "capability_admins": "user_login"}
+
+
+def objects(part: str, value: Any) -> list[dict[str, Any]]:
+    """value, if it is a list of objects with a text OBJECT_LISTS[part]; otherwise TypeError (the part counts as not read)."""
+    key = OBJECT_LISTS[part]
+    if not isinstance(value, list) or not all(isinstance(x, dict) and isinstance(x.get(key), str) for x in value):
+        raise TypeError(f"expected a list of objects with a text {key!r}")
+    return value
+
+
 DIAGNOSIS_PARTS = {
     "core_version": ("wp_core_version", lambda r: r.get("version")),
     "site_urls": ("wp_site_urls", lambda r: r),
-    "plugins": ("wp_plugin_list", lambda r: r.get("plugins", [])),
-    "themes": ("wp_theme_list", lambda r: r.get("themes", [])),
-    "admins": ("wp_admins", lambda r: r.get("admins", [])),
+    "plugins": ("wp_plugin_list", lambda r: objects("plugins", r.get("plugins", []))),
+    "themes": ("wp_theme_list", lambda r: objects("themes", r.get("themes", []))),
+    "admins": ("wp_admins", lambda r: objects("admins", r.get("admins", []))),
     "super_admins": ("wp_admins", lambda r: r.get("super_admins", [])),
+    # Users of other roles with an administrator's powers; missing (not checked) before WordPress 5.9 or with an older gate.
+    "capability_admins": ("wp_admins", lambda r: objects("capability_admins", r["capability_admins"])),
     "maintenance": ("wp_maintenance_status", lambda r: r),
     "debug_log": ("wp_debug_log_status", lambda r: r),
     "core_verify": ("wp_core_verify", lambda r: r),
 }
 # Kept from the previous diagnosis when they cannot be read, so "new since last time" still compares with something.
-BASELINE_PARTS = ("admins", "super_admins", "plugins")
+BASELINE_PARTS = ("admins", "super_admins", "capability_admins", "plugins")
+ADMIN_PARTS = ("admins", "super_admins", "capability_admins")
 HIDDEN_CODE = ("must-use", "dropin")  # loaded even with --skip-plugins
 
 
@@ -134,15 +178,24 @@ def diagnosis_findings(diag: dict[str, Any], previous: dict[str, Any] | None) ->
                            title="Server-side check incomplete; could not check: " + ", ".join(sorted(errors)),
                            detail="; ".join(f"{k}: {v}" for k, v in sorted(errors.items()))[:1000]))
     urls = diag.get("site_urls") or {}
-    if urls and not urls.get("matches"):
+    if urls.get("subdirectory_install_suspected"):
+        # home is right, and siteurl is home plus the folder the site's path ends in: most likely the configuration, not a hack.
+        out.append(Finding(code="subdirectory_install_suspected", severity="warning",
+                           title=f"WordPress seems to live in its own folder (siteurl {urls.get('suspected_siteurl') or urls.get('siteurl')}, "
+                                 f"home {urls.get('home')})",
+                           detail="Set \"siteurl\" for this site in the server's cc-gate configuration, so the address check can tell this "
+                                  "from a changed siteurl. Until then the gate does not reset it (repair_restore_site_url is refused)."))
+    elif urls and not urls.get("matches"):
         expected = urls.get("expected")
         if urls.get("expected_siteurl") and urls.get("expected_siteurl") != expected:
             expected = f"{expected} and {urls.get('expected_siteurl')}"
         out.append(Finding(code="site_url_mismatch", severity="critical",
                            title=f"WordPress address options point elsewhere (home {urls.get('home')}, siteurl {urls.get('siteurl')}; "
                                  f"expected {expected})",
-                           detail="Changed home/siteurl options are a classic redirect hack. Repair: repair_restore_site_url. "
-                                  "If WordPress lives in its own folder, set that site's \"siteurl\" in the server's cc-gate configuration."))
+                           detail="Changed home/siteurl options are a classic redirect hack. Repair: repair_restore_site_url"
+                                  + (" (restores home; siteurl stays, as WordPress may live in that folder: set the site's \"siteurl\" in "
+                                     "the server's cc-gate configuration to have it checked)." if urls.get("suspected_siteurl") else
+                                     ". If WordPress lives in its own folder, set that site's \"siteurl\" in the server's cc-gate configuration.")))
     verify = diag.get("core_verify") or {}
     if verify.get("verified") is False:
         changed, extra = verify.get("files") or [], verify.get("extra_files") or []
@@ -171,21 +224,43 @@ def diagnosis_findings(diag: dict[str, Any], previous: dict[str, Any] | None) ->
         out.append(Finding(code="debug_log_present", severity="warning", title=f"wp-content/debug.log exists ({debug.get('bytes', 0)} bytes)",
                            detail="It can leak paths and errors if served publicly. Repair: repair_quarantine_debug_log."))
     if previous:
-        def logins(d: dict[str, Any]) -> set[str]:
-            return {a.get("user_login") for a in d.get("admins") or []} | set(d.get("super_admins") or [])
+        # Only parts the previous diagnosis really has count as a baseline (a part it could not read is missing there).
+        def logins(d: dict[str, Any], parts: tuple[str, ...] = ADMIN_PARTS) -> set[str]:
+            found = set(d.get("super_admins") or []) if "super_admins" in parts else set()
+            for part in ("admins", "capability_admins"):
+                if part in parts:
+                    found |= {a.get("user_login") for a in d.get(part) or []}
+            return found
 
-        new_admins = logins(diag) - logins(previous)
+        new_admins = logins(diag, tuple(part for part in ADMIN_PARTS if part in previous)) - logins(previous)
         if new_admins and "admins" not in errors:
             out.append(Finding(code="new_admin_account", severity="critical",
                                title="New administrator account(s) since the last check: " + ", ".join(sorted(new_admins)),
                                detail="Check with the site owner; attackers often add an admin account."))
         code = {p.get("name") for p in plugins if p.get("status") in HIDDEN_CODE}
         before = {p.get("name") for p in previous.get("plugins") or [] if p.get("status") in HIDDEN_CODE}
-        if code - before and "plugins" not in errors:
+        if code - before and "plugins" in previous and "plugins" not in errors:
             out.append(Finding(code="new_mu_plugin", severity="critical",
                                title="New must-use plugin or drop-in since the last check: " + ", ".join(sorted(code - before)),
                                detail="They run on every request and cannot be switched off from wp-admin; malware likes to hide there."))
     return out
+
+
+async def record_failed_diagnosis(site_id: int, exc: BaseException) -> None:
+    """A server-side check that could not run at all: noted next to the last diagnosis, which stays the baseline (own transaction).
+
+    The next diagnosis that works replaces the note.
+    """
+    error = "the check ran out of time" if isinstance(exc, asyncio.CancelledError) else str(exc) or exc.__class__.__name__
+    try:
+        async with session_scope() as s:
+            await s.execute(text("SET LOCAL lock_timeout = '10s'"))  # never stuck behind a writer of that row
+            site = await s.get(Site, site_id)
+            if site is not None:
+                site.last_diagnosis = {**(site.last_diagnosis or {}),
+                                       "last_failed_attempt": {"at": datetime.now(UTC).isoformat(), "error": error[:300]}}
+    except Exception as record_exc:  # noqa: BLE001 - the original failure is what the task reports
+        log.warning("could not record the failed server-side check of site %s: %s", site_id, record_exc)
 
 
 class ServerSideCapabilities:
@@ -209,20 +284,21 @@ class ServerSideCapabilities:
                 if op not in answers:
                     try:
                         answers[op] = await gate.run(op, site=key)
-                    except (GateFailed, GateRefused, GateTimeout) as exc:
+                    except (GateFailed, GateRefused, OutcomeUnknown) as exc:
                         answers[op] = exc
                 if isinstance(answers[op], Exception):
                     errors[part] = str(answers[op])[:500]
                     continue
                 try:
                     diag[part] = pick(answers[op])
+                except LookupError:  # this server does not report that part: not checked, and not an error
+                    continue
                 except (AttributeError, TypeError) as exc:  # an answer of the wrong shape
                     errors[part] = f"unexpected answer: {exc}"[:500]
         for part in BASELINE_PARTS:
             if part in errors and previous and part in previous:
                 diag[part] = previous[part]
-        diag.setdefault("plugins", [])
-        diag.setdefault("admins", [])
+        # A part never read stays missing (no empty placeholder): it is not a baseline to compare with.
         diag["errors"] = errors
         diag["at"] = datetime.now(UTC).isoformat()
         diag["server"] = server.name
@@ -235,8 +311,18 @@ class ServerSideCapabilities:
         site, server = await linked(ctx, params.site_id)
         await lock_site(ctx, site)
         previous = dict(site.last_diagnosis or {})
-        diag = await self._diagnose(ctx, site, server, previous or None)
-        findings = diagnosis_findings(diag, previous or None)
+        previous.pop("last_failed_attempt", None)
+        for part in OBJECT_LISTS:  # stored before answers were checked: no baseline
+            try:
+                objects(part, previous.get(part, []))
+            except TypeError:
+                del previous[part]
+        try:
+            diag = await self._diagnose(ctx, site, server, previous or None)
+            findings = diagnosis_findings(diag, previous or None)
+        except BaseException as exc:  # the server could not be asked at all, the time ran out, or the answers made no sense
+            await asyncio.shield(record_failed_diagnosis(site.id, exc))
+            raise
         diag["findings"] = [f.model_dump() for f in findings]
         site.last_diagnosis, site.last_diagnosis_at = diag, datetime.now(UTC)
         serious = [f for f in findings if f.severity != "info"]
@@ -246,8 +332,8 @@ class ServerSideCapabilities:
             events.append(EventSpec(kind="site.server_finding", severity=worst,
                                     title=f"{site.name} (server check): " + "; ".join(f.title for f in serious[:3]),
                                     detail={"site_id": site.id, "codes": [f.code for f in serious]}))
-        summary = (f"{site.name} on {server.name}: WordPress {diag.get('core_version') or '?'}, {len(diag['plugins'])} plugin(s), "
-                   f"{len(diag['admins'])} admin(s); " + ("; ".join(f.title for f in serious) if serious else "no problems found"))
+        summary = (f"{site.name} on {server.name}: WordPress {diag.get('core_version') or '?'}, {len(diag.get('plugins') or [])} plugin(s), "
+                   f"{len(diag.get('admins') or [])} admin(s); " + ("; ".join(f.title for f in serious) if serious else "no problems found"))
         return AgentResult(summary=summary, data={"site_id": site.id, "diagnosis": diag}, findings=findings, events=events)
 
     async def _repair(self, ctx: AgentContext, site_id: int, title: str, steps, *, backup: bool = True,
@@ -259,23 +345,27 @@ class ServerSideCapabilities:
         """
         site, server = await linked(ctx, site_id)
         await lock_site(ctx, site)
+        site, server = await linked_as_approved(ctx, site_id)
         key = site.server_site_key
         notes: list[str] = []
         before, _ = await self._http_status(ctx, site)
-        changing = False
+        gate_session = ctx.ssh.open(ctx, server)
         try:
-            async with ctx.ssh.open(ctx, server) as gate:
+            async with gate_session as gate:
                 outcome = await steps(gate, key, notes, dry=True)
                 if outcome == "nothing to do":
                     return AgentResult(summary=f"{site.name}: {title} not needed ({'; '.join(notes) or 'already correct'}); nothing was changed.",
                                        data={"site_id": site.id, "changed": False})
                 if backup:
-                    exported = await gate.run("wp_db_export", site=key)
+                    try:
+                        exported = await gate.run("wp_db_export", site=key)
+                    finally:
+                        gate.sent_change = False  # the backup changes nothing on the site; from here on a sent change counts
                     notes.insert(0, f"database backup: {exported.get('file')}")
-                changing = True
                 await steps(gate, key, notes, dry=False)
         except BaseException as exc:
-            if changing and not isinstance(exc, GateRefused):  # a refused request changed nothing
+            # Failed part-way only if a change was really sent to the site; a refused one changed nothing.
+            if gate_session.sent_change and not isinstance(exc, GateRefused):
                 await self._repair_failed(ctx, site, server, title, notes, exc)
             raise
         after, problems = await self._http_status(ctx, site)
@@ -322,16 +412,24 @@ class ServerSideCapabilities:
         async def steps(gate, key, notes, dry):
             urls = await gate.run("wp_site_urls", site=key)
             if dry:
+                if urls.get("subdirectory_install_suspected"):  # only siteurl differs, and it looks like WordPress's own folder
+                    raise ValueError(f"WordPress seems to live in its own folder (siteurl {urls['suspected_siteurl']}); set \"siteurl\" "
+                                     "for this site in the server's cc-gate configuration, then check the site again")
                 if urls.get("matches"):
                     notes.append(f"home and siteurl already {urls.get('expected')}")
                     return "nothing to do"
                 notes.append(f"was home {urls.get('home')}, siteurl {urls.get('siteurl')}")
                 return "change"
-            await gate.run("wp_set_site_urls", site=key)
+            result = await gate.run("wp_set_site_urls", site=key)
             after = await gate.run("wp_site_urls", site=key)
-            if not after.get("matches"):
+            if after.get("matches"):
+                notes.append(f"now {after.get('expected')}")
+            elif result.get("siteurl_kept") and after.get("subdirectory_install_suspected"):
+                # The gate undid the changed home and left a siteurl that looks like WordPress's own folder.
+                notes.append(f"home now {after.get('expected')}; siteurl kept at {after.get('siteurl')} (set \"siteurl\" in the "
+                             "cc-gate configuration to have it checked)")
+            else:
                 raise RuntimeError(f"home/siteurl still do not match after the change: {after}")
-            notes.append(f"now {after.get('expected')}")
             return "done"
 
         return await self._repair(ctx, params.site_id, "restore home/siteurl", steps)
@@ -480,6 +578,9 @@ class ServerSideCapabilities:
                 status = await gate.run("wp_debug_log_status", site=key)
                 if not status.get("exists"):
                     notes.append("there is no wp-content/debug.log")
+                    return "nothing to do"
+                if status.get("type", "file") != "file":  # the helper does not touch it either
+                    notes.append(f"wp-content/debug.log is a {status.get('type')}, not a file; check it on the server")
                     return "nothing to do"
                 return "change"
             moved = await gate.run("debug_log_quarantine", site=key)

@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.agents.monitoring import agent as monitoring
 from app.agents.monitoring.checks import SiteChecker
@@ -134,6 +134,60 @@ async def test_deep_scan_is_compared_with_the_previous_deep_scan(admin, web: Fak
     assert alerts == 1  # nothing new since the baseline, so no second alert
 
 
+async def test_a_check_cut_short_is_never_the_baseline_for_new_issues(admin, web: FakeWeb, make_worker, monkeypatch):
+    state = {"slow": False, "html": WP_HOME}
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        if state["slow"] and request.url.path == "/xmlrpc.php":
+            await asyncio.sleep(5)
+        return wordpress_site("https://acme.example.test", home_html=state["html"])(request)
+
+    web.add("acme.example.test", handle)
+    site = (await register(admin, "Acme", "acme.example.test"))["site"]
+    await make_worker().run_until_idle()  # the baseline deep scan reports the exposures
+    # Cut short before the exposure probes, with a new script on the page: the script is reported, once.
+    state.update(slow=True, html=WP_HOME.replace("</head>", '<script src="https://stats.new-tracker.example/t.js"></script></head>'))
+    monkeypatch.setitem(monitoring.SITE_DEADLINE_FACTOR, True, 0.05)
+    partial = await run_task(admin, make_worker, "monitoring", "check_site", {"site_id": site["id"], "deep": True})
+    assert {"check_timeout", "new_external_script"} <= {f["code"] for f in partial["result"]["findings"]}
+    assert "xmlrpc_enabled" not in {f["code"] for f in partial["result"]["findings"]}
+    monkeypatch.setitem(monitoring.SITE_DEADLINE_FACTOR, True, 15)
+    state["slow"] = False
+    complete = await run_task(admin, make_worker, "monitoring", "check_site", {"site_id": site["id"], "deep": True})
+    assert {"xmlrpc_enabled", "new_external_script"} <= {f["code"] for f in complete["result"]["findings"]}
+    async with session_scope() as s:
+        alerts = (await s.scalars(select(Event.title).where(Event.kind == "site.finding").order_by(Event.id))).all()
+        partial_rows = (await s.scalars(select(SiteCheck).where(SiteCheck.details.contains({"partial": True})))).all()
+    assert len(alerts) == 2 and "new-tracker" in alerts[1]  # neither the exposures nor the script are alerted again
+    assert len(partial_rows) == 1
+
+
+async def test_checks_cut_short_at_different_points_do_not_alert_twice(admin, web: FakeWeb, make_worker, monkeypatch):
+    state = {"xmlrpc": False, "slow": ""}
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == state["slow"]:
+            await asyncio.sleep(5)
+        if request.url.path == "/xmlrpc.php" and not state["xmlrpc"]:
+            return httpx.Response(404)
+        return wordpress_site("https://acme.example.test")(request)
+
+    web.add("acme.example.test", handle)
+    site = (await register(admin, "Acme", "acme.example.test"))["site"]
+    await make_worker().run_until_idle()  # a complete baseline, with XML-RPC off
+    state["xmlrpc"] = True
+    monkeypatch.setitem(monitoring.SITE_DEADLINE_FACTOR, True, 0.05)
+    reached = []
+    for slow in ("/wp-json/wp/v2/users", "/wp-json/", "/wp-json/wp/v2/users"):  # after the XML-RPC probe, before it, after it
+        state["slow"] = slow
+        task = await run_task(admin, make_worker, "monitoring", "check_site", {"site_id": site["id"], "deep": True})
+        reached.append("xmlrpc_enabled" in {f["code"] for f in task["result"]["findings"]})
+    assert reached == [True, False, True]
+    async with session_scope() as s:
+        alerts = (await s.scalars(select(Event.title).where(Event.kind == "site.finding").order_by(Event.id))).all()
+    assert sum("XML-RPC" in a for a in alerts) == 1, alerts  # only the first check that reached it
+
+
 async def _add_sites(*names: str) -> None:
     async with session_scope() as s:  # added directly: registering would queue baseline scans
         for name in names:
@@ -185,3 +239,48 @@ async def test_sweep_keeps_the_sites_it_finished_when_the_task_times_out(admin, 
     task = await run_task(admin, make_worker, "monitoring", "check_all_sites", {"deep": False})
     assert "timed out after 1s" in task["error"]
     assert await _statuses(admin) == {"Ok": "up", "Hang": "unknown"}
+
+
+async def test_a_site_deleted_during_a_sweep_is_skipped(admin, web: FakeWeb, make_worker):
+    async def gone(request: httpx.Request) -> httpx.Response:
+        async with session_scope() as s:  # an operator deletes the site while it is being checked
+            await s.execute(delete(Site).where(Site.name == "Gone"))
+        return static_site()(request)
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.5)
+        return static_site()(request)
+
+    web.add("ok.example.test", static_site())
+    web.add("gone.example.test", gone)
+    web.add("later.example.test", slow)
+    await _add_sites("ok", "gone", "later")
+    task = await run_task(admin, make_worker, "monitoring", "check_all_sites", {"deep": False})
+    assert task["status"] == "succeeded", task["error"]
+    assert "2 up, 0 degraded, 0 down. 1 could not be checked." in task["summary"]
+    found = {f["code"]: f for f in task["result"]["findings"]}
+    assert found["check_failed"]["title"] == "Gone could not be checked: site was deleted during the check"
+    assert await _statuses(admin) == {"Ok": "up", "Later": "up"}
+
+
+async def test_sweeps_check_the_least_recently_checked_sites_first(admin, web: FakeWeb, make_worker, monkeypatch):
+    now = datetime.now(UTC)
+    async with session_scope() as s:
+        s.add(Site(name="Fresh", url="http://fresh.example.test", last_checked_at=now - timedelta(minutes=5)))
+        s.add(Site(name="Stale", url="http://stale.example.test", last_checked_at=now - timedelta(days=2)))
+        s.add(Site(name="New", url="http://new.example.test"))
+    started: list[str] = []
+    real_check = SiteChecker.check
+
+    async def check(self, url, **kwargs):
+        started.append(url)
+        return await real_check(self, url, **kwargs)
+
+    monkeypatch.setattr(SiteChecker, "check", check)
+    for name in ("fresh", "stale", "new"):
+        web.add(f"{name}.example.test", static_site())
+    task = await run_task(admin, make_worker, "monitoring", "check_all_sites", {"deep": False})
+    assert task["status"] == "succeeded", task["error"]
+    # A sweep cut short by its timeout therefore starts the next time with the sites it did not reach.
+    assert started == ["http://new.example.test", "http://stale.example.test", "http://fresh.example.test"]
+    assert [r["name"] for r in task["result"]["data"]["sites"]] == ["Fresh", "Stale", "New"]

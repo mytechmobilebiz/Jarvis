@@ -5,7 +5,7 @@ import pytest
 
 from app.agents.http import ReadOnlyHttpClient
 from app.agents.monitoring.agent import normalize_url
-from app.agents.monitoring.checks import SiteChecker, parse_version
+from app.agents.monitoring.checks import SiteChecker, page_markers, parse_version
 from app.config import Settings
 
 from ..fakes import FakeWeb, static_site, wordpress_site
@@ -164,3 +164,12 @@ def test_normalize_url():
 def test_parse_version():
     assert parse_version("6.4.1") == (6, 4, 1)
     assert parse_version("6.8") == (6, 8)
+
+
+def test_page_markers_read_long_tags():
+    pad = "x" * 5000
+    page = (f'<meta data-v="{pad}" name="generator" content="WordPress 6.4.1" />'
+            f'<link data-v="{pad}" rel="https://api.w.org/" href="https://acme.test/wp-json/" />')
+    markers = page_markers(page, "")
+    assert markers.version == "6.4.1" and markers.rest_url == "https://acme.test/wp-json/"
+    assert markers.markers == ["generator", "rest-link"]

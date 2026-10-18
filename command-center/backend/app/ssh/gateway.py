@@ -13,12 +13,14 @@ import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy.exc import StatementError
+
 from .. import events
 from ..db import session_scope
 from ..integrations import ApprovalRequired
 from ..models import Server, ServerCommand
 from . import keys
-from .client import GateAnswer, GateConnection, GateTimeout, HostKeyMismatch, SSHError
+from .client import GateAnswer, GateConnection, HostKeyMismatch, OutcomeUnknown, SSHError, strip_nul
 from .ops import OPS, build_command
 
 if TYPE_CHECKING:
@@ -72,7 +74,7 @@ class GateSession:
             async with session_scope() as s:
                 await events.emit(s, self.settings, kind="server.host_key_mismatch", severity="critical", source=self.ctx_agent,
                                   title=f"{server.name}: host key does not match the pinned key; connection refused",
-                                  detail={"server_id": server.id, "host": server.host, "error": str(exc)}, task_id=self.ctx.task_id)
+                                  detail={"server_id": server.id, "host": server.host, "error": strip_nul(str(exc))}, task_id=self.ctx.task_id)
             raise
         self._conn = conn
         async with session_scope() as s:
@@ -112,19 +114,28 @@ class GateSession:
             self.sent_change = True
         try:
             answer = await self._conn.request(command, timeout)
-        except GateTimeout as exc:
+        except OutcomeUnknown as exc:  # timed out, or the connection was lost after the request was sent
             await self._unknown(audit_id, op, spec.kind, str(exc))
             raise
         except SSHError as exc:
             await self._finish(audit_id, GateAnswer(ok=False, refused=False, exit_status=None, error=str(exc)))
             raise
-        except BaseException:
+        except asyncio.CancelledError:
             # Cancelled (the task's time ran out) while the server was working: record it anyway.
             await asyncio.shield(self._unknown(audit_id, op, spec.kind, "cancelled before the server answered"))
             raise
+        except Exception as exc:
+            # Nothing here expected this; the request may have run. Callers handle SSHError, so they still apply.
+            await self._unknown(audit_id, op, spec.kind, f"unexpected error: {exc.__class__.__name__}")
+            raise GateFailed(f"{op} on {self.server.name}: unexpected error ({exc.__class__.__name__}); outcome unknown") from exc
         if answer.payload.get("timed_out"):
             await self._unknown(audit_id, op, spec.kind, answer.error, answer)
             raise GateFailed(f"{op} timed out on {self.server.name}: {answer.error}")
+        if spec.kind == "change" and "ok" not in answer.payload:
+            # The gate answers every request it handles, even on its own errors. Without an answer it was cut off or
+            # killed (an exit signal, exit status -1) part-way, or what it said could not be read: the change may have run.
+            await self._unknown(audit_id, op, spec.kind, answer.error, answer)
+            raise OutcomeUnknown(f"{op} on {self.server.name}: {answer.error}")
         await self._finish(audit_id, answer)
         self.ctx.log(f"{self.server.name}: {op} {args or ''} -> " + ("ok" if answer.ok else f"{'refused' if answer.refused else 'failed'}: {answer.error}"),
                      "info" if answer.ok else "warning")
@@ -148,6 +159,14 @@ class GateSession:
                                   detail={"server_id": self.server.id, "op": op, "audit_id": audit_id}, task_id=self.ctx.task_id)
 
     async def _finish(self, audit_id: int, answer: GateAnswer) -> None:
+        try:
+            await self._store(audit_id, answer, _clip(answer.result) if answer.ok else None, strip_nul(answer.error)[:2000])
+        except StatementError as exc:
+            # PostgreSQL refused part of the answer: close the row anyway, without the answer but with its outcome
+            # (a change that worked must not look failed).
+            await self._store(audit_id, answer, None, f"could not store the answer ({exc.__class__.__name__})")
+
+    async def _store(self, audit_id: int, answer: GateAnswer, result: Any, error: str) -> None:
         async with session_scope() as s:
             row = await s.get(ServerCommand, audit_id)
             assert row is not None
@@ -156,6 +175,6 @@ class GateSession:
             row.exit_status = answer.exit_status
             row.ok = answer.ok
             row.refused = answer.refused
-            row.result = _clip(answer.result) if answer.ok else None
-            row.error = answer.error[:2000]
+            row.result = result
+            row.error = error
             row.output_sha256 = answer.output_sha256

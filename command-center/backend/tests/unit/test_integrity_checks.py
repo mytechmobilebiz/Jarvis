@@ -33,7 +33,7 @@ async def test_clean_site_has_no_integrity_findings():
     assert report.status == "up"
     # Deep scans also look at the site as a search visitor and as a crawler, with GETs only.
     agents = {r.headers.get("user-agent", "") for r in web.requests}
-    assert any("Googlebot" in a for a in agents) and any("iPhone" in a for a in agents)
+    assert any("Googlebot" in a for a in agents) and any("iPhone" in a for a in agents) and any("Windows NT" in a for a in agents)
     assert web.methods() == {"GET"}
 
 
@@ -178,7 +178,9 @@ HOSTILE_MARKUP = [
     "<p display:none ", "<div style='display:none'>", "<p ", "<meta http-equiv=refresh ",
     "<meta http-equiv=refresh content='0;url=", '<meta name="generator" ', "<script src='x' ", "<script>",
     "<iframe src='//x.example' width=0 ", "<link rel='https://api.w.org/' ", "window.location.href='//",
-    " onclick='", "<noscript>", "String.fromCharCode(11,",
+    " onclick='", "<noscript>", "String.fromCharCode(11,", "window. ", "top . ", "<script ", "<a onclick='x' ",
+    '<a title="', "<a>", "<!--<noscript>", "<p style='display:none'>a</p>", '<span style="display:none"></span>',
+    "<!--!>", "<script><!--<script>",
 ]
 
 
@@ -195,6 +197,38 @@ def test_page_analysis_stays_fast_on_hostile_markup(chunk):
         started = time.perf_counter()
         analyse()
         assert time.perf_counter() - started < 1.0
+
+
+# Whole pages up to the 600 KB body limit (monitor_max_body_bytes). Each is tried at
+# 40 KB first, where a quadratic pattern already takes seconds, so a regression fails fast.
+HOSTILE_PAGES = {
+    "chained location prefixes": lambda size: "window. " * (size // 8),
+    "spaced location prefixes": lambda size: "top . " * (size // 6),
+    "script openers in one tag": lambda size: "<script " * (size // 8) + ">",
+    "script sources in one tag": lambda size: "<script src='x' " * (size // 16) + ">",
+    "hidden blocks with one close": lambda size: "<p style='display:none'>" * (size // 24) + "</p>",
+    "tags inside an open attribute": lambda size: '<a title="' + "<b onclick='x'>" * (size // 15),
+    "spaces after location": lambda size: "location" + " " * size,
+    "spaced assignments": lambda size: ("location.href=" + " " * 40) * (size // 54),
+    "hosts holding redirects": lambda size: "location='//[" * (size // 13),
+    "click handlers holding redirects": lambda size: '<a onclick="location=\'//x' * (size // 25),
+    "comment-wrapped script openers": lambda size: "<script><!--" + "<script></script>" * (size // 17),
+}
+
+
+@pytest.mark.parametrize("build", HOSTILE_PAGES.values(), ids=HOSTILE_PAGES.keys())
+def test_page_analysis_is_linear_up_to_the_body_limit(build):
+    site, url = "https://acme.test", "https://acme.test/"
+    for size, limit in ((40_000, 0.5), (600_000, 2.0)):
+        page = build(size)
+        for analyse, args in (
+            (integrity.html_findings, (site, url, page)),
+            (integrity.external_script_hosts, (site, url, page)),
+            (checks.page_markers, (page, "")),
+        ):
+            started = time.perf_counter()
+            analyse(*args)
+            assert time.perf_counter() - started < limit, (size, analyse.__name__)
 
 
 async def test_malformed_urls_do_not_break_the_check():
@@ -231,6 +265,43 @@ async def test_location_read_as_a_browser_reads_it(location):
     assert "evil.example" not in {r.url.host for r in web.requests}
 
 
+@pytest.mark.parametrize("location", ["ftp://evil.example/", "https://[", "http://localhost:99999/", "intent://x#Intent;scheme=x;end", ""])
+async def test_redirect_to_an_invalid_or_non_web_address_is_a_failure(location):
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path in ("", "/"):
+            return httpx.Response(301, headers={"location": "/home/"})
+        return httpx.Response(302, headers={"location": location}, text="<html>Moved</html>")
+
+    web = FakeWeb()
+    web.add("acme.example.test", handle)
+    report = await run(web, deep=False)
+    assert report.status == "down" and set(codes(report)) == {"fetch_failed"}
+    assert "invalid or non-web address" in report.findings[0].title
+    assert report.findings[0].title.endswith(f"after redirecting to {ORIGIN}/home/")
+    assert web.paths("acme.example.test") == ["/", "/home/"] * 2  # one retry, nothing else requested
+
+
+async def test_app_link_redirect_shown_only_to_phones_is_a_conditional_redirect():
+    def handle(request: httpx.Request) -> httpx.Response:
+        if "iPhone" in request.headers.get("user-agent", "") and request.url.path in ("", "/"):
+            return httpx.Response(302, headers={"location": "intent://evil.example/#Intent;scheme=https;package=com.android.chrome;end"})
+        if "Googlebot" in request.headers.get("user-agent", "") and request.url.path in ("", "/"):
+            return httpx.Response(302, headers={"location": "intent://www.acme.example.test/#Intent;package=com.acme;end"})
+        return wordpress_site(ORIGIN)(request)
+
+    web = FakeWeb()
+    web.add("acme.example.test", handle)
+    report = await run(web)
+    redirects = [f for f in report.findings if f.code == "conditional_redirect"]
+    assert [(f.severity, f.title) for f in redirects] == [
+        ("critical", "Visitors arriving from Google on a phone are redirected to another domain: evil.example")]
+    assert report.status == "degraded"
+    variants = report.details["redirect_check"]["variants"]
+    assert variants["arriving from Google on a phone"]["offsite_target"].startswith("intent://evil.example/")
+    assert "invalid or non-web address" in variants["identifying as Googlebot"]["error"]  # the site's own app: no finding
+    assert "evil.example" not in {r.url.host for r in web.requests}
+
+
 def test_resolve_follows_browser_rules():
     assert integrity.resolve("https://acme.test/a/", "https:x") == "https://acme.test/a/x"
     assert integrity.resolve("https://acme.test/a/", "/\\evil.test/x") == "https://evil.test/x"
@@ -260,17 +331,110 @@ def test_tag_manager_snippet_and_visible_embeds_are_not_hidden_iframes():
 
 def test_navigation_links_are_not_script_redirects():
     page = """<button onclick="window.location.href='https://calendly.com/acme'">Book</button>
+      <a href="#" ONCLICK=location='https://booking.example/acme'>Book</a>
+      <form onsubmit="if (a > b) location.assign('https://pay.example/'); return false"></form>
       <div data-location="https://maps.example/acme"></div>
       <script>if (q) window.location.href = 'https://acme.test?s=' + q; location.assign("https://acme.test:443/shop");</script>"""
     assert integrity.html_findings("https://acme.test", "https://acme.test/", page) == []
-    for script in ('window.top.location.href = "https://evil.example/"', 'document.location="//evil.example:8443/x"'):
+    for script in ('window.top.location.href = "https://evil.example/"', 'document.location="//evil.example:8443/x"',
+                   # Formatted code: any run of spaces after "location", "=" and "replace(".
+                   '\n      window.location.href =\n        "https://evil.example/?utm_source=organic&campaign=1234567890";',
+                   'window.location.replace(\n        "https://evil.example/"\n      );',
+                   "location.href =\r\n        'https://evil.example/'", "location          = 'https://evil.example/'"):
         [finding] = integrity.html_findings("https://acme.test", "https://acme.test/", f"<script>{script}</script>")
         assert finding.code == "js_redirect_offsite" and finding.title.endswith("evil.example")
 
 
-def test_spam_terms_match_whole_words_only():
+@pytest.mark.parametrize("page", [
+    """<img src=x onerror="window.location='https://evil.example/'">""",
+    """<body onload="location.href='https://evil.example/'"><p>Hi</p></body>""",
+    """<svg onload="top.location.replace('https://evil.example/')"></svg>""",
+    # Text that only looks like a click handler must not hide a redirect next to it.
+    """<i title=' onclick="'></i><script>window.location="https://evil.example/"</script>""",
+    """<img title='onclick=' onerror="location='//evil.example'" src=x>""",
+    """<img alt="a> <b onclick='" onerror="location='//evil.example'" src=x>""",
+    """<script>var a = ' onclick="'; window.location = "https://evil.example/"; var b = '"';</script>""",
+    # A handler, or an address that is no host, running on into a real redirect does not hide it.
+    """<b onclick="location="//x><script>location='https://evil.example/'</script>""",
+    """<p>location="//[<script>location='https://evil.example/'</script>""",
+    # One script to a browser: "<!--<script>" keeps the first "</script" from ending it, so this is no tag.
+    """<script><!--<script></script><b onclick="\nlocation='https://evil.example/';\n//"></b></script>""",
+])
+def test_handlers_that_run_by_themselves_are_redirects(page):
+    [finding] = integrity.html_findings("https://acme.test", "https://acme.test/", page)
+    assert (finding.code, finding.severity) == ("js_redirect_offsite", "critical") and finding.title.endswith("evil.example")
+
+
+@pytest.mark.parametrize("before,after", [
+    ("<!-- <noscript> -->", ""),
+    ('<div title="<noscript>"></div>', ""),
+    ('<script>var s = "<noscript>";</script>', "<noscript><img src='/pixel.gif'></noscript>"),
+    ("<noscript>", ""),  # never closed
+    ("<!--<noscript>-->", "<!--</noscript>-->"),
+    ("<script><!--<script></script><noscript>\ndocument.write('", "');\n//</noscript></script>"),  # no noscript: one script
+])
+def test_only_a_real_closed_noscript_makes_a_hidden_iframe_harmless(before, after):
+    page = f'<body>{before}<iframe src="https://evil.example/x" width="0" height="0"></iframe>{after}</body>'
+    found = {f.code: f.severity for f in integrity.html_findings("https://acme.test", "https://acme.test/", page)}
+    assert found == {"hidden_iframe": "critical"}
+
+
+@pytest.mark.parametrize("script", [
+    "<script><!-- <script> --> </script>",  # "-->" leaves both escaped states
+    "<script><!--<script></script> var a; --></script>",
+    "<script><!--><script></script>",  # "<!-->" opens and ends the escape at once
+    "<script><!--\ndocument.write(\"<script src='/a.js'></script>\");\n//--></script>",  # legacy themes
+])
+def test_comment_wrapped_scripts_end_where_a_browser_ends_them(script):
+    page = f"""{script}<button onclick="location.href='https://booking.example/'">Book</button>"""
+    assert integrity.html_findings("https://acme.test", "https://acme.test/", page) == []
+
+
+def test_script_text_in_a_comment_does_not_hide_visible_spam():
+    page = "<!-- <script --><p>cheap viagra here</p><script>var spam = 'online casino';</script>"
+    found = {f.code: f.title for f in integrity.html_findings("https://acme.test", "https://acme.test/", page)}
+    assert found == {"spam_terms": "Spam-like terms on the page: viagra"}
+
+
+def test_a_comment_ends_where_a_browser_ends_it():
+    site, url = "https://acme.test", "https://acme.test/"
+    for comment in ("<!-- x --!>", "<!----!>", "<!-->", "<!--->"):
+        found = {f.code: f.title for f in integrity.html_findings(site, url, comment + "<p>cheap viagra here</p><!-- -->")}
+        assert found == {"spam_terms": "Spam-like terms on the page: viagra"}, comment
+    button = """<button onclick="location.href='https://booking.example/'">Book</button>"""
+    assert integrity.html_findings(site, url, f"<!-- x --!>{button}<!-- -->") == []
+    assert integrity.html_findings(site, url, "<!--!><p>cheap viagra here</p>-->") == []  # the opener's dashes do not count
+
+
+def test_long_or_padded_tags_are_still_examined():
+    site, url, pad = "https://acme.test", "https://acme.test/", "x" * 5000
+    script = f'<script data-v="{pad}" src="https://evil.example/x.js"></script>'
+    assert integrity.external_script_hosts(site, url, script) == ["evil.example"]
+    for page, code in (
+        (f'<iframe data-v="{pad}" src="https://evil.example/" width="0" height="0"></iframe>', "hidden_iframe"),
+        (f'<iframe src="https://evil.example/{pad}" width="0" height="0"></iframe>', "hidden_iframe"),
+        (f'<meta data-v="{pad}" http-equiv="refresh" content="0; url=https://evil.example/">', "meta_refresh_offsite"),
+        (f'<div data-v="{pad}" style="display:none">cheap viagra</div>', "hidden_spam"),
+    ):
+        assert [f.code for f in integrity.html_findings(site, url, page)] == [code]
+
+
+def test_hidden_spam_counts_however_many_hidden_blocks_come_first():
+    padding = '<span style="display:none"></span>' * 600
+    nested = '<div style="display:none"><p style="display:none">payday loans</p> and online casinos</div>'
+    for page in (padding + '<div style="display:none">cheap viagra online pharmacy</div>', padding + nested):
+        found = {f.code: f.severity for f in integrity.html_findings("https://acme.test", "https://acme.test/", page)}
+        assert found == {"hidden_spam": "critical"}
+
+
+def test_spam_terms_match_whole_words_and_their_plurals():
     assert integrity.spam_terms("Ask our Specialist about Sporny cialisation") == []
+    assert integrity.spam_terms("A socialist commercialises the casino onlineshop") == []
     assert integrity.spam_terms("Buy CIALIS and visit our online casino.") == ["cialis", "online casino"]
+    assert integrity.spam_terms("Payday loans, online casinos, free porno on pornhub, cheapviagra from online pharmacies") == [
+        "online casino", "online pharmacy", "payday loan", "porn", "viagra"]
+    [finding] = integrity.chain_findings("https://acme.test", ["https://acme.test", "https://cheapviagra.example/"])
+    assert (finding.code, finding.severity) == ("redirect_offsite", "critical")
 
 
 async def test_content_injected_only_for_crawlers_is_cloaking():
@@ -302,3 +466,44 @@ async def test_coming_soon_counts_only_in_the_page_heading():
     assert footer_report.status == "up" and "page_notice" not in codes(footer_report)
     banner_report = await run(web, "http://banner.example.test", deep=False)
     assert banner_report.status == "degraded" and codes(banner_report)["page_notice"] == "warning"
+
+
+def _home_by_visitor(home_for: dict[str, str]):
+    """The WordPress fake site, with a different home page for user agents containing a key of home_for."""
+    def handle(request: httpx.Request) -> httpx.Response:
+        agent = request.headers.get("user-agent", "")
+        html = next((page for key, page in home_for.items() if key in agent), WP_HOME)
+        if request.url.path in ("", "/"):
+            return httpx.Response(200, text=html.replace("{origin}", ORIGIN), headers={"content-type": "text/html"})
+        return wordpress_site(ORIGIN)(request)
+
+    return handle
+
+
+async def test_scripts_served_only_to_some_visitors_are_cloaking():
+    web = FakeWeb()
+    web.add("acme.example.test", _home_by_visitor({
+        "iPhone": WP_HOME.replace("</head>", "<script src='https://cdn.evil.example/r.js'></script></head>"),
+        "Googlebot": WP_HOME.replace("</body>", "<script>eval(atob('ZG9jdW1lbnQ='))</script></body>"),
+    }))
+    report = await run(web)
+    found = {f.code: f for f in report.findings}
+    assert found["cloaked_script"].severity == "warning"
+    assert found["cloaked_script"].title == "Script domain(s) loaded only for visitors arriving from Google on a phone: cdn.evil.example"
+    assert found["cloaked_injection"].severity == "warning" and "Googlebot" in found["cloaked_injection"].title
+    assert "Obfuscated JavaScript" in found["cloaked_injection"].title and "obfuscated_script" not in found
+    assert "cdn.evil.example" in report.details["external_scripts"]  # so new_external_script tracks it too
+    assert report.status == "up"  # warnings only: ad and analytics scripts are often left out for bots
+    assert "cdn.evil.example" not in {r.url.host for r in web.requests}
+
+
+async def test_redirect_shown_only_to_desktop_search_visitors_is_caught():
+    injected = WP_HOME.replace("</body>", "<script>window.location.href='https://evil.example/'</script></body>")
+    web = FakeWeb()
+    web.add("acme.example.test", _home_by_visitor({"Windows NT": injected}))
+    report = await run(web)
+    found = {f.code: f for f in report.findings}
+    assert found["cloaked_injection"].severity == "critical" and "desktop browser" in found["cloaked_injection"].title
+    assert "evil.example" in found["cloaked_injection"].title and "js_redirect_offsite" not in found
+    assert report.status == "degraded"
+    assert "evil.example" not in {r.url.host for r in web.requests}

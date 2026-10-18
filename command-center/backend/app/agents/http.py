@@ -20,8 +20,11 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+import ssl
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 import httpcore
 import httpx
@@ -123,6 +126,66 @@ async def check_public_host(host: str | None, allowed_private: set[str], resolve
         return
 
 
+NEXT_ADDRESS_SECONDS = 0.25  # RFC 8305's connection attempt delay
+
+
+def _why(exc: BaseException) -> str:
+    return str(exc) or exc.__class__.__name__
+
+
+class NoConnection(Exception):
+    """No address could be connected to; errors holds the error of each address tried, in address order."""
+
+    def __init__(self, errors: dict[str, BaseException]) -> None:
+        self.errors = errors
+        if len(errors) == 1:
+            super().__init__(_why(next(iter(errors.values()))))
+        else:
+            super().__init__("; ".join(f"{address}: {_why(exc)}" for address, exc in errors.items()) or "no time left to connect")
+
+
+async def first_connection(addresses: list[str], timeout: float | None, connect: Callable[[str, float | None], Awaitable[Any]],
+                           close: Callable[[Any], Awaitable[None]]) -> tuple[str, Any]:
+    """Happy eyeballs (RFC 8305) over checked addresses: (address, connection) of the first one to connect.
+
+    connect(address, seconds left), which must give up when they are, starts
+    for each address in turn, the next one as soon as the one before has
+    failed or has not connected within NEXT_ADDRESS_SECONDS. The earlier
+    attempts keep going and one deadline covers them all, so a dead address
+    costs a moment and a slow one that works still has the whole timeout (an
+    address of a family this host cannot use failing at once changes nothing).
+    Once one connects the others are cancelled, and closed if they connected
+    too. NoConnection if none does.
+    """
+    deadline = None if timeout is None else time.monotonic() + timeout
+    waiting = list(addresses)
+    attempts: dict[asyncio.Future, str] = {}
+    winner: asyncio.Future | None = None
+    try:
+        while True:
+            left = None if deadline is None else deadline - time.monotonic()
+            if left is not None and left <= 0:
+                waiting = []  # no time left to start the others
+            if waiting:
+                address = waiting.pop(0)
+                attempts[asyncio.ensure_future(connect(address, left))] = address
+            running = [a for a in attempts if not a.done()]
+            if not running:
+                break
+            await asyncio.wait(running, timeout=NEXT_ADDRESS_SECONDS if waiting else None, return_when=asyncio.FIRST_COMPLETED)
+            winner = next((a for a in attempts if a.done() and not a.cancelled() and a.exception() is None), None)
+            if winner is not None:
+                return attempts[winner], winner.result()
+    finally:
+        losers = [a for a in attempts if a is not winner]
+        for attempt in losers:
+            attempt.cancel()
+        for result in await asyncio.gather(*losers, return_exceptions=True):
+            if not isinstance(result, BaseException):
+                await close(result)
+    raise NoConnection({address: attempt.exception() for attempt, address in attempts.items()})
+
+
 class PublicOnlyBackend(httpcore.AsyncNetworkBackend):
     """httpcore network backend that connects only to addresses resolve_public accepted."""
 
@@ -137,15 +200,17 @@ class PublicOnlyBackend(httpcore.AsyncNetworkBackend):
             addresses = await resolve_public(host, self._allowed_private, self._resolver)
         except OSError as exc:
             raise httpcore.ConnectError(f"getaddrinfo failed for {host}: {exc}") from exc
-        error: Exception | None = None
-        for address in addresses:
-            try:
-                return await self._inner.connect_tcp(address, port, timeout=timeout, local_address=local_address,
-                                                     socket_options=socket_options)
-            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
-                error = exc
-        assert error is not None
-        raise error
+
+        async def connect(address: str, seconds: float | None) -> httpcore.AsyncNetworkStream:
+            return await self._inner.connect_tcp(address, port, timeout=seconds, local_address=local_address, socket_options=socket_options)
+
+        try:
+            return (await first_connection(addresses, timeout, connect, lambda stream: stream.aclose()))[1]
+        except NoConnection as exc:
+            errors = list(exc.errors.values())
+            # An address that ran out of time says more than one that failed at once (of a family this host cannot use, say).
+            slow = [e for e in errors if isinstance(e, httpcore.ConnectTimeout)]
+            raise (slow or errors or [httpcore.ConnectTimeout(f"could not connect to {host} within {timeout}s")])[0]
 
     async def connect_unix_socket(self, path: str, timeout: float | None = None, socket_options=None) -> httpcore.AsyncNetworkStream:
         raise BlockedTarget("unix sockets are not allowed")
@@ -163,15 +228,33 @@ def public_only_transport(allowed_private: set[str], resolver=None) -> httpx.Asy
 
 
 async def open_public_connection(host: str, port: int, allowed_private: set[str], **kwargs) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    """asyncio.open_connection to host, connecting only to a checked address (kwargs as for open_connection)."""
+    """asyncio.open_connection to host, connecting only to a checked address (kwargs as for open_connection).
+
+    The addresses are tried in turn for the TCP connection only. TLS (ssl=...)
+    starts once, on the address that connected: a certificate error is the
+    server's answer, not a reason to try the next address.
+    """
+    tls = kwargs.pop("ssl", None)
+    server_hostname = kwargs.pop("server_hostname", None) or host
+    handshake_timeout = kwargs.pop("ssl_handshake_timeout", None)
     error: OSError | None = None
     for address in await resolve_public(host, allowed_private):
         try:
-            return await asyncio.open_connection(address, port, **kwargs)
+            reader, writer = await asyncio.open_connection(address, port, **kwargs)
+            break
         except OSError as exc:
             error = exc
-    assert error is not None
-    raise error
+    else:
+        assert error is not None
+        raise error
+    if tls:
+        try:
+            await writer.start_tls(ssl.create_default_context() if tls is True else tls, server_hostname=server_hostname,
+                                   ssl_handshake_timeout=handshake_timeout)
+        except BaseException:
+            writer.close()
+            raise
+    return reader, writer
 
 
 class ReadOnlyHttpClient:

@@ -14,6 +14,7 @@ from typing import Any
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .. import tasks as task_service
 from ..models import Server
 from .base import AgentContext, AgentResult, BaseAgent, Finding, Params, Risk, capability
 from .wp_server import server_binding
@@ -38,8 +39,9 @@ class ServiceParams(Params):
     service: str = Field(pattern=r"^[a-z0-9][a-z0-9@._-]{0,63}$", description="A service listed in the server's cc-gate configuration")
 
 
-async def load_server(ctx: AgentContext, server_id: int) -> Server:
-    server = await ctx.session.get(Server, server_id)
+async def load_server(ctx: AgentContext, server_id: int, *, refresh: bool = False) -> Server:
+    """refresh=True reads the row again rather than from this session's identity map."""
+    server = await ctx.session.get(Server, server_id, populate_existing=refresh)
     if server is None:
         raise ValueError(f"no server with id {server_id}")
     if ctx.ssh is None:
@@ -139,7 +141,9 @@ class ServerManagementAgent(BaseAgent):
     @capability(risk=Risk.CHANGE, description="Restart a service the server's cc-gate configuration lists as restartable (approval required).",
                 params=ServiceParams, timeout_seconds=360)
     async def restart_service(self, ctx: AgentContext, params: ServiceParams) -> AgentResult:
-        server = await load_server(ctx, params.server_id)
+        server = await load_server(ctx, params.server_id, refresh=True)
+        # Right before the change, in this task's own session: still the server that was approved (from the row just read).
+        task_service.check_target(ctx.approved_target or {}, await server_approval_context(ctx.session, server.id))
         async with ctx.ssh.open(ctx, server) as gate:
             await gate.run("service_restart", service=params.service)
             state = (await gate.run("service_status", service=params.service)).get("state", "unknown")

@@ -8,9 +8,12 @@ cc-gate starts it through sudo (the only WP-CLI rule in /etc/sudoers.d/cc-gate):
 WP-CLI normally reads configuration, packages and cached downloads from the
 user's home directory (~/.wp-cli), which malware running as the site user
 could rewrite to change what WP-CLI does or reports. cc-wp therefore starts
-WP-CLI with an empty environment, a fresh private HOME and cache, no global or
-user configuration and no packages, from "/". The WP-CLI program itself comes
-from the root-owned configuration ("wp_cli"), never from the caller.
+WP-CLI with an empty environment, a fresh private HOME, no global or user
+configuration, no file cache and no packages, from "/". The configuration,
+cache and packages paths are not in that HOME: it belongs to the site user, so
+malware could plant a configuration ("require:" files) or a cached download
+there before WP-CLI starts. The WP-CLI program itself comes from the
+root-owned configuration ("wp_cli"), never from the caller.
 
 Commands that load WordPress still run the site's wp-config.php, must-use
 plugins and drop-ins; only checks that run before WordPress loads (such as
@@ -32,6 +35,8 @@ import tempfile
 CONFIG_PATH = "/etc/cc-gate/config.json"
 REQUIRE_ROOT_OWNED_CONFIG = True
 SAFE_PATH = "/usr/local/bin:/usr/bin:/bin"
+# In the root-owned program folder, and never created: WP-CLI finds no packages there.
+NO_PACKAGES_DIR = "/usr/local/lib/cc-gate/no-packages"
 
 
 def fail(message):
@@ -62,9 +67,9 @@ def main(argv):
         "PATH": SAFE_PATH,
         "HOME": home,
         "LANG": "C.UTF-8",
-        "WP_CLI_CONFIG_PATH": os.path.join(home, "no-config.yml"),
-        "WP_CLI_PACKAGES_DIR": os.path.join(home, "no-packages"),
-        "WP_CLI_CACHE_DIR": os.path.join(home, "cache"),
+        "WP_CLI_CONFIG_PATH": "/dev/null",  # an empty global configuration
+        "WP_CLI_PACKAGES_DIR": NO_PACKAGES_DIR,
+        "WP_CLI_CACHE_DIR": "/dev/null",  # WP-CLI switches its file cache off for a device
         "WP_CLI_DISABLE_AUTO_CHECK_UPDATE": "1",
     }
     try:

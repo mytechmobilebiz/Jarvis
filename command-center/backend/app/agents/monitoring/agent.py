@@ -24,6 +24,7 @@ _LATEST_TTL = 6 * 3600
 # check makes about twenty requests), so one slow site cannot use up a sweep.
 SITE_DEADLINE_FACTOR = {False: 6, True: 15}
 SWEEP_TIMEOUT_SECONDS = 1800
+PARTIAL_CHECKS_SEEN = 50  # see _reported_since
 
 
 def normalize_url(raw: str) -> str:
@@ -370,13 +371,33 @@ def make_checker(ctx: AgentContext, latest: str | None) -> SiteChecker:
     return SiteChecker(ctx.http, ctx.settings, latest_wp_version=latest, retry_delay=ctx.settings.monitor_retry_delay_seconds)
 
 
-async def previous_check(ctx: AgentContext, site_id: int, deep: bool) -> SiteCheck | None:
+def _same_kind(site_id: int, deep: bool) -> tuple[Any, ...]:
     # Filtered in the database: the nightly deep check is usually far behind dozens of quick ones.
     deep_check = SiteCheck.details.contains({"deep": True})
-    return await ctx.session.scalar(
-        select(SiteCheck).where(SiteCheck.site_id == site_id, deep_check if deep else ~deep_check)
-        .order_by(SiteCheck.checked_at.desc()).limit(1)
-    )
+    return SiteCheck.site_id == site_id, deep_check if deep else ~deep_check
+
+
+async def previous_check(ctx: AgentContext, site_id: int, deep: bool) -> SiteCheck | None:
+    """The latest deep or quick check that was not cut short.
+
+    A check cut short lacks whatever it did not reach, so it is never the one a
+    new check is compared with.
+    """
+    query = select(SiteCheck).where(*_same_kind(site_id, deep), ~SiteCheck.details.contains({"partial": True}))
+    return await ctx.session.scalar(query.order_by(SiteCheck.checked_at.desc()).limit(1))
+
+
+async def _reported_since(ctx: AgentContext, site_id: int, deep: bool, previous: SiteCheck | None) -> list[dict[str, Any]]:
+    """The findings of the checks cut short since previous: already reported, so not new either.
+
+    Each may stop at a different point, so all of them count, up to PARTIAL_CHECKS_SEEN
+    (a site whose every check is cut short would otherwise mean reading them all).
+    """
+    query = select(SiteCheck.findings).where(*_same_kind(site_id, deep), SiteCheck.details.contains({"partial": True}))
+    if previous is not None:
+        query = query.where(SiteCheck.checked_at > previous.checked_at)
+    rows = await ctx.session.scalars(query.order_by(SiteCheck.checked_at.desc()).limit(PARTIAL_CHECKS_SEEN))
+    return [f for findings in rows for f in findings or []]
 
 
 def _compare_scripts(report: SiteReport, previous: SiteCheck | None) -> None:
@@ -390,14 +411,20 @@ def _compare_scripts(report: SiteReport, previous: SiteCheck | None) -> None:
                    "Expected after adding a plugin or tracking code; otherwise check for injected scripts.")
 
 
-async def record_check(ctx: AgentContext, site: Site, deep: bool, report: SiteReport) -> list[EventSpec]:
-    """Store a check result on the site's history and return the state-change events."""
+async def record_check(ctx: AgentContext, site: Site, deep: bool, report: SiteReport) -> list[EventSpec] | None:
+    """Store a check result on the site's history and return the state-change events; None if the site is gone."""
     # Locked and re-read: two checks of the same site may finish at the same time,
     # and only the first may report the status change.
-    await ctx.session.refresh(site, with_for_update=True)
+    fresh = await ctx.session.scalar(
+        select(Site).where(Site.id == site.id).with_for_update().execution_options(populate_existing=True)
+    )
+    if fresh is None:
+        ctx.log(f"{site.name} was deleted during the check; result not recorded", "warning")
+        return None
     previous_status = site.last_status
     previous = await previous_check(ctx, site.id, deep)
     _compare_scripts(report, previous)
+    seen = [*(previous.findings if previous else []), *await _reported_since(ctx, site.id, deep, previous)]
     check = SiteCheck(
         site_id=site.id,
         task_id=ctx.task_id,
@@ -417,11 +444,12 @@ async def record_check(ctx: AgentContext, site: Site, deep: bool, report: SiteRe
     site.last_status = report.status
     site.last_checked_at = check.checked_at
     site.last_check_id = check.id
-    return change_events(site, previous_status, previous, report)
+    return change_events(site, previous_status, seen, report)
 
 
 def _cut_short(report: SiteReport, seconds: float) -> None:
     """A check that ran out of time: down if the home page never answered, else what it found so far."""
+    report.details["partial"] = True  # see previous_check
     if report.http_status is None:
         report.degrade("down")
         report.add("check_timeout", "critical", f"Site could not be checked within {seconds:g} seconds")
@@ -459,17 +487,25 @@ async def check_sites(
                 return
         if record:
             async with db_lock:  # one session, so one site at a time
-                for spec in await record_check(ctx, site, deep, report):
+                specs = await record_check(ctx, site, deep, report)
+                if specs is None:
+                    results[i] = "site was deleted during the check"
+                    return
+                for spec in specs:
                     await events.emit(ctx.session, ctx.settings, kind=spec.kind, severity=spec.severity, title=spec.title,
                                       source=ctx.agent_name or "monitoring", detail=spec.detail, task_id=ctx.task_id)
                 await ctx.session.commit()
         results[i] = report
         ctx.log(report.summary())
 
+    # Least recently checked first: a sweep cut short by its task timeout leaves
+    # out the sites it did not reach, and the next sweep starts with them.
+    order = sorted(range(len(sites)),
+                   key=lambda i: (sites[i].last_checked_at is not None, sites[i].last_checked_at or 0, sites[i].id))
     try:
         async with asyncio.TaskGroup() as group:  # a database error stops the remaining checks
-            for i, site in enumerate(sites):
-                group.create_task(run(i, site))
+            for i in order:
+                group.create_task(run(i, sites[i]))
     except ExceptionGroup as exc:
         raise exc.exceptions[0] from None
     checked = [(site, r) for i, site in enumerate(sites) if isinstance(r := results.get(i), SiteReport)]
@@ -477,7 +513,8 @@ async def check_sites(
     return checked, failed
 
 
-def change_events(site: Site, previous_status: str, previous: SiteCheck | None, report: SiteReport) -> list[EventSpec]:
+def change_events(site: Site, previous_status: str, seen: list[dict[str, Any]], report: SiteReport) -> list[EventSpec]:
+    """Status-change events, and one event for the findings whose code is not among the findings seen before."""
     out: list[EventSpec] = []
     detail = {"site_id": site.id, "site": site.name, "url": site.url, "status": report.status}
     if report.status != previous_status:
@@ -487,7 +524,7 @@ def change_events(site: Site, previous_status: str, previous: SiteCheck | None, 
             out.append(EventSpec(kind="site.degraded", severity="warning", title=f"{site.name} is degraded: {_first(report)}", detail=detail))
         elif previous_status in ("down", "degraded"):
             out.append(EventSpec(kind="site.recovered", severity="info", title=f"{site.name} has recovered", detail=detail))
-    old_codes = {f.get("code") for f in (previous.findings if previous else [])}
+    old_codes = {f.get("code") for f in seen}
     new = [f for f in report.findings if f.severity != "info" and f.code not in old_codes]
     # Availability problems are already covered by the status-change event.
     new = [f for f in new if f.code not in ("fetch_failed", "page_problem", "http_error", "page_notice", "slow_response",

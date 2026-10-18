@@ -120,4 +120,34 @@ describe("server-side check on the website page", () => {
     expect(screen.getByText(/version not read/)).toBeInTheDocument();
     expect(screen.getByText("core_version")).toBeInTheDocument();
   });
+
+  it("says when parts were never read and when the latest check failed", async () => {
+    window.history.pushState({}, "", "/websites");
+    const site = {
+      id: 3, name: "Acme", url: "https://acme.example", client: "", notes: "", enabled: true, last_status: "up", last_checked_at: now,
+      last_check: null, environment: "test", server_id: 1, server_site_key: "acme", uptime: null,
+      last_diagnosis: {
+        at: now, server: "cwp-1",
+        site_urls: { home: "https://acme.example", siteurl: "https://acme.example/wp", expected: "https://acme.example", matches: false,
+                     subdirectory_install_suspected: true, suspected_siteurl: "https://acme.example/wp" },
+        errors: { plugins: "database down", admins: "database down" }, findings: [],
+        last_failed_attempt: { at: now, error: "could not connect to 203.0.113.5:22" },
+      },
+      last_diagnosis_at: now,
+    };
+    mockFetch({
+      "GET /api/system/status": status,
+      "GET /api/auth/me": { user: admin },
+      "GET /api/sites": { sites: [site] },
+      "GET /api/sites/3": { site },
+      "GET /api/sites/3/checks?limit=30": { checks: [] },
+      "GET /api/servers": { servers: [] },
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByText("Acme"));
+    expect(await screen.findByText(/WordPress in its own folder\?/)).toBeInTheDocument();
+    expect(screen.getAllByText("not read")).toHaveLength(2);  // plugins and administrators, not "none"
+    expect(screen.getByText(/could not connect to 203\.0\.113\.5:22/)).toBeInTheDocument();
+    expect(screen.getByText("(the results above are older)")).toBeInTheDocument();
+  });
 });

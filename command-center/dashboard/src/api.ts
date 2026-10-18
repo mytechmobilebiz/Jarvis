@@ -197,7 +197,16 @@ export interface Diagnosis {
   at?: string;
   server?: string;
   core_version?: string;
-  site_urls?: { home: string; siteurl: string; expected: string; expected_siteurl?: string; matches: boolean };
+  site_urls?: {
+    home: string;
+    siteurl: string;
+    expected: string;
+    expected_siteurl?: string;
+    matches: boolean;
+    /** WordPress seems to live in a sub-folder and the cc-gate configuration has no "siteurl" for the site. */
+    subdirectory_install_suspected?: boolean;
+    suspected_siteurl?: string;
+  };
   plugins?: { name: string; status: string; version: string; update: string; update_version: string }[];
   themes?: { name: string; status: string; version: string; update: string }[];
   admins?: { ID: number; user_login: string; user_registered: string }[];
@@ -208,6 +217,8 @@ export interface Diagnosis {
   /** Parts the server could not answer, with the reason; the rest of the diagnosis still counts. */
   errors?: Record<string, string>;
   findings?: Finding[];
+  /** A later check that could not run at all; the results above (if any) are older. */
+  last_failed_attempt?: { at: string; error: string };
 }
 
 export interface Site {

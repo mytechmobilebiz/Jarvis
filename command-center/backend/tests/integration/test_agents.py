@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import select, text
 
 from app.db import session_scope
-from app.models import Artifact, Lead, OutboxEntry, Task, User
+from app.models import Artifact, OutboxEntry, Task, User
 from app.security import hash_password
 
 from ..fakes import FakeLLM, static_site
@@ -135,6 +135,25 @@ async def test_supervisor_routes_to_the_new_agents(admin, make_worker):
         tasks = (await admin.get(f"/api/supervisor/requests/{req_id}")).json()["tasks"]
         agents = {t["agent"] for t in tasks} - {"supervisor"}
         assert agents == {agent}, (message, agents)
+
+
+async def test_a_planned_change_on_a_target_that_does_not_exist_leaves_no_task_behind(admin, make_worker):
+    from app.models import Approval
+
+    # The AI planner never sees server ids, so it can name one that does not exist.
+    llm = FakeLLM(json_responses=[{"reply": "ok", "steps": [
+        {"action": "server_management.restart_service", "params_json": '{"server_id": 42, "service": "httpd"}', "rationale": "asked"},
+        {"action": "monitoring.sites_overview", "params_json": "{}", "rationale": "asked"},
+    ]}], text_response="summary")
+    r = await admin.post("/api/supervisor/requests", json={"message": "restart httpd on server 42 and give me an overview"})
+    req_id = r.json()["request"]["id"]
+    await make_worker(llm=llm).run_until_idle()
+    async with session_scope() as s:
+        assert (await s.scalars(select(Task).where(Task.capability == "restart_service"))).all() == []
+        assert (await s.scalars(select(Approval))).all() == []
+    detail = (await admin.get(f"/api/supervisor/requests/{req_id}")).json()
+    assert detail["request"]["status"] == "completed"
+    assert any("no server with id 42" in note for note in detail["request"]["plan"]["notes"])
 
 
 # --------------------------------------------------------------- credit repair

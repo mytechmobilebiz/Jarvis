@@ -64,11 +64,11 @@ KNOWN_NAMESPACES = {
     "wpforms/v1": "WPForms",
     "updraftplus/v1": "UpdraftPlus",
 }
-# Matched on the attributes of one tag (integrity.META_RE, LINK_RE): see integrity.py on backtracking.
+# Matched on the attributes of one tag (integrity.tags()): see integrity.py on backtracking.
 GENERATOR_NAME_RE = re.compile(r"(?<![\w-])name\s*=\s*[\"']generator[\"']", re.I)
 GENERATOR_CONTENT_RE = re.compile(r"(?<![\w-])content\s*=\s*[\"']WordPress\s*([\d.]+)?", re.I)
 FEED_GENERATOR_RE = re.compile(r"<generator>\s*https?://wordpress\.org/\?v=([\d.]+)\s*</generator>", re.I)
-LINK_RE = re.compile(r"<link\b([^>]{0,1000}+)>", re.I)
+LINK_RE = re.compile(r"<link\b", re.I)
 REST_REL_RE = re.compile(r"(?<![\w-])rel\s*=\s*[\"']https://api\.w\.org/[\"']", re.I)
 HREF_RE = re.compile(r"(?<![\w-])href\s*=\s*[\"']([^\"']+)", re.I)
 REST_LINK_HEADER_RE = re.compile(r"<([^>]{0,2000}+)>;\s*rel=\"https://api\.w\.org/\"")
@@ -125,6 +125,14 @@ class SiteReport:
         return ", ".join(bits)
 
 
+class InvalidRedirect(httpx.RemoteProtocolError):
+    """A redirect to an address a browser does not open as a web page (ftp:, intent:, a malformed URL)."""
+
+    def __init__(self, location: str, request: httpx.Request) -> None:
+        super().__init__(f"redirects to an invalid or non-web address: {location[:200]!r}", request=request)
+        self.location = location
+
+
 def describe_fetch_error(exc: BaseException, timeout: float) -> str:
     if isinstance(exc, BlockedTarget):
         return f"refused to check: {exc}"
@@ -141,6 +149,8 @@ def describe_fetch_error(exc: BaseException, timeout: float) -> str:
         return f"cannot be reached ({exc})"
     if isinstance(exc, httpx.TooManyRedirects):
         return "redirects in a loop"
+    if isinstance(exc, InvalidRedirect):
+        return str(exc)
     if isinstance(exc, httpx.HTTPError):
         return f"cannot be reached ({exc.__class__.__name__}: {exc})"
     return f"check failed ({exc.__class__.__name__}: {exc})"
@@ -163,8 +173,8 @@ class PageMarkers:
 
 def page_markers(html: str, link_header: str) -> PageMarkers:
     page = PageMarkers()
-    for tag in integrity.META_RE.finditer(html):
-        content = GENERATOR_CONTENT_RE.search(tag.group(1)) if GENERATOR_NAME_RE.search(tag.group(1)) else None
+    for _tag, attrs in integrity.tags(html, integrity.META_RE):
+        content = GENERATOR_CONTENT_RE.search(attrs) if GENERATOR_NAME_RE.search(attrs) else None
         if content:
             page.markers.append("generator")
             page.version = content.group(1) or ""
@@ -177,8 +187,8 @@ def page_markers(html: str, link_header: str) -> PageMarkers:
         page.rest_url = m.group(1)
         page.markers.append("rest-link-header")
     else:
-        for tag in LINK_RE.finditer(html):
-            href = HREF_RE.search(tag.group(1)) if REST_REL_RE.search(tag.group(1)) else None
+        for _tag, attrs in integrity.tags(html, LINK_RE):
+            href = HREF_RE.search(attrs) if REST_REL_RE.search(attrs) else None
             if href:
                 page.rest_url = href.group(1)
                 page.markers.append("rest-link")
@@ -270,6 +280,10 @@ class SiteChecker:
             location = res.headers.get("location", "") if res.status in integrity.REDIRECT_STATUSES else ""
             nxt = integrity.resolve(current, location) if location else ""
             last = replace(res, url=url, elapsed_ms=elapsed, redirects=[h.url for h in hops])
+            if not nxt and res.status in integrity.REDIRECT_STATUSES and "location" in res.headers:
+                # Visitors are sent nowhere a browser can show (ftp:, intent:, a malformed address): not a page.
+                hops.append(Hop(url=current, status=res.status, location=location))
+                raise InvalidRedirect(location, httpx.Request("GET", current))
             if not nxt:
                 return last, ""
             hops.append(Hop(url=current, status=res.status, location=nxt))
@@ -353,7 +367,13 @@ class SiteChecker:
         try:
             res, offsite = await self._walk(url, headers=headers, max_hops=max_hops, hops=trace.hops)
         except Exception as exc:  # noqa: BLE001 - recorded on the trace
-            trace.error = describe_fetch_error(exc, self.settings.monitor_timeout_seconds)
+            target = exc.location if isinstance(exc, InvalidRedirect) and "//" in exc.location else ""
+            if integrity.bare_host(target) and not integrity.same_site(url, target):
+                # An app link or other non-web address on another domain (intent://evil.example/...): a redirect
+                # all the same, and not followed. One that names no host leads nowhere: an error.
+                trace.offsite_target = trace.final_url = target
+            else:
+                trace.error = describe_fetch_error(exc, self.settings.monitor_timeout_seconds)
             return trace
         if offsite:
             trace.offsite_target = trace.final_url = offsite
@@ -380,13 +400,18 @@ class SiteChecker:
         normal = Trace(final_url=home.final_url, final_status=home.status, html=home.text)
         variants = {
             "arriving from Google on a phone": await self.trace(url, integrity.SEARCH_VISITOR),
+            "arriving from Google on a desktop browser": await self.trace(url, integrity.DESKTOP_SEARCH_VISITOR),
             "identifying as Googlebot": await self.trace(url, integrity.CRAWLER),
         }
         findings = await asyncio.to_thread(integrity.cloaking_findings, url, normal, variants)
         report.findings.extend(findings)
-        if findings:
+        if any(f.severity == "critical" for f in findings):
             report.degrade("degraded")
         report.details.setdefault("redirect_check", {})["variants"] = {k: v.as_dict() for k, v in variants.items()}
+        # Scripts only some visitors get count for new_external_script too.
+        hosts = await asyncio.to_thread(
+            lambda: {h for t in variants.values() for h in integrity.external_script_hosts(url, t.final_url, t.html)})
+        report.details["external_scripts"] = sorted({*report.details.get("external_scripts", []), *hosts})
 
     async def _assess_http_redirect(self, report: SiteReport, url: str) -> None:
         parts = urlsplit(url)

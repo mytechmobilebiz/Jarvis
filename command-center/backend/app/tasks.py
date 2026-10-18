@@ -86,6 +86,13 @@ async def create_task(
 
     clean = validated.model_dump(mode="json")
     needs_approval = cap.risk.requires_approval
+    extra: dict[str, Any] = {}
+    if needs_approval:
+        # Before the task exists: a target that does not exist must not leave a task without an approval behind.
+        try:
+            extra = await get_agent(agent).approval_context(session, capability, clean)  # type: ignore[union-attr]
+        except ValueError as exc:
+            raise TaskError(str(exc)) from exc
     task = Task(
         agent=agent,
         capability=capability,
@@ -102,10 +109,6 @@ async def create_task(
     session.add(task)
     await session.flush()
     if needs_approval:
-        try:
-            extra = await get_agent(agent).approval_context(session, capability, clean)  # type: ignore[union-attr]
-        except ValueError as exc:
-            raise TaskError(str(exc)) from exc
         action = summary or describe_action(agent, capability, clean)
         if extra.get("target"):
             action += f" on {extra['target']}" + (" (PRODUCTION)" if extra.get("production") else "")
@@ -147,11 +150,22 @@ async def current_target(session: AsyncSession, approval: Approval, params: dict
         fresh = await agent.approval_context(session, approval.capability, params, lock=lock) if agent else {}
     except ValueError as exc:
         raise TargetChanged(f"{exc}; the approval no longer applies") from exc
-    stored = approval.details or {}
-    if fresh.get("binding") != stored.get("binding"):
+    check_target(approval.details or {}, fresh)
+    return fresh
+
+
+def check_target(approved: dict[str, Any], fresh: dict[str, Any]) -> None:
+    """Raises TargetChanged unless `fresh` (an approval context computed now) still describes the `approved` target.
+
+    Also used by agents in their own session, right before a change is sent.
+    """
+    if fresh.get("binding") != approved.get("binding"):
         raise TargetChanged(f"the target changed since this was requested (now: {fresh.get('target') or 'none'}); "
                             "reject it and request the change again")
-    return fresh
+    if fresh.get("production") and not approved.get("production"):
+        # Approved without an admin's typed confirmation, which production needs.
+        raise TargetChanged(f"{fresh.get('target')} became a production target after this was requested; "
+                            "reject it and request the change again")
 
 
 async def decide_approval(
@@ -166,11 +180,8 @@ async def decide_approval(
         assert task is not None
         # Computed again now: the site or server may have moved to production, been
         # re-linked or renamed since the request was made.
-        fresh = await current_target(session, approval, task.params, lock=True)
-        if details.get("production") or fresh.get("production"):
-            if not details.get("production"):
-                raise TargetChanged(f"{fresh.get('target')} became a production target after this was requested; "
-                                    "reject it and request the change again")
+        await current_target(session, approval, task.params, lock=True)
+        if details.get("production"):
             if actor_role != "admin":
                 raise ConfirmationRequired("changes to production need an admin's approval")
             expected = str(details.get("confirm", "")).strip()

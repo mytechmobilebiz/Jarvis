@@ -19,8 +19,8 @@ site's user through cc-wp, which gives it an environment the site cannot change.
 
 Each operation has a time budget (timeout_seconds, or slow_timeout_seconds for
 the slow ones). When it runs out, the program is asked to stop (SIGTERM, which
-sudo passes on), then killed, and the answer says the operation may not have
-finished.
+sudo passes on because the program runs in its own session), then killed, and
+the answer says the operation may not have finished.
 
 Answers are one JSON object on stdout. Exit status: 0 done, 1 the operation
 failed, 2 the request was refused.
@@ -40,6 +40,7 @@ import stat
 import subprocess
 import sys
 import time
+from urllib.parse import urlsplit
 
 GATE_VERSION = "1.1.0"
 CONFIG_PATH = "/etc/cc-gate/config.json"
@@ -82,6 +83,8 @@ OPS = {
 }
 SLOW_OPS = {"wp_core_verify", "wp_plugin_update", "wp_plugin_reinstall", "wp_core_reinstall", "wp_db_export", "debug_log_quarantine"}
 STOP_GRACE_SECONDS = 10
+# Either one lets a user take over the site; a custom or edited role can carry them without being "administrator".
+ADMIN_CAPABILITIES = "manage_options,promote_users"
 # Update URI values WordPress itself treats as WordPress.org.
 WPORG_UPDATE_URI = re.compile(r"^(https?://)?(www\.)?(w\.org|wordpress\.org)(/|$)", re.I)
 
@@ -189,7 +192,9 @@ def child_env():
 
 
 def stop(proc):
-    """Ask the program to stop (sudo passes SIGTERM on to the command), then kill it."""
+    """Ask the program to stop (sudo passes SIGTERM on to the command, see run()), then kill it.
+
+    The kill reaches only sudo: the gate's account cannot signal the site user's processes."""
     try:
         proc.terminate()
         proc.wait(timeout=STOP_GRACE_SECONDS)
@@ -209,8 +214,10 @@ def run(argv, config):
     if left <= 0:
         raise TimedOut("ran out of time before %s could start" % os.path.basename(argv[0]))
     try:
+        # Its own session: sudo (1.8/1.9 on EL8/EL9) ignores a signal sent from its own process group, which
+        # it would otherwise share with the gate, so stop()'s SIGTERM would never reach the command.
         proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd="/",
-                                env=child_env())
+                                env=child_env(), start_new_session=True)
     except OSError as exc:
         raise Failed("could not start %s: %s" % (argv[0], exc))
     limit = config["max_output_bytes"]
@@ -281,6 +288,8 @@ def helper(site, op, site_key, *extra):
     except ValueError:
         raise Failed((err or out).strip()[-2000:] or "site helper failed")
     if code != 0 or not data.get("ok"):
+        if data.get("unchanged"):  # refused before touching anything
+            raise Refused(data.get("error") or "site helper refused")
         raise Failed(data.get("error") or "site helper failed")
     return data["result"]
 
@@ -373,18 +382,40 @@ def op_wp_theme_list(args):
     return {"themes": wp_json(SITE, "theme", "list", "--format=json", "--fields=name,status,version,update,update_version")}
 
 
+def version_at_least(version, wanted):
+    m = re.match(r"^([0-9]+)\.([0-9]+)", version)
+    return bool(m) and (int(m.group(1)), int(m.group(2))) >= wanted
+
+
 def op_wp_admins(args):
-    admins = wp_json(SITE, "user", "list", "--role=administrator", "--format=json", "--fields=ID,user_login,user_registered")
+    fields = "--fields=ID,user_login,user_registered"
+    admins = wp_json(SITE, "user", "list", "--role=administrator", "--format=json", fields)
+    result = {"admins": admins}
+    # Users whose role holds an administrator's powers under another name. Kept apart from "admins", so a Command
+    # Center that never saw this list takes it as a new baseline, not as new accounts. Left out (not checked) before
+    # WordPress 5.9, which ignores capability__in and would list every user.
+    if version_at_least(wp_ok(SITE, "core", "version"), (5, 9)):
+        known, result["capability_admins"] = {a.get("ID") for a in admins if isinstance(a, dict)}, []
+        for user in wp_json(SITE, "user", "list", "--capability__in=" + ADMIN_CAPABILITIES, "--format=json", fields):
+            if isinstance(user, dict) and user.get("ID") not in known:
+                known.add(user.get("ID"))
+                result["capability_admins"].append(user)
     code, out, err = run(wp(SITE, "super-admin", "list", "--format=json"), CONFIG)
     supers = []
     if code == 0:
         try:
-            supers = [u for u in json.loads(out or "[]") if isinstance(u, str)][:500]
+            listed = json.loads(out or "[]")
         except ValueError:
-            pass
+            listed = []
+        # WP-CLI prints [{"user_login": "..."}, ...]; plain names are taken too.
+        for user in listed if isinstance(listed, list) else []:
+            login = user.get("user_login") if isinstance(user, dict) else user
+            if isinstance(login, str) and login and len(supers) < 500:
+                supers.append(login)
     elif "multisite" not in (out + err).lower():  # a single site has no super admins
         raise Failed((err or out).strip()[-2000:] or "wp-cli exited with status %d" % code)
-    return {"admins": admins, "super_admins": supers}
+    result["super_admins"] = supers
+    return result
 
 
 def expected_urls():
@@ -393,12 +424,50 @@ def expected_urls():
     return home, (SITE.get("siteurl") or home).rstrip("/")
 
 
+def site_home(site):
+    """The site user's home folder as the account database lists it ("" if unknown)."""
+    try:
+        return pwd.getpwnam(site["user"]).pw_dir.rstrip("/")
+    except KeyError:
+        return ""
+
+
+def wordpress_folder(siteurl):
+    """The sub-path WordPress seems to live in, or None.
+
+    Only without a configured "siteurl": the current siteurl is the configured home plus a sub-path, the
+    site's path ends with that URL path, and the rest of the path (the web root) lies inside the site user's
+    home (home https://acme.com, siteurl https://acme.com/wp, path /home/acme/public_html/wp). Restoring
+    siteurl to home would then break wp-admin. A root install (path /home/acme/public_html) never fits,
+    whatever siteurl was set to: its web root would be the home folder or above it.
+    """
+    if SITE.get("siteurl"):
+        return None
+    home, siteurl = SITE["url"].rstrip("/"), siteurl.rstrip("/")
+    if not siteurl.startswith(home + "/"):
+        return None
+    parts = urlsplit(siteurl)
+    if parts.query or parts.fragment or not re.match(r"^(/[A-Za-z0-9._~-]+)+$", parts.path):
+        return None
+    path, user_home = SITE["path"].rstrip("/"), site_home(SITE)
+    if not path.endswith(parts.path) or not user_home or not path[:-len(parts.path)].startswith(user_home + "/"):
+        return None
+    return siteurl[len(home):]
+
+
 def op_wp_site_urls(args):
     home = wp_ok(SITE, "option", "get", "home")
     siteurl = wp_ok(SITE, "option", "get", "siteurl")
     want_home, want_siteurl = expected_urls()
-    return {"home": home, "siteurl": siteurl, "expected": want_home, "expected_siteurl": want_siteurl,
-            "matches": home.rstrip("/") == want_home and siteurl.rstrip("/") == want_siteurl}
+    result = {"home": home, "siteurl": siteurl, "expected": want_home, "expected_siteurl": want_siteurl,
+              "matches": home.rstrip("/") == want_home and siteurl.rstrip("/") == want_siteurl,
+              "subdirectory_install_suspected": False}
+    if wordpress_folder(siteurl):
+        # wp_set_site_urls leaves this siteurl alone (it restores only a changed home). When siteurl is the one
+        # difference, the configuration most likely just lacks "siteurl" (rather than the address having been hijacked).
+        result["suspected_siteurl"] = siteurl.rstrip("/")
+        result["subdirectory_install_suspected"] = home.rstrip("/") == want_home
+    return result
 
 
 def op_wp_maintenance_status(args):
@@ -426,12 +495,24 @@ def op_wp_db_export(args):
 def op_wp_set_site_urls(args):
     home, siteurl = expected_urls()
     before = op_wp_site_urls(args)
+    folder = wordpress_folder(before["siteurl"])
+    if folder and before["home"].rstrip("/") == home:
+        raise Refused('WordPress appears to live in %s (siteurl is %s); set "siteurl" for this site in %s to its real '
+                      'WordPress address (%s if it has no folder of its own) before restoring the addresses'
+                      % (folder, before["siteurl"].rstrip("/"), CONFIG_PATH, home))
     wp_ok(SITE, "option", "update", "home", home)
+    result = {"before": {"home": before["home"], "siteurl": before["siteurl"]}, "after": home, "after_siteurl": siteurl,
+              "siteurl_kept": bool(folder)}
+    if folder:
+        # home was changed, and that redirect is undone now. siteurl stays on the site's own host: setting it to
+        # home would break wp-admin if WordPress really lives in that folder.
+        result["after_siteurl"] = before["siteurl"]
+        return result
     try:
         wp_ok(SITE, "option", "update", "siteurl", siteurl)
     except Failed as exc:
         raise Failed("home was set to %s, but setting siteurl failed (it is still %s): %s" % (home, before["siteurl"], exc))
-    return {"before": {"home": before["home"], "siteurl": before["siteurl"]}, "after": home, "after_siteurl": siteurl}
+    return result
 
 
 def op_wp_plugin_deactivate(args):

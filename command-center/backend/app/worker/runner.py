@@ -18,6 +18,7 @@ from .. import tasks as task_service
 from ..agents.base import AgentContext, AgentResult
 from ..agents.http import ReadOnlyHttpClient
 from ..agents.registry import get_agent
+from ..agents.wp_server import SiteBusy
 from ..config import Settings
 from ..db import session_scope, sessionmaker
 from ..integrations import IntegrationHub, build_hub
@@ -27,6 +28,8 @@ from ..workflow import WorkflowEngine, build_engine
 from . import forwarder, scheduler
 
 log = logging.getLogger(__name__)
+
+BUSY_RETRY_SECONDS = 30  # a task whose site is busy (SiteBusy) is tried again this much later
 
 CLAIM_SQL = text(
     """
@@ -199,6 +202,7 @@ class Worker:
                 requested_by = task.created_by
                 approval = await session.scalar(select(Approval).where(Approval.task_id == task_id))
                 approved_by = approval.decided_by if approval and approval.status == "approved" else ""
+                approved_target = dict(approval.details or {}) if approved_by else None
                 refused = ""
                 if approved_by:
                     # The approval covers the target as it was then; refuse if it was re-linked or changed since.
@@ -232,6 +236,7 @@ class Worker:
                         task_id=task_id,
                         request_id=request_id,
                         approved_by=approved_by,
+                        approved_target=approved_target,
                         logs=logs,
                         ssh=self.ssh,
                         requested_by=requested_by,
@@ -245,6 +250,8 @@ class Worker:
                     except BaseException:
                         await session.rollback()
                         raise
+            except SiteBusy as exc:
+                await self._requeue(task_id, str(exc), logs)
             except TimeoutError:
                 await self._fail(task_id, f"timed out after {timeout}s", logs)
             except Exception as exc:  # noqa: BLE001 - every failure is recorded on the task
@@ -300,6 +307,20 @@ class Worker:
             session.add(TaskLog(task_id=task_id, level=level, message=message[:4000]))
         await session.flush()
         await task_service.on_task_terminal(session, self.settings, task)
+
+    async def _requeue(self, task_id: int, reason: str, logs: list[tuple[str, str]]) -> None:
+        """Its site is busy with other server-side work: back in the queue (not an attempt, not a failure), freeing the slot."""
+        log.info("task %s waits: %s", task_id, reason)
+        async with session_scope() as session:
+            task = await session.get(Task, task_id, with_for_update=True)
+            for level, message in [*logs, ("info", f"{reason}; trying again in {BUSY_RETRY_SECONDS}s")]:
+                session.add(TaskLog(task_id=task_id, level=level, message=message[:4000]))
+            task.status = "queued"
+            task.run_after = _now() + timedelta(seconds=BUSY_RETRY_SECONDS)
+            task.attempts = max(task.attempts - 1, 0)
+            task.locked_by = ""
+            task.started_at = None
+            task.updated_at = _now()
 
     async def _fail(self, task_id: int, error: str, logs: list[tuple[str, str]]) -> None:
         async with session_scope() as session:

@@ -195,6 +195,45 @@ async def test_the_worker_refuses_an_approved_change_whose_target_changed(admin,
         assert (await s.scalars(select(ServerCommand))).all() == []  # nothing was sent
 
 
+async def test_the_worker_refuses_an_approved_change_whose_target_became_production(admin, make_worker):
+    server, approval = await server_request(admin)  # staging: approved without a typed name
+    assert (await admin.post(f"/api/approvals/{approval['id']}/decision", json={"approve": True})).status_code == 200
+    await admin.patch(f"/api/servers/{server['id']}", json={"environment": "production"})  # before the worker picks it up
+    await make_worker().run_until_idle()
+    task = (await admin.get(f"/api/tasks/{approval['task_id']}")).json()["task"]
+    assert task["status"] == "failed" and "became a production target" in task["error"]
+    async with session_scope() as s:
+        assert (await s.scalars(select(ServerCommand))).all() == []
+
+
+async def test_a_restart_checks_its_target_again_in_its_own_session(admin, make_worker, monkeypatch):
+    from app import tasks as task_service
+    from app.models import Server
+
+    key = await ssh_key(admin)
+    async with FakeGateServer(key["openssh"]) as srv:
+        server = await add_server(admin, srv, environment="staging")
+        task = await run_task(admin, make_worker, "server_management", "restart_service", {"server_id": server["id"], "service": "httpd"})
+        approval = (await admin.get("/api/approvals")).json()["approvals"][0]
+        assert (await admin.post(f"/api/approvals/{approval['id']}/decision", json={"approve": True})).status_code == 200
+        real = task_service.current_target
+
+        async def check_then_promote(session, approval, params, *, lock=False):
+            # The worker's check passes; the server becomes production before the agent loads it.
+            fresh = await real(session, approval, params, lock=lock)
+            async with session_scope() as s:
+                (await s.get(Server, server["id"])).environment = "production"
+            return fresh
+
+        monkeypatch.setattr(task_service, "current_target", check_then_promote)
+        await make_worker().run_until_idle()
+        task = (await admin.get(f"/api/tasks/{task['id']}")).json()["task"]
+        assert task["status"] == "failed" and "became a production target" in task["error"]
+        assert srv.calls("systemctl") == []
+    async with session_scope() as s:
+        assert (await s.scalars(select(ServerCommand))).all() == []  # the gate was never opened
+
+
 async def test_names_used_for_typed_confirmation_are_trimmed_and_never_empty(admin):
     assert (await admin.post("/api/sites", json={"name": "   ", "url": "https://blank.example"})).status_code == 422
     site = (await admin.post("/api/sites", json={"name": " Shop ", "url": "https://shop.example"})).json()["site"]
