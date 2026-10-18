@@ -39,7 +39,11 @@ class Unreachable(SSHError):
     pass
 
 
-class GateTimeout(SSHError):
+class OutcomeUnknown(SSHError):
+    """The request reached the server, but no answer came back: it may have run, fully or partly."""
+
+
+class GateTimeout(OutcomeUnknown):
     """No answer in time; the operation may still be running on the server."""
 
 

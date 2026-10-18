@@ -56,6 +56,7 @@ class GateSession:
         self.gateway, self.ctx, self.server = gateway, ctx, server
         self.settings = gateway.settings
         self._conn: GateConnection | None = None
+        self.sent_change = False  # a change operation has been sent to the server in this session
 
     async def __aenter__(self) -> GateSession:
         server = self.server
@@ -107,6 +108,8 @@ class GateSession:
             s.add(row)
             await s.flush()
             audit_id = row.id
+        if spec.kind == "change":
+            self.sent_change = True
         try:
             answer = await self._conn.request(command, timeout)
         except GateTimeout as exc:
