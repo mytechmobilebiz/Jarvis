@@ -50,8 +50,8 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
         response.headers.setdefault("Cache-Control", "no-store")
         return response
 
-    from .api import admin, auth, credit_repair, integrations, records, sites, supervisor, system, work
+    from .api import admin, auth, credit_repair, integrations, records, servers, sites, supervisor, system, work
 
-    for module in (auth, system, work, supervisor, sites, integrations, admin, records, credit_repair):
+    for module in (auth, system, work, supervisor, sites, servers, integrations, admin, records, credit_repair):
         app.include_router(module.router)
     return app

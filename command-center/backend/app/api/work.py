@@ -32,6 +32,8 @@ class RunBody(BaseModel):
 class DecisionBody(BaseModel):
     approve: bool
     note: str = Field("", max_length=2000)
+    # For production changes: the target's name, typed by an admin.
+    confirm: str = Field("", max_length=200)
 
 
 async def require_sensitive_access(session: AsyncSession, principal: Principal, agent_name: str) -> None:
@@ -230,7 +232,8 @@ async def decide(
         raise HTTPException(404, "no such approval")
     await require_sensitive_access(session, principal, approval.agent)
     task = await task_service.decide_approval(
-        session, settings, approval, approve=body.approve, actor=principal.name, note=body.note
+        session, settings, approval, approve=body.approve, actor=principal.name, note=body.note,
+        actor_role=principal.role, confirm=body.confirm,
     )
     await audit.record(
         session, principal.name, "approval.approved" if body.approve else "approval.rejected", "approval", approval_id,

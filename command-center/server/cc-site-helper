@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""cc-site-helper: file checks cc-gate cannot do with WP-CLI, run as the site's own user.
+
+cc-gate starts it through sudo as the configured site user:
+
+    cc-site-helper debug_log_status <site>
+    cc-site-helper debug_log_quarantine <site>
+
+It only touches <site path>/wp-content/debug.log, and quarantining moves the
+file into the site's backup folder (nothing is deleted). It refuses to run as
+root and refuses unless it runs as exactly the user configured for that site.
+"""
+
+import datetime
+import json
+import os
+import pwd
+import re
+import shutil
+import stat
+import sys
+
+CONFIG_PATH = "/etc/cc-gate/config.json"
+REQUIRE_ROOT_OWNED_CONFIG = True
+SITE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def answer(ok, result=None, error=""):
+    sys.stdout.write(json.dumps({"ok": ok, "result": result, "error": error}, sort_keys=True) + "\n")
+    return 0 if ok else 1
+
+
+def main(argv):
+    if os.geteuid() == 0 or os.getuid() == 0:
+        return answer(False, error="cc-site-helper must not run as root")
+    if len(argv) != 3 or argv[1] not in ("debug_log_status", "debug_log_quarantine") or not SITE_RE.match(argv[2]):
+        return answer(False, error="usage: cc-site-helper debug_log_status|debug_log_quarantine <site>")
+    op, key = argv[1], argv[2]
+    st = os.stat(CONFIG_PATH)
+    if REQUIRE_ROOT_OWNED_CONFIG and (st.st_uid != 0 or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+        return answer(False, error="configuration must be owned by root and not writable by group or others")
+    with open(CONFIG_PATH) as fh:
+        config = json.load(fh)
+    site = config.get("sites", {}).get(key)
+    if not site or not site.get("path") or not site.get("user"):
+        return answer(False, error="site is not configured")
+    if pwd.getpwnam(site["user"]).pw_uid != os.getuid():
+        return answer(False, error="must run as the site's user")
+    log = os.path.join(site["path"], "wp-content", "debug.log")
+    try:
+        info = os.lstat(log)
+    except FileNotFoundError:
+        return answer(True, {"exists": False})
+    if not stat.S_ISREG(info.st_mode):
+        return answer(False, error="wp-content/debug.log is not a regular file (symlink or other); not touching it")
+    status = {"exists": True, "bytes": info.st_size,
+              "modified": datetime.datetime.utcfromtimestamp(info.st_mtime).isoformat() + "Z"}
+    if op == "debug_log_status":
+        return answer(True, status)
+    target_dir = os.path.join(config.get("backup_dir", "/var/lib/cc-gate/backups"), key)
+    if not os.path.isdir(target_dir):
+        return answer(False, error="backup folder %s does not exist (run install-gate.sh --sync-sites)" % target_dir)
+    target = os.path.join(target_dir, "debug-%s.log" % datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"))
+    shutil.move(log, target)
+    return answer(True, {**status, "moved_to": target})
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

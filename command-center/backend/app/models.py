@@ -187,6 +187,9 @@ class Site(Base):
     last_status: Mapped[str] = mapped_column(Text, default="unknown")
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_check_id: Mapped[int | None] = mapped_column(BigInteger)
+    environment: Mapped[str] = mapped_column(Text, default="production")
+    server_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("servers.id", ondelete="SET NULL"))
+    server_site_key: Mapped[str] = mapped_column(Text, default="")
 
 
 class SiteCheck(Base):
@@ -322,3 +325,47 @@ class OutboxEntry(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     approved_by: Mapped[str] = mapped_column(Text)
     result: Mapped[str] = mapped_column(Text, default="recorded, not sent")
+
+
+class Server(Base):
+    __tablename__ = "servers"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, unique=True)
+    host: Mapped[str] = mapped_column(Text)
+    port: Mapped[int] = mapped_column(Integer, default=22)
+    username: Mapped[str] = mapped_column(Text)
+    environment: Mapped[str] = mapped_column(Text, default="production")
+    host_key: Mapped[str] = mapped_column(Text, default="")
+    host_key_fingerprint: Mapped[str] = mapped_column(Text, default="")
+    host_key_trusted_by: Mapped[str] = mapped_column(Text, default="")
+    host_key_trusted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    offered_host_key: Mapped[str] = mapped_column(Text, default="")
+    offered_fingerprint: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    last_hello: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = _now_col()
+    updated_at: Mapped[datetime] = _now_col()
+
+
+class ServerCommand(Base):
+    __tablename__ = "server_commands"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    server_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("servers.id", ondelete="CASCADE"))
+    task_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("tasks.id", ondelete="SET NULL"))
+    op: Mapped[str] = mapped_column(Text)
+    args: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    kind: Mapped[str] = mapped_column(Text)
+    requested_by: Mapped[str] = mapped_column(Text, default="")
+    approved_by: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime] = _now_col()
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    exit_status: Mapped[int | None] = mapped_column(Integer)
+    ok: Mapped[bool | None] = mapped_column(Boolean)
+    refused: Mapped[bool] = mapped_column(Boolean, default=False)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    error: Mapped[str] = mapped_column(Text, default="")
+    output_sha256: Mapped[str] = mapped_column(Text, default="")

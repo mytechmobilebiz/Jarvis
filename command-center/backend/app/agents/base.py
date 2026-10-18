@@ -97,6 +97,9 @@ class AgentContext:
     request_id: int | None = None
     approved_by: str = ""  # set only when a human approved this task
     logs: list[tuple[str, str]] = field(default_factory=list)
+    ssh: Any = None  # app.ssh.gateway.SSHGateway: servers, only through cc-gate
+    requested_by: str = ""
+    agent_name: str = ""
 
     def log(self, message: str, level: str = "info") -> None:
         self.logs.append((level, message))
@@ -114,6 +117,7 @@ class Capability:
     params_model: type[Params]
     method_name: str
     examples: tuple[str, ...] = ()
+    timeout_seconds: int | None = None  # overrides TASK_TIMEOUT_SECONDS for slow work
 
     def params_schema(self) -> dict[str, Any]:
         return self.params_model.model_json_schema()
@@ -126,6 +130,7 @@ def capability(
     description: str,
     params: type[Params] = NoParams,
     examples: tuple[str, ...] = (),
+    timeout_seconds: int | None = None,
 ) -> Callable[[Handler], Handler]:
     def decorate(fn: Handler) -> Handler:
         fn.__capability__ = {  # type: ignore[attr-defined]
@@ -134,6 +139,7 @@ def capability(
             "risk": risk,
             "params_model": params,
             "examples": examples,
+            "timeout_seconds": timeout_seconds,
         }
         return fn
 
@@ -185,6 +191,14 @@ class BaseAgent:
 
     def intents(self) -> list[Intent]:
         return []
+
+    async def approval_context(self, session: AsyncSession, capability: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Facts shown with an approval request: {"target": ..., "environment": ...}.
+
+        "production": True makes the approval need an admin who types the
+        "confirm" text (the target's name) before it is accepted.
+        """
+        return {}
 
     async def run(self, ctx: AgentContext, capability_name: str, raw_params: dict[str, Any]) -> AgentResult:
         cap = self._capabilities[capability_name]

@@ -1,0 +1,444 @@
+#!/usr/bin/env python3
+"""cc-gate: the only program the Infinite AI Command Center can run on a server.
+
+Install it as the forced command of the Command Center's SSH key:
+
+    command="/usr/local/bin/cc-gate",restrict ssh-ed25519 AAAA... infinite-command-center
+
+sshd then runs this program for every connection, whatever command the client
+asked for, and passes that request in SSH_ORIGINAL_COMMAND. The request must be
+
+    cc-gate v1 <operation> [arguments...]
+
+Only the operations in OPS exist; their arguments are checked against strict
+patterns and the root-owned configuration (/etc/cc-gate/config.json); programs
+are started without a shell. Operations that change anything are refused unless
+the configuration sets "allow_changes": true. The gate never runs as root.
+
+Answers are one JSON object on stdout. Exit status: 0 done, 1 the operation
+failed, 2 the request was refused.
+
+Requires Python 3.6+ (on EL8/EL9 /usr/libexec/platform-python is always present).
+"""
+
+import datetime
+import json
+import os
+import pwd
+import re
+import shlex
+import socket
+import stat
+import subprocess
+import sys
+import time
+
+GATE_VERSION = "1.0.0"
+CONFIG_PATH = "/etc/cc-gate/config.json"
+# The configuration decides what the gate may do, so only root may be able to change it.
+REQUIRE_ROOT_OWNED_CONFIG = True
+SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+SITE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,99}$")
+SERVICE_RE = re.compile(r"^[a-z0-9][a-z0-9@._-]{0,63}$")
+ONOFF = ("on", "off")
+
+# operation -> (kind, argument names). kind "read" never changes anything;
+# kind "change" needs "allow_changes": true. The Command Center keeps an
+# identical table (backend/app/ssh/ops.py); a test checks they match.
+OPS = {
+    "hello": ("read", []),
+    "system_overview": ("read", []),
+    "service_status": ("read", ["service"]),
+    "wp_core_version": ("read", ["site"]),
+    "wp_core_verify": ("read", ["site"]),
+    "wp_plugin_list": ("read", ["site"]),
+    "wp_theme_list": ("read", ["site"]),
+    "wp_admins": ("read", ["site"]),
+    "wp_site_urls": ("read", ["site"]),
+    "wp_maintenance_status": ("read", ["site"]),
+    "wp_debug_log_status": ("read", ["site"]),
+    "wp_db_export": ("change", ["site"]),
+    "wp_set_site_urls": ("change", ["site"]),
+    "wp_plugin_deactivate": ("change", ["site", "slug"]),
+    "wp_plugin_activate": ("change", ["site", "slug"]),
+    "wp_plugin_update": ("change", ["site", "slug"]),
+    "wp_plugin_reinstall": ("change", ["site", "slug"]),
+    "wp_core_reinstall": ("change", ["site"]),
+    "wp_maintenance": ("change", ["site", "onoff"]),
+    "wp_cache_flush": ("change", ["site"]),
+    "wp_rewrite_flush": ("change", ["site"]),
+    "debug_log_quarantine": ("change", ["site"]),
+    "service_restart": ("change", ["service"]),
+}
+SLOW_OPS = {"wp_core_verify", "wp_plugin_update", "wp_plugin_reinstall", "wp_core_reinstall", "wp_db_export"}
+
+
+class Refused(Exception):
+    """The request is not allowed (exit status 2)."""
+
+
+class Failed(Exception):
+    """The operation ran and failed (exit status 1)."""
+
+
+def emit(payload, code):
+    sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+    sys.stdout.flush()
+    return code
+
+
+def load_config():
+    try:
+        st = os.stat(CONFIG_PATH)
+    except OSError as exc:
+        raise Refused("configuration %s is missing: %s" % (CONFIG_PATH, exc))
+    if REQUIRE_ROOT_OWNED_CONFIG and (st.st_uid != 0 or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+        raise Refused("configuration must be owned by root and not writable by group or others")
+    with open(CONFIG_PATH) as fh:
+        config = json.load(fh)
+    config.setdefault("allow_changes", False)
+    config.setdefault("sites", {})
+    config.setdefault("services", [])
+    config.setdefault("restartable_services", [])
+    config.setdefault("wp_cli", "/usr/local/bin/wp")
+    config.setdefault("sudo", "/usr/bin/sudo")
+    config.setdefault("systemctl", "/usr/bin/systemctl")
+    config.setdefault("site_helper", "/usr/local/lib/cc-gate/cc-site-helper")
+    config.setdefault("timeout_seconds", 120)
+    config.setdefault("slow_timeout_seconds", 600)
+    config.setdefault("max_output_bytes", 1000000)
+    return config
+
+
+def parse_request(raw):
+    if raw is None or not raw.strip():
+        raise Refused("interactive sessions are not allowed; this key can only run cc-gate operations")
+    if len(raw) > 2048:
+        raise Refused("request too long")
+    try:
+        tokens = shlex.split(raw)
+    except ValueError:
+        raise Refused("request could not be parsed")
+    if len(tokens) < 3 or tokens[0] != "cc-gate" or tokens[1] != "v1":
+        raise Refused("only 'cc-gate v1 <operation> ...' requests are accepted")
+    op, args = tokens[2], tokens[3:]
+    if op not in OPS:
+        raise Refused("unknown operation %r" % op)
+    names = OPS[op][1]
+    if len(args) != len(names):
+        raise Refused("%s takes %d argument(s)" % (op, len(names)))
+    return op, dict(zip(names, args))
+
+
+def validate(op, args, config):
+    kind = OPS[op][0]
+    if kind == "change" and config.get("allow_changes") is not True:
+        raise Refused("changes are switched off on this server (allow_changes is false in %s)" % CONFIG_PATH)
+    if "site" in args:
+        if not SITE_RE.match(args["site"]) or args["site"] not in config["sites"]:
+            raise Refused("site %r is not configured on this server" % args["site"])
+        site = config["sites"][args["site"]]
+        for key in ("path", "user", "url"):
+            if not site.get(key):
+                raise Refused("site %r is missing %r in the configuration" % (args["site"], key))
+    if "slug" in args and not SLUG_RE.match(args["slug"]):
+        raise Refused("invalid plugin name")
+    if "service" in args:
+        if not SERVICE_RE.match(args["service"]) or args["service"] not in config["services"]:
+            raise Refused("service %r is not allowed" % args["service"])
+        if op == "service_restart" and args["service"] not in config["restartable_services"]:
+            raise Refused("service %r may not be restarted" % args["service"])
+    if "onoff" in args and args["onoff"] not in ONOFF:
+        raise Refused("expected on or off")
+
+
+def current_user():
+    return pwd.getpwuid(os.getuid()).pw_name
+
+
+def run(argv, config, slow=False):
+    timeout = config["slow_timeout_seconds"] if slow else config["timeout_seconds"]
+    try:
+        proc = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd="/",
+            env={"PATH": SAFE_PATH, "LANG": "C.UTF-8", "HOME": "/tmp"}, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise Failed("timed out after %d seconds" % timeout)
+    except OSError as exc:
+        raise Failed("could not start %s: %s" % (argv[0], exc))
+    limit = config["max_output_bytes"]
+    out = proc.stdout[:limit].decode("utf-8", "replace")
+    err = proc.stderr[: limit // 4].decode("utf-8", "replace")
+    return proc.returncode, out, err
+
+
+def as_site_user(site, argv):
+    """Run argv as the site's own system user (through sudo unless the gate already is that user)."""
+    if site["user"] == current_user():
+        return argv
+    return [CONFIG["sudo"], "-n", "-H", "-u", site["user"], "--"] + argv
+
+
+def wp(site, *wp_args, skip_code=True):
+    argv = [CONFIG["wp_cli"], "--path=" + site["path"], "--no-color"]
+    if skip_code:
+        # Do not run plugin or theme code for maintenance commands; a broken
+        # or infected plugin then cannot interfere.
+        argv += ["--skip-plugins", "--skip-themes"]
+    return as_site_user(site, argv + list(wp_args))
+
+
+def wp_ok(site, *wp_args, slow=False, skip_code=True):
+    code, out, err = run(wp(site, *wp_args, skip_code=skip_code), CONFIG, slow=slow)
+    if code != 0:
+        raise Failed((err or out).strip()[-2000:] or "wp-cli exited with status %d" % code)
+    return out.strip()
+
+
+def wp_json(site, *wp_args):
+    text = wp_ok(site, *wp_args)
+    try:
+        return json.loads(text or "[]")
+    except ValueError:
+        raise Failed("wp-cli did not return JSON")
+
+
+def helper(site, op, site_key):
+    code, out, err = run(as_site_user(site, [CONFIG["site_helper"], op, site_key]), CONFIG)
+    try:
+        data = json.loads(out)
+    except ValueError:
+        raise Failed((err or out).strip()[-2000:] or "site helper failed")
+    if code != 0 or not data.get("ok"):
+        raise Failed(data.get("error") or "site helper failed")
+    return data["result"]
+
+
+def utc_stamp():
+    return datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+
+
+# ------------------------------------------------------------------ operations
+
+
+def op_hello(args):
+    return {
+        "gate_version": GATE_VERSION,
+        "user": current_user(),
+        "uid": os.getuid(),
+        "hostname": socket.gethostname(),
+        "allow_changes": CONFIG.get("allow_changes") is True,
+        "ops": sorted(op for op, (kind, _) in OPS.items() if kind == "read" or CONFIG.get("allow_changes") is True),
+        "sites": {key: {"url": s.get("url", "")} for key, s in sorted(CONFIG["sites"].items())},
+        "services": list(CONFIG["services"]),
+        "restartable_services": list(CONFIG["restartable_services"]),
+    }
+
+
+def op_system_overview(args):
+    with open("/proc/uptime") as fh:
+        uptime = float(fh.read().split()[0])
+    with open("/proc/loadavg") as fh:
+        load = [float(x) for x in fh.read().split()[:3]]
+    mem = {}
+    with open("/proc/meminfo") as fh:
+        for line in fh:
+            key, _, rest = line.partition(":")
+            if key in ("MemTotal", "MemAvailable"):
+                mem[key] = int(rest.split()[0]) // 1024
+    disks = []
+    for mount in ("/", "/home", "/var", "/tmp"):
+        if not os.path.ismount(mount):
+            continue
+        sv = os.statvfs(mount)
+        total = sv.f_blocks * sv.f_frsize
+        free = sv.f_bavail * sv.f_frsize
+        used = total - sv.f_bfree * sv.f_frsize
+        disks.append({"mount": mount, "total_gb": round(total / 1e9, 1), "free_gb": round(free / 1e9, 1),
+                      "used_pct": round(100.0 * used / total, 1) if total else 0.0})
+    os_name = ""
+    try:
+        with open("/etc/os-release") as fh:
+            for line in fh:
+                if line.startswith("PRETTY_NAME="):
+                    os_name = line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    return {"uptime_seconds": int(uptime), "load": load, "cpus": os.cpu_count(),
+            "memory_mb": {"total": mem.get("MemTotal"), "available": mem.get("MemAvailable")}, "disks": disks, "os": os_name}
+
+
+def op_service_status(args):
+    code, out, err = run([CONFIG["systemctl"], "is-active", args["service"]], CONFIG)
+    return {"service": args["service"], "state": (out.strip() or err.strip() or "unknown").splitlines()[0]}
+
+
+def op_wp_core_version(args):
+    return {"version": wp_ok(SITE, "core", "version")}
+
+
+def op_wp_core_verify(args):
+    code, out, err = run(wp(SITE, "core", "verify-checksums"), CONFIG, slow=True)
+    text = (out + "\n" + err).strip()
+    if code == 0:
+        return {"verified": True, "detail": text[-4000:]}
+    if "checksums" in text.lower() and ("couldn't get" in text.lower() or "could not get" in text.lower()):
+        return {"verified": None, "detail": "checksums could not be downloaded from WordPress.org: " + text[-1000:]}
+    problems = [line for line in text.splitlines() if line.startswith("Warning:")][:200]
+    return {"verified": False, "files": problems, "detail": text[-4000:]}
+
+
+def op_wp_plugin_list(args):
+    return {"plugins": wp_json(SITE, "plugin", "list", "--format=json", "--fields=name,status,version,update,update_version")}
+
+
+def op_wp_theme_list(args):
+    return {"themes": wp_json(SITE, "theme", "list", "--format=json", "--fields=name,status,version,update,update_version")}
+
+
+def op_wp_admins(args):
+    return {"admins": wp_json(SITE, "user", "list", "--role=administrator", "--format=json", "--fields=ID,user_login,user_registered")}
+
+
+def op_wp_site_urls(args):
+    home = wp_ok(SITE, "option", "get", "home")
+    siteurl = wp_ok(SITE, "option", "get", "siteurl")
+    expected = SITE["url"].rstrip("/")
+    return {"home": home, "siteurl": siteurl, "expected": expected,
+            "matches": home.rstrip("/") == expected and siteurl.rstrip("/") == expected}
+
+
+def op_wp_maintenance_status(args):
+    code, out, err = run(wp(SITE, "maintenance-mode", "is-active"), CONFIG)
+    return {"active": code == 0}
+
+
+def op_wp_debug_log_status(args):
+    return helper(SITE, "debug_log_status", ARGS["site"])
+
+
+def op_wp_db_export(args):
+    target_dir = os.path.join(CONFIG.get("backup_dir", "/var/lib/cc-gate/backups"), args["site"])
+    target = os.path.join(target_dir, "%s-%s.sql" % (args["site"], utc_stamp()))
+    wp_ok(SITE, "db", "export", target, "--add-drop-table", slow=True)
+    return {"file": target}
+
+
+def op_wp_set_site_urls(args):
+    url = SITE["url"].rstrip("/")
+    before = op_wp_site_urls(args)
+    wp_ok(SITE, "option", "update", "home", url)
+    wp_ok(SITE, "option", "update", "siteurl", url)
+    return {"before": {"home": before["home"], "siteurl": before["siteurl"]}, "after": url}
+
+
+def op_wp_plugin_deactivate(args):
+    return {"output": wp_ok(SITE, "plugin", "deactivate", args["slug"])}
+
+
+def op_wp_plugin_activate(args):
+    # Activation runs the plugin's activation hook, so plugin code is loaded here.
+    return {"output": wp_ok(SITE, "plugin", "activate", args["slug"], skip_code=False)}
+
+
+def op_wp_plugin_update(args):
+    return {"output": wp_ok(SITE, "plugin", "update", args["slug"], slow=True)}
+
+
+def op_wp_plugin_reinstall(args):
+    version = wp_ok(SITE, "plugin", "get", args["slug"], "--field=version")
+    if not re.match(r"^[0-9][0-9A-Za-z.\-]{0,40}$", version):
+        raise Failed("unexpected plugin version %r" % version)
+    out = wp_ok(SITE, "plugin", "install", args["slug"], "--force", "--version=" + version, slow=True)
+    return {"version": version, "output": out}
+
+
+def op_wp_core_reinstall(args):
+    version = wp_ok(SITE, "core", "version")
+    if not re.match(r"^[0-9]+\.[0-9]+(\.[0-9]+)?$", version):
+        raise Failed("unexpected WordPress version %r" % version)
+    out = wp_ok(SITE, "core", "download", "--skip-content", "--force", "--version=" + version, slow=True)
+    return {"version": version, "output": out}
+
+
+def op_wp_maintenance(args):
+    action = "activate" if args["onoff"] == "on" else "deactivate"
+    return {"output": wp_ok(SITE, "maintenance-mode", action)}
+
+
+def op_wp_cache_flush(args):
+    return {"output": wp_ok(SITE, "cache", "flush")}
+
+
+def op_wp_rewrite_flush(args):
+    return {"output": wp_ok(SITE, "rewrite", "flush")}
+
+
+def op_debug_log_quarantine(args):
+    return helper(SITE, "debug_log_quarantine", ARGS["site"])
+
+
+def op_service_restart(args):
+    code, out, err = run([CONFIG["sudo"], "-n", CONFIG["systemctl"], "restart", args["service"]], CONFIG)
+    if code != 0:
+        raise Failed((err or out).strip()[-2000:] or "restart failed")
+    return {"service": args["service"], "restarted": True}
+
+
+CONFIG = {}
+SITE = {}
+ARGS = {}
+
+
+def log_line(entry):
+    path = CONFIG.get("log_file")
+    if not path:
+        return
+    try:
+        with open(path, "a") as fh:
+            fh.write(json.dumps(entry, sort_keys=True) + "\n")
+    except OSError:
+        pass
+    try:
+        import syslog
+
+        syslog.openlog("cc-gate", 0, syslog.LOG_AUTH)
+        syslog.syslog(syslog.LOG_INFO, json.dumps(entry, sort_keys=True))
+    except Exception:  # noqa: BLE001 - syslog is best effort
+        pass
+
+
+def main():
+    global CONFIG, SITE, ARGS
+    started = time.time()
+    raw = os.environ.get("SSH_ORIGINAL_COMMAND")
+    op, args, code, payload = None, {}, 2, {}
+    try:
+        if os.geteuid() == 0 or os.getuid() == 0:
+            raise Refused("cc-gate must not run as root; use a dedicated unprivileged account")
+        CONFIG = load_config()
+        op, args = parse_request(raw)
+        validate(op, args, CONFIG)
+        ARGS = args
+        SITE = CONFIG["sites"].get(args.get("site", ""), {})
+        result = globals()["op_" + op](args)
+        payload, code = {"ok": True, "op": op, "gate_version": GATE_VERSION, "result": result}, 0
+    except Refused as exc:
+        payload, code = {"ok": False, "op": op, "gate_version": GATE_VERSION, "refused": True, "error": str(exc)}, 2
+    except Failed as exc:
+        payload, code = {"ok": False, "op": op, "gate_version": GATE_VERSION, "refused": False, "error": str(exc)}, 1
+    except Exception as exc:  # noqa: BLE001 - never leak a traceback to the client
+        payload, code = {"ok": False, "op": op, "gate_version": GATE_VERSION, "refused": False,
+                         "error": "internal error: %s" % exc.__class__.__name__}, 1
+    log_line({
+        "at": datetime.datetime.utcnow().isoformat() + "Z", "user": current_user(), "client": os.environ.get("SSH_CLIENT", "").split(" ")[0],
+        "op": op, "args": args, "request": (raw or "")[:300], "exit": code, "ms": int((time.time() - started) * 1000),
+    })
+    return emit(payload, code)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

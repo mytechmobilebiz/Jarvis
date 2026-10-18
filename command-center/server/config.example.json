@@ -1,0 +1,21 @@
+{
+  "allow_changes": false,
+  "sites": {
+    "example": {
+      "path": "/home/exampleuser/public_html",
+      "user": "exampleuser",
+      "url": "https://example.com"
+    }
+  },
+  "services": ["httpd", "nginx", "mariadb", "mysqld", "php-fpm", "cwpsrv", "named", "postfix", "dovecot", "csf", "lfd"],
+  "restartable_services": [],
+  "wp_cli": "/usr/local/bin/wp",
+  "sudo": "/usr/bin/sudo",
+  "systemctl": "/usr/bin/systemctl",
+  "site_helper": "/usr/local/lib/cc-gate/cc-site-helper",
+  "backup_dir": "/var/lib/cc-gate/backups",
+  "log_file": "/var/log/cc-gate/gate.log",
+  "timeout_seconds": 120,
+  "slow_timeout_seconds": 600,
+  "max_output_bytes": 1000000
+}

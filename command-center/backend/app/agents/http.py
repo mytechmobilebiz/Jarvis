@@ -64,6 +64,44 @@ def _is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     )
 
 
+async def default_resolver(host: str) -> list[str]:
+    loop = asyncio.get_running_loop()
+    infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    return [info[4][0] for info in infos]
+
+
+async def check_public_host(host: str | None, allowed_private: set[str], resolver=None) -> None:
+    """Refuse hosts that are, or resolve to, loopback, private, link-local or other non-public addresses.
+
+    Hosts listed in allowed_private are let through (e.g. a local test server).
+    Shared by the read-only HTTP client and the SSH client.
+    """
+    if not host:
+        raise BlockedTarget("no host")
+    host = host.lower().strip("[]")
+    if host in allowed_private:
+        return
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if not _is_public(literal):
+            raise BlockedTarget(f"{host} is not a public address")
+        return
+    if host == "localhost" or host.endswith((".localhost", ".internal", ".local")):
+        raise BlockedTarget(f"{host} is an internal hostname")
+    try:
+        addresses = await (resolver or default_resolver)(host)
+    except OSError:
+        # Unresolvable here: the connection itself will fail (or an
+        # egress proxy resolves it outside our network), so let it through.
+        return
+    for addr in addresses:
+        if not _is_public(ipaddress.ip_address(addr.split("%")[0])):
+            raise BlockedTarget(f"{host} resolves to non-public address {addr}")
+
+
 class ReadOnlyHttpClient:
     def __init__(
         self,
@@ -92,37 +130,12 @@ class ReadOnlyHttpClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    @staticmethod
-    async def _default_resolver(host: str) -> list[str]:
-        loop = asyncio.get_running_loop()
-        infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-        return [info[4][0] for info in infos]
+    _default_resolver = staticmethod(default_resolver)
 
     async def check_target(self, host: str | None) -> None:
         if not host:
             raise BlockedTarget("URL has no host")
-        host = host.lower().strip("[]")
-        if host in self._allowed_private:
-            return
-        try:
-            literal = ipaddress.ip_address(host)
-        except ValueError:
-            literal = None
-        if literal is not None:
-            if not _is_public(literal):
-                raise BlockedTarget(f"{host} is not a public address")
-            return
-        if host == "localhost" or host.endswith((".localhost", ".internal", ".local")):
-            raise BlockedTarget(f"{host} is an internal hostname")
-        try:
-            addresses = await self._resolver(host)
-        except OSError:
-            # Unresolvable here: the connection itself will fail (or an
-            # egress proxy resolves it outside our network), so let it through.
-            return
-        for addr in addresses:
-            if not _is_public(ipaddress.ip_address(addr.split("%")[0])):
-                raise BlockedTarget(f"{host} resolves to non-public address {addr}")
+        await check_public_host(host, self._allowed_private, self._resolver)
 
     async def _guard(self, request: httpx.Request) -> None:
         if request.method.upper() not in READ_ONLY_METHODS:

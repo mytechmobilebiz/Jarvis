@@ -15,6 +15,7 @@ os.environ["MONITOR_RETRY_DELAY_SECONDS"] = "0"
 os.environ["LLM_PROVIDER"] = "rule_based"
 os.environ["CC_SECRETS_KEY"] = "test-secrets-key-0123456789abcdef"
 os.environ["CC_EDITION"] = "developer"
+os.environ["SSH_ALLOWED_PRIVATE_HOSTS"] = "127.0.0.1"  # the in-process test SSH server (tests/sshfake.py)
 os.environ.setdefault("TEST_CREDIT_REPAIR_DATABASE_URL", os.environ["TEST_DATABASE_URL"].rsplit("/", 1)[0] + "/cc_test_cr")
 os.environ["CREDIT_REPAIR_DATABASE_URL"] = os.environ["TEST_CREDIT_REPAIR_DATABASE_URL"]
 os.environ["CREDIT_REPAIR_DATA_KEY"] = "test-credit-repair-key-0123456789"

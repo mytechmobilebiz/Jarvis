@@ -10,3 +10,4 @@ croniter==6.2.4
 bcrypt==5.0.0
 anthropic==1.15.0
 cryptography==50.0.2
+asyncssh==2.24.1

@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 
 from .. import events
 from .. import tasks as task_service
@@ -71,6 +71,9 @@ class Worker:
         self._running: set[asyncio.Task[None]] = set()
         self._stop = asyncio.Event()
         self._last_probe = 0.0
+        from ..ssh.gateway import SSHGateway
+
+        self.ssh = SSHGateway(settings)
 
     # ----------------------------------------------------------------- loop
 
@@ -179,16 +182,22 @@ class Worker:
                 assert task is not None
                 agent_name, cap_name, params = task.agent, task.capability, dict(task.params)
                 request_id = task.request_id
+                requested_by = task.created_by
                 approval = await session.scalar(select(Approval).where(Approval.task_id == task_id))
                 approved_by = approval.decided_by if approval and approval.status == "approved" else ""
                 llm = self._fixed_llm or await runtime_provider(session, self.settings)
 
             http = ReadOnlyHttpClient(self.settings, transport=self.http_transport)
             logs: list[tuple[str, str]] = []
+            beat = asyncio.create_task(self._heartbeat(task_id))
+            timeout = self.settings.task_timeout_seconds
             try:
                 agent = get_agent(agent_name)
                 if agent is None:
                     raise RuntimeError(f"agent '{agent_name}' is not installed")
+                cap = agent.capabilities().get(cap_name)
+                if cap is not None and cap.timeout_seconds:
+                    timeout = cap.timeout_seconds
                 async with sessionmaker()() as session:
                     ctx = AgentContext(
                         session=session,
@@ -200,24 +209,36 @@ class Worker:
                         request_id=request_id,
                         approved_by=approved_by,
                         logs=logs,
+                        ssh=self.ssh,
+                        requested_by=requested_by,
+                        agent_name=agent_name,
                     )
                     try:
-                        result = await asyncio.wait_for(
-                            agent.run(ctx, cap_name, params), timeout=self.settings.task_timeout_seconds
-                        )
+                        result = await asyncio.wait_for(agent.run(ctx, cap_name, params), timeout=timeout)
                         await self._complete(session, task_id, agent_name, result, logs)
                         await session.commit()
                     except BaseException:
                         await session.rollback()
                         raise
             except TimeoutError:
-                await self._fail(task_id, f"timed out after {self.settings.task_timeout_seconds}s", logs)
+                await self._fail(task_id, f"timed out after {timeout}s", logs)
             except Exception as exc:  # noqa: BLE001 - every failure is recorded on the task
                 log.warning("task %s (%s.%s) failed: %s", task_id, agent_name, cap_name, exc)
                 logs.append(("error", "".join(traceback.format_exception_only(exc)).strip()))
                 await self._fail(task_id, f"{exc.__class__.__name__}: {exc}", logs)
             finally:
+                beat.cancel()
                 await http.aclose()
+
+    async def _heartbeat(self, task_id: int) -> None:
+        """Keep a long task's heartbeat fresh so the stale-task reaper leaves it alone."""
+        while True:
+            await asyncio.sleep(60)
+            try:
+                async with session_scope() as session:
+                    await session.execute(update(Task).where(Task.id == task_id, Task.status == "running").values(heartbeat_at=_now()))
+            except Exception as exc:  # noqa: BLE001 - a missed beat is retried next minute
+                log.warning("heartbeat for task %s failed: %s", task_id, exc)
 
     async def _complete(self, session: Any, task_id: int, agent_name: str, result: AgentResult, logs: list[tuple[str, str]]) -> None:
         for spec in result.artifacts:

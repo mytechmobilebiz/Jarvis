@@ -89,12 +89,22 @@ class Settings(BaseSettings):
     # test WordPress). Everything else that resolves privately is refused, so a
     # monitored URL can never be used to reach internal services.
     monitor_allowed_private_hosts: str = ""
+    # SSH to managed servers (through cc-gate only). Private addresses are refused
+    # unless listed here (the disposable test server, for example).
+    ssh_allowed_private_hosts: str = ""
+    ssh_connect_timeout_seconds: float = 15.0
+    ssh_command_timeout_seconds: int = 120
+    ssh_slow_command_timeout_seconds: int = 840
     wp_core_version_check: bool = True
     wp_version_api_url: str = "https://api.wordpress.org/core/version-check/1.7/"
 
     @property
     def allowed_private_hosts(self) -> set[str]:
         return {h.strip().lower() for h in self.monitor_allowed_private_hosts.split(",") if h.strip()}
+
+    @property
+    def ssh_private_hosts(self) -> set[str]:
+        return {h.strip().lower() for h in self.ssh_allowed_private_hosts.split(",") if h.strip()}
 
     @property
     def anthropic_enabled(self) -> bool:

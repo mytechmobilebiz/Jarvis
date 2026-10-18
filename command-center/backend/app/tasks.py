@@ -102,7 +102,10 @@ async def create_task(
     session.add(task)
     await session.flush()
     if needs_approval:
+        extra = await get_agent(agent).approval_context(session, capability, clean)  # type: ignore[union-attr]
         action = summary or describe_action(agent, capability, clean)
+        if extra.get("target"):
+            action += f" on {extra['target']}" + (" (PRODUCTION)" if extra.get("production") else "")
         session.add(
             Approval(
                 task_id=task.id,
@@ -110,7 +113,7 @@ async def create_task(
                 capability=capability,
                 risk=cap.risk.value,
                 summary=action,
-                details={"params": clean, "capability_description": cap.description},
+                details={"params": clean, "capability_description": cap.description, **extra},
             )
         )
         await events.emit(
@@ -126,11 +129,22 @@ async def create_task(
     return task
 
 
+class ConfirmationRequired(TaskError):
+    pass
+
+
 async def decide_approval(
-    session: AsyncSession, settings: Settings, approval: Approval, *, approve: bool, actor: str, note: str = ""
+    session: AsyncSession, settings: Settings, approval: Approval, *, approve: bool, actor: str, note: str = "",
+    actor_role: str = "", confirm: str = "",
 ) -> Task:
     if approval.status != "pending":
         raise TaskError(f"approval {approval.id} was already {approval.status}")
+    details = approval.details or {}
+    if approve and details.get("production"):
+        if actor_role != "admin":
+            raise ConfirmationRequired("changes to production need an admin's approval")
+        if confirm.strip() != str(details.get("confirm", "")):
+            raise ConfirmationRequired(f"type '{details.get('confirm', '')}' to confirm this production change")
     task = await session.get(Task, approval.task_id, with_for_update=True)
     assert task is not None
     if task.status != "awaiting_approval":
