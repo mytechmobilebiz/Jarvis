@@ -2,8 +2,10 @@ import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type Server, type Site, type SiteCheck, type Task } from "../api";
 import { useAuth } from "../App";
-import { Card, Empty, ErrorNote, Findings, Modal, Pill, Time } from "../components";
+import { Card, Empty, ErrorNote, Findings, Modal, Pill, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
+import { Icon } from "../icons";
+import "./Websites.css";
 
 function AddSite({ onAdded }: { onAdded: () => void }) {
   const [name, setName] = useState("");
@@ -58,6 +60,10 @@ const REPAIRS: { capability: string; label: string; plugin?: boolean; params?: R
 
 function pct(v: number | null | undefined) {
   return v == null ? "—" : `${v}%`;
+}
+
+function uptimeTone(v: number | null | undefined): "good" | "warn" | "bad" | "muted" {
+  return v == null ? "muted" : v >= 99.5 ? "good" : v >= 98 ? "warn" : "bad";
 }
 
 function ServerLink({ site, onChanged }: { site: Site; onChanged: () => void }) {
@@ -265,7 +271,7 @@ function SiteDetail({ site, onClose, onChanged }: { site: Site; onClose: () => v
 
   return (
     <Modal title={site.name} onClose={onClose} wide>
-      <p>
+      <p className="ws-detail-head">
         <a href={site.url} target="_blank" rel="noreferrer noopener">
           {site.url}
         </a>{" "}
@@ -367,34 +373,36 @@ function SiteDetail({ site, onClose, onChanged }: { site: Site; onClose: () => v
         </>
       ) : null}
       <h3>History</h3>
-      <table className="table compact">
-        <thead>
-          <tr>
-            <th>When</th>
-            <th>Status</th>
-            <th>HTTP</th>
-            <th>ms</th>
-            <th>Type</th>
-            <th>Issues</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(checks.data?.checks ?? []).map((c) => (
-            <tr key={c.id}>
-              <td>
-                <Time iso={c.checked_at} />
-              </td>
-              <td>
-                <Pill value={c.status} />
-              </td>
-              <td>{c.http_status ?? "—"}</td>
-              <td>{c.response_ms ?? "—"}</td>
-              <td>{c.details.deep ? "security" : "uptime"}</td>
-              <td>{c.findings.filter((f) => f.severity !== "info").length}</td>
+      <div className="table-wrap">
+        <table className="table compact">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Status</th>
+              <th>HTTP</th>
+              <th>ms</th>
+              <th>Type</th>
+              <th>Issues</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {(checks.data?.checks ?? []).map((c) => (
+              <tr key={c.id}>
+                <td>
+                  <Time iso={c.checked_at} />
+                </td>
+                <td>
+                  <Pill value={c.status} />
+                </td>
+                <td>{c.http_status ?? "—"}</td>
+                <td>{c.response_ms ?? "—"}</td>
+                <td>{c.details.deep ? "security" : "uptime"}</td>
+                <td>{c.findings.filter((f) => f.severity !== "info").length}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </Modal>
   );
 }
@@ -405,10 +413,25 @@ export default function Websites() {
   const [openId, setOpenId] = useState<number | null>(null);
   const open = sites.data?.sites.find((s) => s.id === openId) ?? null;
 
+  // Summary of the same list the table shows: status of monitored (not paused) sites, the 7-day uptime column and the Issues column.
+  const all = sites.data?.sites ?? [];
+  const loaded = !!sites.data;
+  const monitored = all.filter((s) => s.enabled);
+  const count = (status: Site["last_status"]) => monitored.filter((s) => s.last_status === status).length;
+  const [up, down, degraded, unchecked] = [count("up"), count("down"), count("degraded"), count("unknown")];
+  const uptimes = all.map((s) => s.uptime?.["7d"]).filter((v): v is number => typeof v === "number");
+  const avgUptime = uptimes.length ? uptimes.reduce((a, b) => a + b, 0) / uptimes.length : null;
+  const issues = all.flatMap((s) => (s.last_check ? s.last_check.findings.filter((f) => f.severity !== "info") : []));
+  const critical = issues.filter((f) => f.severity === "critical").length;
+  const sitesWithIssues = all.filter((s) => s.last_check?.findings.some((f) => f.severity !== "info")).length;
+  const pending = sites.error ?? "…";
+  const tone = uptimeTone(avgUptime);
+
   return (
-    <div className="page">
+    <div className="page ws-page">
       <header className="page-head">
         <div>
+          <div className="eyebrow">Monitoring</div>
           <h1>Websites</h1>
           <p className="muted">
             Uptime and redirect checks every 15 minutes and a nightly security scan, all read-only. Sites linked to a server also get WP-CLI checks; repairs
@@ -416,65 +439,149 @@ export default function Websites() {
           </p>
         </div>
       </header>
+
+      <div className="tiles cols-4">
+        <Tile
+          icon="globe"
+          tone="cyan"
+          label="Monitored"
+          hint={
+            loaded
+              ? [all.length > monitored.length ? `${all.length - monitored.length} paused` : "", unchecked ? `${unchecked} not checked yet` : ""]
+                  .filter(Boolean)
+                  .join(" · ") || (monitored.length ? "None paused" : "No sites yet")
+              : pending
+          }
+        >
+          <span className="tile-value tabular">{loaded ? monitored.length : "—"}</span>
+          {loaded && all.length > monitored.length ? <span className="tile-of">of {all.length}</span> : null}
+        </Tile>
+        <Tile icon="pulse" tone={!loaded ? "muted" : down ? "bad" : degraded ? "warn" : "green"} label="Up · down · degraded" hint={loaded ? "Latest check of each monitored site" : pending}>
+          <div className="ws-status tabular">
+            <span className="ws-status-item">
+              <span className={`ws-status-value ${up ? "text-good" : ""}`}>{loaded ? up : "—"}</span> up
+            </span>
+            <span className="ws-status-item">
+              <span className={`ws-status-value ${down ? "text-bad" : ""}`}>{loaded ? down : "—"}</span> down
+            </span>
+            <span className="ws-status-item">
+              <span className={`ws-status-value ${degraded ? "text-warn" : ""}`}>{loaded ? degraded : "—"}</span> degraded
+            </span>
+          </div>
+        </Tile>
+        <Tile
+          icon="clock"
+          tone={tone === "good" ? "green" : tone}
+          label="Average uptime, 7 days"
+          hint={loaded ? (avgUptime == null ? "No checks recorded yet" : `Average of ${uptimes.length} site${uptimes.length === 1 ? "" : "s"}`) : pending}
+        >
+          <span className="tile-value tabular">{avgUptime == null ? "—" : `${avgUptime.toFixed(avgUptime >= 99.995 ? 0 : 2)}%`}</span>
+          {avgUptime != null ? (
+            <div className="meter" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Number(avgUptime.toFixed(2))} aria-label="Average uptime, 7 days">
+              <span className={`meter-fill tone-${tone}`} style={{ width: `${Math.max(2, avgUptime)}%` }} />
+            </div>
+          ) : null}
+        </Tile>
+        <Tile
+          icon="alert"
+          tone={!loaded ? "muted" : critical ? "bad" : issues.length ? "warn" : "green"}
+          label="Open issues"
+          hint={
+            loaded
+              ? issues.length
+                ? `${critical} critical · on ${sitesWithIssues} site${sitesWithIssues === 1 ? "" : "s"}`
+                : "Nothing found in the latest checks"
+              : pending
+          }
+        >
+          <span className="tile-value tabular">{loaded ? issues.length : "—"}</span>
+        </Tile>
+      </div>
+
       {canOperate ? (
-        <Card title="Add a site">
+        <Card
+          title={
+            <>
+              <Icon name="plug" size={18} className="card-icon" /> Add a site
+            </>
+          }
+        >
           <AddSite onAdded={() => void sites.refresh()} />
         </Card>
       ) : null}
-      <Card title={`Monitored sites (${sites.data?.sites.length ?? 0})`}>
+      <Card
+        title={
+          <>
+            <Icon name="globe" size={18} className="card-icon" /> Monitored sites ({sites.data?.sites.length ?? 0})
+          </>
+        }
+        actions={sites.data?.sites.length ? <span className="muted small">Select a row for details</span> : null}
+      >
         <ErrorNote error={sites.error} />
         {sites.data?.sites.length ? (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Site</th>
-                <th>Status</th>
-                <th>Uptime 7 d</th>
-                <th>Last check</th>
-                <th>Response</th>
-                <th>WordPress</th>
-                <th>TLS</th>
-                <th>Issues</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sites.data.sites.map((s) => {
-                const c = s.last_check;
-                const issues = c ? c.findings.filter((f) => f.severity !== "info") : [];
-                return (
-                  <tr key={s.id} className="clickable" onClick={() => setOpenId(s.id)}>
-                    <td>
-                      <strong>{s.name}</strong>
-                      <div className="muted small">{s.url}</div>
-                    </td>
-                    <td>
-                      <Pill value={s.enabled ? s.last_status : "disabled"} label={s.enabled ? undefined : "paused"} />
-                      {s.environment && s.environment !== "production" ? (
-                        <>
-                          {" "}
-                          <Pill value={s.environment} />
-                        </>
-                      ) : null}
-                    </td>
-                    <td>{pct(s.uptime?.["7d"])}</td>
-                    <td>
-                      <Time iso={s.last_checked_at} />
-                    </td>
-                    <td>{c?.response_ms != null ? `${c.response_ms} ms` : "—"}</td>
-                    <td>{c ? (c.is_wordpress ? c.wp_version || "yes" : "no") : "—"}</td>
-                    <td>{c?.tls_days_left != null ? `${c.tls_days_left} d` : "—"}</td>
-                    <td>
-                      {issues.length ? (
-                        <Pill value={issues.some((f) => f.severity === "critical") ? "critical" : "warning"} label={String(issues.length)} />
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div className="table-wrap">
+            <table className="table ws-table">
+              <thead>
+                <tr>
+                  <th>Site</th>
+                  <th>Status</th>
+                  <th>Uptime 7 d</th>
+                  <th>Last check</th>
+                  <th>Response</th>
+                  <th>WordPress</th>
+                  <th>TLS</th>
+                  <th>Issues</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sites.data.sites.map((s) => {
+                  const c = s.last_check;
+                  const issues = c ? c.findings.filter((f) => f.severity !== "info") : [];
+                  const week = s.uptime?.["7d"];
+                  return (
+                    <tr key={s.id} className="clickable" onClick={() => setOpenId(s.id)}>
+                      <td className="ws-site">
+                        <strong>{s.name}</strong>
+                        <div className="muted small ws-url" title={s.url}>
+                          {s.url}
+                        </div>
+                      </td>
+                      <td className="ws-nowrap">
+                        <Pill value={s.enabled ? s.last_status : "disabled"} label={s.enabled ? undefined : "paused"} />
+                        {s.environment && s.environment !== "production" ? (
+                          <>
+                            {" "}
+                            <Pill value={s.environment} />
+                          </>
+                        ) : null}
+                      </td>
+                      <td className="ws-uptime tabular">
+                        {pct(week)}
+                        {week != null ? (
+                          <div className="meter thin">
+                            <span className={`meter-fill tone-${uptimeTone(week)}`} style={{ width: `${Math.max(2, week)}%` }} />
+                          </div>
+                        ) : null}
+                      </td>
+                      <td className="ws-nowrap">
+                        <Time iso={s.last_checked_at} />
+                      </td>
+                      <td className="ws-nowrap tabular">{c?.response_ms != null ? `${c.response_ms} ms` : "—"}</td>
+                      <td>{c ? (c.is_wordpress ? c.wp_version || "yes" : "no") : "—"}</td>
+                      <td className="ws-nowrap tabular">{c?.tls_days_left != null ? `${c.tls_days_left} d` : "—"}</td>
+                      <td>
+                        {issues.length ? (
+                          <Pill value={issues.some((f) => f.severity === "critical") ? "critical" : "warning"} label={String(issues.length)} />
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <Empty>No sites yet.</Empty>
         )}

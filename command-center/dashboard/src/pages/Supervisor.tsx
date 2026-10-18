@@ -2,8 +2,10 @@ import { FormEvent, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, type SupervisorRequest, type Task } from "../api";
 import { useAuth } from "../App";
-import { Card, Empty, ErrorNote, Findings, Pill, RiskBadge, Time } from "../components";
+import { Card, Empty, ErrorNote, Findings, Pill, RiskBadge, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
+import { Icon } from "../icons";
+import "./Supervisor.css";
 
 const EXAMPLES = [
   "Check all websites",
@@ -21,34 +23,45 @@ function RequestDetail({ id }: { id: number }) {
   const req = detail.data?.request;
   const tasks = (detail.data?.tasks ?? []).filter((t) => !(t.agent === "supervisor" && ["plan_request", "summarize_request"].includes(t.capability)));
   if (detail.error) return <ErrorNote error={detail.error} />;
-  if (!req) return <p className="muted">Loading…</p>;
+  if (!req) return <p className="muted su-working">Loading…</p>;
   return (
-    <div className="request-detail">
-      <div className="bubble bubble-user">
-        <div className="muted small">
-          {req.requested_by} via {req.source} · <Time iso={req.created_at} />
+    <div className="request-detail su-thread">
+      <div className="su-turn su-turn-user">
+        <div className="bubble bubble-user">
+          <div className="muted small">
+            {req.requested_by} via {req.source} · <Time iso={req.created_at} />
+          </div>
+          {req.message}
         </div>
-        {req.message}
+        <span className="su-avatar su-avatar-user" aria-hidden>
+          <Icon name="user" size={16} />
+        </span>
       </div>
-      <div className="bubble bubble-ai">
-        <div className="muted small">
-          Supervisor · planned by {req.planner || "…"} <Pill value={req.status} />
+      <div className="su-turn">
+        <span className="su-avatar" aria-hidden>
+          <Icon name="sparkles" size={16} />
+        </span>
+        <div className="bubble bubble-ai">
+          <div className="muted small su-bubble-head">
+            Supervisor · planned by {req.planner || "…"} <Pill value={req.status} />
+          </div>
+          {req.status === "planning" ? <p className="su-working">Planning…</p> : <p>{req.reply}</p>}
+          {req.plan.notes?.length ? (
+            <ul className="notes">
+              {req.plan.notes.map((n, i) => (
+                <li key={i}>{n}</li>
+              ))}
+            </ul>
+          ) : null}
         </div>
-        {req.status === "planning" ? <p>Planning…</p> : <p>{req.reply}</p>}
-        {req.plan.notes?.length ? (
-          <ul className="notes">
-            {req.plan.notes.map((n, i) => (
-              <li key={i}>{n}</li>
-            ))}
-          </ul>
-        ) : null}
       </div>
       {tasks.length ? (
-        <div className="task-steps">
+        <div className="task-steps su-steps">
           {tasks.map((t) => (
-            <div className="step" key={t.id}>
+            <div className={`step su-step su-step-${t.status}`} key={t.id}>
               <div className="step-head">
-                <Pill value={t.status} /> <code>
+                <Pill value={t.status} />{" "}
+                <code>
                   {t.agent}.{t.capability}
                 </code>{" "}
                 <RiskBadge risk={t.risk} />
@@ -69,12 +82,17 @@ function RequestDetail({ id }: { id: number }) {
         </div>
       ) : null}
       {req.summary && req.status !== "planning" ? (
-        <div className="bubble bubble-ai summary">
-          <div className="muted small">Summary · {req.summarizer}</div>
-          <pre className="plain">{req.summary}</pre>
+        <div className="su-turn">
+          <span className="su-avatar" aria-hidden>
+            <Icon name="sparkles" size={16} />
+          </span>
+          <div className="bubble bubble-ai summary su-summary">
+            <div className="muted small">Summary · {req.summarizer}</div>
+            <pre className="plain">{req.summary}</pre>
+          </div>
         </div>
       ) : ACTIVE.has(req.status) ? (
-        <p className="muted">Agents working…</p>
+        <p className="muted su-working">Agents working…</p>
       ) : null}
     </div>
   );
@@ -109,19 +127,49 @@ export default function Supervisor() {
   }
 
   const current = selected ?? list.data?.requests[0]?.id ?? null;
+  const recent = list.data?.requests ?? null;
+  const countOf = (...statuses: SupervisorRequest["status"][]) => (recent ? recent.filter((r) => statuses.includes(r.status)).length : null);
+  const working = countOf("planning", "running");
+  const waiting = countOf("awaiting_approval");
+  const failed = countOf("failed");
+  const scope = recent ? `Latest ${recent.length} request${recent.length === 1 ? "" : "s"}` : (list.error ?? "…");
+  const value = (n: number | null) => <span className="tile-value tabular">{n ?? "—"}</span>;
   return (
     <div className="page">
       <header className="page-head">
         <div>
+          <div className="eyebrow">Automation</div>
           <h1>AI Supervisor</h1>
           <p className="muted">
-            Ask in plain language. The supervisor plans the work, hands it to the agents and reports back. Anything that publishes, sends or spends waits
-            for your approval.
+            Ask in plain language. The supervisor plans the work, hands it to the agents and reports back. Anything that publishes, sends or spends waits for
+            your approval.
           </p>
         </div>
       </header>
+      <div className="tiles cols-4 su-tiles">
+        <Tile icon="pulse" tone="blue" label="Working now" hint={<>Planning or running · {scope}</>}>
+          {value(working)}
+        </Tile>
+        <Tile icon="approvals" tone={waiting ? "warn" : "orange"} label="Awaiting approval" to="/approvals" hint={scope}>
+          {value(waiting)}
+        </Tile>
+        <Tile icon="check" tone="green" label="Completed" hint={scope}>
+          {value(countOf("completed"))}
+        </Tile>
+        <Tile icon="alert" tone={failed ? "bad" : "muted"} label="Failed" hint={scope}>
+          {value(failed)}
+        </Tile>
+      </div>
       {canOperate ? (
-        <Card>
+        <Card
+          className="su-ask-card"
+          title={
+            <>
+              <Icon name="send" size={18} className="card-icon" /> New request
+            </>
+          }
+          actions={<span className="muted small su-shortcut">Ctrl + Enter to send</span>}
+        >
           <form className="ask" onSubmit={submit}>
             <textarea
               aria-label="Request"
@@ -142,21 +190,30 @@ export default function Supervisor() {
                   </button>
                 ))}
               </div>
-              <button className="btn primary" type="submit" disabled={busy || !message.trim()}>
-                {busy ? "Sending…" : "Send"}
+              <button className="btn primary su-send" type="submit" disabled={busy || !message.trim()}>
+                <Icon name="send" size={16} /> {busy ? "Sending…" : "Send"}
               </button>
             </div>
             <ErrorNote error={error} />
           </form>
         </Card>
       ) : (
-        <p className="muted">Your role is read-only; ask an operator to submit requests.</p>
+        <p className="alert alert-info su-readonly">
+          <Icon name="lock" size={15} /> Your role is read-only; ask an operator to submit requests.
+        </p>
       )}
       <div className="split">
-        <Card title="History" className="history">
+        <Card
+          title={
+            <>
+              <Icon name="history" size={18} className="card-icon" /> History
+            </>
+          }
+          className="history su-history-card"
+        >
           <ErrorNote error={list.error} />
           {list.data?.requests.length ? (
-            <ul className="selectable">
+            <ul className="selectable su-history">
               {list.data.requests.map((r) => (
                 <li key={r.id} className={r.id === current ? "selected" : ""}>
                   <button onClick={() => setSelected(r.id)}>
@@ -173,7 +230,16 @@ export default function Supervisor() {
             <Empty>No requests yet. Try one of the examples above.</Empty>
           )}
         </Card>
-        <Card title={current ? `Request #${current}` : "Conversation"}>{current ? <RequestDetail id={current} /> : <Empty>Pick a request.</Empty>}</Card>
+        <Card
+          className="su-conversation"
+          title={
+            <>
+              <Icon name="sparkles" size={18} className="card-icon" /> {current ? `Request #${current}` : "Conversation"}
+            </>
+          }
+        >
+          {current ? <RequestDetail id={current} /> : <Empty>Pick a request.</Empty>}
+        </Card>
       </div>
     </div>
   );

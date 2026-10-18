@@ -1,0 +1,178 @@
+/* AI Agents page (prefix ag-). Page stylesheets load before styles.css, so rules that adjust shared classes carry an extra class. */
+.ag-section-head {
+  margin-bottom: 12px;
+}
+.ag-section-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ag-section-head p {
+  margin: 0;
+}
+
+/* the seven agents, in number order; an agent with many capabilities spans the row (ag-wide) */
+.agent-grid.ag-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
+}
+.agent-grid.ag-grid > .ag-wide {
+  grid-column: 1 / -1;
+}
+
+/* agent card */
+.ag-card .card-head.card-head {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+.ag-card .card-head h2 {
+  flex: 1;
+  min-width: 0;
+  gap: 12px;
+  font-size: 15.5px;
+  line-height: 1.3;
+}
+.ag-card .card-actions {
+  flex: none;
+}
+.ag-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ag-icon {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--primary-text);
+  background: var(--primary-soft);
+  border: 1px solid rgba(47, 123, 255, 0.35);
+}
+.ag-number {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-2);
+  color: var(--text-2);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+.card.ag-coordinator {
+  background: radial-gradient(640px 200px at 100% 0%, var(--purple-soft), transparent 70%), var(--surface);
+  border-color: rgba(139, 92, 246, 0.28);
+}
+.ag-coordinator .ag-icon {
+  color: var(--purple-text);
+  background: var(--purple-soft);
+  border-color: rgba(139, 92, 246, 0.4);
+}
+.ag-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px 50px;
+}
+.ag-desc {
+  margin: 0 0 14px;
+}
+
+/* last-24-hour counts */
+.ag-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.ag-stats > div {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 7px 11px;
+  min-width: 0;
+}
+.ag-stats dt {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ag-stats dd {
+  margin: 1px 0 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ag-stats dd time {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.ag-integrations {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+.ag-chip {
+  border: 1px solid var(--border-2);
+  background: var(--surface-2);
+  color: var(--text-2);
+  border-radius: 999px;
+  padding: 0 9px;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+/* capabilities */
+.caps.ag-caps li {
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0;
+}
+.ag-cap {
+  min-width: 0;
+}
+.ag-cap-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+.ag-cap-name code {
+  overflow-wrap: anywhere;
+}
+.ag-caps .btn {
+  flex: none;
+}
+.ag-coordinator .caps.ag-caps,
+.ag-wide .caps.ag-caps {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
+  column-gap: 28px;
+}
+
+@media (max-width: 560px) {
+  .ag-pills {
+    margin-left: 0;
+  }
+}

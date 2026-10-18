@@ -1,0 +1,385 @@
+/* Workflows page: schedules table, engine and on-demand panels (tiles come from ../tiles.css). */
+.wf-page .card-icon {
+  color: var(--primary-text);
+}
+.wf-lead {
+  margin: -4px 0 12px;
+  max-width: 820px;
+}
+.wf-foot {
+  margin: 10px 0 0;
+}
+.wf-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 18px;
+  align-items: start;
+}
+.wf-grid .card {
+  margin-bottom: 0;
+}
+.wf-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.wf-break {
+  overflow-wrap: anywhere;
+}
+
+/* tiles */
+.wf-when {
+  font-size: 30px;
+  white-space: nowrap;
+}
+.wf-tile-sub {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  color: var(--text-2);
+  font-weight: 550;
+  min-width: 0;
+}
+
+/* schedules table */
+.wf-table td {
+  vertical-align: middle;
+}
+.wf-table .wf-col-name {
+  min-width: 220px;
+  max-width: 380px;
+}
+.wf-table .wf-col-name strong {
+  display: block;
+  font-weight: 650;
+}
+.wf-table .wf-col-name .muted {
+  overflow-wrap: anywhere;
+}
+.wf-table tr.wf-paused .wf-col-name strong,
+.wf-table tr.wf-paused .wf-agent {
+  color: var(--text-2);
+}
+.wf-agent {
+  font-weight: 600;
+  color: var(--text);
+}
+.wf-cap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 3px;
+  min-width: 0;
+}
+.wf-cap code {
+  overflow-wrap: anywhere;
+}
+.wf-cron-hint {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.wf-cron {
+  display: inline-block;
+  margin-top: 3px;
+  white-space: nowrap;
+}
+.wf-last {
+  margin-top: 3px;
+}
+.wf-task-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 999px;
+}
+.wf-task-link:hover .pill {
+  filter: brightness(1.2);
+}
+.wf-col-state {
+  white-space: nowrap;
+}
+
+/* on/off switch (role="switch"; the label beside it states the value in words) */
+.wf-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 3px 4px 3px 2px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--muted-text);
+  cursor: pointer;
+  border-radius: 999px;
+}
+.wf-switch:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+.wf-switch-track {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-2);
+  transition: background 0.15s, border-color 0.15s;
+  flex: none;
+}
+.wf-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 0.15s, background 0.15s;
+}
+.wf-switch:hover:not(:disabled) .wf-switch-track {
+  border-color: #33477a;
+}
+.wf-switch.on {
+  color: var(--good-text);
+}
+.wf-switch.on .wf-switch-track {
+  background: rgba(34, 197, 94, 0.28);
+  border-color: rgba(34, 197, 94, 0.55);
+}
+.wf-switch.on .wf-switch-thumb {
+  transform: translateX(16px);
+  background: #ffffff;
+}
+
+/* workflow engine card */
+.wf-engine-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  font-size: 15px;
+}
+.wf-engine-head + p {
+  margin: 8px 0 14px;
+}
+.wf-kv {
+  grid-template-columns: 140px minmax(0, 1fr);
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+.wf-error {
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+.wf-sub {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  margin: 18px 0 6px;
+}
+.wf-flows li {
+  align-items: center;
+}
+.wf-flow-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* on-demand card */
+.wf-requests li {
+  align-items: flex-start;
+}
+.wf-requests .pill {
+  margin-top: 2px;
+  flex: none;
+}
+.wf-req-main {
+  flex: 1;
+  min-width: 0;
+}
+.wf-req-msg {
+  display: block;
+  color: var(--text);
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-req-meta {
+  overflow-wrap: anywhere;
+}
+.wf-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+.wf-step {
+  font-size: 11.5px;
+  font-weight: 550;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 7px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-channels {
+  border-top: 1px solid var(--border);
+  margin-top: 12px;
+}
+.wf-channels .wf-sub {
+  margin-top: 14px;
+}
+.wf-channels p {
+  margin: 8px 0 0;
+}
+.wf-channel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.wf-channel-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  min-width: 0;
+  font-size: 12.5px;
+}
+.wf-channel-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+
+@media (max-width: 1180px) {
+  .wf-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Below this width each schedule becomes a stacked block with labelled fields. */
+@media (max-width: 1000px) {
+  .wf-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+  .wf-table,
+  .wf-table tbody {
+    display: block;
+  }
+  .wf-table tr {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px 16px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .wf-table tr:first-child {
+    padding-top: 4px;
+  }
+  .wf-table tr:last-child {
+    border-bottom: 0;
+  }
+  .wf-table td,
+  .wf-table.table td {
+    display: block;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+  }
+  .wf-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    margin-bottom: 3px;
+  }
+  .wf-table .wf-col-name {
+    grid-column: 1 / span 3;
+    max-width: none;
+    min-width: 0;
+  }
+  .wf-table .wf-col-state {
+    grid-column: 4;
+    grid-row: 1;
+    justify-self: end;
+  }
+  .wf-table .wf-col-state::before {
+    display: none !important;
+  }
+  .wf-cron-hint {
+    white-space: normal;
+  }
+}
+@media (max-width: 560px) {
+  .wf-table tr {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  /* the switch sits in the top-right corner of each block, beside the name */
+  .wf-table tr {
+    position: relative;
+  }
+  .wf-table td.wf-col-name {
+    grid-column: 1 / -1;
+    padding-right: 100px;
+  }
+  .wf-table .wf-col-state {
+    position: absolute;
+    top: 14px;
+    right: 0;
+  }
+  .wf-table tr:first-child .wf-col-state {
+    top: 4px;
+  }
+  .wf-table .wf-col-runs {
+    grid-column: 1 / -1;
+  }
+  .wf-kv {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .wf-channel-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .wf-when {
+    font-size: 28px;
+  }
+}

@@ -1,0 +1,78 @@
+/* Tasks page. Every class here starts with tk-. */
+.tk-filters {
+  align-items: center;
+}
+.tk-filters select {
+  min-width: 170px;
+}
+.tk-search {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.tk-search-icon {
+  position: absolute;
+  left: 11px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.tk-search input {
+  width: 200px;
+  padding-left: 34px;
+}
+
+/* The summary column takes whatever width is left and ellipsises inside it
+   (width 100% + max-width 0), so the table never runs past the card. */
+.tk-table {
+  min-width: 820px;
+}
+.tk-table td {
+  vertical-align: middle;
+}
+.tk-table th.tk-summary,
+.tk-table td.tk-summary {
+  width: 100%;
+  max-width: 0;
+}
+.tk-clip {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tk-id {
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.tk-nowrap {
+  white-space: nowrap;
+}
+.tk-action {
+  min-width: 190px;
+}
+.tk-action code {
+  display: inline-block;
+  max-width: 300px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.tk-table tr.clickable:hover .tk-action code {
+  border-color: var(--border-2);
+}
+
+@media (max-width: 760px) {
+  .tk-filters {
+    width: 100%;
+  }
+  .tk-filters select,
+  .tk-search,
+  .tk-search input {
+    flex: 1 1 140px;
+    min-width: 0;
+    width: 100%;
+  }
+  .tk-table {
+    min-width: 760px;
+  }
+}

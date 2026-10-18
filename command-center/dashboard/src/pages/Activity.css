@@ -1,0 +1,107 @@
+/* Activity log. Every class here starts with ac-. */
+.ac-locked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The detail column takes the width that is left and ellipsises inside it. */
+.ac-table {
+  min-width: 860px;
+}
+.ac-table td {
+  vertical-align: middle;
+}
+.ac-table.compact td {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+.ac-table th:last-child,
+.ac-table td.ac-detail {
+  width: 100%;
+  max-width: 0;
+}
+.ac-clip {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+.ac-when,
+.ac-nowrap,
+.ac-target {
+  white-space: nowrap;
+}
+.ac-when {
+  color: var(--text-2);
+}
+.ac-actor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  min-width: 0;
+}
+.ac-initial {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--primary-text);
+  background: var(--primary-soft);
+  border: 1px solid rgba(47, 123, 255, 0.3);
+}
+.ac-actor-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ac-target {
+  color: var(--text-2);
+}
+
+/* action chips coloured by family */
+code.ac-action {
+  white-space: nowrap;
+}
+code.ac-tone-purple {
+  color: var(--purple-text);
+  border-color: rgba(139, 92, 246, 0.3);
+  background: var(--purple-soft);
+}
+code.ac-tone-warn {
+  color: var(--warn-text);
+  border-color: rgba(245, 158, 11, 0.3);
+  background: var(--warn-soft);
+}
+code.ac-tone-info {
+  color: var(--info-text);
+  border-color: rgba(34, 211, 238, 0.25);
+  background: var(--info-soft);
+}
+code.ac-tone-good {
+  color: var(--good-text);
+  border-color: rgba(34, 197, 94, 0.28);
+  background: var(--good-soft);
+}
+code.ac-tone-bad {
+  color: var(--bad-text);
+  border-color: rgba(239, 68, 68, 0.3);
+  background: var(--bad-soft);
+}
+
+@media (max-width: 760px) {
+  .ac-table {
+    min-width: 720px;
+  }
+  .ac-actor {
+    max-width: 200px;
+  }
+}

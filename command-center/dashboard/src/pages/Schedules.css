@@ -1,0 +1,55 @@
+/* Schedules page. Every class here starts with sc-. */
+.sc-clip {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tile-value.sc-time {
+  font-size: 30px;
+}
+
+.sc-table {
+  min-width: 860px;
+}
+.sc-table td {
+  vertical-align: middle;
+}
+.sc-name {
+  min-width: 240px;
+}
+.sc-name strong {
+  display: block;
+  color: var(--text);
+}
+.sc-name .muted {
+  margin-top: 2px;
+  line-height: 1.45;
+}
+.sc-runs code {
+  display: inline-block;
+  line-height: 1.5;
+}
+.sc-nowrap {
+  white-space: nowrap;
+}
+.sc-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.sc-paused td {
+  opacity: 0.62;
+}
+.sc-paused td:last-child {
+  opacity: 1;
+}
+
+@media (max-width: 760px) {
+  .sc-table {
+    min-width: 760px;
+  }
+  .tile-value.sc-time {
+    font-size: 26px;
+  }
+}

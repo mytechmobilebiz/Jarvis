@@ -1,0 +1,196 @@
+/* Approvals page. Every class here starts with ap-. */
+.ap-clip {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* approval cards */
+.ap-card {
+  position: relative;
+  overflow: hidden;
+}
+.ap-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--border-2);
+}
+.ap-card.ap-pending::before {
+  background: var(--warn);
+}
+.ap-card.ap-production.ap-pending::before {
+  background: var(--bad);
+}
+.ap-card.ap-approved::before {
+  background: var(--good);
+}
+.ap-card.ap-rejected::before {
+  background: var(--bad);
+  opacity: 0.6;
+}
+.ap-card.ap-pending {
+  background: radial-gradient(520px 150px at 100% 0%, var(--warn-soft), transparent 70%), var(--surface);
+}
+.ap-card.ap-production.ap-pending {
+  background: radial-gradient(520px 150px at 100% 0%, var(--bad-soft), transparent 70%), var(--surface);
+}
+.ap-card .card-head {
+  align-items: flex-start;
+}
+.ap-card .card-head h2 {
+  flex: 1 1 360px;
+  min-width: 0;
+  align-items: baseline;
+  line-height: 1.45;
+}
+.ap-card .card-actions {
+  padding-top: 1px;
+}
+.ap-id {
+  flex: none;
+  color: var(--primary-text);
+  background: var(--primary-soft);
+  border: 1px solid rgba(47, 123, 255, 0.3);
+  border-radius: 7px;
+  padding: 0 7px;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.ap-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ap-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin: -4px 0 12px;
+}
+.ap-meta code {
+  overflow-wrap: anywhere;
+}
+.ap-meta-icon {
+  color: var(--faint);
+}
+.ap-description {
+  margin: 0 0 12px;
+  color: var(--text-2);
+}
+.ap-target {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.ap-target-icon {
+  flex: none;
+  color: var(--info-text);
+}
+
+/* collapsible parameters */
+.ap-params {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.ap-params summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-2);
+  font-weight: 600;
+  font-size: 13px;
+  border-radius: 6px;
+}
+.ap-params summary::-webkit-details-marker {
+  display: none;
+}
+.ap-params summary:hover {
+  color: var(--text);
+}
+.ap-chevron {
+  transition: transform 0.15s;
+}
+.ap-params[open] .ap-chevron {
+  transform: rotate(90deg);
+}
+.ap-params pre.json {
+  margin: 10px 0 0;
+}
+
+/* decision row: inputs stretch, buttons keep their size, everything wraps */
+.decision.ap-decision {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.ap-decision input {
+  flex: 1 1 220px;
+  min-width: 0;
+  width: auto;
+}
+.ap-decision > span {
+  flex: 1 1 220px;
+}
+.ap-decision .btn {
+  flex: none;
+}
+.ap-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 0;
+}
+.ap-decided {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 14px 0 0;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+/* empty state */
+.ap-empty {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.ap-empty .empty {
+  padding: 4px 0;
+}
+.ap-empty-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--good-text);
+  background: var(--good-soft);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+@media (max-width: 560px) {
+  .ap-decision .btn {
+    flex: 1 1 120px;
+  }
+}

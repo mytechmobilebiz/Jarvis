@@ -199,7 +199,7 @@ export default function Workflows() {
         <div>
           <div className="eyebrow">Automation</div>
           <h1>Workflows</h1>
-          <p className="muted">Every automation that runs the platform: scheduled agent routines, the workflow engine and on-demand AI Supervisor requests.</p>
+          <p className="muted">Every automation that runs the platform: schedules, the workflow engine and AI Supervisor requests.</p>
         </div>
         <div className="row-actions">
           {isAdmin ? (
@@ -300,7 +300,7 @@ export default function Workflows() {
         <Tile
           icon="sparkles"
           tone="purple"
-          label="Supervisor requests (24 h)"
+          label="Supervisor requests"
           to="/supervisor"
           hint={
             !requests.data ? (
@@ -320,7 +320,7 @@ export default function Workflows() {
           }
         >
           <span className="tile-value tabular">{requests.data ? recent.length : "—"}</span>
-          {truncated ? <span className="tile-of">of the latest {REQUEST_WINDOW}</span> : null}
+          <span className="tile-of">{truncated ? `of the latest ${REQUEST_WINDOW}, last 24 h` : "in the last 24 h"}</span>
         </Tile>
       </div>
 
@@ -371,7 +371,8 @@ export default function Workflows() {
                         <div className="wf-agent">{agent?.title ?? s.agent}</div>
                         <div className="wf-cap">
                           <code title={cap?.description}>
-                            {s.agent}.{s.capability}
+                            {s.agent}.<wbr />
+                            {s.capability}
                           </code>
                           {cap ? <RiskBadge risk={cap.risk} /> : null}
                         </div>
@@ -586,7 +587,7 @@ export default function Workflows() {
                       </Link>
                       <div className="muted small wf-req-meta">
                         <span className="wf-req-who">{r.requested_by || r.source}</span>
-                        {r.requested_by && r.source ? <span> via {r.source}</span> : null}
+                        {r.requested_by && r.source && !r.requested_by.includes(r.source) ? <span> via {r.source}</span> : null}
                         <span>
                           {" "}
                           · <Time iso={r.created_at} />
@@ -619,7 +620,7 @@ export default function Workflows() {
               <ul className="wf-channel-list">
                 {channels.map((c) => (
                   <li key={c.name} title={c.description}>
-                    <span className="wf-channel-name">{c.title}</span>
+                    <span className="wf-channel-name">{c.title.replace(/\s*\(.*\)$/, "")}</span>
                     <Pill value={c.mode} label={c.mode === "mock" ? "Mock" : c.mode === "live" ? "Live" : "Off"} />
                   </li>
                 ))}

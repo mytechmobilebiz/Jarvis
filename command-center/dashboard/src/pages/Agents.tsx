@@ -1,11 +1,29 @@
 import { useState } from "react";
 import { api, type Agent, type Capability } from "../api";
 import { useAuth } from "../App";
-import { Card, ErrorNote, Pill, RiskBadge, Time } from "../components";
+import { Card, ErrorNote, Pill, RiskBadge, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
+import { Icon, type IconName } from "../icons";
 import { RunModal } from "../work";
+import "./Agents.css";
 
 const INTERNAL = new Set(["supervisor.plan_request", "supervisor.summarize_request"]);
+
+const AGENT_ICON: Record<string, IconName> = {
+  supervisor: "sparkles",
+  wordpress_security: "shield",
+  seo_content: "trending",
+  social_marketing: "megaphone",
+  server_management: "server",
+  communications: "mail",
+  monitoring: "globe",
+  credit_repair: "lock",
+};
+
+/** Sum of one status (or of every status) in the agents' last-24-hour task counts. */
+function total(agents: Agent[], status?: string): number {
+  return agents.reduce((n, a) => n + Object.entries(a.stats_24h ?? {}).reduce((m, [k, v]) => m + (!status || k === status ? v : 0), 0), 0);
+}
 
 export default function Agents() {
   const { canOperate } = useAuth();
@@ -26,19 +44,34 @@ export default function Agents() {
   const all = agents.data?.agents ?? [];
   const supervisor = all.find((a) => a.role === "supervisor");
   const specialists = all.filter((a) => a.role !== "supervisor");
+  const loaded = !!agents.data;
+  const active = specialists.filter((a) => a.enabled && a.entitled).length;
+  const switchedOff = specialists.filter((a) => !a.enabled).length;
+  const notEntitled = specialists.filter((a) => !a.entitled).length;
+  const tasks24 = total(all);
+  const succeeded24 = total(all, "succeeded");
+  const inProgress = total(all, "queued") + total(all, "running");
+  const awaiting = total(all, "awaiting_approval");
+  const failed = total(all, "failed");
+  const failingAgents = all.filter((a) => (a.stats_24h?.failed ?? 0) > 0).length;
+  const pending = agents.error ?? "…";
 
   function card(agent: Agent, number?: number) {
     const stats = agent.stats_24h;
+    const caps = agent.capabilities.filter((c) => !INTERNAL.has(`${agent.name}.${c.name}`));
+    // An agent with a long capability list takes a whole row and lists them in columns, so the cards beside it stay compact.
+    const layout = agent.role === "supervisor" ? "ag-coordinator" : caps.length > 8 ? "ag-wide" : "";
     return (
       <Card
         key={agent.name}
-        className={agent.enabled ? "" : "disabled"}
+        className={`ag-card ${layout} ${agent.enabled ? "" : "disabled"}`}
         title={
           <>
-            {number ? <span className="agent-number">{number}</span> : null}
-            {agent.title} <Pill value={agent.enabled ? "up" : "disabled"} label={agent.enabled ? "enabled" : "disabled"} />
-            {agent.entitled === false ? <Pill value="disabled" label="not in your edition" /> : null}
-            {agent.sensitive ? <Pill value="warning" label="sensitive data" /> : null}
+            <span className="ag-icon" aria-hidden>
+              <Icon name={AGENT_ICON[agent.name] ?? "agents"} size={18} />
+              {number ? <span className="ag-number">{number}</span> : null}
+            </span>
+            <span className="ag-title">{agent.title}</span>
           </>
         }
         actions={
@@ -49,53 +82,137 @@ export default function Agents() {
           ) : null
         }
       >
-        <p className="muted">{agent.description}</p>
-        <div className="small muted">
-          24 h: {stats.succeeded ?? 0} succeeded · {stats.failed ?? 0} failed · {stats.awaiting_approval ?? 0} awaiting approval · last run{" "}
-          <Time iso={agent.last_run_at} />
+        <div className="ag-pills">
+          <Pill value={agent.enabled ? "up" : "disabled"} label={agent.enabled ? "enabled" : "disabled"} />
+          {agent.entitled === false ? <Pill value="disabled" label="not in your edition" /> : null}
+          {agent.sensitive ? <Pill value="warning" label="sensitive data" /> : null}
         </div>
-        {agent.integrations.length ? <div className="small muted">Integrations: {agent.integrations.join(", ")}</div> : null}
-        {agent.capabilities.length ? null : <p className="small muted">No capabilities in this build yet.</p>}
-        <ul className="caps">
-          {agent.capabilities
-            .filter((c) => !INTERNAL.has(`${agent.name}.${c.name}`))
-            .map((cap) => (
-              <li key={cap.name}>
-                <div>
-                  <code>{cap.name}</code> <RiskBadge risk={cap.risk} />
-                  <div className="small muted">{cap.description}</div>
-                </div>
-                {canOperate && agent.enabled && agent.entitled !== false ? (
-                  <button className="btn small" onClick={() => setRunning({ agent, cap })}>
-                    Run
-                  </button>
-                ) : null}
-              </li>
+        <p className="muted ag-desc">{agent.description}</p>
+        <dl className="ag-stats" title="Tasks created in the last 24 hours">
+          <div>
+            <dt>Succeeded 24 h</dt>
+            <dd className="tabular">{stats.succeeded ?? 0}</dd>
+          </div>
+          <div>
+            <dt>Failed</dt>
+            <dd className={`tabular ${stats.failed ? "text-bad" : ""}`}>{stats.failed ?? 0}</dd>
+          </div>
+          <div>
+            <dt>Awaiting approval</dt>
+            <dd className={`tabular ${stats.awaiting_approval ? "text-warn" : ""}`}>{stats.awaiting_approval ?? 0}</dd>
+          </div>
+          <div>
+            <dt>Last run</dt>
+            <dd>
+              <Time iso={agent.last_run_at} />
+            </dd>
+          </div>
+        </dl>
+        {agent.integrations.length ? (
+          <div className="ag-integrations small">
+            <span className="muted">Integrations:</span>
+            {agent.integrations.map((i) => (
+              <span key={i} className="ag-chip">
+                {i}
+              </span>
             ))}
+          </div>
+        ) : null}
+        {agent.capabilities.length ? null : <p className="small muted">No capabilities in this build yet.</p>}
+        <ul className="caps ag-caps">
+          {caps.map((cap) => (
+            <li key={cap.name}>
+              <div className="ag-cap">
+                <div className="ag-cap-name">
+                  <code>{cap.name}</code> <RiskBadge risk={cap.risk} />
+                </div>
+                <div className="small muted">{cap.description}</div>
+              </div>
+              {canOperate && agent.enabled && agent.entitled !== false ? (
+                <button className="btn small" onClick={() => setRunning({ agent, cap })}>
+                  <Icon name="play" size={14} /> Run
+                </button>
+              ) : null}
+            </li>
+          ))}
         </ul>
       </Card>
     );
   }
 
   return (
-    <div className="page">
+    <div className="page ag-page">
       <header className="page-head">
         <div>
-          <h1>Agents</h1>
+          <div className="eyebrow">Automation</div>
+          <h1>AI Agents</h1>
           <p className="muted">The AI Supervisor and the seven agents. Risk levels decide what needs your approval; agents cannot change that themselves.</p>
         </div>
       </header>
       <ErrorNote error={agents.error ?? error} />
+
+      <div className="tiles cols-4">
+        <Tile
+          icon="agents"
+          tone="purple"
+          label="Active agents"
+          hint={
+            loaded
+              ? [switchedOff ? `${switchedOff} switched off` : "", notEntitled ? `${notEntitled} not in your edition` : ""].filter(Boolean).join(" · ") ||
+                `All ${specialists.length} switched on · AI Supervisor ${supervisor?.enabled ? "on" : "off"}`
+              : pending
+          }
+        >
+          <span className="tile-value tabular">{loaded ? active : "—"}</span>
+          {loaded ? <span className="tile-of">of {specialists.length}</span> : null}
+        </Tile>
+        <Tile
+          icon="tasks"
+          tone="blue"
+          label="Tasks in 24 h"
+          to="/tasks"
+          hint={loaded ? `${succeeded24} succeeded · ${inProgress} queued or running` : pending}
+        >
+          <span className="tile-value tabular">{loaded ? tasks24.toLocaleString() : "—"}</span>
+        </Tile>
+        <Tile
+          icon="approvals"
+          tone={!loaded ? "muted" : awaiting ? "warn" : "green"}
+          label="Awaiting approval"
+          to="/approvals"
+          hint={loaded ? (awaiting ? "Tasks from the last 24 h held for you" : "Nothing from the last 24 h is held") : pending}
+        >
+          <span className="tile-value tabular">{loaded ? awaiting : "—"}</span>
+        </Tile>
+        <Tile
+          icon="alert"
+          tone={!loaded ? "muted" : failed ? "bad" : "green"}
+          label="Failed 24 h"
+          to="/tasks"
+          hint={loaded ? (failed ? `${failingAgents} agent${failingAgents === 1 ? "" : "s"} with failures` : "No failed tasks") : pending}
+        >
+          <span className="tile-value tabular">{loaded ? failed : "—"}</span>
+        </Tile>
+      </div>
+
       {supervisor ? (
         <section className="agent-section">
-          <h2>Coordinator</h2>
-          <p className="muted small">The AI Supervisor is not one of the seven agents: it plans your requests and hands the work to them.</p>
+          <div className="ag-section-head">
+            <h2>
+              <Icon name="sparkles" size={18} className="card-icon" /> Coordinator
+            </h2>
+            <p className="muted small">The AI Supervisor is not one of the seven agents: it plans your requests and hands the work to them.</p>
+          </div>
           <div className="agent-grid single">{card(supervisor)}</div>
         </section>
       ) : null}
       <section className="agent-section">
-        <h2>The seven agents</h2>
-        <div className="agent-grid">{specialists.map((a, i) => card(a, i + 1))}</div>
+        <div className="ag-section-head">
+          <h2>
+            <Icon name="agents" size={18} className="card-icon" /> The seven agents
+          </h2>
+        </div>
+        <div className="agent-grid ag-grid">{specialists.map((a, i) => card(a, i + 1))}</div>
       </section>
       {running ? <RunModal agent={running.agent} cap={running.cap} onClose={() => setRunning(null)} /> : null}
     </div>

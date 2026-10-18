@@ -1,0 +1,61 @@
+/* Websites page (prefix ws-). Page stylesheets load before styles.css, so rules that adjust shared classes carry an extra class. */
+.ws-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.ws-status-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+}
+.ws-status-value {
+  font-size: 30px;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: var(--text);
+}
+.ws-status-value.text-good {
+  color: var(--good-text);
+}
+.ws-status-value.text-warn {
+  color: var(--warn-text);
+}
+.ws-status-value.text-bad {
+  color: var(--bad-text);
+}
+
+/* sites table */
+.table.ws-table td {
+  vertical-align: middle;
+}
+.ws-site {
+  min-width: 180px;
+  max-width: 320px;
+}
+.ws-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-nowrap {
+  white-space: nowrap;
+}
+.ws-uptime {
+  min-width: 96px;
+  font-weight: 600;
+}
+.ws-uptime .meter {
+  width: 72px;
+  margin-top: 5px;
+}
+
+/* site detail dialog */
+.ws-detail-head {
+  overflow-wrap: anywhere;
+}
