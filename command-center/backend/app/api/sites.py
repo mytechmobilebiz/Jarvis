@@ -6,11 +6,11 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import audit
+from .. import audit, licensing
 from .. import tasks as task_service
 from ..agents.wordpress_monitor.agent import normalize_url
 from ..config import Settings, get_settings
@@ -59,8 +59,13 @@ async def list_sites(_: Principal = Depends(require_user), session: AsyncSession
 
 @router.post("", status_code=201)
 async def create_site(
-    body: SiteBody, request: Request, principal: Principal = Depends(require_operator), session: AsyncSession = Depends(get_db)
+    body: SiteBody, request: Request, principal: Principal = Depends(require_operator),
+    session: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings),
 ) -> dict:
+    ent = await licensing.current_entitlements(session, settings)
+    count = await session.scalar(select(func.count()).select_from(Site))
+    if ent.max_sites is not None and count >= ent.max_sites:
+        raise HTTPException(403, f"the {ent.edition.title} edition monitors up to {ent.max_sites} sites")
     site = Site(name=body.name.strip(), url=body.url, client=body.client.strip(), notes=body.notes, enabled=body.enabled)
     session.add(site)
     try:

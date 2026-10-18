@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import __version__, audit
+from .. import __version__, audit, customer_settings, licensing
 from ..config import Settings, get_settings
 from ..models import (
     Approval,
@@ -73,6 +73,8 @@ async def system_status(
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     llm_today = await session.scalar(select(func.count()).select_from(LLMUsage).where(LLMUsage.at >= start))
     integrations = {r.name: to_dict(r) for r in (await session.scalars(select(IntegrationStatus))).all()}
+    ai, _key = await customer_settings.resolve_ai(session, settings)
+    ent = await licensing.current_entitlements(session, settings)
     return {
         "app": settings.app_name,
         "version": __version__,
@@ -83,13 +85,16 @@ async def system_status(
             {**to_dict(w), "alive": now - w.last_seen_at < timedelta(minutes=2)} for w in workers[:10]
         ],
         "llm": {
-            "configured": settings.anthropic_enabled,
-            "provider": "anthropic" if settings.anthropic_enabled else "rule-based",
-            "model": settings.llm_model if settings.anthropic_enabled else None,
+            "configured": ai.provider == "anthropic",
+            "provider": "anthropic" if ai.provider == "anthropic" else "rule-based",
+            "model": ai.model if ai.provider == "anthropic" else None,
             "requests_today": llm_today,
-            "daily_cap": settings.llm_daily_request_cap,
+            "daily_cap": ai.daily_cap,
+            "reason": ai.reason,
         },
-        "n8n": integrations.get("n8n"),
+        "workflow_engine": settings.workflow_engine,
+        "edition": {"code": ent.edition.code, "title": ent.edition.title, "source": ent.source},
+        "n8n": integrations.get(settings.workflow_engine),
         "counts": {
             "sites": site_counts,
             "tasks_24h": task_counts,

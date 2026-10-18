@@ -14,6 +14,20 @@ SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
 ALWAYS_FORWARD = frozenset({"site.recovered"})
 
 
+def event_payload(event: Event) -> dict[str, Any]:
+    """What a workflow engine receives for an event (no secrets, no personal data)."""
+    return {
+        "event_id": event.id,
+        "kind": event.kind,
+        "severity": event.severity,
+        "source": event.source,
+        "title": event.title,
+        "detail": event.detail,
+        "at": event.at.isoformat() if event.at else None,
+        "task_id": event.task_id,
+    }
+
+
 async def emit(
     session: AsyncSession,
     settings: Settings,

@@ -1,4 +1,4 @@
-"""Delivering pending events to the n8n events webhook, with backoff."""
+"""Delivering pending events to the configured workflow engine, with backoff."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 
 from ..db import session_scope
-from ..integrations.n8n import N8nClient
 from ..models import Event, IntegrationStatus
 
 log = logging.getLogger(__name__)
@@ -34,7 +33,7 @@ async def record_integration(name: str, ok: bool, error: str = "", detail: dict 
         row.updated_at = now
 
 
-async def forward_pending(n8n: N8nClient, limit: int = 20) -> int:
+async def forward_pending(engine, limit: int = 20) -> int:
     now = datetime.now(UTC)
     sent = 0
     errors: list[str] = []
@@ -49,8 +48,12 @@ async def forward_pending(n8n: N8nClient, limit: int = 20) -> int:
             )
         ).all()
         for event in pending:
+            if not engine.delivers:
+                event.forward_status = "skipped"
+                event.forward_error = "no workflow engine configured"
+                continue
             try:
-                await n8n.send_event(event)
+                await engine.deliver(event)
             except Exception as exc:  # noqa: BLE001 - any delivery failure is retried
                 event.forward_attempts += 1
                 event.forward_error = f"{exc.__class__.__name__}: {exc}"[:500]
@@ -66,7 +69,7 @@ async def forward_pending(n8n: N8nClient, limit: int = 20) -> int:
             event.forward_error = ""
             sent += 1
     if sent:
-        await record_integration("n8n", True)
+        await record_integration(engine.name, True)
     if errors:
-        await record_integration("n8n", False, f"event delivery failed: {errors[-1]}")
+        await record_integration(engine.name, False, f"event delivery failed: {errors[-1]}")
     return sent

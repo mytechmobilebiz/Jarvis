@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import audit
+from .. import audit, licensing
 from .. import tasks as task_service
 from ..agents.registry import all_agents, get_agent
 from ..config import Settings, get_settings
@@ -39,7 +39,9 @@ def task_view(task: Task) -> dict[str, Any]:
 
 
 @router.get("/agents")
-async def list_agents(_: Principal = Depends(require_user), session: AsyncSession = Depends(get_db)) -> dict:
+async def list_agents(
+    _: Principal = Depends(require_user), session: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
+) -> dict:
     states = {s.name: s for s in (await session.scalars(select(AgentState))).all()}
     since = datetime.now(UTC) - timedelta(hours=24)
     stats: dict[str, dict[str, int]] = {}
@@ -52,11 +54,13 @@ async def list_agents(_: Principal = Depends(require_user), session: AsyncSessio
     last_runs = dict(
         (await session.execute(select(Task.agent, func.max(Task.finished_at)).group_by(Task.agent))).all()
     )
+    ent = await licensing.current_entitlements(session, settings)
     out = []
     for name, agent in all_agents().items():
         d = agent.describe()
         state = states.get(name)
         d["enabled"] = True if state is None else state.enabled
+        d["entitled"] = ent.allows_agent(name)
         d["stats_24h"] = stats.get(name, {})
         last = last_runs.get(name)
         d["last_run_at"] = last.isoformat() if last else None

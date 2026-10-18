@@ -112,6 +112,7 @@ export default function Agents() {
               title={
                 <>
                   {agent.title} <Pill value={agent.enabled ? "up" : "disabled"} label={agent.enabled ? "enabled" : "disabled"} />
+                  {agent.entitled === false ? <Pill value="disabled" label="not in your edition" /> : null}
                 </>
               }
               actions={
@@ -137,7 +138,7 @@ export default function Agents() {
                         <code>{cap.name}</code> <RiskBadge risk={cap.risk} />
                         <div className="small muted">{cap.description}</div>
                       </div>
-                      {canOperate && agent.enabled ? (
+                      {canOperate && agent.enabled && agent.entitled !== false ? (
                         <button className="btn small" onClick={() => setRunning({ agent, cap })}>
                           Run
                         </button>

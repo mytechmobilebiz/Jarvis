@@ -35,6 +35,7 @@ def config_problems(settings: Settings) -> tuple[list[str], list[str]]:
     secret("ADMIN_PASSWORD", settings.admin_password, 12)
     token = secret("CC_SERVICE_TOKEN", settings.service_token)
     webhook = secret("N8N_WEBHOOK_SECRET", settings.n8n_webhook_secret)
+    secret("CC_SECRETS_KEY", settings.secrets_key)
     if token and token == webhook:
         errors.append("CC_SERVICE_TOKEN and N8N_WEBHOOK_SECRET must be different")
     if not settings.database_url.startswith("postgresql+asyncpg://"):

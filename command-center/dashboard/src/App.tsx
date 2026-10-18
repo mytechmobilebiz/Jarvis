@@ -10,6 +10,7 @@ import Integrations from "./pages/Integrations";
 import Login from "./pages/Login";
 import Overview from "./pages/Overview";
 import Schedules from "./pages/Schedules";
+import Settings from "./pages/Settings";
 import Supervisor from "./pages/Supervisor";
 import Tasks from "./pages/Tasks";
 import Websites from "./pages/Websites";
@@ -28,7 +29,7 @@ export function useAuth(): AuthState {
   return ctx;
 }
 
-const NAV: { to: string; label: string; badge?: (s: SystemStatus) => number }[] = [
+const NAV: { to: string; label: string; badge?: (s: SystemStatus) => number; adminOnly?: boolean }[] = [
   { to: "/", label: "Overview" },
   { to: "/supervisor", label: "Supervisor" },
   { to: "/agents", label: "Agents" },
@@ -38,7 +39,8 @@ const NAV: { to: string; label: string; badge?: (s: SystemStatus) => number }[] 
   { to: "/drafts", label: "Drafts & reports" },
   { to: "/schedules", label: "Schedules" },
   { to: "/integrations", label: "Integrations" },
-  { to: "/activity", label: "Activity log" },
+  { to: "/activity", label: "Activity log", adminOnly: true },
+  { to: "/settings", label: "Settings", adminOnly: true },
 ];
 
 function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void> }) {
@@ -60,7 +62,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
             </div>
           </div>
           <nav>
-            {NAV.map((item) => {
+            {NAV.filter((item) => !item.adminOnly || user.role === "admin").map((item) => {
               const count = s && item.badge ? item.badge(s) : 0;
               return (
                 <NavLink key={item.to} to={item.to} end={item.to === "/"} className={({ isActive }) => (isActive ? "active" : "")}>
@@ -80,6 +82,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
             <div className="health-line">
               <span className={`dot ${s?.llm.configured ? "dot-good" : "dot-muted"}`} /> AI: {s ? (s.llm.configured ? s.llm.model : "rule-based") : "…"}
             </div>
+            {s?.edition ? <div className="health-line muted">Edition: {s.edition.title}</div> : null}
             <div className="user-line">
               <span title={user.role}>{user.email}</span>
               <button className="btn ghost small" onClick={() => void onSignOut()}>
@@ -100,6 +103,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
             <Route path="/schedules" element={<Schedules />} />
             <Route path="/integrations" element={<Integrations />} />
             <Route path="/activity" element={<Activity />} />
+            <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>

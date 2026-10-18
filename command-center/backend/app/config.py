@@ -10,6 +10,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Deployment and developer settings, read from the environment (.env).
+
+    These describe the installation itself (database, secrets, ports, tuning)
+    and are never shown or edited in the dashboard. Settings a customer may
+    change live in the database instead: see app/customer_settings.py.
+    """
+
     model_config = SettingsConfigDict(env_file=None, extra="ignore", case_sensitive=False)
 
     app_name: str = "Infinite AI Command Center"
@@ -28,8 +35,25 @@ class Settings(BaseSettings):
     login_max_failures: int = 5
     login_lockout_minutes: int = 15
 
-    # AI provider. "auto" uses Claude when ANTHROPIC_API_KEY is set, else the
-    # deterministic rule-based planner.
+    # Encrypts customer secrets stored in the database (app/secrets.py).
+    secrets_key: SecretStr | None = Field(default=None, validation_alias="CC_SECRETS_KEY")
+
+    # Edition when no valid license is installed (developer setting). The
+    # internal "developer" edition enables everything and is not for sale.
+    edition: str = Field(default="developer", validation_alias="CC_EDITION")
+    # Ed25519 public key (base64, 32 bytes) that signs license files. Without
+    # it, uploaded licenses cannot be verified and are ignored.
+    license_public_key: str = Field(default="", validation_alias="CC_LICENSE_PUBLIC_KEY")
+
+    # Workflow engine the platform hands events to: n8n, a generic signed
+    # webhook (any engine), or none.
+    workflow_engine: Literal["n8n", "webhook", "none"] = "n8n"
+    workflow_webhook_url: str = ""
+    workflow_webhook_secret: SecretStr | None = None
+
+    # AI provider defaults. Customers override these (and supply their own API
+    # key) on the Settings page. "auto" uses Claude when a key is available,
+    # else the deterministic rule-based planner.
     llm_provider: Literal["auto", "anthropic", "rule_based"] = "auto"
     anthropic_api_key: SecretStr | None = None
     llm_model: str = "claude-opus-5-5"

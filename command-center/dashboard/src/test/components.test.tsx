@@ -39,7 +39,7 @@ describe("badges", () => {
       </>,
     );
     expect(screen.getByText("external · approval")).toBeInTheDocument();
-    expect(screen.getByText("awaiting approval")).toHaveClass("tone-warn");
+    expect(screen.getByText("Awaiting approval")).toHaveClass("tone-warn");
   });
 
   it("orders findings by severity and hides info by default", () => {

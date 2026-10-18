@@ -30,6 +30,7 @@ CC_DB_PASSWORD=$(New-Secret 24)
 N8N_DB_PASSWORD=$(New-Secret 24)
 
 CC_SERVICE_TOKEN=$(New-Secret 32)
+CC_SECRETS_KEY=$(New-Secret 32)
 N8N_WEBHOOK_SECRET=$(New-Secret 32)
 N8N_ENCRYPTION_KEY=$(New-Secret 32)
 N8N_OWNER_PASSWORD=$n8nPassword
@@ -53,5 +54,5 @@ N8N_PORT=5680
 Write-Host "Wrote $envFile"
 Write-Host "Dashboard sign-in: $AdminEmail / $adminPassword"
 Write-Host "n8n sign-in:       $AdminEmail / $n8nPassword"
-Write-Host "Back up N8N_ENCRYPTION_KEY somewhere safe: without it n8n cannot decrypt its stored credentials."
+Write-Host "Back up .env somewhere safe: N8N_ENCRYPTION_KEY and CC_SECRETS_KEY are needed to decrypt stored credentials."
 exit 0

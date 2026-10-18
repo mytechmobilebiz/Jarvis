@@ -13,6 +13,8 @@ os.environ["N8N_BASE_URL"] = "http://n8n.test:5678"
 os.environ["N8N_WEBHOOK_SECRET"] = "test-webhook-secret"
 os.environ["MONITOR_RETRY_DELAY_SECONDS"] = "0"
 os.environ["LLM_PROVIDER"] = "rule_based"
+os.environ["CC_SECRETS_KEY"] = "test-secrets-key-0123456789abcdef"
+os.environ["CC_EDITION"] = "developer"
 os.environ.pop("ANTHROPIC_API_KEY", None)
 os.environ.pop("HTTPS_PROXY", None)
 os.environ.pop("https_proxy", None)
@@ -24,7 +26,7 @@ from sqlalchemy import text  # noqa: E402
 from app import db  # noqa: E402
 from app.bootstrap import ensure_admin  # noqa: E402
 from app.config import get_settings  # noqa: E402
-from app.integrations.n8n import N8nClient  # noqa: E402
+from app.workflow import N8nEngine  # noqa: E402
 from app.llm import NullProvider  # noqa: E402
 from app.security import CSRF_HEADER, CSRF_VALUE  # noqa: E402
 from app.worker.runner import Worker  # noqa: E402
@@ -60,9 +62,12 @@ async def clean_db(migrated, settings):
         )]
         await conn.execute(text(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE"))
     await ensure_admin(settings)
+    from app import customer_settings, licensing
     from app.agents.wordpress_monitor import agent as wp_agent
 
     wp_agent._LATEST_CACHE.clear()
+    licensing.clear_cache()
+    customer_settings.clear_ai_cache()
     yield migrated
 
 
@@ -80,7 +85,7 @@ def n8n() -> FakeN8n:
 def make_worker(settings, web, n8n):
     def build(**kwargs):
         kwargs.setdefault("llm", NullProvider())
-        kwargs.setdefault("n8n", N8nClient(settings, transport=n8n.transport))
+        kwargs.setdefault("engine", N8nEngine(settings, transport=n8n.transport))
         kwargs.setdefault("http_transport", web.transport)
         return Worker(kwargs.pop("settings", settings), worker_id="test-worker", **kwargs)
 

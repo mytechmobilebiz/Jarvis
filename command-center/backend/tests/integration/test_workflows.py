@@ -9,51 +9,13 @@ import pytest
 from sqlalchemy import select, update
 
 from app import tasks as task_service
-from app.agents import registry
-from app.agents.base import AgentContext, AgentResult, BaseAgent, Params, Risk, capability
 from app.config import Settings
 from app.db import session_scope
 from app.models import Artifact, Event, Schedule, Site, SiteCheck, Task
 from app.worker import scheduler
 
 from ..fakes import FakeLLM, static_site, wordpress_site
-
-
-class PublishParams(Params):
-    title: str
-
-
-class GateTestAgent(BaseAgent):
-    """A stand-in for an agent with an outward-facing action."""
-
-    name = "gate_test"
-    title = "Gate test"
-    description = "test agent"
-    seen_approvers: list[str] = []
-
-    @capability(risk=Risk.EXTERNAL, description="publish something", params=PublishParams)
-    async def publish(self, ctx: AgentContext, params: PublishParams) -> AgentResult:
-        type(self).seen_approvers.append(ctx.approved_by)
-        return AgentResult(summary=f"would publish {params.title}")
-
-    @capability(risk=Risk.READ, description="sleeps", params=Params)
-    async def slow(self, ctx: AgentContext, params: Params) -> AgentResult:
-        await asyncio.sleep(5)
-        return AgentResult(summary="never")
-
-    @capability(risk=Risk.READ, description="explodes", params=Params)
-    async def explode(self, ctx: AgentContext, params: Params) -> AgentResult:
-        ctx.log("about to fail")
-        raise RuntimeError("kaboom")
-
-
-@pytest.fixture
-def gate_agent(monkeypatch):
-    agents = dict(registry.all_agents())
-    agents["gate_test"] = GateTestAgent()
-    GateTestAgent.seen_approvers = []
-    monkeypatch.setattr(registry, "_AGENTS", agents)
-    return agents["gate_test"]
+from .conftest import GateTestAgent
 
 
 async def add_site(admin, name, url):

@@ -61,7 +61,7 @@ def test_websites_page_and_site_detail(signed_in: Page, api, test_site):
     page.get_by_role("link", name="Websites", exact=True).click()
     row = page.get_by_role("row", name="Local test WordPress")
     expect(row).to_be_visible()
-    expect(row.locator(".pill").first).to_have_text("up")
+    expect(row.locator(".pill").first).to_have_text("Up")
     shot(page, "03-websites")
     row.click()
     dialog = page.get_by_role("dialog")
@@ -93,3 +93,20 @@ def test_sign_out(signed_in: Page):
     page = signed_in
     page.get_by_role("button", name="Sign out").click()
     expect(page.get_by_role("button", name="Sign in")).to_be_visible()
+
+
+def test_settings_page_stores_key_without_showing_it(signed_in: Page, api):
+    page = signed_in
+    page.get_by_role("link", name="Settings", exact=True).click()
+    expect(page.get_by_text("Developer (internal, not for sale)")).to_be_visible()
+    fake = "sk-ant-e2e-placeholder-not-a-real-key-9z9z"
+    page.get_by_label("New Anthropic API key").fill(fake)
+    page.get_by_role("button", name="Save key").click()
+    expect(page.get_by_text("set …9z9z")).to_be_visible()
+    assert fake not in page.content()
+    assert fake not in api.get("/api/settings").text
+    shot(page, "07-settings")
+    # Remove the placeholder straight away so no AI call is ever attempted with it.
+    page.once("dialog", lambda d: d.accept())
+    page.get_by_role("button", name="Remove").click()
+    expect(page.get_by_text("not set")).to_be_visible()

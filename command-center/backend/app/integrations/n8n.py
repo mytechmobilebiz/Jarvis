@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from ..config import Settings
+from ..events import event_payload
 from ..models import Event
 
 WEBHOOK_SECRET_HEADER = "X-CC-Webhook-Secret"
@@ -41,24 +42,12 @@ class N8nClient:
             "status_code": live.status_code,
         }
 
-    def event_payload(self, event: Event) -> dict[str, Any]:
-        return {
-            "event_id": event.id,
-            "kind": event.kind,
-            "severity": event.severity,
-            "source": event.source,
-            "title": event.title,
-            "detail": event.detail,
-            "at": event.at.isoformat() if event.at else None,
-            "task_id": event.task_id,
-        }
-
     async def send_event(self, event: Event) -> int:
         headers = {}
         if self.settings.n8n_webhook_secret:
             headers[WEBHOOK_SECRET_HEADER] = self.settings.n8n_webhook_secret.get_secret_value()
         async with self._client() as client:
-            response = await client.post(self.events_webhook_url, json=self.event_payload(event), headers=headers)
+            response = await client.post(self.events_webhook_url, json=event_payload(event), headers=headers)
         response.raise_for_status()
         return response.status_code
 

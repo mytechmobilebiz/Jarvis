@@ -15,11 +15,11 @@ verified on Windows yet; see "Cloud sandbox vs Windows" below.
 |---|---|
 | M1: dashboard, PostgreSQL, n8n, AI supervisor, read-only WordPress monitor | **Done** in the cloud sandbox (tests below) |
 | M1b: Windows 11 deployment package (Docker Desktop + WSL 2) | **Done** in the sandbox; needs one run on the PC (`install.ps1`) |
-| M2: commercial-ready architecture (workflow-engine interface, editions, settings split, SBOM) | Next |
+| M2: commercial-ready architecture (workflow-engine interface, editions, settings split, SBOM) | **Done** in the sandbox; plan and blockers in COMMERCIALIZATION.md |
 | M3: remaining agent modules, incl. the isolated Credit Repair Agent | Planned |
 | M4: real integrations (email, publishing, ads, notifications) | Needs owner approval and credentials |
 
-Estimated MVP completion: **about 45%**. This is an estimate, weighted by
+Estimated MVP completion: **about 55%**. This is an estimate, weighted by
 the work remaining, not a measurement.
 
 ## Completed
@@ -47,19 +47,26 @@ the work remaining, not a measurement.
   `init-env`, `start`, `status`, `stop`, `backup`, `smoke`, `uninstall`.
 - Clean package builder: only git-tracked files, no tests or dev files,
   refuses to build if a local secret would be included.
+- Commercial-ready architecture (M2): a `WorkflowEngine` interface (n8n,
+  generic HMAC-signed webhook, none); Personal / Professional / Agency
+  editions with enforced agent, site and user limits; offline Ed25519-signed
+  license files; customer settings (database, admin-only) separated from
+  deployment settings (.env); customer API keys stored encrypted and never
+  shown again; per-task AI provider resolution; user management; SBOM
+  (CycloneDX); COMMERCIALIZATION.md with the blockers to distribution.
 
 ## Active
 
-- Investigating one intermittent end-to-end UI test failure (see Blockers).
-- Starting M2 (commercial-ready architecture), then M3 agents.
+- M3: the remaining agent modules, starting with the isolated Credit Repair
+  Agent's data layer (design in COMMERCIALIZATION.md section 4).
 
 ## Test results (latest runs, cloud sandbox)
 
 | Suite | Result | What it covers |
 |---|---|---|
-| Backend unit + integration (pytest, real PostgreSQL 18) | **106 passed, 0 failed** | API, auth, roles, approvals, worker, scheduler, supervisor, WordPress checks, TLS probe, Claude provider (mocked API), schema |
+| Backend unit + integration (pytest, real PostgreSQL 18) | **130 passed, 0 failed** | API, auth, roles, approvals, worker, scheduler, supervisor, WordPress checks, TLS probe, Claude provider (mocked API), schema, licenses, editions, encrypted secrets, settings, users, workflow engines |
 | Dashboard (Vitest) | **9 passed, 0 failed** | sign-in, approvals, supervisor, viewer restrictions, safe Markdown |
-| End-to-end, running stack (pytest + Playwright Chromium) | **20 passed** in the latest runs; 1 intermittent UI failure seen twice in about eight full runs | real n8n round trip, real local WordPress, read-only verified from WordPress's access log, browser flows |
+| End-to-end, running stack (pytest + Playwright Chromium) | **21 passed**; 8 further consecutive full runs passed (one earlier intermittent failure, not reproduced since) | real n8n round trip, real local WordPress, read-only verified from WordPress's access log, browser flows, Settings page |
 | `smoke.ps1` against the stack (PowerShell 7.4) | **6 of 6 passed** | health, sign-in, worker, n8n round trip, supervisor |
 | Package lifecycle from the zip (PowerShell 7.4) | **all steps passed** | install, status, backup (restorable), stop/start, uninstall keeping data, reinstall, uninstall deleting data; a decoy Docker project left untouched |
 | `docker compose config` | valid, base and test overlay | |
@@ -97,8 +104,9 @@ Verification on the PC = `install.ps1` finishing with `SMOKE TEST PASSED`.
 5. **Repository**: the Command Center sits inside the Jarvis repository,
    which also holds the purchased Jarvis source. Before distribution it
    should move to its own repository.
-6. **Intermittent UI test** (`test_supervisor_console`): passes in isolation
-   and in most full runs; root cause not yet captured.
+6. **Intermittent UI test** (`test_supervisor_console`): failed twice, both
+   times right after a stack restart; not reproduced in 8 consecutive full
+   runs since. The suite now keeps a screenshot of any failure.
 
 ## Remaining integrations (all need owner approval and credentials)
 
@@ -116,7 +124,6 @@ Verification on the PC = `install.ps1` finishing with `SMOKE TEST PASSED`.
 
 1. Owner: run `install.ps1` on the PC and send back the `smoke.ps1` output.
 2. Owner: confirm the seven agents, or send the full handoff.
-3. M2: workflow-engine interface, editions and entitlements, settings split,
-   encrypted customer secrets and AI provider settings, SBOM, COMMERCIALIZATION.md.
+3. Owner: decide on blockers B1 (n8n licensing) and B3 (own repository) in COMMERCIALIZATION.md.
 4. M3: the remaining agents (mock integrations, approval-gated), Credit Repair
    in an isolated database.

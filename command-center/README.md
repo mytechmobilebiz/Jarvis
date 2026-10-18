@@ -8,6 +8,8 @@ that machine (127.0.0.1) until you deliberately put a TLS proxy in front.
 
 Status, test results and open items: [PROJECT_STATUS.md](PROJECT_STATUS.md).
 Install on Windows 11: [docs/DEPLOY_WINDOWS.md](docs/DEPLOY_WINDOWS.md).
+Commercial edition plan and blockers: [COMMERCIALIZATION.md](COMMERCIALIZATION.md).
+Third-party components and licenses: [SBOM.md](SBOM.md).
 
 ## What is in the box
 
@@ -34,6 +36,9 @@ Install on Windows 11: [docs/DEPLOY_WINDOWS.md](docs/DEPLOY_WINDOWS.md).
 | `backend/app/supervisor` | The AI supervisor: plans requests (Claude or rules), summarises, daily briefing, health review |
 | `backend/app/worker` | Runs tasks (PostgreSQL `SKIP LOCKED` queue), cron schedules, delivers events to n8n |
 | `backend/app/migrations` | The database schema, as plain SQL |
+| `backend/app/workflow.py` | The workflow-engine boundary (n8n, generic signed webhook, none) |
+| `backend/app/licensing.py` | Editions, entitlements, signed license files |
+| `backend/app/customer_settings.py`, `secrets.py` | Customer settings and encrypted customer secrets (deployment settings stay in `.env`) |
 | `dashboard/` | The web dashboard |
 | `n8n/` | Workflows and credentials provisioned into n8n at start-up |
 | `scripts/` | Windows (PowerShell 5.1+) install, start, stop, status, backup, smoke test, uninstall |

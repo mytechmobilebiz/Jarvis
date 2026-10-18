@@ -81,14 +81,17 @@ export default function Overview({ status }: { status: SystemStatus | null }) {
               {status ? (
                 status.llm.configured ? (
                   <>
-                    <Pill value="live" label={status.llm.model ?? "Claude"} />{" "}
+                    <Pill value="live" label={`Claude · ${status.llm.model ?? ""}`} />{" "}
                     <span className="muted small">
                       {status.llm.requests_today}/{status.llm.daily_cap} requests today
                     </span>
                   </>
                 ) : (
                   <>
-                    <Pill value="info" label="rule-based planner" /> <span className="muted small">No ANTHROPIC_API_KEY set</span>
+                    <Pill value="info" label="rule-based planner" />{" "}
+                    <span className="muted small">
+                      {status.llm.reason ?? "no AI key set"} · <Link to="/settings">Settings</Link>
+                    </span>
                   </>
                 )
               ) : (

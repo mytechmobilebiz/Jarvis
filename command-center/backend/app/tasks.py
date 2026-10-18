@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from sqlalchemy import and_, not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from . import events
+from . import events, licensing
 from .agents.base import Capability
 from .agents.registry import get_agent
 from .config import Settings
@@ -80,6 +80,9 @@ async def create_task(
         raise TaskError(f"invalid parameters for {agent}.{capability}: {exc.errors(include_url=False)}") from exc
     if not await agent_enabled(session, agent):
         raise TaskError(f"agent '{agent}' is disabled")
+    entitlements = await licensing.current_entitlements(session, settings)
+    if not entitlements.allows_agent(agent):
+        raise TaskError(f"the {agent} agent is not included in the {entitlements.edition.title} edition")
 
     clean = validated.model_dump(mode="json")
     needs_approval = cap.risk.requires_approval

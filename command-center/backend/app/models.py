@@ -250,3 +250,20 @@ class LLMUsage(Base):
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     ok: Mapped[bool] = mapped_column(Boolean, default=True)
     error: Mapped[str] = mapped_column(Text, default="")
+
+
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[Any] = mapped_column(JSONB)
+    updated_at: Mapped[datetime] = _now_col()
+    updated_by: Mapped[str] = mapped_column(Text, default="")
+
+
+class SecretValue(Base):
+    __tablename__ = "secret_values"
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    ciphertext: Mapped[str] = mapped_column(Text)
+    hint: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = _now_col()
+    updated_by: Mapped[str] = mapped_column(Text, default="")

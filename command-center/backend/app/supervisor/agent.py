@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import Field
 from sqlalchemy import and_, func, not_, select
 
+from .. import licensing
 from .. import tasks as task_service
 from ..agents.base import (
     AgentContext,
@@ -136,7 +137,12 @@ class SupervisorAgent(BaseAgent):
         if request.status != "planning":
             return AgentResult(summary=f"request {request.id} was already planned")
 
-        agents = {n: a for n, a in all_agents().items() if await task_service.agent_enabled(session, n)}
+        entitlements = await licensing.current_entitlements(session, ctx.settings)
+        agents = {
+            n: a
+            for n, a in all_agents().items()
+            if entitlements.allows_agent(n) and await task_service.agent_enabled(session, n)
+        }
         sites = [(r.id, r.name, r.url) for r in (await session.execute(select(Site.id, Site.name, Site.url).order_by(Site.id).limit(100))).all()]
         plan = await make_plan(request.message, agents, ctx.llm, sites)
         created: list[Task] = []

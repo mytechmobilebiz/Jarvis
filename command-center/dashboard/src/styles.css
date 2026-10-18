@@ -331,7 +331,6 @@ h3 {
   padding: 1px 9px;
   font-size: 11.5px;
   font-weight: 600;
-  text-transform: capitalize;
   white-space: nowrap;
 }
 .tone-good {
@@ -806,4 +805,28 @@ pre.json {
 }
 .n8n-test {
   margin-top: 8px;
+}
+
+/* settings */
+.settings-form label {
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.settings-form label .muted {
+  text-transform: none;
+  font-weight: 400;
+}
+.secret-field {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 10px;
+}
+.secret-form,
+.users-form {
+  grid-template-columns: 1fr auto auto;
+  margin-top: 8px;
+}
+.users-form {
+  grid-template-columns: 1.4fr 0.8fr 1.4fr auto;
+  margin-top: 12px;
 }

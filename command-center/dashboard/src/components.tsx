@@ -50,7 +50,8 @@ const STATUS_TONE: Record<string, string> = {
 };
 
 export function Pill({ value, label }: { value: string; label?: string }) {
-  return <span className={`pill tone-${STATUS_TONE[value] ?? "muted"}`}>{label ?? value.replace(/_/g, " ")}</span>;
+  const text = label ?? value.replace(/_/g, " ");
+  return <span className={`pill tone-${STATUS_TONE[value] ?? "muted"}`}>{label ? text : text.charAt(0).toUpperCase() + text.slice(1)}</span>;
 }
 
 const RISK_LABEL: Record<Risk, string> = {

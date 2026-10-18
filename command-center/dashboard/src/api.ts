@@ -49,6 +49,7 @@ export const api = {
   get: <T>(path: string) => request<T>("GET", path),
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body ?? {}),
   patch: <T>(path: string, body: unknown) => request<T>("PATCH", path, body),
+  put: <T>(path: string, body: unknown) => request<T>("PUT", path, body),
   del: <T>(path: string) => request<T>("DELETE", path),
 };
 
@@ -83,6 +84,7 @@ export interface Agent {
   title: string;
   description: string;
   enabled: boolean;
+  entitled: boolean;
   integrations: string[];
   capabilities: Capability[];
   stats_24h: Record<string, number>;
@@ -246,7 +248,9 @@ export interface SystemStatus {
   time: string;
   database: { ok: boolean };
   workers: { worker_id: string; last_seen_at: string; alive: boolean; info: Json }[];
-  llm: { configured: boolean; provider: string; model: string | null; requests_today: number; daily_cap: number };
+  llm: { configured: boolean; provider: string; model: string | null; requests_today: number; daily_cap: number; reason?: string };
+  workflow_engine?: string;
+  edition?: { code: string; title: string; source: string };
   n8n: IntegrationState | null;
   counts: {
     sites: Record<string, number>;
@@ -268,4 +272,41 @@ export interface AuditEntry {
   target_id: string;
   detail: Json;
   ip: string;
+}
+
+export interface EditionInfo {
+  edition: string;
+  title: string;
+  source: "license" | "configuration";
+  license: { license_id: string; customer: string; issued_at: string; expires_at: string | null; expired: boolean } | null;
+  limits: { max_sites: number | null; max_users: number | null };
+  agents: string[] | null;
+  features: Record<string, { enabled: boolean; description: string }>;
+  notes: string[];
+  usage: { sites: number; users: number };
+}
+
+export interface SettingField {
+  value: string | number;
+  label: string;
+  description: string;
+  kind: "text" | "choice" | "integer" | "timezone";
+  choices: string[];
+}
+
+export interface SettingsPage {
+  settings: Record<string, SettingField>;
+  secrets: Record<string, { label: string; description: string; set: boolean; hint: string; updated_at: string | null; updated_by: string }>;
+  secrets_available: boolean;
+  ai: { provider: string; model: string; daily_cap: number; key_source: string; reason: string };
+}
+
+export interface ManagedUser {
+  id: number;
+  email: string;
+  display_name: string;
+  role: "admin" | "operator" | "viewer";
+  is_active: boolean;
+  created_at: string | null;
+  last_login_at: string | null;
 }

@@ -74,7 +74,7 @@ if ($freeGb -ge 10) { Ok "$freeGb GB free on $($drive.Name):" } else { Warn "onl
 
 Write-Host "`nConfiguration"
 if (Test-Path (Join-Path $root ".env")) {
-  $required = "ADMIN_EMAIL","ADMIN_PASSWORD","POSTGRES_PASSWORD","CC_DB_PASSWORD","N8N_DB_PASSWORD","CC_SERVICE_TOKEN","N8N_WEBHOOK_SECRET","N8N_ENCRYPTION_KEY","N8N_OWNER_PASSWORD"
+  $required = "ADMIN_EMAIL","ADMIN_PASSWORD","POSTGRES_PASSWORD","CC_DB_PASSWORD","N8N_DB_PASSWORD","CC_SERVICE_TOKEN","CC_SECRETS_KEY","N8N_WEBHOOK_SECRET","N8N_ENCRYPTION_KEY","N8N_OWNER_PASSWORD"
   $missing = $required | Where-Object { -not $envValues[$_] }
   if ($missing) { Bad ".env is missing: $($missing -join ', ')" } else { Ok ".env has every required secret" }
   if ($envValues["ANTHROPIC_API_KEY"]) { Ok "ANTHROPIC_API_KEY set: the supervisor will use Claude (metered)" } else { Write-Host "  [info] ANTHROPIC_API_KEY empty: the supervisor plans with deterministic rules" }

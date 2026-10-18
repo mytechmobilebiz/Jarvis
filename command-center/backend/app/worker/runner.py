@@ -21,9 +21,9 @@ from ..agents.registry import get_agent
 from ..config import Settings
 from ..db import session_scope, sessionmaker
 from ..integrations import IntegrationHub, build_hub
-from ..integrations.n8n import N8nClient
-from ..llm import LLMProvider, build_provider
+from ..llm import LLMProvider, runtime_provider
 from ..models import Approval, Artifact, Task, TaskLog, WorkerHeartbeat
+from ..workflow import WorkflowEngine, build_engine
 from . import forwarder, scheduler
 
 log = logging.getLogger(__name__)
@@ -55,20 +55,22 @@ class Worker:
         *,
         llm: LLMProvider | None = None,
         hub: IntegrationHub | None = None,
-        n8n: N8nClient | None = None,
+        engine: WorkflowEngine | None = None,
         http_transport: httpx.AsyncBaseTransport | None = None,
         worker_id: str | None = None,
     ) -> None:
         self.settings = settings
-        self.llm = llm or build_provider(settings)
+        # A fixed provider (tests); otherwise resolved per task from the
+        # customer's AI settings, so a key entered in the dashboard applies at once.
+        self._fixed_llm = llm
         self.hub = hub or build_hub(settings)
-        self.n8n = n8n or N8nClient(settings)
+        self.engine = engine or build_engine(settings)
         self.http_transport = http_transport
         self.worker_id = worker_id or f"{socket.gethostname()}-{os.getpid()}"
         self._slots = asyncio.Semaphore(settings.worker_concurrency)
         self._running: set[asyncio.Task[None]] = set()
         self._stop = asyncio.Event()
-        self._last_n8n_probe = 0.0
+        self._last_probe = 0.0
 
     # ----------------------------------------------------------------- loop
 
@@ -76,7 +78,7 @@ class Worker:
         self._stop.set()
 
     async def run_forever(self) -> None:
-        log.info("worker %s started (concurrency %d, model: %s)", self.worker_id, self.settings.worker_concurrency, self.llm.name)
+        log.info("worker %s started (concurrency %d, workflow engine: %s)", self.worker_id, self.settings.worker_concurrency, self.engine.name)
         while not self._stop.is_set():
             try:
                 await self.tick()
@@ -103,8 +105,8 @@ class Worker:
             job = asyncio.create_task(self.execute(task_id))
             self._running.add(job)
             job.add_done_callback(self._running.discard)
-        await forwarder.forward_pending(self.n8n)
-        await self.probe_n8n()
+        await forwarder.forward_pending(self.engine)
+        await self.probe_engine()
         return claimed
 
     async def run_until_idle(self, max_rounds: int = 100) -> None:
@@ -122,27 +124,31 @@ class Worker:
     async def heartbeat(self) -> None:
         async with session_scope() as session:
             hb = await session.get(WorkerHeartbeat, self.worker_id)
-            info = {"running": len(self._running), "model": self.llm.name, "concurrency": self.settings.worker_concurrency}
+            info = {"running": len(self._running), "engine": self.engine.name, "concurrency": self.settings.worker_concurrency}
             if hb is None:
                 session.add(WorkerHeartbeat(worker_id=self.worker_id, info=info))
             else:
                 hb.last_seen_at = _now()
                 hb.info = info
 
-    async def probe_n8n(self) -> None:
+    async def probe_engine(self) -> None:
         loop = asyncio.get_running_loop()
-        if loop.time() - self._last_n8n_probe < 60:
+        if not self.engine.delivers or loop.time() - self._last_probe < 60:
             return
-        self._last_n8n_probe = loop.time()
+        self._last_probe = loop.time()
         try:
-            health = await self.n8n.health()
+            health = await self.engine.health()
         except Exception as exc:  # noqa: BLE001
-            await forwarder.record_integration("n8n", False, f"health check failed: {exc}")
+            await forwarder.record_integration(self.engine.name, False, f"health check failed: {exc}")
+            return
+        if health.get("reachable") is None:
             return
         if health["reachable"]:
-            await forwarder.record_integration("n8n", True, detail=health)
+            await forwarder.record_integration(self.engine.name, True, detail=health)
         else:
-            await forwarder.record_integration("n8n", False, f"health check returned HTTP {health['status_code']}", detail=health)
+            await forwarder.record_integration(
+                self.engine.name, False, f"health check returned HTTP {health.get('status_code')}", detail=health
+            )
 
     async def reap_stale(self) -> None:
         """Fail tasks whose worker vanished mid-run (container restart, crash)."""
@@ -175,6 +181,7 @@ class Worker:
                 request_id = task.request_id
                 approval = await session.scalar(select(Approval).where(Approval.task_id == task_id))
                 approved_by = approval.decided_by if approval and approval.status == "approved" else ""
+                llm = self._fixed_llm or await runtime_provider(session, self.settings)
 
             http = ReadOnlyHttpClient(self.settings, transport=self.http_transport)
             logs: list[tuple[str, str]] = []
@@ -187,7 +194,7 @@ class Worker:
                         session=session,
                         settings=self.settings,
                         http=http,
-                        llm=self.llm,
+                        llm=llm,
                         integrations=self.hub,
                         task_id=task_id,
                         request_id=request_id,

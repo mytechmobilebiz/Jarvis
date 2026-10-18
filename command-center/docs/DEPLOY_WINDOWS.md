@@ -65,10 +65,11 @@ and run the same command from `Jarvis\command-center`.
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD` | First dashboard admin; the email is also the n8n owner |
 | `POSTGRES_PASSWORD`, `CC_DB_PASSWORD`, `N8N_DB_PASSWORD` | Database superuser and the two application roles |
 | `CC_SERVICE_TOKEN` | n8n calling the Command Center API |
+| `CC_SECRETS_KEY` | Encrypts API keys entered on the Settings page. **Back it up.** |
 | `N8N_WEBHOOK_SECRET` | Command Center calling n8n's event webhook |
 | `N8N_ENCRYPTION_KEY` | Encrypts n8n's stored credentials. **Back it up.** |
 | `N8N_OWNER_PASSWORD` | n8n editor sign-in |
-| `ANTHROPIC_API_KEY` (optional) | Claude for planning and summaries; metered, capped by `LLM_DAILY_REQUEST_CAP` |
+| `ANTHROPIC_API_KEY` (optional) | Deployment default for Claude; normally leave empty and enter your key on the dashboard's Settings page instead (stored encrypted) |
 | `DASHBOARD_PORT`, `N8N_PORT`, `TZ` | Local ports and time zone |
 
 ## Uninstall
