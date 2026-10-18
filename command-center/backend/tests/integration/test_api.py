@@ -104,21 +104,21 @@ async def test_invalid_site_url(admin):
 async def test_agents_listing_and_toggle(admin):
     agents = (await admin.get("/api/agents")).json()["agents"]
     names = {a["name"] for a in agents}
-    assert {"supervisor", "wordpress_monitor"} <= names
-    wp = next(a for a in agents if a["name"] == "wordpress_monitor")
+    assert {"supervisor", "monitoring"} <= names
+    wp = next(a for a in agents if a["name"] == "monitoring")
     assert all(c["risk"] == "read" and not c["requires_approval"] for c in wp["capabilities"])
-    assert (await admin.patch("/api/agents/wordpress_monitor", json={"enabled": False})).json()["enabled"] is False
-    r = await admin.post("/api/agents/wordpress_monitor/tasks", json={"capability": "check_url", "params": {"url": "a.test"}})
+    assert (await admin.patch("/api/agents/monitoring", json={"enabled": False})).json()["enabled"] is False
+    r = await admin.post("/api/agents/monitoring/tasks", json={"capability": "check_url", "params": {"url": "a.test"}})
     assert r.status_code == 400 and "disabled" in r.json()["detail"]
     assert (await admin.patch("/api/agents/supervisor", json={"enabled": False})).status_code == 400
 
 
 async def test_run_capability_validates_params(admin):
-    r = await admin.post("/api/agents/wordpress_monitor/tasks", json={"capability": "check_site", "params": {"site_id": "abc"}})
+    r = await admin.post("/api/agents/monitoring/tasks", json={"capability": "check_site", "params": {"site_id": "abc"}})
     assert r.status_code == 400
-    r = await admin.post("/api/agents/wordpress_monitor/tasks", json={"capability": "check_url", "params": {"url": "a.test", "evil": 1}})
+    r = await admin.post("/api/agents/monitoring/tasks", json={"capability": "check_url", "params": {"url": "a.test", "evil": 1}})
     assert r.status_code == 400
-    r = await admin.post("/api/agents/wordpress_monitor/tasks", json={"capability": "nope"})
+    r = await admin.post("/api/agents/monitoring/tasks", json={"capability": "nope"})
     assert r.status_code == 400
     r = await admin.post("/api/agents/supervisor/tasks", json={"capability": "plan_request", "params": {"request_id": 1}})
     assert r.status_code == 400

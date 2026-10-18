@@ -1,4 +1,8 @@
-"""Content & Social: blog and social drafts; publishing only after approval (mock)."""
+"""Content and social capabilities: blog and social drafts; publishing only after approval (mock).
+
+Blog drafts and WordPress publishing belong to the SEO & Content agent; social
+drafts and Postonomous publishing to the Social Media & Marketing agent.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +12,7 @@ from datetime import UTC, datetime
 from pydantic import Field
 
 from ..models import Artifact, Site
-from .base import AgentContext, AgentResult, ArtifactSpec, BaseAgent, Intent, Params, Risk, capability
+from .base import AgentContext, AgentResult, ArtifactSpec, Intent, Params, Risk, capability
 from .drafting import write
 
 PLATFORMS = ("facebook", "instagram", "linkedin", "x", "google_business")
@@ -37,17 +41,14 @@ def _topic_from(text: str) -> str:
     return (m.group(2) if m else text).strip(" .?!")[:200]
 
 
-class ContentAgent(BaseAgent):
-    name = "content"
-    title = "Content & Social"
-    description = "Drafts blog posts and social posts in Infinite Marketing's voice. Publishing waits for approval (mock in this build)."
-    integrations = ("wordpress_publish", "social")
+class ContentCapabilities:
+    """Blog drafts and WordPress publishing; part of the SEO & Content agent."""
 
-    def intents(self) -> list[Intent]:
+    name: str
+
+    def content_intents(self) -> list[Intent]:
         return [
             Intent("draft_blog_post", (r"\bblog\b", r"\barticle\b", r"\bwrite\b.*\bpost\b"), lambda text, urls: {"topic": _topic_from(text)}, weight=2),
-            Intent("draft_social_posts", (r"\bsocial\b", r"\b(facebook|instagram|linkedin|tweet|posts?)\b"),
-                   lambda text, urls: {"topic": _topic_from(text)}),
         ]
 
     @capability(risk=Risk.DRAFT, description="Draft a blog post (Markdown) for review.", params=BlogParams,
@@ -76,6 +77,35 @@ class ContentAgent(BaseAgent):
         return AgentResult(summary=f"Blog draft '{title}' ready for review ({writer})", data={"writer": writer},
                            artifacts=[ArtifactSpec(kind="blog_draft", title=title, content=text, data={"writer": writer, "topic": params.topic})])
 
+    @capability(risk=Risk.EXTERNAL, description="Publish an approved blog draft to a client's WordPress site as a draft post (mock in this build).",
+                params=PublishParams)
+    async def publish_draft(self, ctx: AgentContext, params: PublishParams) -> AgentResult:
+        artifact = await ctx.session.get(Artifact, params.artifact_id)
+        if artifact is None or artifact.kind != "blog_draft":
+            raise ValueError(f"artifact {params.artifact_id} is not a blog draft")
+        if params.destination != "wordpress":
+            raise ValueError("this agent publishes to WordPress only; social posts go through Social Media & Marketing")
+        site = await ctx.session.get(Site, params.site_id) if params.site_id else None
+        if site is None:
+            raise ValueError("publishing to WordPress needs the site_id of a monitored site")
+        entry = await ctx.integrations.get("wordpress_publish").publish(  # type: ignore[attr-defined]
+            ctx, self.name, site_url=site.url, title=artifact.title, content=artifact.content, status="draft")
+        artifact.data = {**artifact.data, "published_mock": {"outbox_id": entry.id, "at": datetime.now(UTC).isoformat()}}
+        return AgentResult(summary=f"Recorded publishing of '{artifact.title}' to {site.name} (mock: outbox #{entry.id}, nothing was published)",
+                           data={"outbox_id": entry.id})
+
+
+class SocialCapabilities:
+    """Social post drafts and publishing through Postonomous; part of the Social Media & Marketing agent."""
+
+    name: str
+
+    def social_intents(self) -> list[Intent]:
+        return [
+            Intent("draft_social_posts", (r"\bsocial\b", r"\b(facebook|instagram|linkedin|tweet|posts?)\b", r"\bpostonomous\b"),
+                   lambda text, urls: {"topic": _topic_from(text)}),
+        ]
+
     @capability(risk=Risk.DRAFT, description="Draft social posts for one or more platforms.", params=SocialParams,
                 examples=("Draft social posts about our new AI chatbot service",))
     async def draft_social_posts(self, ctx: AgentContext, params: SocialParams) -> AgentResult:
@@ -101,22 +131,16 @@ class ContentAgent(BaseAgent):
                            artifacts=[ArtifactSpec(kind="social_drafts", title=f"Social posts - {params.topic}", content=text,
                                                    data={"writer": writer, "platforms": platforms})])
 
-    @capability(risk=Risk.EXTERNAL, description="Publish an approved draft to a WordPress site or a social platform (mock in this build).",
+    @capability(risk=Risk.EXTERNAL, description="Publish an approved social draft through Postonomous (mock in this build).",
                 params=PublishParams)
     async def publish_draft(self, ctx: AgentContext, params: PublishParams) -> AgentResult:
         artifact = await ctx.session.get(Artifact, params.artifact_id)
-        if artifact is None or artifact.kind not in ("blog_draft", "social_drafts"):
-            raise ValueError(f"artifact {params.artifact_id} is not a content draft")
-        if params.destination == "wordpress":
-            site = await ctx.session.get(Site, params.site_id) if params.site_id else None
-            if site is None:
-                raise ValueError("publishing to WordPress needs the site_id of a monitored site")
-            entry = await ctx.integrations.get("wordpress_publish").publish(  # type: ignore[attr-defined]
-                ctx, self.name, site_url=site.url, title=artifact.title, content=artifact.content, status="draft")
-        elif params.destination in PLATFORMS:
-            entry = await ctx.integrations.get("social").publish(ctx, self.name, platform=params.destination, text=artifact.content)  # type: ignore[attr-defined]
-        else:
-            raise ValueError(f"unknown destination '{params.destination}'")
+        if artifact is None or artifact.kind != "social_drafts":
+            raise ValueError(f"artifact {params.artifact_id} is not a social draft")
+        if params.destination not in PLATFORMS:
+            raise ValueError(f"unknown social platform '{params.destination}' (one of: {', '.join(PLATFORMS)})")
+        entry = await ctx.integrations.get("postonomous").publish(  # type: ignore[attr-defined]
+            ctx, self.name, platform=params.destination, text=artifact.content)
         artifact.data = {**artifact.data, "published_mock": {"outbox_id": entry.id, "at": datetime.now(UTC).isoformat()}}
-        return AgentResult(summary=f"Recorded publishing of '{artifact.title}' to {params.destination} (mock: outbox #{entry.id}, nothing was published)",
-                           data={"outbox_id": entry.id})
+        return AgentResult(summary=f"Recorded publishing of '{artifact.title}' to {params.destination} via Postonomous "
+                                   f"(mock: outbox #{entry.id}, nothing was published)", data={"outbox_id": entry.id})

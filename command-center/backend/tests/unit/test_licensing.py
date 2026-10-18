@@ -77,7 +77,7 @@ def test_garbage_is_not_a_license():
 
 def test_edition_entitlements():
     personal = Entitlements(EDITIONS["personal"], "configuration")
-    assert personal.allows_agent("wordpress_monitor") and not personal.allows_agent("credit_repair")
+    assert personal.allows_agent("monitoring") and not personal.allows_agent("credit_repair")
     assert personal.has("ai_llm") and not personal.has("multi_user")
     assert personal.max_sites == 5 and personal.max_users == 1
     agency = Entitlements(EDITIONS["agency"], "configuration")

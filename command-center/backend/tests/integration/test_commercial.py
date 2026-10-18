@@ -126,7 +126,7 @@ async def test_personal_license_limits_sites_users_and_agents(admin, signer, gat
     r = await admin.post("/api/agents/gate_test/tasks", json={"capability": "publish", "params": {"title": "x"}})
     assert r.status_code == 400 and "not included in the Personal edition" in r.json()["detail"]
     agents = {a["name"]: a for a in (await admin.get("/api/agents")).json()["agents"]}
-    assert agents["wordpress_monitor"]["entitled"] and not agents["gate_test"]["entitled"]
+    assert agents["monitoring"]["entitled"] and not agents["gate_test"]["entitled"]
 
 
 async def test_bad_and_removed_licenses(admin, signer):

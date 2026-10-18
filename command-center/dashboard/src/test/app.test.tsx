@@ -19,7 +19,7 @@ const admin = { id: 1, email: "admin@test.local", display_name: "Admin", role: "
 
 const common = {
   "GET /api/system/status": status,
-  "GET /api/events": { events: [{ id: 1, at: new Date().toISOString(), kind: "site.down", severity: "critical", source: "wordpress_monitor", title: "Broken is DOWN", detail: {}, task_id: 1, forward_status: "sent", forward_attempts: 0, forward_error: "", forwarded_at: null, n8n_ack_at: new Date().toISOString(), n8n_execution_id: "7" }] },
+  "GET /api/events": { events: [{ id: 1, at: new Date().toISOString(), kind: "site.down", severity: "critical", source: "monitoring", title: "Broken is DOWN", detail: {}, task_id: 1, forward_status: "sent", forward_attempts: 0, forward_error: "", forwarded_at: null, n8n_ack_at: new Date().toISOString(), n8n_execution_id: "7" }] },
   "GET /api/sites": { sites: [{ id: 3, name: "Broken", url: "https://broken.test", client: "", notes: "", enabled: true, last_status: "down", last_checked_at: null, last_check: null }] },
   "GET /api/supervisor/requests": { requests: [] },
 };
@@ -55,7 +55,7 @@ describe("App", () => {
   it("approves a pending action with the exact parameters shown", async () => {
     window.history.pushState({}, "", "/approvals");
     const approval = {
-      id: 9, created_at: new Date().toISOString(), task_id: 42, status: "pending", agent: "content", capability: "publish_post",
+      id: 9, created_at: new Date().toISOString(), task_id: 42, status: "pending", agent: "seo_content", capability: "publish_draft",
       risk: "external", summary: "Publish post 'Spring tips'", details: { params: { draft_id: 5 } }, decided_by: "", decided_at: null, decision_note: "",
     };
     const calls = mockFetch({
@@ -80,7 +80,7 @@ describe("App", () => {
       "GET /api/auth/me": { user: admin },
       "POST /api/supervisor/requests": { json: { request: { id: 5, status: "planning" } } },
       "GET /api/supervisor/requests/5": {
-        request: { id: 5, created_at: new Date().toISOString(), source: "dashboard", requested_by: "admin@test.local", message: "Check all websites", status: "completed", planner: "rule-based", plan: { notes: [] }, reply: "Routing this to: wordpress_monitor.check_all_sites.", summary: "Results:\n- all good", summarizer: "template", error: "", completed_at: null },
+        request: { id: 5, created_at: new Date().toISOString(), source: "dashboard", requested_by: "admin@test.local", message: "Check all websites", status: "completed", planner: "rule-based", plan: { notes: [] }, reply: "Routing this to: monitoring.check_all_sites.", summary: "Results:\n- all good", summarizer: "template", error: "", completed_at: null },
         tasks: [],
       },
     });

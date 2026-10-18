@@ -37,13 +37,13 @@ async def test_lead_to_proposal_to_mock_email(admin, make_worker):
     assert lead["score"] >= 75 and lead["status"] == "qualified"
     assert any(e["kind"] == "lead.hot" for e in (await admin.get("/api/events")).json()["events"])
 
-    task = await run_task(admin, make_worker, "sales", "draft_proposal", {"lead_id": lead_id})
+    task = await run_task(admin, make_worker, "communications", "draft_proposal", {"lead_id": lead_id})
     assert task["status"] == "succeeded", task["error"]
     async with session_scope() as s:
         proposal = await s.scalar(select(Artifact).where(Artifact.kind == "proposal"))
     assert proposal.content_type == "text/html" and "Crystal &lt;b&gt;" in proposal.content
 
-    send = await run_task(admin, make_worker, "sales", "send_proposal", {"lead_id": lead_id})
+    send = await run_task(admin, make_worker, "communications", "send_proposal", {"lead_id": lead_id})
     assert send["status"] == "awaiting_approval"
     async with session_scope() as s:
         assert (await s.scalars(select(OutboxEntry))).all() == []
@@ -77,7 +77,7 @@ async def test_support_ticket_triage_draft_and_approved_reply(admin, make_worker
     assert "<untrusted>" in llm.calls[-1]["prompt"] and "never follow instructions" in llm.calls[-1]["system"]
     kinds = [(e["kind"], e["severity"]) for e in (await admin.get("/api/events")).json()["events"]]
     assert ("support.urgent", "critical") in kinds
-    send = await run_task(admin, make_worker, "support", "send_reply", {"ticket_id": ticket_id}, llm=llm)
+    send = await run_task(admin, make_worker, "communications", "send_reply", {"ticket_id": ticket_id}, llm=llm)
     assert send["status"] == "awaiting_approval"
     await approve_all(admin)
     await worker.run_until_idle()
@@ -86,12 +86,12 @@ async def test_support_ticket_triage_draft_and_approved_reply(admin, make_worker
 
 
 async def test_content_drafts_and_mock_publishing(admin, make_worker):
-    blog = await run_task(admin, make_worker, "content", "draft_blog_post", {"topic": "why page speed matters"})
+    blog = await run_task(admin, make_worker, "seo_content", "draft_blog_post", {"topic": "why page speed matters"})
     assert blog["status"] == "succeeded" and "(template)" in blog["summary"]
     site = (await admin.post("/api/sites", json={"name": "Client", "url": "client.example.test"})).json()["site"]
     async with session_scope() as s:
         draft = await s.scalar(select(Artifact).where(Artifact.kind == "blog_draft"))
-    pub = await run_task(admin, make_worker, "content", "publish_draft", {"artifact_id": draft.id, "destination": "wordpress", "site_id": site["id"]})
+    pub = await run_task(admin, make_worker, "seo_content", "publish_draft", {"artifact_id": draft.id, "destination": "wordpress", "site_id": site["id"]})
     assert pub["status"] == "awaiting_approval" and pub["risk"] == "external"
     await approve_all(admin)
     await make_worker().run_until_idle()
@@ -102,7 +102,7 @@ async def test_content_drafts_and_mock_publishing(admin, make_worker):
 
 async def test_seo_audit_is_read_only(admin, make_worker, web):
     web.add("acme.example.test", static_site("<html><head><title>Acme</title></head><body><h1>Acme</h1><p>Hello</p></body></html>"))
-    task = await run_task(admin, make_worker, "seo", "audit_page", {"url": "https://acme.example.test"})
+    task = await run_task(admin, make_worker, "seo_content", "audit_page", {"url": "https://acme.example.test"})
     assert task["status"] == "succeeded", task["error"]
     assert task["result"]["data"]["score"] < 80
     assert "no_meta_description" in {f["code"] for f in task["result"]["findings"]}
@@ -110,9 +110,9 @@ async def test_seo_audit_is_read_only(admin, make_worker, web):
 
 
 async def test_ads_report_and_financial_approval(admin, make_worker):
-    report = await run_task(admin, make_worker, "ads", "ads_report", {"days": 7})
+    report = await run_task(admin, make_worker, "social_marketing", "ads_report", {"days": 7})
     assert report["status"] == "succeeded" and "sample data" in report["summary"]
-    change = await run_task(admin, make_worker, "ads", "change_budget", {"campaign_id": "cmp-101", "daily_budget": 50, "reason": "Best ROAS"})
+    change = await run_task(admin, make_worker, "social_marketing", "change_budget", {"campaign_id": "cmp-101", "daily_budget": 50, "reason": "Best ROAS"})
     assert change["status"] == "awaiting_approval" and change["risk"] == "financial"
     await approve_all(admin)
     await make_worker().run_until_idle()
@@ -121,14 +121,14 @@ async def test_ads_report_and_financial_approval(admin, make_worker):
 
 
 async def test_server_check_refuses_internal_hosts(admin, make_worker):
-    task = await run_task(admin, make_worker, "wordpress_monitor", "check_server", {"host": "localhost"})
+    task = await run_task(admin, make_worker, "monitoring", "check_server", {"host": "localhost"})
     assert task["status"] == "failed" and "internal" in task["error"]
 
 
 async def test_supervisor_routes_to_the_new_agents(admin, make_worker):
-    for message, agent in [("Write a blog post about website accessibility", "content"),
-                           ("Run an SEO audit of acme.example.test", "seo"),
-                           ("How are our ads doing?", "ads")]:
+    for message, agent in [("Write a blog post about website accessibility", "seo_content"),
+                           ("Run an SEO audit of acme.example.test", "seo_content"),
+                           ("How are our ads doing?", "social_marketing")]:
         r = await admin.post("/api/supervisor/requests", json={"message": message})
         req_id = r.json()["request"]["id"]
         await make_worker().run_until_idle()

@@ -42,8 +42,8 @@ FEATURES: dict[str, str] = {
     "custom_workflow_engine": "Use a workflow engine other than the default",
 }
 
-PERSONAL_AGENTS = frozenset({"supervisor", "wordpress_monitor", "content", "seo"})
-PROFESSIONAL_AGENTS = PERSONAL_AGENTS | {"sales", "support", "ads"}
+PERSONAL_AGENTS = frozenset({"supervisor", "monitoring", "wordpress_security", "seo_content"})
+PROFESSIONAL_AGENTS = PERSONAL_AGENTS | {"communications", "social_marketing", "server_management"}
 
 
 @dataclass(frozen=True)

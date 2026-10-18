@@ -1,4 +1,4 @@
-"""The set of agent modules this deployment runs."""
+"""The set of agent modules this deployment runs: the AI Supervisor and the seven official agents."""
 
 from __future__ import annotations
 
@@ -6,29 +6,42 @@ from .base import BaseAgent
 
 _AGENTS: dict[str, BaseAgent] | None = None
 
+SUPERVISOR = "supervisor"
+# The seven official agents, in the owner's order.
+OFFICIAL_ORDER = (
+    "wordpress_security",
+    "seo_content",
+    "social_marketing",
+    "server_management",
+    "communications",
+    "monitoring",
+    "credit_repair",
+)
+
 
 def _build() -> dict[str, BaseAgent]:
     from ..supervisor.agent import SupervisorAgent
-    from .ads import AdsAgent
-    from .content import ContentAgent
+    from .communications import CommunicationsAgent
     from .credit_repair import CreditRepairAgent
-    from .sales import SalesAgent
-    from .seo import SEOAgent
-    from .support import SupportAgent
-    from .wordpress_monitor.agent import WordPressMonitorAgent
+    from .monitoring.agent import MonitoringAgent
+    from .seo_content import SEOContentAgent
+    from .server_management import ServerManagementAgent
+    from .social_marketing import SocialMarketingAgent
+    from .wordpress_security import WordPressSecurityAgent
 
-    # The supervisor and the seven specialist modules.
     agents: list[BaseAgent] = [
         SupervisorAgent(),
-        WordPressMonitorAgent(),
-        SalesAgent(),
-        SupportAgent(),
-        ContentAgent(),
-        SEOAgent(),
-        AdsAgent(),
+        WordPressSecurityAgent(),
+        SEOContentAgent(),
+        SocialMarketingAgent(),
+        ServerManagementAgent(),
+        CommunicationsAgent(),
+        MonitoringAgent(),
         CreditRepairAgent(),
     ]
-    return {a.name: a for a in agents}
+    built = {a.name: a for a in agents}
+    assert tuple(n for n in built if n != SUPERVISOR) == OFFICIAL_ORDER
+    return built
 
 
 def all_agents() -> dict[str, BaseAgent]:
@@ -43,5 +56,5 @@ def get_agent(name: str) -> BaseAgent | None:
 
 
 def specialist_agents() -> dict[str, BaseAgent]:
-    """Every agent the supervisor can delegate to (i.e. all but itself)."""
-    return {n: a for n, a in all_agents().items() if n != "supervisor"}
+    """The seven agents the supervisor can delegate to (every agent but itself)."""
+    return {n: a for n, a in all_agents().items() if n != SUPERVISOR}

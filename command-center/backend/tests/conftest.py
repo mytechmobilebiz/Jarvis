@@ -87,7 +87,7 @@ async def clean_db(migrated, settings):
         await conn.execute(text("TRUNCATE cr_clients, cr_items, cr_letters, cr_access_log RESTART IDENTITY CASCADE"))
     await ensure_admin(settings)
     from app import customer_settings, licensing
-    from app.agents.wordpress_monitor import agent as wp_agent
+    from app.agents.monitoring import agent as wp_agent
 
     wp_agent._LATEST_CACHE.clear()
     licensing.clear_cache()

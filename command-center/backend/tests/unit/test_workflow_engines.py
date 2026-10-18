@@ -14,7 +14,7 @@ from app.workflow import N8nEngine, NoEngine, WebhookEngine, build_engine
 
 
 def event() -> Event:
-    return Event(id=7, kind="site.down", severity="critical", source="wordpress_monitor", title="Acme is DOWN",
+    return Event(id=7, kind="site.down", severity="critical", source="monitoring", title="Acme is DOWN",
                  detail={"site_id": 1}, at=datetime(2026, 10, 18, tzinfo=UTC), task_id=3)
 
 

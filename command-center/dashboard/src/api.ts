@@ -54,7 +54,7 @@ export const api = {
 };
 
 export type Severity = "info" | "warning" | "critical";
-export type Risk = "read" | "draft" | "external" | "financial" | "destructive";
+export type Risk = "read" | "draft" | "external" | "change" | "financial" | "destructive";
 
 export interface User {
   id: number;
@@ -82,6 +82,7 @@ export interface Capability {
 
 export interface Agent {
   name: string;
+  role: "supervisor" | "agent";
   title: string;
   description: string;
   enabled: boolean;

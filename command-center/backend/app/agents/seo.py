@@ -10,9 +10,9 @@ from urllib.parse import urljoin, urlsplit
 
 from pydantic import Field, field_validator
 
-from .base import AgentContext, AgentResult, ArtifactSpec, BaseAgent, Finding, Intent, Params, Risk, capability
+from .base import AgentContext, AgentResult, ArtifactSpec, Finding, Intent, Params, Risk, capability
 from .drafting import write
-from .wordpress_monitor.agent import normalize_url
+from .monitoring.agent import normalize_url
 
 
 class PageParser(HTMLParser):
@@ -131,12 +131,12 @@ def audit_findings(p: PageParser, status: int, final_url: str) -> tuple[list[Fin
     return f, max(score, 0)
 
 
-class SEOAgent(BaseAgent):
-    name = "seo"
-    title = "SEO & Research"
-    description = "Read-only on-page SEO audits of client pages and keyword/content briefs. Never changes a site."
+class SEOCapabilities:
+    """Read-only SEO audits and keyword briefs; part of the SEO & Content agent."""
 
-    def intents(self) -> list[Intent]:
+    name: str
+
+    def seo_intents(self) -> list[Intent]:
         return [
             Intent("audit_page", (r"\bseo\b", r"\baudit\b", r"\bon-?page\b", r"\bmeta (tags?|description)\b"),
                    lambda text, urls: [{"url": u} for u in urls] or None, weight=2),

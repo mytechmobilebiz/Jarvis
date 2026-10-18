@@ -33,9 +33,9 @@ def test_extract_urls():
 @pytest.mark.parametrize(
     "message,expected",
     [
-        ("Check all websites", [("wordpress_monitor", "check_all_sites", {"deep": False})]),
-        ("Run a security scan on every site", [("wordpress_monitor", "check_all_sites", {"deep": True})]),
-        ("Is example.com up?", [("wordpress_monitor", "check_url", {"url": "https://example.com", "deep": True})]),
+        ("Check all websites", [("monitoring", "check_all_sites", {"deep": False})]),
+        ("Run a security scan on every site", [("wordpress_security", "security_scan_all", {})]),
+        ("Is example.com up?", [("monitoring", "check_url", {"url": "https://example.com", "deep": True})]),
         ("Prepare the daily briefing", [("supervisor", "daily_briefing", {"hours": 24})]),
         ("Is the system healthy?", [("supervisor", "health_review", {})]),
     ],
@@ -64,23 +64,23 @@ async def test_llm_plan_is_validated(agents):
             {
                 "reply": "Checking the site.",
                 "steps": [
-                    {"action": "wordpress_monitor.check_url", "params_json": json.dumps({"url": "acme.com"}), "rationale": "asked"},
-                    {"action": "wordpress_monitor.check_site", "params_json": json.dumps({"site_id": "x"}), "rationale": "bad"},
-                    {"action": "wordpress_monitor.check_url", "params_json": "{not json", "rationale": "bad"},
+                    {"action": "monitoring.check_url", "params_json": json.dumps({"url": "acme.com"}), "rationale": "asked"},
+                    {"action": "monitoring.check_site", "params_json": json.dumps({"site_id": "x"}), "rationale": "bad"},
+                    {"action": "monitoring.check_url", "params_json": "{not json", "rationale": "bad"},
                     {"action": "ghost.agent", "params_json": "{}", "rationale": "bad"},
                 ],
             }
         ]
     )
     plan = await LLMPlanner(llm).plan("check acme.com", agents, [(1, "Acme", "https://acme.com")])
-    assert steps(plan) == [("wordpress_monitor", "check_url", {"url": "https://acme.com", "deep": True})]
+    assert steps(plan) == [("monitoring", "check_url", {"url": "https://acme.com", "deep": True})]
     assert len(plan.notes) == 3
     assert plan.planner == "fake:test-model"
     call = llm.calls[0]
     assert "1, Acme, https://acme.com" in call["system"]
     assert "<request>\ncheck acme.com\n</request>" in call["prompt"]
     enum = call["schema"]["properties"]["steps"]["items"]["properties"]["action"]["enum"]
-    assert "wordpress_monitor.check_url" in enum
+    assert "monitoring.check_url" in enum
     assert "supervisor.plan_request" not in enum  # internal capabilities are not offered
 
 
@@ -93,15 +93,15 @@ async def test_llm_answer_without_steps_is_kept(agents):
 async def test_llm_outage_falls_back_to_rules(agents):
     plan = await make_plan("Check all websites", agents, FakeLLM(fail=True), [])
     assert plan.planner == "rule-based"
-    assert steps(plan) == [("wordpress_monitor", "check_all_sites", {"deep": False})]
+    assert steps(plan) == [("monitoring", "check_all_sites", {"deep": False})]
     assert any("model unavailable" in n for n in plan.notes)
 
 
 async def test_llm_plan_with_only_invalid_steps_falls_back(agents):
-    llm = FakeLLM(json_responses=[{"reply": "ok", "steps": [{"action": "wordpress_monitor.check_site", "params_json": "{}", "rationale": ""}]}])
+    llm = FakeLLM(json_responses=[{"reply": "ok", "steps": [{"action": "monitoring.check_site", "params_json": "{}", "rationale": ""}]}])
     plan = await make_plan("Check all websites", agents, llm, [])
     assert plan.planner == "rule-based"
-    assert steps(plan) == [("wordpress_monitor", "check_all_sites", {"deep": False})]
+    assert steps(plan) == [("monitoring", "check_all_sites", {"deep": False})]
 
 
 def test_plan_schema_is_strict():

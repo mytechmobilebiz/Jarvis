@@ -18,8 +18,8 @@ log = logging.getLogger(__name__)
 DEFAULT_SCHEDULES = [
     {
         "name": "wordpress-uptime-sweep",
-        "description": "Uptime and TLS check of every monitored site (no exposure probes).",
-        "agent": "wordpress_monitor",
+        "description": "Uptime, TLS and redirect check of every monitored site (no exposure probes).",
+        "agent": "monitoring",
         "capability": "check_all_sites",
         "params": {"deep": False},
         "cron": "*/15 * * * *",
@@ -27,10 +27,10 @@ DEFAULT_SCHEDULES = [
     },
     {
         "name": "wordpress-security-scan",
-        "description": "Nightly deep scan: WordPress version and public exposures on every site.",
-        "agent": "wordpress_monitor",
-        "capability": "check_all_sites",
-        "params": {"deep": True},
+        "description": "Nightly security scan of every site: exposures, suspicious redirects and cloaking, injected content.",
+        "agent": "wordpress_security",
+        "capability": "security_scan_all",
+        "params": {},
         "cron": "17 3 * * *",
         "enabled": True,
     },

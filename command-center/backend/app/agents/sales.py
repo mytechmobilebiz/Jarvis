@@ -10,7 +10,7 @@ from pathlib import Path
 from pydantic import Field
 
 from ..models import Artifact, Lead
-from .base import AgentContext, AgentResult, ArtifactSpec, BaseAgent, EventSpec, Intent, NoParams, Params, Risk, capability
+from .base import AgentContext, AgentResult, ArtifactSpec, EventSpec, Intent, NoParams, Params, Risk, capability
 
 TEMPLATE_PATH = Path("/app/templates/proposal-template.html")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -88,13 +88,12 @@ h1{color:#4f46e5}table{border-collapse:collapse;width:100%}td{border:1px solid #
 </body></html>"""
 
 
-class SalesAgent(BaseAgent):
-    name = "sales"
-    title = "Sales & Proposals"
-    description = "Scores incoming leads, drafts website design proposals from the proposal template, and sends them only after approval (mock email in this build)."
-    integrations = ("email",)
+class SalesCapabilities:
+    """Leads and proposals; part of the Email & Customer Communications agent."""
 
-    def intents(self) -> list[Intent]:
+    name: str
+
+    def sales_intents(self) -> list[Intent]:
         return [
             Intent("lead_overview", (r"\bleads?\b", r"\bprospects?\b", r"\bpipeline\b"), lambda text, urls: {}),
         ]

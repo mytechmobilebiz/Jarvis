@@ -29,7 +29,7 @@ export default function Support() {
   async function send(t: Ticket) {
     setError(null);
     try {
-      const r = await api.post<{ task: Task }>("/api/agents/support/tasks", { capability: "send_reply", params: { ticket_id: t.id } });
+      const r = await api.post<{ task: Task }>("/api/agents/communications/tasks", { capability: "send_reply", params: { ticket_id: t.id } });
       setNote(`Reply to ${t.customer_email} is waiting for approval (task #${r.task.id}).`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

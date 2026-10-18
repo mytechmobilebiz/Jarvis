@@ -65,7 +65,7 @@ def letter_text(client: dict, bureau: str, items: list[dict], today: datetime) -
 
 class CreditRepairAgent(BaseAgent):
     name = "credit_repair"
-    title = "Credit Repair"
+    title = "Credit Repair & Dispute Management"
     description = (
         "Isolated module: checks Credit Repair Organizations Act timing rules and drafts Fair Credit Reporting Act dispute letters "
         "from the encrypted client store. Never shares personal data with the AI model or other agents. Mailing needs approval (mock)."

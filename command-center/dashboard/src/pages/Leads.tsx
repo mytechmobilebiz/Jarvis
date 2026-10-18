@@ -30,7 +30,7 @@ export default function Leads() {
   async function run(lead: LeadRecord, capability: string) {
     setError(null);
     try {
-      const r = await api.post<{ task: Task }>("/api/agents/sales/tasks", { capability, params: { lead_id: lead.id } });
+      const r = await api.post<{ task: Task }>("/api/agents/communications/tasks", { capability, params: { lead_id: lead.id } });
       setNote(r.task.status === "awaiting_approval" ? `Sending to ${lead.email} is waiting for approval (task #${r.task.id}).` : `Task #${r.task.id} queued.`);
       await leads.refresh();
     } catch (err) {

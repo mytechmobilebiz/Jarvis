@@ -46,7 +46,7 @@ async def test_supervisor_checks_all_sites(admin, web, make_worker):
     assert req["summarizer"] == "template"
     assert "CRITICAL" in req["summary"] and "Broken" in req["summary"]
     actions = [(t["agent"], t["capability"], t["status"]) for t in detail["tasks"]]
-    assert ("wordpress_monitor", "check_all_sites", "succeeded") in actions
+    assert ("monitoring", "check_all_sites", "succeeded") in actions
     assert ("supervisor", "summarize_request", "succeeded") in actions
 
     sites = {s["id"]: s for s in (await admin.get("/api/sites")).json()["sites"]}
@@ -113,7 +113,7 @@ async def test_new_findings_alert_only_once(admin, web, make_worker):
     assert events[0]["severity"] == "critical"  # the exposed debug.log
     async with session_scope() as s:
         checks = (await s.scalars(select(SiteCheck))).all()
-    assert len(checks) == 2
+    assert len(checks) == 3  # the baseline scan queued at registration, then two checks
 
 
 async def test_n8n_outage_backs_off_and_records_error(admin, web, n8n, make_worker):
@@ -227,7 +227,7 @@ async def test_task_timeout(admin, gate_agent, make_worker, settings):
 
 async def test_stale_running_task_is_reaped(admin, settings, make_worker):
     async with session_scope() as s:
-        t = await task_service.create_task(s, settings, agent="wordpress_monitor", capability="sites_overview")
+        t = await task_service.create_task(s, settings, agent="monitoring", capability="sites_overview")
         await s.flush()
         await s.execute(
             update(Task)
@@ -242,7 +242,7 @@ async def test_stale_running_task_is_reaped(admin, settings, make_worker):
 
 async def test_scheduler_fires_and_does_not_pile_up(clean_db, settings):
     async with session_scope() as s:
-        s.add(Schedule(name="every-minute", agent="wordpress_monitor", capability="sites_overview", params={}, cron="* * * * *"))
+        s.add(Schedule(name="every-minute", agent="monitoring", capability="sites_overview", params={}, cron="* * * * *"))
     assert await scheduler.enqueue_due(settings) == 0  # first pass only schedules the next slot
     future = datetime.now(UTC) + timedelta(minutes=2)
     assert await scheduler.enqueue_due(settings, now=future) == 1
@@ -299,13 +299,13 @@ async def test_concurrent_workers_never_double_run(admin, web, make_worker, sett
     async with session_scope() as s:
         tasks = (await s.scalars(select(Task).where(Task.capability == "check_site"))).all()
         checks = (await s.scalars(select(SiteCheck))).all()
-    assert all(t.status == "succeeded" and t.attempts == 1 for t in tasks)
-    assert len(checks) == 12
+    assert len(tasks) == 12 and all(t.status == "succeeded" and t.attempts == 1 for t in tasks)
+    assert len(checks) == 13  # the twelve, plus the baseline scan queued at registration
 
 
 async def test_check_url_for_unregistered_site_is_not_stored(admin, web, make_worker):
     web.add("other.example.test", static_site())
-    r = await admin.post("/api/agents/wordpress_monitor/tasks", json={"capability": "check_url", "params": {"url": "other.example.test", "deep": False}})
+    r = await admin.post("/api/agents/monitoring/tasks", json={"capability": "check_url", "params": {"url": "other.example.test", "deep": False}})
     await make_worker().run_until_idle()
     task = (await admin.get(f"/api/tasks/{r.json()['task']['id']}")).json()["task"]
     assert task["status"] == "succeeded" and "not stored" in task["summary"]

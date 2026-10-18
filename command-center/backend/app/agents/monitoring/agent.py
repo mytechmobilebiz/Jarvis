@@ -1,4 +1,4 @@
-"""WordPress Monitor: read-only uptime, TLS and security-exposure monitoring."""
+"""Website & Infrastructure Monitoring: read-only uptime, TLS, redirect and exposure checks, and server reachability."""
 
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import Field, field_validator
 from sqlalchemy import select
 
+from ... import uptime
 from ...models import Site, SiteCheck
-from ..base import AgentContext, AgentResult, BaseAgent, EventSpec, Finding, Intent, NoParams, Params, Risk, capability
+from ..base import AgentContext, AgentResult, ArtifactSpec, BaseAgent, EventSpec, Finding, Intent, NoParams, Params, Risk, capability
 from .checks import SiteChecker, SiteReport
 
 _LATEST_CACHE: dict[str, tuple[float, str | None]] = {}
@@ -63,6 +64,10 @@ class CheckAllParams(Params):
     deep: bool = Field(False, description="Run the exposure checks on every site (slower)")
 
 
+class UptimeParams(Params):
+    site_id: int | None = Field(None, description="One site; leave out for every site")
+
+
 async def latest_wordpress_version(ctx: AgentContext) -> str | None:
     if not ctx.settings.wp_core_version_check:
         return None
@@ -84,13 +89,13 @@ async def latest_wordpress_version(ctx: AgentContext) -> str | None:
     return version
 
 
-class WordPressMonitorAgent(BaseAgent):
-    name = "wordpress_monitor"
-    title = "WordPress & Hosting Monitor"
+class MonitoringAgent(BaseAgent):
+    name = "monitoring"
+    title = "Website & Infrastructure Monitoring"
     description = (
-        "Read-only monitoring of client websites and their servers: uptime, response time, TLS certificate expiry, "
-        "WordPress version, publicly exposed risks (XML-RPC, user listing, debug.log, directory listing), and basic "
-        "hosting reachability. Never logs in, never uses SSH or panel credentials, never changes a site or server."
+        "Read-only monitoring of client websites and their servers: uptime and uptime history, response time, TLS "
+        "certificate validity and expiry, suspicious redirects, WordPress version and publicly exposed risks, and "
+        "network reachability of servers (DNS, ports, TLS). Never logs in and never changes a site or server."
     )
 
     def intents(self) -> list[Intent]:
@@ -119,6 +124,12 @@ class WordPressMonitorAgent(BaseAgent):
                 else {"deep": bool(re.search(r"\b(deep|security|full|vulnerab|exposure)", text, re.I))},
             ),
             Intent(
+                "uptime_report",
+                (r"\buptime\b.{0,20}\b(report|history|percent|%|stats?)\b", r"\b(downtime|outages?|incidents?)\b"),
+                lambda text, urls: None if urls else {},
+                weight=2,
+            ),
+            Intent(
                 "sites_overview",
                 (
                     r"\b(web)?sites?\b.{0,15}\b(overview|report|summary|list)\b",
@@ -131,68 +142,10 @@ class WordPressMonitorAgent(BaseAgent):
     # ------------------------------------------------------------------ helpers
 
     def _checker(self, ctx: AgentContext, latest: str | None) -> SiteChecker:
-        return SiteChecker(ctx.http, ctx.settings, latest_wp_version=latest, retry_delay=ctx.settings.monitor_retry_delay_seconds)
-
-    async def _previous_check(self, ctx: AgentContext, site_id: int, deep: bool) -> SiteCheck | None:
-        rows = await ctx.session.scalars(
-            select(SiteCheck).where(SiteCheck.site_id == site_id).order_by(SiteCheck.checked_at.desc()).limit(20)
-        )
-        for row in rows:
-            if bool(row.details.get("deep")) == deep:
-                return row
-        return None
+        return make_checker(ctx, latest)
 
     async def _record(self, ctx: AgentContext, site: Site, deep: bool, report: SiteReport) -> list[EventSpec]:
-        """Store a check result on the site's history and return the state-change events."""
-        previous_status = site.last_status
-        previous = await self._previous_check(ctx, site.id, deep)
-        check = SiteCheck(
-            site_id=site.id,
-            task_id=ctx.task_id,
-            status=report.status,
-            http_status=report.http_status,
-            response_ms=report.response_ms,
-            final_url=report.final_url,
-            tls_days_left=report.tls_days_left,
-            tls_issuer=report.tls_issuer,
-            is_wordpress=report.is_wordpress,
-            wp_version=report.wp_version,
-            findings=[f.model_dump() for f in report.findings],
-            details=report.details,
-        )
-        ctx.session.add(check)
-        await ctx.session.flush()
-        site.last_status = report.status
-        site.last_checked_at = check.checked_at
-        site.last_check_id = check.id
-        return self._change_events(site, previous_status, previous, report)
-
-    @staticmethod
-    def _change_events(site: Site, previous_status: str, previous: SiteCheck | None, report: SiteReport) -> list[EventSpec]:
-        out: list[EventSpec] = []
-        detail = {"site_id": site.id, "site": site.name, "url": site.url, "status": report.status}
-        if report.status != previous_status:
-            if report.status == "down":
-                out.append(EventSpec(kind="site.down", severity="critical", title=f"{site.name} is DOWN: {_first(report)}", detail=detail))
-            elif report.status == "degraded":
-                out.append(EventSpec(kind="site.degraded", severity="warning", title=f"{site.name} is degraded: {_first(report)}", detail=detail))
-            elif previous_status in ("down", "degraded"):
-                out.append(EventSpec(kind="site.recovered", severity="info", title=f"{site.name} has recovered", detail=detail))
-        old_codes = {f.get("code") for f in (previous.findings if previous else [])}
-        new = [f for f in report.findings if f.severity != "info" and f.code not in old_codes]
-        # Availability problems are already covered by the status-change event.
-        new = [f for f in new if f.code not in ("fetch_failed", "page_problem", "http_error", "page_notice", "slow_response")]
-        if new:
-            worst = "critical" if any(f.severity == "critical" for f in new) else "warning"
-            out.append(
-                EventSpec(
-                    kind="site.finding",
-                    severity=worst,
-                    title=f"{site.name}: {len(new)} new issue(s) - " + "; ".join(f.title for f in new[:3]),
-                    detail={**detail, "findings": [f.model_dump() for f in new]},
-                )
-            )
-        return out
+        return await record_check(ctx, site, deep, report)
 
     # ------------------------------------------------------------- capabilities
 
@@ -343,11 +296,55 @@ class WordPressMonitorAgent(BaseAgent):
         return AgentResult(summary=f"{len(rows)} monitored site(s). " + "; ".join(lines[:10]), data={"sites": rows})
 
 
+    @capability(
+        risk=Risk.READ,
+        description="Uptime report: uptime over 24 hours, 7 and 30 days, response time, and downtime incidents (from stored checks).",
+        params=UptimeParams,
+        examples=("Give me the uptime report",),
+    )
+    async def uptime_report(self, ctx: AgentContext, params: UptimeParams) -> AgentResult:
+        query = select(Site).order_by(Site.name)
+        if params.site_id is not None:
+            query = query.where(Site.id == params.site_id)
+        sites = (await ctx.session.scalars(query)).all()
+        if not sites:
+            return AgentResult(summary="No matching sites.")
+        stats = await uptime.uptime_stats(ctx.session)
+        lines = ["# Uptime report", "", "_Based on the stored checks (normally every 15 minutes); a degraded site counts as up._", "",
+                 "| Site | 24 h | 7 days | 30 days | Avg response (24 h) | Incidents (30 days) |", "|---|---|---|---|---|---|"]
+        rows = []
+        for site in sites:
+            s = stats.get(site.id) or {}
+            incidents = await uptime.incidents(ctx.session, site.id)
+            rows.append({"site_id": site.id, "name": site.name, **s, "incidents": incidents})
+            pct = [("n/a" if s.get(k) is None else f"{s[k]:g}%") for k in ("24h", "7d", "30d")]
+            avg = f"{s['avg_response_ms_24h']} ms" if s.get("avg_response_ms_24h") is not None else "n/a"
+            lines.append(f"| {site.name} | {pct[0]} | {pct[1]} | {pct[2]} | {avg} | {len(incidents)} |")
+        for row in rows:
+            if row["incidents"]:
+                lines += ["", f"## {row['name']}: downtime", ""]
+                lines += [f"- {i['start'][:16].replace('T', ' ')} UTC, {i['minutes']} min: {i['reason']}" for i in row["incidents"][-10:]]
+        worst = min(rows, key=lambda r: r.get("30d") if r.get("30d") is not None else 101)
+        summary = f"Uptime for {len(rows)} site(s); lowest 30-day uptime: {worst['name']} " + (
+            f"{worst['30d']:g}%" if worst.get("30d") is not None else "(no checks yet)")
+        return AgentResult(summary=summary, data={"sites": rows},
+                           artifacts=[ArtifactSpec(kind="uptime_report", title="Uptime report", content="\n".join(lines))])
+
+
+# Findings that change a site's status (down or degraded); an alert headline names one of these first.
+STATUS_CAUSES = frozenset({
+    "fetch_failed", "page_problem", "http_error", "page_notice", "slow_response", "tls_expired", "tls_invalid",
+    "redirect_offsite", "conditional_redirect", "cloaked_spam", "js_redirect_offsite", "meta_refresh_offsite",
+    "hidden_iframe", "hidden_spam",
+})
+
+
 def _first(report: SiteReport) -> str:
-    for f in report.findings:
-        if f.severity != "info":
-            return f.title
-    return report.status
+    """The finding behind the site's status, else the most serious one, for an alert headline."""
+    serious = [f for f in report.findings if f.severity != "info"]
+    if not serious:
+        return report.status
+    return min(serious, key=lambda f: (f.code not in STATUS_CAUSES, f.severity != "critical")).title
 
 
 def _report_data(report: SiteReport) -> dict[str, Any]:
@@ -363,3 +360,89 @@ def _report_data(report: SiteReport) -> dict[str, Any]:
         "wp_version": report.wp_version,
         "details": report.details,
     }
+
+
+# ---------------------------------------------------------------------- shared
+# Used by this agent and by the WordPress Security & Repair agent.
+
+
+def make_checker(ctx: AgentContext, latest: str | None) -> SiteChecker:
+    return SiteChecker(ctx.http, ctx.settings, latest_wp_version=latest, retry_delay=ctx.settings.monitor_retry_delay_seconds)
+
+
+async def previous_check(ctx: AgentContext, site_id: int, deep: bool) -> SiteCheck | None:
+    rows = await ctx.session.scalars(
+        select(SiteCheck).where(SiteCheck.site_id == site_id).order_by(SiteCheck.checked_at.desc()).limit(20)
+    )
+    for row in rows:
+        if bool(row.details.get("deep")) == deep:
+            return row
+    return None
+
+
+def _compare_scripts(report: SiteReport, previous: SiteCheck | None) -> None:
+    """Flag script domains that were not on the page at the previous check (the first check is the baseline)."""
+    now = set(report.details.get("external_scripts") or [])
+    if previous is None or "external_scripts" not in previous.details:
+        return
+    new = sorted(now - set(previous.details.get("external_scripts") or []))
+    if new:
+        report.add("new_external_script", "warning", "New third-party script domain(s) on the home page: " + ", ".join(new[:5]),
+                   "Expected after adding a plugin or tracking code; otherwise check for injected scripts.")
+
+
+async def record_check(ctx: AgentContext, site: Site, deep: bool, report: SiteReport) -> list[EventSpec]:
+    """Store a check result on the site's history and return the state-change events."""
+    # Locked and re-read: two checks of the same site may finish at the same time,
+    # and only the first may report the status change.
+    await ctx.session.refresh(site, with_for_update=True)
+    previous_status = site.last_status
+    previous = await previous_check(ctx, site.id, deep)
+    _compare_scripts(report, previous)
+    check = SiteCheck(
+        site_id=site.id,
+        task_id=ctx.task_id,
+        status=report.status,
+        http_status=report.http_status,
+        response_ms=report.response_ms,
+        final_url=report.final_url,
+        tls_days_left=report.tls_days_left,
+        tls_issuer=report.tls_issuer,
+        is_wordpress=report.is_wordpress,
+        wp_version=report.wp_version,
+        findings=[f.model_dump() for f in report.findings],
+        details=report.details,
+    )
+    ctx.session.add(check)
+    await ctx.session.flush()
+    site.last_status = report.status
+    site.last_checked_at = check.checked_at
+    site.last_check_id = check.id
+    return change_events(site, previous_status, previous, report)
+
+
+def change_events(site: Site, previous_status: str, previous: SiteCheck | None, report: SiteReport) -> list[EventSpec]:
+    out: list[EventSpec] = []
+    detail = {"site_id": site.id, "site": site.name, "url": site.url, "status": report.status}
+    if report.status != previous_status:
+        if report.status == "down":
+            out.append(EventSpec(kind="site.down", severity="critical", title=f"{site.name} is DOWN: {_first(report)}", detail=detail))
+        elif report.status == "degraded":
+            out.append(EventSpec(kind="site.degraded", severity="warning", title=f"{site.name} is degraded: {_first(report)}", detail=detail))
+        elif previous_status in ("down", "degraded"):
+            out.append(EventSpec(kind="site.recovered", severity="info", title=f"{site.name} has recovered", detail=detail))
+    old_codes = {f.get("code") for f in (previous.findings if previous else [])}
+    new = [f for f in report.findings if f.severity != "info" and f.code not in old_codes]
+    # Availability problems are already covered by the status-change event.
+    new = [f for f in new if f.code not in ("fetch_failed", "page_problem", "http_error", "page_notice", "slow_response")]
+    if new:
+        worst = "critical" if any(f.severity == "critical" for f in new) else "warning"
+        out.append(
+            EventSpec(
+                kind="site.finding",
+                severity=worst,
+                title=f"{site.name}: {len(new)} new issue(s) - " + "; ".join(f.title for f in new[:3]),
+                detail={**detail, "findings": [f.model_dump() for f in new]},
+            )
+        )
+    return out

@@ -58,6 +58,7 @@ const RISK_LABEL: Record<Risk, string> = {
   read: "read-only",
   draft: "draft only",
   external: "external · approval",
+  change: "change · approval",
   financial: "money · approval",
   destructive: "destructive · approval",
 };

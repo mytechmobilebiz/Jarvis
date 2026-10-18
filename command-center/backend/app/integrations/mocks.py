@@ -52,11 +52,12 @@ class MockEmail(Integration):
                              payload={"attachments": attachments or []})
 
 
-class MockSocialPublisher(Integration):
-    name = "social"
-    title = "Social media (Postiz / Meta)"
-    description = "Scheduling and publishing posts. Mock: approved posts are recorded in the Outbox, not published."
-    live_requirements = "Postiz (self-hosted) or platform API credentials, and the owner's authorization to publish."
+class MockPostonomous(Integration):
+    name = "postonomous"
+    title = "Postonomous (social media publishing)"
+    description = "Scheduling and publishing social posts through Postonomous. Mock: approved posts are recorded in the Outbox, not published."
+    live_requirements = ("Postonomous API documentation, an API URL and key for the owner's account, and the owner's authorization "
+                         "to publish. The live adapter has not been built because its API has not been provided.")
 
     async def publish(self, ctx: AgentContext, agent: str, *, platform: str, text: str, when: str = "") -> OutboxEntry:
         return await _record(ctx, self, agent, "publish_post", recipient=platform, body=text, payload={"scheduled_for": when})
@@ -118,4 +119,4 @@ class MockPostalMail(Integration):
                              subject=f"Dispute letter #{letter_id}", payload={"letter_id": letter_id})
 
 
-ADAPTERS: list[type[Integration]] = [MockEmail, MockSocialPublisher, MockWordPressPublisher, MockAdsPlatform, MockPostalMail]
+ADAPTERS: list[type[Integration]] = [MockEmail, MockPostonomous, MockWordPressPublisher, MockAdsPlatform, MockPostalMail]

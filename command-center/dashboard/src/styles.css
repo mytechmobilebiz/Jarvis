@@ -370,6 +370,7 @@ h3 {
   white-space: nowrap;
 }
 .risk-external,
+.risk-change,
 .risk-financial {
   border-color: var(--warn);
   color: var(--warn);
@@ -871,4 +872,26 @@ pre.boxed {
 .cell-actions {
   margin: 0;
   justify-content: flex-end;
+}
+
+/* agents page */
+.agent-section {
+  margin-bottom: 22px;
+}
+.agent-section h2 {
+  font-size: 15px;
+  margin: 0 0 4px;
+}
+.agent-grid.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+.agent-number {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  font-size: 12px;
+  margin-right: 6px;
 }

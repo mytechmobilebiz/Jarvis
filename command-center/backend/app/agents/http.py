@@ -140,11 +140,13 @@ class ReadOnlyHttpClient:
     async def head(self, url: str, **kwargs) -> httpx.Response:
         return await self.request("HEAD", url, **kwargs)
 
-    async def fetch(self, url: str, *, max_bytes: int | None = None, headers: dict[str, str] | None = None) -> FetchResult:
+    async def fetch(
+        self, url: str, *, max_bytes: int | None = None, headers: dict[str, str] | None = None, follow_redirects: bool = True
+    ) -> FetchResult:
         """GET a URL, keeping at most max_bytes of the body."""
         limit = max_bytes or self.settings.monitor_max_body_bytes
         started = time.perf_counter()
-        async with self._client.stream("GET", url, headers=headers) as response:
+        async with self._client.stream("GET", url, headers=headers, follow_redirects=follow_redirects) as response:
             chunks: list[bytes] = []
             size = 0
             truncated = False

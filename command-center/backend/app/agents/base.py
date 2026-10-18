@@ -35,6 +35,7 @@ class Risk(str, Enum):
     READ = "read"  # observes only
     DRAFT = "draft"  # writes drafts inside the Command Center only
     EXTERNAL = "external"  # contacts or publishes to the outside world
+    CHANGE = "change"  # changes a website or server we manage (repairs, restarts)
     FINANCIAL = "financial"  # moves or commits money (ad spend, refunds)
     DESTRUCTIVE = "destructive"  # irreversible change or deletion
 
@@ -194,6 +195,7 @@ class BaseAgent:
     def describe(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            "role": "supervisor" if self.name == "supervisor" else "agent",
             "title": self.title,
             "description": self.description,
             "integrations": list(self.integrations),

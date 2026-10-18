@@ -6,7 +6,7 @@ from collections import defaultdict
 
 from pydantic import Field
 
-from .base import AgentContext, AgentResult, ArtifactSpec, BaseAgent, Finding, Intent, Params, Risk, capability
+from .base import AgentContext, AgentResult, ArtifactSpec, Finding, Intent, Params, Risk, capability
 
 
 class ReportParams(Params):
@@ -19,14 +19,12 @@ class BudgetParams(Params):
     reason: str = Field(min_length=5, max_length=500)
 
 
-class AdsAgent(BaseAgent):
-    name = "ads"
-    title = "Ads & Analytics"
-    description = ("Reports ad performance (spend, conversions, ROAS, CPA), flags waste and anomalies, and proposes budget moves. "
-                   "Budget changes are financial actions: approval required, and mock in this build. Performance data is sample data until an ad account is connected.")
-    integrations = ("ads",)
+class AdsCapabilities:
+    """Ad performance and budgets; part of the Social Media & Marketing agent."""
 
-    def intents(self) -> list[Intent]:
+    name: str
+
+    def ads_intents(self) -> list[Intent]:
         return [Intent("ads_report", (r"\b(ads?|advertising|campaigns?|roas|cpa|ad spend|ppc)\b",), lambda text, urls: {"days": 7}, weight=2)]
 
     @capability(risk=Risk.READ, description="Ad performance report with ROAS, CPA and anomalies.", params=ReportParams,

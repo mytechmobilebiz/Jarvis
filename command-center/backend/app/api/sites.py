@@ -10,9 +10,9 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import audit, licensing
+from .. import audit, licensing, uptime
 from .. import tasks as task_service
-from ..agents.wordpress_monitor.agent import normalize_url
+from ..agents.monitoring.agent import normalize_url
 from ..config import Settings, get_settings
 from ..models import Site, SiteCheck
 from .deps import Principal, client_ip, get_db, require_operator, require_user, to_dict
@@ -44,17 +44,21 @@ class CheckBody(BaseModel):
     deep: bool = True
 
 
-async def _site_view(session: AsyncSession, site: Site) -> dict:
+async def _site_view(session: AsyncSession, site: Site, stats: dict[int, dict] | None = None) -> dict:
     d = to_dict(site)
     check = await session.get(SiteCheck, site.last_check_id) if site.last_check_id else None
     d["last_check"] = to_dict(check) if check else None
+    if stats is None:
+        stats = await uptime.uptime_stats(session)
+    d["uptime"] = stats.get(site.id)
     return d
 
 
 @router.get("")
 async def list_sites(_: Principal = Depends(require_user), session: AsyncSession = Depends(get_db)) -> dict:
     sites = (await session.scalars(select(Site).order_by(Site.name))).all()
-    return {"sites": [await _site_view(session, s) for s in sites]}
+    stats = await uptime.uptime_stats(session)
+    return {"sites": [await _site_view(session, s, stats) for s in sites]}
 
 
 @router.post("", status_code=201)
@@ -73,8 +77,24 @@ async def create_site(
     except IntegrityError:
         raise HTTPException(409, "that URL is already monitored") from None
     await audit.record(session, principal.name, "site.created", "site", site.id, {"url": site.url}, ip=client_ip(request))
+    baseline = await _queue_baseline(session, settings, site, principal.name) if site.enabled else None
     await session.commit()
-    return {"site": await _site_view(session, site)}
+    return {"site": await _site_view(session, site), "baseline_task": to_dict(baseline) if baseline else None}
+
+
+async def _queue_baseline(session: AsyncSession, settings: Settings, site: Site, actor: str):
+    """A first, deep scan right after registration: current state, and the baseline later scans compare against."""
+    for agent, capability, params in (
+        ("wordpress_security", "security_scan", {"site_id": site.id}),
+        ("monitoring", "check_site", {"site_id": site.id, "deep": True}),
+    ):
+        try:
+            return await task_service.create_task(session, settings, agent=agent, capability=capability, params=params,
+                                                  source="dashboard", created_by=actor, priority=20,
+                                                  summary=f"Baseline scan of newly registered site {site.name}")
+        except task_service.TaskError:
+            continue  # agent switched off or not in this edition
+    return None
 
 
 async def _site(session: AsyncSession, site_id: int) -> Site:
@@ -86,7 +106,10 @@ async def _site(session: AsyncSession, site_id: int) -> Site:
 
 @router.get("/{site_id}")
 async def get_site(site_id: int, _: Principal = Depends(require_user), session: AsyncSession = Depends(get_db)) -> dict:
-    return {"site": await _site_view(session, await _site(session, site_id))}
+    site = await _site(session, site_id)
+    view = await _site_view(session, site)
+    view["incidents_30d"] = await uptime.incidents(session, site.id)
+    return {"site": view}
 
 
 @router.patch("/{site_id}")
@@ -124,7 +147,7 @@ async def check_now(
 ) -> dict:
     site = await _site(session, site_id)
     task = await task_service.create_task(
-        session, settings, agent="wordpress_monitor", capability="check_site",
+        session, settings, agent="monitoring", capability="check_site",
         params={"site_id": site.id, "deep": (body or CheckBody()).deep},
         source="dashboard", created_by=principal.name, priority=20,
     )

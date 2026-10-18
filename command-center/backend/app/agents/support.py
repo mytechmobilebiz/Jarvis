@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pydantic import Field
 
 from ..models import Artifact, SupportTicket
-from .base import AgentContext, AgentResult, BaseAgent, EventSpec, Intent, NoParams, Params, Risk, capability
+from .base import AgentContext, AgentResult, EventSpec, Intent, NoParams, Params, Risk, capability
 from .drafting import untrusted, write
 
 CATEGORIES = [
@@ -42,13 +42,12 @@ def triage(subject: str, body: str) -> dict:
     return {"category": category, "priority": priority, "sentiment": sentiment, "method": "rules"}
 
 
-class SupportAgent(BaseAgent):
-    name = "support"
-    title = "Client Support"
-    description = "Triages client messages (category, priority, sentiment) and drafts replies. Replies are sent only after approval (mock email in this build)."
-    integrations = ("email",)
+class SupportCapabilities:
+    """Client messages: triage and replies; part of the Email & Customer Communications agent."""
 
-    def intents(self) -> list[Intent]:
+    name: str
+
+    def support_intents(self) -> list[Intent]:
         return [Intent("support_overview", (r"\b(support|tickets?|client messages?|inbox)\b",), lambda text, urls: {})]
 
     async def _ticket(self, ctx: AgentContext, ticket_id: int) -> SupportTicket:

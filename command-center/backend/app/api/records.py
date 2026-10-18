@@ -38,7 +38,7 @@ async def intake_lead(session: AsyncSession, settings: Settings, body: LeadBody,
     lead = Lead(source=source, **body.model_dump())
     session.add(lead)
     await session.flush()
-    task = await task_service.create_task(session, settings, agent="sales", capability="score_lead", params={"lead_id": lead.id},
+    task = await task_service.create_task(session, settings, agent="communications", capability="score_lead", params={"lead_id": lead.id},
                                           source=source, created_by=actor, priority=40)
     return lead, [task.id]
 
@@ -50,7 +50,7 @@ async def intake_ticket(session: AsyncSession, settings: Settings, body: TicketB
     await session.flush()
     ids = []
     for capability in ("triage_ticket", "draft_reply"):
-        task = await task_service.create_task(session, settings, agent="support", capability=capability, params={"ticket_id": ticket.id},
+        task = await task_service.create_task(session, settings, agent="communications", capability=capability, params={"ticket_id": ticket.id},
                                               source=source, created_by=actor, priority=30 if capability == "triage_ticket" else 60)
         ids.append(task.id)
     return ticket, ids

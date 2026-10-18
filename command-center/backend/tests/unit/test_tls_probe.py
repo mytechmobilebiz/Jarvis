@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import trustme
 
-from app.agents.wordpress_monitor.checks import probe_tls
+from app.agents.monitoring.checks import probe_tls
 
 
 async def serve(cert: trustme.LeafCert):

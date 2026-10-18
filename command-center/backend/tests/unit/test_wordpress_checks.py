@@ -4,8 +4,8 @@ import httpx
 import pytest
 
 from app.agents.http import ReadOnlyHttpClient
-from app.agents.wordpress_monitor.agent import normalize_url
-from app.agents.wordpress_monitor.checks import SiteChecker, parse_version
+from app.agents.monitoring.agent import normalize_url
+from app.agents.monitoring.checks import SiteChecker, parse_version
 from app.config import Settings
 
 from ..fakes import FakeWeb, static_site, wordpress_site

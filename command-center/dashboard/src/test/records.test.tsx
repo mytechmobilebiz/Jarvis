@@ -83,11 +83,36 @@ describe("record pages", () => {
       "GET /api/system/status": status,
       "GET /api/auth/me": { user: admin },
       "GET /api/outbox": {
-        entries: [{ id: 1, created_at: now, task_id: 4, agent: "sales", integration: "email", mode: "mock", action: "send", recipient: "ann@lee.example", subject: "Your proposal", body: "Hi", payload: {}, approved_by: "admin@test.local", result: "recorded, not sent" }],
+        entries: [{ id: 1, created_at: now, task_id: 4, agent: "communications", integration: "email", mode: "mock", action: "send", recipient: "ann@lee.example", subject: "Your proposal", body: "Hi", payload: {}, approved_by: "admin@test.local", result: "recorded, not sent" }],
       },
     });
     render(<App />);
     expect(await screen.findByText("recorded, not sent")).toBeInTheDocument();
     expect(screen.getByText("MOCK")).toBeInTheDocument();
+  });
+});
+
+describe("agents page", () => {
+  it("shows the AI Supervisor apart from the seven numbered agents", async () => {
+    window.history.pushState({}, "", "/agents");
+    const agent = (name: string, title: string, role = "agent") => ({
+      name, role, title, description: "d", enabled: true, entitled: true, sensitive: name === "credit_repair", integrations: [],
+      capabilities: [{ name: "x", description: "", risk: "change", requires_approval: true, params_schema: { properties: {} }, examples: [] }],
+      stats_24h: {}, last_run_at: null,
+    });
+    const titles = ["WordPress Security & Repair", "SEO & Content", "Social Media & Marketing (Postonomous)", "VPS & Server Management (CWP/SSH)",
+      "Email & Customer Communications", "Website & Infrastructure Monitoring", "Credit Repair & Dispute Management"];
+    mockFetch({
+      "GET /api/system/status": status,
+      "GET /api/auth/me": { user: admin },
+      "GET /api/agents": { agents: [agent("supervisor", "AI Supervisor", "supervisor"), ...titles.map((t, i) => agent(`a${i}`, t))] },
+    });
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Coordinator" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "The seven agents" })).toBeInTheDocument();
+    for (const t of titles) expect(screen.getByText(t)).toBeInTheDocument();
+    expect(screen.getAllByText("change · approval").length).toBe(8);
+    // The supervisor cannot be switched off; each of the seven can.
+    expect(screen.getAllByRole("button", { name: "Disable" })).toHaveLength(7);
   });
 });

@@ -21,6 +21,8 @@ import httpx
 from ...config import Settings
 from ..base import Finding
 from ..http import BlockedTarget, FetchResult, ReadOnlyHttpClient
+from . import integrity
+from .integrity import Hop, Trace
 
 Status = Literal["up", "degraded", "down"]
 
@@ -77,6 +79,8 @@ class TLSInfo:
     days_left: int | None = None
     issuer: str = ""
     error: str = ""
+    expires_at: str = ""
+    protocol: str = ""
 
 
 @dataclass
@@ -154,6 +158,8 @@ async def probe_tls(host: str, port: int, timeout: float, context: ssl.SSLContex
         return TLSInfo(error=f"probe failed: {exc.__class__.__name__}: {exc}")
     try:
         cert = writer.get_extra_info("peercert") or {}
+        ssl_object = writer.get_extra_info("ssl_object")
+        protocol = ssl_object.version() if ssl_object is not None else ""
     finally:
         writer.close()
         try:
@@ -169,7 +175,7 @@ async def probe_tls(host: str, port: int, timeout: float, context: ssl.SSLContex
     if not not_after:
         return TLSInfo(issuer=issuer, error="certificate has no expiry date")
     expires = datetime.fromtimestamp(ssl.cert_time_to_seconds(not_after), tz=UTC)
-    return TLSInfo(days_left=(expires - datetime.now(UTC)).days, issuer=issuer)
+    return TLSInfo(days_left=(expires - datetime.now(UTC)).days, issuer=issuer, expires_at=expires.isoformat(), protocol=protocol or "")
 
 
 class SiteChecker:
@@ -188,18 +194,23 @@ class SiteChecker:
         self.tls_context = tls_context
         self.retry_delay = retry_delay
 
-    async def _fetch_home(self, url: str) -> tuple[FetchResult | None, str]:
-        error = ""
+    async def _fetch_home(self, url: str) -> tuple[FetchResult | None, str, str]:
+        """The home page, following redirects; on failure the error and the URL that failed."""
+        error, failed_url = "", url
         for attempt in range(2):  # one retry, so a passing hiccup does not raise an alert
             try:
-                return await self.http.fetch(url), ""
+                return await self.http.fetch(url), "", ""
             except BlockedTarget as exc:
-                return None, describe_fetch_error(exc, self.settings.monitor_timeout_seconds)
+                return None, describe_fetch_error(exc, self.settings.monitor_timeout_seconds), url
             except Exception as exc:  # noqa: BLE001 - every failure becomes a finding
                 error = describe_fetch_error(exc, self.settings.monitor_timeout_seconds)
+                try:
+                    failed_url = str(exc.request.url)  # type: ignore[attr-defined]
+                except (AttributeError, RuntimeError):
+                    failed_url = url
             if attempt == 0 and self.retry_delay:
                 await asyncio.sleep(self.retry_delay)
-        return None, error
+        return None, error, failed_url
 
     async def _get(self, url: str, **kwargs: Any) -> FetchResult | None:
         try:
@@ -210,10 +221,17 @@ class SiteChecker:
     async def check(self, url: str, *, deep: bool = True) -> SiteReport:
         report = SiteReport(url=url)
         report.details["deep"] = deep
-        home, error = await self._fetch_home(url)
+        home, error, failed_url = await self._fetch_home(url)
         if home is None:
             report.status = "down"
-            report.add("fetch_failed", "critical", f"Site {error}")
+            if not integrity.same_site(url, failed_url):
+                # It failed after being redirected to another domain.
+                host = urlsplit(failed_url).hostname
+                report.add("redirect_offsite", "critical", f"Site redirects visitors to another domain ({host}), which cannot be reached",
+                           "A redirect to a foreign domain is a common sign of a hacked site.")
+                report.details["redirect_check"] = {"chain": [url, failed_url], "offsite": True}
+            else:
+                report.add("fetch_failed", "critical", f"Site {error}")
             return report
 
         report.http_status = home.status
@@ -223,13 +241,88 @@ class SiteChecker:
         body = home.text.lower()
         self._assess_availability(report, home, body)
         self._assess_headers(report, home)
+        offsite = self._assess_redirects(report, url, home)
         if urlsplit(home.final_url).scheme == "https":
             await self._assess_tls(report, home.final_url)
         else:
             report.add("no_https", "warning", "Site is not served over HTTPS", f"final URL {home.final_url}")
+        if offsite:
+            return report  # the page served is not the site's own; nothing more to learn from it
 
+        integrity_findings = integrity.html_findings(url, home.final_url, home.text)
+        report.findings.extend(integrity_findings)
+        if any(f.severity == "critical" for f in integrity_findings):
+            report.degrade("degraded")
+        report.details["external_scripts"] = integrity.external_script_hosts(url, home.final_url, home.text)
         await self._assess_wordpress(report, home, deep=deep)
+        if deep:
+            await self._assess_cloaking(report, url, home)
+            await self._assess_http_redirect(report, url)
         return report
+
+    async def trace(self, url: str, headers: dict[str, str] | None = None, max_hops: int = 6) -> Trace:
+        """Walk the redirects from url one hop at a time; stop, without visiting it, at any other domain."""
+        trace = Trace()
+        current = url
+        for _ in range(max_hops + 1):
+            try:
+                res = await self.http.fetch(current, headers=headers, follow_redirects=False)
+            except Exception as exc:  # noqa: BLE001 - recorded on the trace
+                trace.error = describe_fetch_error(exc, self.settings.monitor_timeout_seconds)
+                return trace
+            location = res.headers.get("location", "")
+            if res.status in integrity.REDIRECT_STATUSES and location:
+                nxt = urljoin(current, location)
+                trace.hops.append(Hop(url=current, status=res.status, location=nxt))
+                if not integrity.same_site(url, nxt):
+                    trace.offsite_target = nxt
+                    trace.final_url = nxt
+                    return trace
+                current = nxt
+                continue
+            trace.final_url, trace.final_status, trace.html = current, res.status, res.text
+            return trace
+        trace.error = "too many redirects"
+        return trace
+
+    def _assess_redirects(self, report: SiteReport, url: str, home: FetchResult) -> bool:
+        chain = [*home.redirects, home.final_url] if home.redirects else [home.final_url]
+        if chain[0] != url and not home.redirects:
+            chain = [url, home.final_url]
+        findings = integrity.chain_findings(url, chain)
+        report.findings.extend(findings)
+        offsite = any(f.code == "redirect_offsite" for f in findings)
+        if offsite:
+            report.degrade("degraded")
+        report.details["redirect_check"] = {"chain": chain, "offsite": offsite}
+        return offsite
+
+    async def _assess_cloaking(self, report: SiteReport, url: str, home: FetchResult) -> None:
+        normal = Trace(final_url=home.final_url, final_status=home.status, html=home.text)
+        variants = {
+            "arriving from Google on a phone": await self.trace(url, integrity.SEARCH_VISITOR),
+            "identifying as Googlebot": await self.trace(url, integrity.CRAWLER),
+        }
+        findings = integrity.cloaking_findings(url, normal, variants)
+        report.findings.extend(findings)
+        if findings:
+            report.degrade("degraded")
+        report.details.setdefault("redirect_check", {})["variants"] = {k: v.as_dict() for k, v in variants.items()}
+
+    async def _assess_http_redirect(self, report: SiteReport, url: str) -> None:
+        parts = urlsplit(url)
+        if parts.scheme != "https":
+            return
+        plain = f"http://{parts.netloc}/"
+        try:
+            res = await self.http.fetch(plain, follow_redirects=False, max_bytes=4_000)
+        except Exception:  # noqa: BLE001 - port 80 closed is fine
+            return
+        location = urljoin(plain, res.headers.get("location", ""))
+        if res.status == 200:
+            report.add("no_https_redirect", "warning", "Plain http:// serves the site instead of redirecting to https://")
+        elif res.status in integrity.REDIRECT_STATUSES and not location.startswith("https://"):
+            report.add("no_https_redirect", "warning", "http:// does not redirect to https://", f"redirects to {location}")
 
     def _assess_availability(self, report: SiteReport, home: FetchResult, body: str) -> None:
         status = home.status
@@ -313,6 +406,9 @@ class SiteChecker:
             return
         report.tls_days_left = info.days_left
         report.tls_issuer = info.issuer
+        report.details["tls"] = {"expires_at": info.expires_at, "protocol": info.protocol, "issuer": info.issuer}
+        if info.protocol in ("TLSv1", "TLSv1.1"):
+            report.add("tls_old_protocol", "warning", f"Server negotiated an outdated TLS version ({info.protocol})")
         days = info.days_left if info.days_left is not None else 9999
         if days < 0:
             report.degrade("down")
