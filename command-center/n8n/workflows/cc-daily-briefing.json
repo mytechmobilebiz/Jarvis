@@ -1,0 +1,95 @@
+{
+  "id": "ccDailyBrief0001",
+  "name": "Command Center - morning briefing",
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/New_York"
+  },
+  "versionId": "6f1d2a40-1b1e-4c55-9a51-2d0f3c1e0b02",
+  "pinData": {},
+  "tags": [],
+  "nodes": [
+    {
+      "id": "1d8b1f72-4e66-4c2a-9a2a-9b5c6e8f0001",
+      "name": "Weekdays 07:52",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "52 7 * * 1-5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "1d8b1f72-4e66-4c2a-9a2a-9b5c6e8f0003",
+      "name": "Run now (manual)",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        180
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "1d8b1f72-4e66-4c2a-9a2a-9b5c6e8f0002",
+      "name": "Ask the supervisor for the briefing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        260,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://api:8000/api/supervisor/requests",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"message\": \"Prepare the daily briefing\"}",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ccApiToken000001",
+          "name": "Command Center API token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Weekdays 07:52": {
+      "main": [
+        [
+          {
+            "node": "Ask the supervisor for the briefing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run now (manual)": {
+      "main": [
+        [
+          {
+            "node": "Ask the supervisor for the briefing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

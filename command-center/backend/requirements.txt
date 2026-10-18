@@ -1,0 +1,11 @@
+# Runtime dependencies for the Command Center API and worker (pinned).
+fastapi==0.143.3
+uvicorn[standard]==0.54.0
+sqlalchemy[asyncio]==2.1.5
+asyncpg==0.32.0
+pydantic==2.14.1
+pydantic-settings==2.16.0
+httpx==0.28.1
+croniter==6.2.4
+bcrypt==5.0.0
+anthropic==1.15.0

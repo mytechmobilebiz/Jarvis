@@ -1,0 +1,99 @@
+{
+  "id": "ccEventRouter001",
+  "name": "Command Center - event router",
+  "active": true,
+  "settings": { "executionOrder": "v1", "saveDataSuccessExecution": "all", "saveDataErrorExecution": "all" },
+  "versionId": "6f1d2a40-1b1e-4c55-9a51-2d0f3c1e0a01",
+  "pinData": {},
+  "tags": [],
+  "nodes": [
+    {
+      "id": "0c7a0e61-3d55-4b1f-8f1f-8a4b5d7e0001",
+      "name": "Event from Command Center",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "a3f6c0f8-7f0e-4f62-9d33-5d2b7b9c0001",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cc-events",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "credentials": { "httpHeaderAuth": { "id": "ccWebhookSecret1", "name": "Command Center webhook secret" } }
+    },
+    {
+      "id": "0c7a0e61-3d55-4b1f-8f1f-8a4b5d7e0002",
+      "name": "Classify event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 0],
+      "parameters": {
+        "jsCode": "const event = $input.first().json.body || {};\nconst severity = String(event.severity || 'info');\nconst notify = severity === 'critical' || event.kind === 'site.recovered';\nreturn [{ json: {\n  event_id: event.event_id,\n  kind: event.kind,\n  severity,\n  title: event.title,\n  notify,\n  message: `[${severity.toUpperCase()}] ${event.title}`,\n} }];"
+      }
+    },
+    {
+      "id": "0c7a0e61-3d55-4b1f-8f1f-8a4b5d7e0003",
+      "name": "Owner should be told?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [480, -120],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            {
+              "id": "5b1c9a32-0a8e-4d0e-9b8e-6f8c9d2e0001",
+              "leftValue": "={{ $json.notify }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "0c7a0e61-3d55-4b1f-8f1f-8a4b5d7e0004",
+      "name": "Notify owner (not configured)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [720, -200],
+      "notes": "Placeholder. Replace with an Email, Slack or WhatsApp node once the owner approves the channel and its credentials. Nothing is sent from here today.",
+      "notesInFlow": true,
+      "parameters": {}
+    },
+    {
+      "id": "0c7a0e61-3d55-4b1f-8f1f-8a4b5d7e0005",
+      "name": "Acknowledge to Command Center",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 120],
+      "parameters": {
+        "method": "POST",
+        "url": "http://api:8000/api/integrations/n8n/ack",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ event_id: $json.event_id, execution_id: String($execution.id), workflow: $workflow.name }) }}",
+        "options": {}
+      },
+      "credentials": { "httpHeaderAuth": { "id": "ccApiToken000001", "name": "Command Center API token" } }
+    }
+  ],
+  "connections": {
+    "Event from Command Center": { "main": [[{ "node": "Classify event", "type": "main", "index": 0 }]] },
+    "Classify event": {
+      "main": [
+        [
+          { "node": "Owner should be told?", "type": "main", "index": 0 },
+          { "node": "Acknowledge to Command Center", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Owner should be told?": { "main": [[{ "node": "Notify owner (not configured)", "type": "main", "index": 0 }], []] }
+  }
+}

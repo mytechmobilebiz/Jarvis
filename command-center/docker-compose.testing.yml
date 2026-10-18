@@ -1,0 +1,63 @@
+# Test overlay: adds a throwaway local WordPress for the monitor to watch.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.testing.yml up -d --build
+#
+# The WordPress here is created fresh on a private network and destroyed with
+# `down -v`. It is not, and must never be pointed at, a production site.
+
+services:
+  api:
+    environment:
+      MONITOR_ALLOWED_PRIVATE_HOSTS: wp-test
+  worker:
+    environment:
+      MONITOR_ALLOWED_PRIVATE_HOSTS: wp-test
+
+  wp-test-db:
+    image: ${REGISTRY:-docker.io}/library/mariadb:11
+    environment:
+      MARIADB_DATABASE: wordpress
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: wp-test-only
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks: [internal]
+
+  wp-test:
+    image: ${REGISTRY:-docker.io}/library/wordpress:6-apache
+    environment:
+      WORDPRESS_DB_HOST: wp-test-db
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: wp-test-only
+      WORDPRESS_DB_NAME: wordpress
+    volumes:
+      - wp_test_html:/var/www/html
+    depends_on:
+      wp-test-db:
+        condition: service_healthy
+    networks: [internal]
+
+  wp-test-setup:
+    image: ${REGISTRY:-docker.io}/library/wordpress:cli
+    user: "33:33"
+    restart: "no"
+    environment:
+      WORDPRESS_DB_HOST: wp-test-db
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: wp-test-only
+      WORDPRESS_DB_NAME: wordpress
+    volumes:
+      - wp_test_html:/var/www/html
+      - ./testing/wordpress/setup.sh:/setup.sh:ro
+    entrypoint: ["sh", "/setup.sh"]
+    depends_on:
+      wp-test:
+        condition: service_started
+    networks: [internal]
+
+volumes:
+  wp_test_html:
