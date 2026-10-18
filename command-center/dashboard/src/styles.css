@@ -910,3 +910,8 @@ pre.boxed {
   grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
   gap: 6px;
 }
+.row-actions select,
+.row-actions input {
+  width: auto;
+  min-width: 180px;
+}

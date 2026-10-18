@@ -55,7 +55,7 @@ def test_supervisor_console(signed_in: Page):
     nav(page, "Supervisor")
     page.get_by_role("button", name="Check all websites").click()
     page.get_by_role("button", name="Send").click()
-    expect(page.get_by_text("Routing this to: wordpress_monitor.check_all_sites.")).to_be_visible(timeout=30_000)
+    expect(page.get_by_text("Routing this to: monitoring.check_all_sites.")).to_be_visible(timeout=30_000)
     expect(page.locator(".summary")).to_contain_text("Checked", timeout=90_000)
     shot(page, "02-supervisor")
 
@@ -87,7 +87,10 @@ def test_n8n_test_event_from_integrations_page(signed_in: Page):
 def test_agents_and_approvals_pages(signed_in: Page):
     page = signed_in
     nav(page, "Agents")
-    expect(page.get_by_role("heading", name="WordPress & Hosting Monitor")).to_be_visible()
+    expect(page.get_by_role("heading", name="The seven agents")).to_be_visible()
+    for title in ("WordPress Security & Repair", "SEO & Content", "Social Media & Marketing (Postonomous)", "VPS & Server Management (CWP/SSH)",
+                  "Email & Customer Communications", "Website & Infrastructure Monitoring", "Credit Repair & Dispute Management"):
+        expect(page.locator(".card-head h2").filter(has_text=title).first).to_be_visible()
     shot(page, "06-agents")
     nav(page, "Approvals")
     expect(page.get_by_role("heading", name="Approvals")).to_be_visible()
@@ -144,3 +147,24 @@ def test_leads_support_outbox_and_credit_repair_pages(signed_in: Page, api):
     expect(page.get_by_role("heading", name="Credit Repair")).to_be_visible()
     expect(page.get_by_text("isolated module")).to_be_visible()
     shot(page, "11-credit-repair")
+
+
+def test_servers_page_and_server_side_site_detail(signed_in: Page, api):
+    if not any(s["name"] == "wp-repair-test" for s in api.get("/api/servers").json()["servers"]):
+        pytest.skip("needs the wp-repair server from test_ssh_repairs.py")
+    page = signed_in
+    nav(page, "Servers")
+    expect(page.get_by_role("heading", name="Servers", exact=True)).to_be_visible()
+    expect(page.get_by_label("authorized_keys line")).to_contain_text('command="/usr/local/bin/cc-gate",restrict')
+    page.get_by_role("row").filter(has_text="wp-repair-test").first.click()
+    dialog = page.get_by_role("dialog")
+    expect(dialog).to_contain_text("Command audit trail")
+    expect(dialog).to_contain_text("cc-gate 1.0.0 as ccagent")
+    shot(page, "12-servers")
+    page.keyboard.press("Escape")
+    nav(page, "Websites")
+    page.get_by_role("row").filter(has_text="Repair test site").first.click()
+    dialog = page.get_by_role("dialog")
+    expect(dialog).to_contain_text("Server-side (WP-CLI)")
+    expect(dialog.get_by_role("button", name="Restore home/siteurl")).to_be_visible()
+    shot(page, "13-site-repairs")

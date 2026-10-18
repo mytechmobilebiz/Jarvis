@@ -10,7 +10,8 @@ import httpx
 
 from .conftest import compose, wait_for, wait_task, worker_access_lines
 
-AGENTS = {"supervisor", "wordpress_monitor", "sales", "support", "content", "seo", "ads", "credit_repair"}
+AGENTS = {"supervisor", "wordpress_security", "seo_content", "social_marketing", "server_management", "communications", "monitoring",
+          "credit_repair"}
 
 
 def run(api, agent: str, capability: str, params: dict) -> dict:
@@ -34,8 +35,10 @@ def psql(db: str, sql: str, user: str = "postgres") -> str:
 
 
 def test_all_seven_agents_and_the_supervisor_are_registered(api):
-    agents = {a["name"]: a for a in api.get("/api/agents").json()["agents"]}
+    listed = api.get("/api/agents").json()["agents"]
+    agents = {a["name"]: a for a in listed}
     assert set(agents) == AGENTS
+    assert [a["role"] for a in listed].count("supervisor") == 1 and agents["supervisor"]["role"] == "supervisor"
     assert agents["credit_repair"]["sensitive"] is True
     assert not any(a["sensitive"] for name, a in agents.items() if name != "credit_repair")
 
@@ -56,9 +59,9 @@ def test_lead_from_the_n8n_webhook_to_a_mock_proposal_email(api, env):
     lead = wait_for(scored, what="the lead to arrive through n8n and be scored")
     assert lead["source"] == "workflow" and lead["name"] == "E2E Prospect" and lead["score"] >= 75
 
-    draft = run(api, "sales", "draft_proposal", {"lead_id": lead["id"]})
+    draft = run(api, "communications", "draft_proposal", {"lead_id": lead["id"]})
     assert draft["status"] == "succeeded", draft
-    send = run(api, "sales", "send_proposal", {"lead_id": lead["id"]})
+    send = run(api, "communications", "send_proposal", {"lead_id": lead["id"]})
     assert send["status"] == "awaiting_approval"  # nothing goes out without a person
     assert not any(e["recipient"] == email for e in api.get("/api/outbox").json()["entries"])
     assert approve_task(api, send["id"])["status"] == "succeeded"
@@ -82,7 +85,7 @@ def test_support_message_is_triaged_and_a_reply_drafted(api):
 
 def test_seo_audit_reads_the_local_wordpress_only(api, test_site):
     before = len(worker_access_lines())
-    task = run(api, "seo", "audit_page", {"url": test_site["url"]})
+    task = run(api, "seo_content", "audit_page", {"url": test_site["url"]})
     assert task["status"] == "succeeded", task
     assert task["result"]["data"]["score"] is not None
     lines = wait_for(lambda: (l := worker_access_lines())[before:] and l[before:], timeout=30, what="the audit in the access log")

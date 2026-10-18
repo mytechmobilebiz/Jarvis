@@ -37,7 +37,7 @@ def test_platform_status(api):
 
 def test_agents_registered(api):
     names = {a["name"] for a in api.get("/api/agents").json()["agents"]}
-    assert {"supervisor", "wordpress_monitor"} <= names
+    assert {"supervisor", "monitoring", "wordpress_security", "server_management"} <= names
 
 
 def test_event_round_trip_through_n8n(api):
@@ -79,7 +79,7 @@ def test_supervisor_plans_and_completes_a_request(api, test_site):
     detail = wait_request(api, req["id"])
     r = detail["request"]
     assert r["status"] == "completed"
-    assert r["plan"]["steps"][0]["agent"] == "wordpress_monitor"
+    assert r["plan"]["steps"][0]["agent"] == "monitoring"
     assert "Checked" in r["summary"]
     assert all(t["status"] == "succeeded" for t in detail["tasks"])
 

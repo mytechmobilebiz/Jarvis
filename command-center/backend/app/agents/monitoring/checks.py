@@ -230,6 +230,9 @@ class SiteChecker:
                 report.add("redirect_offsite", "critical", f"Site redirects visitors to another domain ({host}), which cannot be reached",
                            "A redirect to a foreign domain is a common sign of a hacked site.")
                 report.details["redirect_check"] = {"chain": [url, failed_url], "offsite": True}
+            elif failed_url.rstrip("/") != url.rstrip("/"):
+                report.add("fetch_failed", "critical", f"Site {error} after redirecting to {failed_url}")
+                report.details["redirect_check"] = {"chain": [url, failed_url], "offsite": False}
             else:
                 report.add("fetch_failed", "critical", f"Site {error}")
             return report
