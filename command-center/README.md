@@ -70,6 +70,38 @@ See [docs/SERVER_SETUP.md](docs/SERVER_SETUP.md).
 | `postgres/provision.sh` | Creates the databases and login roles on every start (idempotent) |
 | `templates/` | Your own proposal template (optional; not in git) |
 
+## The dashboard
+
+A dark command-center interface (0.4.0) at http://localhost:8090:
+
+- **Top bar**: the Infinite AI logo, the **AI command input** with an
+  **Execute** button, notifications, settings (admins) and the account menu.
+  A command goes to the AI Supervisor exactly like a request typed on the AI
+  Supervisor page: same sign-in, same roles (viewers cannot send), same
+  approval rules. The answer appears under the input, with a link to the full
+  request and to any approvals it is waiting for. <kbd>Ctrl</kbd>+<kbd>K</kbd>
+  or <kbd>/</kbd> jumps to the input.
+- **Voice dictation** (microphone button) appears only when it can work: a
+  browser with speech recognition (Chrome, Edge), a secure address such as
+  `http://localhost`, and microphone permission. It asks for consent first,
+  because those browsers send the audio to Google or Microsoft for
+  recognition. Dictation only fills the input; nothing runs until you press
+  Execute.
+- **Sidebar**: Dashboard, AI Agents, Workflows, Websites, SEO & Marketing,
+  CWP / Servers, Email, Credit Repair (admins and users allowed to see
+  sensitive data), Social Media / Postonomous, Automation Logs, Knowledge
+  Base, Settings (admins); then Approvals, Tasks, AI Supervisor, Leads, Client
+  support, Drafts & reports, Outbox, Integrations and Activity log. On a
+  tablet the sidebar becomes an icon rail; on a phone, a menu.
+- **Dashboard**: active AI agents, websites monitored, tasks completed today,
+  website uptime, local date and time, worker and service health, a 24-hour
+  task chart (with a table view), agents, websites, approvals, alerts and
+  recent supervisor requests. Every number comes from the API; nothing is
+  sample data.
+
+The typeface (Inter, SIL Open Font License) is bundled into the dashboard;
+the page loads nothing from other sites.
+
 ## Safety model
 
 - **Risk levels are code, not prompts.** Every agent capability declares

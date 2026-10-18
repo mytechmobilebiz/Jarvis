@@ -1,14 +1,14 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:c1c28e0d-8e81-415e-8c05-4d2ef3a747b8",
+  "serialNumber": "urn:uuid:a98c4164-33e9-49c9-84cb-c65dae73f526",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-18T09:58:36+00:00",
+    "timestamp": "2026-10-18T23:13:10+00:00",
     "component": {
       "type": "application",
       "name": "Infinite AI Command Center",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "licenses": [
         {
           "license": {
@@ -1876,6 +1876,26 @@
         {
           "name": "cc:scope",
           "value": "build only"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@fontsource-variable/inter",
+      "version": "5.2.8",
+      "licenses": [
+        {
+          "license": {
+            "name": "OFL-1.1"
+          }
+        }
+      ],
+      "purl": "pkg:npm/@fontsource-variable/inter@5.2.8",
+      "scope": "required",
+      "properties": [
+        {
+          "name": "cc:scope",
+          "value": "shipped in the dashboard bundle"
         }
       ]
     },

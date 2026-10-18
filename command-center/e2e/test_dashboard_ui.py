@@ -20,13 +20,13 @@ def signed_in(page: Page, base_url, env, test_site):
     page.get_by_label("Email").fill(env["ADMIN_EMAIL"])
     page.get_by_label("Password").fill(env["ADMIN_PASSWORD"])
     page.get_by_role("button", name="Sign in").click()
-    expect(page.get_by_role("heading", name="Overview")).to_be_visible()
+    expect(page.get_by_role("heading", level=1, name=re.compile(r"^Good (morning|afternoon|evening), "))).to_be_visible()
     return page
 
 
 def nav(page: Page, label: str) -> None:
-    """Open a page from the sidebar menu (pages can contain links with the same name)."""
-    page.locator(".sidebar nav").get_by_role("link", name=label, exact=True).click()
+    """Open a page from the sidebar menu (pages can contain links with the same name; a link may carry a count badge)."""
+    page.locator(".sidebar nav").get_by_role("link", name=re.compile(rf"^{re.escape(label)}(\s|$)")).click()
 
 
 def shot(page: Page, name: str) -> None:
@@ -42,17 +42,46 @@ def test_wrong_password_is_refused(page: Page, base_url, env):
     expect(page.get_by_role("alert")).to_contain_text("wrong email or password")
 
 
-def test_overview(signed_in: Page):
+def test_dashboard(signed_in: Page):
     page = signed_in
-    expect(page.get_by_text("Websites", exact=True).first).to_be_visible()
-    expect(page.get_by_text("Platform")).to_be_visible()
-    expect(page.locator(".kv").get_by_text("connected").first).to_be_visible()
-    shot(page, "01-overview")
+    for tile in ("Active AI agents", "Websites monitored", "Tasks completed today", "Website uptime (24 h)", "Local date and time", "Worker and service health"):
+        expect(page.get_by_role("region", name=tile)).to_be_visible()
+    health = page.get_by_role("region", name="Worker and service health")
+    expect(health).to_contain_text("Database")
+    expect(health.get_by_text("connected").first).to_be_visible()
+    expect(page.get_by_role("region", name="Websites monitored").locator(".tile-value")).to_have_text(re.compile(r"^\d+$"))
+    shot(page, "01-dashboard")
+
+
+def test_command_bar_runs_a_supervisor_request(signed_in: Page):
+    page = signed_in
+    page.get_by_label("Command for the AI Supervisor").fill("Check all websites")
+    page.get_by_role("button", name="Execute").click()
+    answer = page.locator(".command-result")
+    expect(answer).to_contain_text("Checked", timeout=90_000)
+    answer.get_by_role("link", name="Open in AI Supervisor").click()
+    expect(page.get_by_role("heading", name="AI Supervisor", exact=True)).to_be_visible()
+    expect(page).to_have_url(re.compile(r"/supervisor\?id=\d+$"))
+
+
+def test_every_sidebar_section_opens(signed_in: Page):
+    page = signed_in
+    for label, heading in (
+        ("AI Agents", "AI Agents"), ("Workflows", "Workflows"), ("Websites", "Websites"), ("SEO & Marketing", "SEO & Marketing"),
+        ("CWP / Servers", "CWP / Servers"), ("Email", "Email"), ("Credit Repair", "Credit Repair"),
+        ("Social Media / Postonomous", "Social Media / Postonomous"), ("Automation Logs", "Automation Logs"),
+        ("Knowledge Base", "Knowledge Base"), ("Settings", "Settings"), ("Approvals", "Approvals"), ("Tasks", "Tasks"),
+        ("AI Supervisor", "AI Supervisor"), ("Activity log", "Activity log"),
+    ):
+        nav(page, label)
+        expect(page.get_by_role("heading", level=1, name=heading, exact=True)).to_be_visible()
+        expect(page.locator(".alert-bad")).to_have_count(0)
+        shot(page, "20-" + re.sub(r"[^a-z]+", "-", label.lower()).strip("-"))
 
 
 def test_supervisor_console(signed_in: Page):
     page = signed_in
-    nav(page, "Supervisor")
+    nav(page, "AI Supervisor")
     page.get_by_role("button", name="Check all websites").click()
     page.get_by_role("button", name="Send").click()
     expect(page.get_by_text("Routing this to: monitoring.check_all_sites.")).to_be_visible(timeout=30_000)
@@ -86,7 +115,7 @@ def test_n8n_test_event_from_integrations_page(signed_in: Page):
 
 def test_agents_and_approvals_pages(signed_in: Page):
     page = signed_in
-    nav(page, "Agents")
+    nav(page, "AI Agents")
     expect(page.get_by_role("heading", name="The seven agents")).to_be_visible()
     for title in ("WordPress Security & Repair", "SEO & Content", "Social Media & Marketing (Postonomous)", "VPS & Server Management (CWP/SSH)",
                   "Email & Customer Communications", "Website & Infrastructure Monitoring", "Credit Repair & Dispute Management"):
@@ -153,8 +182,8 @@ def test_servers_page_and_server_side_site_detail(signed_in: Page, api):
     if not any(s["name"] == "wp-repair-test" for s in api.get("/api/servers").json()["servers"]):
         pytest.skip("needs the wp-repair server from test_ssh_repairs.py")
     page = signed_in
-    nav(page, "Servers")
-    expect(page.get_by_role("heading", name="Servers", exact=True)).to_be_visible()
+    nav(page, "CWP / Servers")
+    expect(page.get_by_role("heading", name="CWP / Servers", exact=True)).to_be_visible()
     expect(page.get_by_label("authorized_keys line")).to_contain_text('command="/usr/local/bin/cc-gate",restrict')
     page.get_by_role("row").filter(has_text="wp-repair-test").first.click()
     dialog = page.get_by_role("dialog")

@@ -1,4 +1,4 @@
-# Software bill of materials: Infinite AI Command Center 0.3.0
+# Software bill of materials: Infinite AI Command Center 0.4.0
 
 Generated 2026-10-18 by `scripts/generate-sbom.py`; machine-readable copy: `sbom.cdx.json` (CycloneDX 1.5).
 
@@ -65,10 +65,11 @@ No third-party component is vendored into this repository: each is fetched from 
 | watchfiles | 1.3.0 | MIT |  | runtime |
 | websockets | 17.2 | BSD-3-Clause |  | runtime |
 
-## npm packages shipped in the dashboard bundle (8)
+## npm packages shipped in the dashboard bundle (9)
 
 | Package | Version | License | Direct |
 |---|---|---|---|
+| @fontsource-variable/inter | 5.2.8 | OFL-1.1 | yes |
 | @remix-run/router | 1.21.0 | MIT |  |
 | js-tokens | 4.0.0 | MIT |  |
 | loose-envify | 1.4.0 | MIT |  |
