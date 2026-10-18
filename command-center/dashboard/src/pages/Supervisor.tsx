@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api, type SupervisorRequest, type Task } from "../api";
 import { useAuth } from "../App";
 import { Card, Empty, ErrorNote, Findings, Pill, RiskBadge, Time } from "../components";
@@ -83,7 +83,10 @@ function RequestDetail({ id }: { id: number }) {
 export default function Supervisor() {
   const { canOperate } = useAuth();
   const [message, setMessage] = useState("");
-  const [selected, setSelected] = useState<number | null>(null);
+  // The selected request lives in ?id= so the command bar and dashboard can link straight to one.
+  const [params, setParams] = useSearchParams();
+  const selected = Number(params.get("id")) || null;
+  const setSelected = (id: number) => setParams({ id: String(id) }, { replace: true });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const list = usePoll(() => api.get<{ requests: SupervisorRequest[] }>("/api/supervisor/requests?limit=30"), 4_000);

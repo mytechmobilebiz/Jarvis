@@ -124,6 +124,8 @@ function initials(name: string): string {
 export function AccountMenu() {
   const { user, signOut } = useAuth();
   const name = user.display_name || user.email;
+  const roleLabel = user.role === "admin" ? "Administrator" : user.role === "operator" ? "Operator" : "Viewer";
+  const shortName = user.display_name || user.email.split("@")[0];
   return (
     <Popover
       label="Account menu"
@@ -134,8 +136,8 @@ export function AccountMenu() {
             {initials(name)}
           </span>
           <span className="account-name">
-            <span>{user.display_name || user.email.split("@")[0]}</span>
-            <span className="muted">{user.role === "admin" ? "Administrator" : user.role === "operator" ? "Operator" : "Viewer"}</span>
+            <span>{shortName}</span>
+            <span className="muted">{shortName.toLowerCase() === roleLabel.toLowerCase() ? user.email : roleLabel}</span>
           </span>
           <Icon name="chevronDown" size={16} className="account-chevron" />
         </>
