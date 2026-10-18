@@ -80,6 +80,12 @@ async def bootstrap(settings: Settings) -> None:
     if applied:
         log.info("applied migrations: %s", ", ".join(applied))
     await ensure_admin(settings)
+    from .credit_repair import store as credit_repair_store
+
+    if credit_repair_store.configured(settings):
+        cr_applied = await credit_repair_store.migrate(settings)
+        if cr_applied:
+            log.info("applied credit repair migrations: %s", ", ".join(cr_applied))
     from .agents.registry import all_agents
 
     extra = [s for a in all_agents().values() for s in getattr(a, "default_schedules", [])]

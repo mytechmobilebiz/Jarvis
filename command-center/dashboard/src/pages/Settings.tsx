@@ -221,6 +221,7 @@ function Users() {
           <tr>
             <th>User</th>
             <th>Role</th>
+            <th title="Access to the isolated Credit Repair client data">Sensitive data</th>
             <th>Last sign-in</th>
             <th>State</th>
           </tr>
@@ -238,6 +239,17 @@ function Users() {
                   <option value="operator">operator</option>
                   <option value="viewer">viewer</option>
                 </select>
+              </td>
+              <td>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    aria-label={`Sensitive data access for ${u.email}`}
+                    checked={u.can_access_sensitive}
+                    onChange={(e) => void patch(u, { can_access_sensitive: e.target.checked })}
+                  />{" "}
+                  {u.can_access_sensitive ? "allowed" : "no"}
+                </label>
               </td>
               <td>
                 <Time iso={u.last_login_at} />

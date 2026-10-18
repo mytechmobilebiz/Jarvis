@@ -113,6 +113,7 @@ export default function Agents() {
                 <>
                   {agent.title} <Pill value={agent.enabled ? "up" : "disabled"} label={agent.enabled ? "enabled" : "disabled"} />
                   {agent.entitled === false ? <Pill value="disabled" label="not in your edition" /> : null}
+                  {agent.sensitive ? <Pill value="warning" label="sensitive data" /> : null}
                 </>
               }
               actions={

@@ -9,3 +9,5 @@ dashboard/dist/
 e2e/screenshots/
 backups/
 e2e/test-results/
+templates/*
+!templates/README.md

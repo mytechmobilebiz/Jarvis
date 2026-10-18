@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit, customer_settings, events
@@ -82,14 +83,12 @@ async def n8n_ack(
     now = datetime.now(UTC)
     event.n8n_ack_at = now
     event.n8n_execution_id = body.execution_id
-    engine_name = get_settings().workflow_engine
-    status = await session.get(IntegrationStatus, engine_name, with_for_update=True)
-    if status is None:
-        status = IntegrationStatus(name=engine_name, detail={})
-        session.add(status)
-    status.last_ok_at = now
-    status.detail = {**(status.detail or {}), "last_ack_event_id": event.id, "last_ack_workflow": body.workflow}
-    status.updated_at = now
+    detail = {"last_ack_event_id": event.id, "last_ack_workflow": body.workflow}
+    stmt = pg_insert(IntegrationStatus).values(name=get_settings().workflow_engine, last_ok_at=now, detail=detail, updated_at=now)
+    await session.execute(stmt.on_conflict_do_update(
+        index_elements=[IntegrationStatus.name],
+        set_={"last_ok_at": now, "updated_at": now, "detail": IntegrationStatus.detail.op("||")(stmt.excluded.detail)},
+    ))
     await session.commit()
     return {"ok": True, "event_id": event.id}
 

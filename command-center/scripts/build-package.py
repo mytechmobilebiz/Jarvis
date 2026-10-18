@@ -94,6 +94,8 @@ def main() -> None:
     with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for f in files:
             data = (ROOT / f).read_bytes()
+            if f.endswith(".ps1"):  # as a Windows git checkout has them (.gitattributes)
+                data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
             manifest.append(f"{hashlib.sha256(data).hexdigest()}  {f}")
             info = zipfile.ZipInfo(f"{TOP}/{f}", date_time=(2026, 1, 1, 0, 0, 0))
             info.external_attr = (0o755 if f.endswith(".sh") else 0o644) << 16

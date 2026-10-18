@@ -7,7 +7,7 @@ network and volumes, so it does not touch XAMPP or other Docker projects
 
 | What | Where |
 |---|---|
-| Installation package | `InfiniteAI-CommandCenter-0.1.0-windows.zip` (in the GitHub repo at `command-center/releases/`, with a `.sha256` file) |
+| Installation package | `InfiniteAI-CommandCenter-0.2.0-windows.zip` (in the GitHub repo at `command-center/releases/`, with a `.sha256` file) |
 | Source | GitHub `mytechmobilebiz/Jarvis`, branch `ccr-eb27a2af-8u7i39`, folder `command-center/` |
 | Install location on the PC | `C:\InfiniteAI\InfiniteAI-CommandCenter` (outside `C:\xampp`) |
 | Dashboard | http://localhost:8090 (bound to 127.0.0.1 only) |
@@ -31,9 +31,9 @@ The scripts are run with `-ExecutionPolicy Bypass` for that one process only;
 the machine-wide execution policy is not changed. `preflight.ps1` and
 `status.ps1` are read-only; read any script first if you wish.
 
-1. Download `InfiniteAI-CommandCenter-0.1.0-windows.zip` and, optionally,
+1. Download `InfiniteAI-CommandCenter-0.2.0-windows.zip` and, optionally,
    check it against the `.sha256` file:
-   `Get-FileHash .\InfiniteAI-CommandCenter-0.1.0-windows.zip -Algorithm SHA256`
+   `Get-FileHash .\InfiniteAI-CommandCenter-0.2.0-windows.zip -Algorithm SHA256`
 2. Extract it to `C:\InfiniteAI` (you get `C:\InfiniteAI\InfiniteAI-CommandCenter`).
 3. Open PowerShell and run:
 
@@ -63,14 +63,37 @@ and run the same command from `Jarvis\command-center`.
 | Variable | Purpose |
 |---|---|
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD` | First dashboard admin; the email is also the n8n owner |
-| `POSTGRES_PASSWORD`, `CC_DB_PASSWORD`, `N8N_DB_PASSWORD` | Database superuser and the two application roles |
+| `POSTGRES_PASSWORD`, `CC_DB_PASSWORD`, `N8N_DB_PASSWORD`, `CREDIT_REPAIR_DB_PASSWORD` | Database superuser and the three application roles (the Credit Repair role is separate; the main application cannot open that database) |
 | `CC_SERVICE_TOKEN` | n8n calling the Command Center API |
 | `CC_SECRETS_KEY` | Encrypts API keys entered on the Settings page. **Back it up.** |
+| `CREDIT_REPAIR_DATA_KEY` | Encrypts Credit Repair client fields. **Back it up**; without it that data cannot be read. |
 | `N8N_WEBHOOK_SECRET` | Command Center calling n8n's event webhook |
 | `N8N_ENCRYPTION_KEY` | Encrypts n8n's stored credentials. **Back it up.** |
 | `N8N_OWNER_PASSWORD` | n8n editor sign-in |
 | `ANTHROPIC_API_KEY` (optional) | Deployment default for Claude; normally leave empty and enter your key on the dashboard's Settings page instead (stored encrypted) |
 | `DASHBOARD_PORT`, `N8N_PORT`, `TZ` | Local ports and time zone |
+
+Upgrading from 0.1.0: `install.ps1` adds the three keys introduced since
+then (`CC_SECRETS_KEY`, `CREDIT_REPAIR_DB_PASSWORD`, `CREDIT_REPAIR_DATA_KEY`)
+to your existing `.env` and changes nothing else in it. To do only that step:
+`.\scripts\init-env.ps1 -AddMissing`.
+
+## Your proposal template (optional)
+
+The Sales agent drafts proposals from `templates\proposal-template.html` if
+the file exists, otherwise from a plain built-in template without prices.
+Put your own template there (placeholders such as `{{CLIENT_NAME}}` and
+`{{CLIENT_COMPANY}}`; see `templates\README.md`). The folder
+is read-only to the application and is not included in backups or git.
+
+## Credit Repair module
+
+Off by default. To try it, sign in as admin, tick **Sensitive data** for your
+own user on the Settings page, open **Credit Repair**, read the compliance
+notice and enable the module. Use made-up test data only until the module has
+had legal review (see COMMERCIALIZATION.md, blocker B5). Client data lives in
+its own database (`credit_repair`) and is encrypted with
+`CREDIT_REPAIR_DATA_KEY`; `backup.ps1` includes it.
 
 ## Uninstall
 
@@ -89,8 +112,12 @@ Docker Desktop if nothing else uses them.
 .\scripts\status.ps1     # what is running (read-only)
 .\scripts\stop.ps1       # stop; data is kept
 .\scripts\start.ps1 -NoBuild
-.\scripts\backup.ps1     # dumps both databases to .\backups\<timestamp>\
+.\scripts\backup.ps1     # dumps the databases to .\backups\<timestamp>\
+.\scripts\restore.ps1 -BackupFolder .\backups\<timestamp>   # replaces current data; backs it up first, asks to confirm
 ```
+
+Keep a copy of `.env` with your backups: the encryption keys in it are needed
+to read stored credentials and Credit Repair data.
 
 (Prefix each with `powershell -NoProfile -ExecutionPolicy Bypass -File` if
 script execution is restricted.)

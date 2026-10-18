@@ -162,6 +162,10 @@ class BaseAgent:
     description: ClassVar[str]
     # External services this agent would use; shown on the Integrations page.
     integrations: ClassVar[tuple[str, ...]] = ()
+    # Sensitive agents handle protected personal data: the supervisor never
+    # routes to them, and only users with the sensitive-data permission may
+    # run or approve their tasks.
+    sensitive: ClassVar[bool] = False
     _capabilities: ClassVar[dict[str, Capability]]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -193,6 +197,7 @@ class BaseAgent:
             "title": self.title,
             "description": self.description,
             "integrations": list(self.integrations),
+            "sensitive": self.sensitive,
             "capabilities": [
                 {
                     "name": c.name,

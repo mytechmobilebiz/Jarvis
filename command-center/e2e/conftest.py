@@ -97,3 +97,13 @@ def wait_request(api, request_id: int, timeout: float = 120) -> dict:
         timeout,
         what=f"supervisor request {request_id}",
     )
+
+
+def worker_access_lines() -> list[str]:
+    """Lines of the test WordPress's Apache access log that came from the worker container."""
+    worker_ip = compose("exec", "-T", "worker", "python", "-c",
+                        "import socket; print(socket.gethostbyname(socket.gethostname()))").stdout.strip()
+    ips = (set(compose("exec", "-T", "worker", "hostname", "-i").stdout.split()) | {worker_ip}) - {""}
+    assert ips, "could not determine the worker's address"
+    log = compose("logs", "--no-color", "wp-test").stdout
+    return [line for line in log.splitlines() if any(f" {ip} - " in line or f"| {ip} - " in line for ip in ips)]

@@ -141,7 +141,7 @@ class SupervisorAgent(BaseAgent):
         agents = {
             n: a
             for n, a in all_agents().items()
-            if entitlements.allows_agent(n) and await task_service.agent_enabled(session, n)
+            if not a.sensitive and entitlements.allows_agent(n) and await task_service.agent_enabled(session, n)
         }
         sites = [(r.id, r.name, r.url) for r in (await session.execute(select(Site.id, Site.name, Site.url).order_by(Site.id).limit(100))).all()]
         plan = await make_plan(request.message, agents, ctx.llm, sites)

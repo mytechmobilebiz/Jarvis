@@ -116,6 +116,7 @@ h3 {
   position: sticky;
   top: 0;
   height: 100vh;
+  overflow-y: auto;
 }
 .brand {
   display: flex;
@@ -150,7 +151,7 @@ h3 {
 .sidebar nav a {
   color: var(--sidebar-ink);
   text-decoration: none;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border-radius: 8px;
   display: flex;
   justify-content: space-between;
@@ -829,4 +830,45 @@ pre.json {
 .users-form {
   grid-template-columns: 1.4fr 0.8fr 1.4fr auto;
   margin-top: 12px;
+}
+
+/* record pages (leads, support, credit repair) */
+.grid-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+  align-items: start;
+}
+.grid-form textarea {
+  grid-column: 1 / -1;
+  resize: vertical;
+}
+.grid-form .btn {
+  justify-self: start;
+}
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0;
+  cursor: pointer;
+}
+.check input {
+  width: auto;
+  margin: 0;
+}
+.pre-wrap {
+  white-space: pre-wrap;
+}
+pre.boxed {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  max-height: 420px;
+  overflow: auto;
+}
+.cell-actions {
+  margin: 0;
+  justify-content: flex-end;
 }

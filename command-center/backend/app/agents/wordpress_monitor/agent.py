@@ -12,7 +12,7 @@ from pydantic import Field, field_validator
 from sqlalchemy import select
 
 from ...models import Site, SiteCheck
-from ..base import AgentContext, AgentResult, BaseAgent, EventSpec, Intent, NoParams, Params, Risk, capability
+from ..base import AgentContext, AgentResult, BaseAgent, EventSpec, Finding, Intent, NoParams, Params, Risk, capability
 from .checks import SiteChecker, SiteReport
 
 _LATEST_CACHE: dict[str, tuple[float, str | None]] = {}
@@ -46,6 +46,19 @@ class CheckUrlParams(Params):
         return normalize_url(v)
 
 
+class ServerParams(Params):
+    host: str = Field(max_length=253, description="Server hostname or public IP, e.g. server1.example.com")
+    ports: list[int] = Field(default_factory=lambda: [80, 443], max_length=6,
+                             description="TCP ports to test (default 80 and 443; keep the list short)")
+
+    @field_validator("ports")
+    @classmethod
+    def _ports(cls, v: list[int]) -> list[int]:
+        if any(not 1 <= p <= 65535 for p in v):
+            raise ValueError("ports must be between 1 and 65535")
+        return sorted(set(v))
+
+
 class CheckAllParams(Params):
     deep: bool = Field(False, description="Run the exposure checks on every site (slower)")
 
@@ -73,11 +86,11 @@ async def latest_wordpress_version(ctx: AgentContext) -> str | None:
 
 class WordPressMonitorAgent(BaseAgent):
     name = "wordpress_monitor"
-    title = "WordPress Monitor"
+    title = "WordPress & Hosting Monitor"
     description = (
-        "Read-only monitoring of client websites: uptime, response time, TLS certificate expiry, "
-        "WordPress version, and publicly exposed risks (XML-RPC, user listing, debug.log, directory listing). "
-        "Never logs in or changes a site."
+        "Read-only monitoring of client websites and their servers: uptime, response time, TLS certificate expiry, "
+        "WordPress version, publicly exposed risks (XML-RPC, user listing, debug.log, directory listing), and basic "
+        "hosting reachability. Never logs in, never uses SSH or panel credentials, never changes a site or server."
     )
 
     def intents(self) -> list[Intent]:
@@ -182,6 +195,50 @@ class WordPressMonitorAgent(BaseAgent):
         return out
 
     # ------------------------------------------------------------- capabilities
+
+    @capability(
+        risk=Risk.READ,
+        description="Read-only hosting check of a server (e.g. a CWP server): DNS, a single TCP connect per listed port, "
+        "and the TLS certificate on 443. Never logs in; no SSH, no panel credentials.",
+        params=ServerParams,
+        examples=("Check server1.example.com",),
+    )
+    async def check_server(self, ctx: AgentContext, params: ServerParams) -> AgentResult:
+        from .checks import probe_tls
+
+        host = params.host.strip().lower()
+        await ctx.http.check_target(host)  # refuses private and internal addresses
+        findings = []
+        try:
+            infos = await asyncio.get_running_loop().getaddrinfo(host, None)
+            addresses = sorted({i[4][0] for i in infos})
+        except OSError as exc:
+            addresses = []
+            findings.append(Finding(code="dns_failed", severity="critical", title=f"{host} does not resolve: {exc}"))
+        ports: dict[int, str] = {}
+        for port in params.ports if addresses else []:
+            try:
+                _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=5)
+                writer.close()
+                ports[port] = "open"
+            except (OSError, TimeoutError):
+                ports[port] = "closed or filtered"
+                severity = "critical" if port in (80, 443) else "warning"
+                findings.append(Finding(code="port_unreachable", severity=severity, title=f"{host}:{port} did not accept a connection"))
+        tls = None
+        if ports.get(443) == "open":
+            info = await probe_tls(host, 443, ctx.settings.monitor_timeout_seconds)
+            tls = {"days_left": info.days_left, "issuer": info.issuer, "error": info.error}
+            if info.error and not info.error.startswith("probe failed"):
+                findings.append(Finding(code="tls_invalid", severity="critical", title=f"TLS certificate problem: {info.error}"))
+            elif info.days_left is not None and info.days_left <= 14:
+                findings.append(Finding(code="tls_expiring", severity="critical" if info.days_left <= 7 else "warning",
+                                        title=f"TLS certificate expires in {info.days_left} days"))
+        ok = not any(f.severity == "critical" for f in findings)
+        summary = f"{host}: " + ("reachable" if ok else "PROBLEM") + f"; addresses {', '.join(addresses) or 'none'}; " + \
+            ", ".join(f"{p} {state}" for p, state in ports.items())
+        ctx.log(summary)
+        return AgentResult(summary=summary, data={"host": host, "addresses": addresses, "ports": ports, "tls": tls}, findings=findings)
 
     @capability(
         risk=Risk.READ,

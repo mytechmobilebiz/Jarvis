@@ -61,6 +61,7 @@ export interface User {
   email: string;
   display_name: string;
   role: "admin" | "operator" | "viewer";
+  can_access_sensitive?: boolean;
 }
 
 export interface Finding {
@@ -85,6 +86,7 @@ export interface Agent {
   description: string;
   enabled: boolean;
   entitled: boolean;
+  sensitive: boolean;
   integrations: string[];
   capabilities: Capability[];
   stats_24h: Record<string, number>;
@@ -307,6 +309,80 @@ export interface ManagedUser {
   display_name: string;
   role: "admin" | "operator" | "viewer";
   is_active: boolean;
+  can_access_sensitive: boolean;
   created_at: string | null;
   last_login_at: string | null;
+}
+
+export interface LeadRecord {
+  id: number;
+  created_at: string;
+  source: string;
+  name: string;
+  company: string;
+  email: string;
+  phone: string;
+  website: string;
+  service_interest: string;
+  message: string;
+  score: number | null;
+  score_reasons: string[];
+  status: string;
+  proposal_artifact_id: number | null;
+}
+
+export interface Ticket {
+  id: number;
+  created_at: string;
+  source: string;
+  customer_name: string;
+  customer_email: string;
+  subject: string;
+  body: string;
+  category: string;
+  priority: "low" | "normal" | "high" | "urgent";
+  sentiment: string;
+  status: string;
+  reply_artifact_id: number | null;
+}
+
+export interface OutboxRecord {
+  id: number;
+  created_at: string;
+  task_id: number | null;
+  agent: string;
+  integration: string;
+  mode: "mock" | "live";
+  action: string;
+  recipient: string;
+  subject: string;
+  body: string;
+  payload: Record<string, unknown>;
+  approved_by: string;
+  result: string;
+}
+
+export interface CRStatus {
+  configured: boolean;
+  entitled: boolean;
+  enabled: { acknowledged_by: string; acknowledged_at: string } | null;
+  can_access: boolean;
+  notice: string;
+}
+
+export interface CRClient {
+  id: number;
+  reference: string;
+  full_name: string;
+  status: string;
+  contract_signed_on: string | null;
+  services_completed_on: string | null;
+  fees_collected_cents: number;
+  created_at: string;
+  address?: string;
+  email?: string;
+  phone?: string;
+  dob?: string;
+  ssn_last4?: string;
+  notes?: string;
 }

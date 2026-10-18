@@ -74,9 +74,15 @@ if ($freeGb -ge 10) { Ok "$freeGb GB free on $($drive.Name):" } else { Warn "onl
 
 Write-Host "`nConfiguration"
 if (Test-Path (Join-Path $root ".env")) {
-  $required = "ADMIN_EMAIL","ADMIN_PASSWORD","POSTGRES_PASSWORD","CC_DB_PASSWORD","N8N_DB_PASSWORD","CC_SERVICE_TOKEN","CC_SECRETS_KEY","N8N_WEBHOOK_SECRET","N8N_ENCRYPTION_KEY","N8N_OWNER_PASSWORD"
-  $missing = $required | Where-Object { -not $envValues[$_] }
-  if ($missing) { Bad ".env is missing: $($missing -join ', ')" } else { Ok ".env has every required secret" }
+  $required = "ADMIN_EMAIL","ADMIN_PASSWORD","POSTGRES_PASSWORD","CC_DB_PASSWORD","N8N_DB_PASSWORD","CC_SERVICE_TOKEN","CC_SECRETS_KEY","CREDIT_REPAIR_DB_PASSWORD","CREDIT_REPAIR_DATA_KEY","N8N_WEBHOOK_SECRET","N8N_ENCRYPTION_KEY","N8N_OWNER_PASSWORD"
+  # Keys introduced after 0.1.0; install.ps1 adds them to an older .env (existing values are never changed).
+  $addable = "CC_SECRETS_KEY","CREDIT_REPAIR_DB_PASSWORD","CREDIT_REPAIR_DATA_KEY"
+  $missing = @($required | Where-Object { -not $envValues[$_] })
+  $toAdd = @($missing | Where-Object { $addable -contains $_ })
+  $blocking = @($missing | Where-Object { $addable -notcontains $_ })
+  if ($blocking.Count -gt 0) { Bad ".env is missing: $($blocking -join ', ')" }
+  if ($toAdd.Count -gt 0) { Warn ".env is from an older version; install.ps1 will add: $($toAdd -join ', ')" }
+  if ($missing.Count -eq 0) { Ok ".env has every required secret" }
   if ($envValues["ANTHROPIC_API_KEY"]) { Ok "ANTHROPIC_API_KEY set: the supervisor will use Claude (metered)" } else { Write-Host "  [info] ANTHROPIC_API_KEY empty: the supervisor plans with deterministic rules" }
 } else {
   Warn ".env not found yet: run .\scripts\init-env.ps1"

@@ -32,6 +32,7 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = _now_col()
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    can_access_sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Session(Base):
@@ -267,3 +268,57 @@ class SecretValue(Base):
     hint: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = _now_col()
     updated_by: Mapped[str] = mapped_column(Text, default="")
+
+
+class Lead(Base):
+    __tablename__ = "leads"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    created_at: Mapped[datetime] = _now_col()
+    updated_at: Mapped[datetime] = _now_col()
+    source: Mapped[str] = mapped_column(Text, default="dashboard")
+    name: Mapped[str] = mapped_column(Text)
+    company: Mapped[str] = mapped_column(Text, default="")
+    email: Mapped[str] = mapped_column(Text, default="")
+    phone: Mapped[str] = mapped_column(Text, default="")
+    website: Mapped[str] = mapped_column(Text, default="")
+    service_interest: Mapped[str] = mapped_column(Text, default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+    score: Mapped[int | None] = mapped_column(Integer)
+    score_reasons: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    status: Mapped[str] = mapped_column(Text, default="new")
+    proposal_artifact_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("artifacts.id", ondelete="SET NULL"))
+
+
+class SupportTicket(Base):
+    __tablename__ = "support_tickets"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    created_at: Mapped[datetime] = _now_col()
+    updated_at: Mapped[datetime] = _now_col()
+    source: Mapped[str] = mapped_column(Text, default="dashboard")
+    customer_name: Mapped[str] = mapped_column(Text, default="")
+    customer_email: Mapped[str] = mapped_column(Text, default="")
+    subject: Mapped[str] = mapped_column(Text)
+    body: Mapped[str] = mapped_column(Text, default="")
+    category: Mapped[str] = mapped_column(Text, default="")
+    priority: Mapped[str] = mapped_column(Text, default="normal")
+    sentiment: Mapped[str] = mapped_column(Text, default="")
+    triage: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(Text, default="open")
+    reply_artifact_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("artifacts.id", ondelete="SET NULL"))
+
+
+class OutboxEntry(Base):
+    __tablename__ = "outbox"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    created_at: Mapped[datetime] = _now_col()
+    task_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("tasks.id", ondelete="SET NULL"))
+    agent: Mapped[str] = mapped_column(Text)
+    integration: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str] = mapped_column(Text, default="mock")
+    action: Mapped[str] = mapped_column(Text)
+    recipient: Mapped[str] = mapped_column(Text, default="")
+    subject: Mapped[str] = mapped_column(Text, default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    approved_by: Mapped[str] = mapped_column(Text)
+    result: Mapped[str] = mapped_column(Text, default="recorded, not sent")

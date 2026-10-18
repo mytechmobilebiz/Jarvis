@@ -1,0 +1,60 @@
+{
+  "id": "ccLeadIntake0001",
+  "name": "Command Center - lead intake",
+  "active": true,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "6f1d2a40-1b1e-4c55-9a51-2d0f3c1e0c01",
+  "pinData": {},
+  "tags": [],
+  "nodes": [
+    {
+      "id": "2e9c2a83-5f77-4d3b-8b3b-0c6d7f9a0001",
+      "name": "Lead form submission",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "b4a7d1f9-8a1f-4b73-9e44-6e3c8cad0001",
+      "notes": "Receives web-form leads (POST JSON with the X-CC-Webhook-Secret header). Reachable only on this machine until a TLS proxy is added.",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-intake",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "credentials": { "httpHeaderAuth": { "id": "ccWebhookSecret1", "name": "Command Center webhook secret" } }
+    },
+    {
+      "id": "2e9c2a83-5f77-4d3b-8b3b-0c6d7f9a0002",
+      "name": "Normalise the form fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 0],
+      "parameters": {
+        "jsCode": "const b = $input.first().json.body || {};\nconst pick = (...keys) => {\n  for (const k of keys) { if (b[k] !== undefined && b[k] !== null && String(b[k]).trim()) return String(b[k]).trim(); }\n  return '';\n};\nreturn [{ json: {\n  name: (pick('name', 'full_name', 'your-name', 'Name') || 'Unknown').slice(0, 200),\n  company: pick('company', 'business', 'your-company', 'Company').slice(0, 200),\n  email: pick('email', 'your-email', 'Email').slice(0, 320),\n  phone: pick('phone', 'tel', 'your-phone', 'Phone').slice(0, 50),\n  website: pick('website', 'url', 'Website').slice(0, 500),\n  service_interest: pick('service', 'service_interest', 'interest', 'Service').slice(0, 300),\n  message: pick('message', 'your-message', 'comments', 'Message').slice(0, 5000),\n} }];"
+      }
+    },
+    {
+      "id": "2e9c2a83-5f77-4d3b-8b3b-0c6d7f9a0003",
+      "name": "Hand the lead to the Command Center",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "http://api:8000/api/integrations/workflow/leads",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "credentials": { "httpHeaderAuth": { "id": "ccApiToken000001", "name": "Command Center API token" } }
+    }
+  ],
+  "connections": {
+    "Lead form submission": { "main": [[{ "node": "Normalise the form fields", "type": "main", "index": 0 }]] },
+    "Normalise the form fields": { "main": [[{ "node": "Hand the lead to the Command Center", "type": "main", "index": 0 }]] }
+  }
+}

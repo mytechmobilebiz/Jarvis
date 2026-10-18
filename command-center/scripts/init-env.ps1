@@ -2,18 +2,46 @@
 # Refuses to overwrite an existing .env. Read-only apart from creating that file.
 #
 #   .\scripts\init-env.ps1 [-AdminEmail you@example.com]
-param([string]$AdminEmail = "admin@infinitemarketing.local")
+#   .\scripts\init-env.ps1 -AddMissing   # upgrade: append keys added since 0.1.0 to an existing .env
+param([string]$AdminEmail = "admin@infinitemarketing.local", [switch]$AddMissing)
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $envFile = Join-Path $root ".env"
-if (Test-Path $envFile) { Write-Host ".env already exists; not overwriting it." -ForegroundColor Yellow; exit 1 }
 
 function New-Secret([int]$bytes) {
   $buffer = New-Object byte[] $bytes
   [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($buffer)
   return ([Convert]::ToBase64String($buffer)).TrimEnd("=").Replace("+", "-").Replace("/", "_")
 }
+
+if ($AddMissing) {
+  if (-not (Test-Path $envFile)) { Write-Host "No .env to upgrade; run init-env.ps1 without -AddMissing." -ForegroundColor Yellow; exit 1 }
+  # Only keys that can safely start with a fresh value. Existing lines are never changed.
+  $upgradeKeys = [ordered]@{ "CC_SECRETS_KEY" = 32; "CREDIT_REPAIR_DB_PASSWORD" = 24; "CREDIT_REPAIR_DATA_KEY" = 32 }
+  $present = @{}
+  foreach ($line in Get-Content $envFile) {
+    if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$' -and $Matches[2].Trim()) { $present[$Matches[1]] = $true }
+  }
+  $lines = @()
+  foreach ($key in $upgradeKeys.Keys) {
+    if (-not $present[$key]) { $lines += "$key=$(New-Secret $upgradeKeys[$key])" }
+  }
+  if ($lines.Count -eq 0) { Write-Host ".env already has every required key."; exit 0 }
+  $stamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+  $text = [System.IO.File]::ReadAllText($envFile)
+  if ($text.Length -gt 0 -and -not $text.EndsWith("`n")) { $text += "`n" }
+  $text += "`n# Added by init-env.ps1 -AddMissing on $stamp (upgrade).`n" + ($lines -join "`n") + "`n"
+  # Drop an earlier empty assignment of the same key so the new value is the only one.
+  $names = $lines | ForEach-Object { $_.Split("=")[0] }
+  $kept = $text -split "`n" | Where-Object { -not ($_ -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*$' -and $names -contains $Matches[1]) }
+  [System.IO.File]::WriteAllText($envFile, (($kept -join "`n") -replace "`r", ""), (New-Object System.Text.UTF8Encoding $false))
+  Write-Host "Added to .env: $($names -join ', ')"
+  Write-Host "Back up .env again: CC_SECRETS_KEY and CREDIT_REPAIR_DATA_KEY decrypt stored data."
+  exit 0
+}
+
+if (Test-Path $envFile) { Write-Host ".env already exists; not overwriting it." -ForegroundColor Yellow; exit 1 }
 
 $adminPassword = New-Secret 18
 $n8nPassword = (New-Secret 18) + "A1"   # n8n wants a digit and a capital letter
@@ -28,9 +56,11 @@ ADMIN_PASSWORD=$adminPassword
 POSTGRES_PASSWORD=$(New-Secret 24)
 CC_DB_PASSWORD=$(New-Secret 24)
 N8N_DB_PASSWORD=$(New-Secret 24)
+CREDIT_REPAIR_DB_PASSWORD=$(New-Secret 24)
 
 CC_SERVICE_TOKEN=$(New-Secret 32)
 CC_SECRETS_KEY=$(New-Secret 32)
+CREDIT_REPAIR_DATA_KEY=$(New-Secret 32)
 N8N_WEBHOOK_SECRET=$(New-Secret 32)
 N8N_ENCRYPTION_KEY=$(New-Secret 32)
 N8N_OWNER_PASSWORD=$n8nPassword
@@ -54,5 +84,5 @@ N8N_PORT=5680
 Write-Host "Wrote $envFile"
 Write-Host "Dashboard sign-in: $AdminEmail / $adminPassword"
 Write-Host "n8n sign-in:       $AdminEmail / $n8nPassword"
-Write-Host "Back up .env somewhere safe: N8N_ENCRYPTION_KEY and CC_SECRETS_KEY are needed to decrypt stored credentials."
+Write-Host "Back up .env somewhere safe: N8N_ENCRYPTION_KEY, CC_SECRETS_KEY and CREDIT_REPAIR_DATA_KEY are needed to decrypt stored data."
 exit 0

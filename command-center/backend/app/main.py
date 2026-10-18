@@ -25,6 +25,9 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
             await bootstrap(settings)
         yield
         await dispose_engine()
+        from .credit_repair import store
+
+        await store.dispose()
 
     app = FastAPI(
         title=settings.app_name,
@@ -47,8 +50,8 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
         response.headers.setdefault("Cache-Control", "no-store")
         return response
 
-    from .api import admin, auth, integrations, sites, supervisor, system, work
+    from .api import admin, auth, credit_repair, integrations, records, sites, supervisor, system, work
 
-    for module in (auth, system, work, supervisor, sites, integrations, admin):
+    for module in (auth, system, work, supervisor, sites, integrations, admin, records, credit_repair):
         app.include_router(module.router)
     return app

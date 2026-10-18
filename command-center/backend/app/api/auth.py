@@ -30,7 +30,8 @@ class PasswordBody(BaseModel):
 
 
 def user_view(user: User) -> dict:
-    return {"id": user.id, "email": user.email, "display_name": user.display_name, "role": user.role}
+    return {"id": user.id, "email": user.email, "display_name": user.display_name, "role": user.role,
+            "can_access_sensitive": user.can_access_sensitive}
 
 
 @router.post("/login")

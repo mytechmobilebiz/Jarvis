@@ -21,18 +21,38 @@ Third-party components and licenses: [SBOM.md](SBOM.md).
                  │                       │ events (webhook + secret)
                  ▼                       ▼
             PostgreSQL 18  ◄──── worker ────► n8n 2.43.7  :5680 on 127.0.0.1
-          (command_center,      │  agents      │ calls back with the
-           n8n databases)       │  scheduler   │ service token
+          (command_center,      │  agents      │ lead-intake webhook,
+           n8n, credit_repair   │  scheduler   │ briefings; calls back
+           databases)           │              │ with the service token
                                 ▼              ▼
                      monitored websites   (future: email, Slack, ...)
                      (GET-only, public
                       addresses only)
 ```
 
+## The agents
+
+| Agent | Does | Needs approval for |
+|---|---|---|
+| AI Supervisor | Plans requests (Claude or rules) and hands them to the agents below; summaries, daily briefing, health review | nothing (it only delegates) |
+| WordPress & Hosting Monitor | Read-only uptime, TLS, WordPress version and exposure checks; read-only server checks (DNS, TCP connect, TLS) | nothing (read-only) |
+| Sales & Proposals | Scores leads, drafts proposals from `templates/proposal-template.html` | sending a proposal (mock email) |
+| Client Support | Triages client messages, drafts replies | sending a reply (mock email) |
+| Content & Social | Drafts blog and social posts | publishing (mock WordPress / social) |
+| SEO & Research | Read-only on-page SEO audits; keyword and content briefs | nothing (read-only / drafts) |
+| Ads & Analytics | Ad performance report on **sample data** (no ad account connected) | any budget change (financial, mock) |
+| Credit Repair | Isolated module: compliance timing checks, dispute-letter drafts from an encrypted store | mailing a letter (mock); off until an admin enables it |
+
+"Mock" means the action is recorded in the **Outbox** page and nothing leaves
+the machine. Real integrations need your approval and credentials (see
+PROJECT_STATUS.md).
+
 | Part | What it does |
 |---|---|
 | `backend/app/api` | REST API: sign-in, roles, sites, tasks, approvals, supervisor, integrations, audit log |
 | `backend/app/agents` | Agent framework (capabilities with declared risk), the read-only HTTP client, the agents |
+| `backend/app/credit_repair` | The Credit Repair store: its own database, login role, encryption key and access log |
+| `backend/app/integrations` | Outward integrations (all mocks in this build) and the n8n client |
 | `backend/app/supervisor` | The AI supervisor: plans requests (Claude or rules), summarises, daily briefing, health review |
 | `backend/app/worker` | Runs tasks (PostgreSQL `SKIP LOCKED` queue), cron schedules, delivers events to n8n |
 | `backend/app/migrations` | The database schema, as plain SQL |
@@ -42,6 +62,8 @@ Third-party components and licenses: [SBOM.md](SBOM.md).
 | `dashboard/` | The web dashboard |
 | `n8n/` | Workflows and credentials provisioned into n8n at start-up |
 | `scripts/` | Windows (PowerShell 5.1+) install, start, stop, status, backup, smoke test, uninstall |
+| `postgres/provision.sh` | Creates the databases and login roles on every start (idempotent) |
+| `templates/` | Your own proposal template (optional; not in git) |
 
 ## Safety model
 
@@ -58,6 +80,11 @@ Third-party components and licenses: [SBOM.md](SBOM.md).
 - **Model text is data**: agent output and fetched pages go to the summariser
   wrapped as data, and the planner can only choose from real capabilities.
 - Everything a person changes is in the audit log.
+- **Credit Repair data is isolated**: a separate database and login role
+  (the main application's role cannot connect to it), field encryption with
+  its own key, a per-user permission (off for everyone, admins included),
+  its own access log, and the supervisor and AI never see it; outside the
+  store a client is only a reference such as `CR-0001`.
 
 ## Developing
 

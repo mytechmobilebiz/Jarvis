@@ -5,13 +5,17 @@ import { usePoll } from "./hooks";
 import Activity from "./pages/Activity";
 import Agents from "./pages/Agents";
 import Approvals from "./pages/Approvals";
+import CreditRepair from "./pages/CreditRepair";
 import Drafts from "./pages/Drafts";
 import Integrations from "./pages/Integrations";
+import Leads from "./pages/Leads";
 import Login from "./pages/Login";
+import Outbox from "./pages/Outbox";
 import Overview from "./pages/Overview";
 import Schedules from "./pages/Schedules";
 import Settings from "./pages/Settings";
 import Supervisor from "./pages/Supervisor";
+import Support from "./pages/Support";
 import Tasks from "./pages/Tasks";
 import Websites from "./pages/Websites";
 
@@ -29,14 +33,18 @@ export function useAuth(): AuthState {
   return ctx;
 }
 
-const NAV: { to: string; label: string; badge?: (s: SystemStatus) => number; adminOnly?: boolean }[] = [
+const NAV: { to: string; label: string; badge?: (s: SystemStatus) => number; adminOnly?: boolean; sensitiveOnly?: boolean }[] = [
   { to: "/", label: "Overview" },
   { to: "/supervisor", label: "Supervisor" },
   { to: "/agents", label: "Agents" },
   { to: "/websites", label: "Websites", badge: (s) => (s.counts.sites.down ?? 0) + (s.counts.sites.degraded ?? 0) },
   { to: "/approvals", label: "Approvals", badge: (s) => s.counts.approvals_pending },
+  { to: "/leads", label: "Leads" },
+  { to: "/support", label: "Client support" },
+  { to: "/credit-repair", label: "Credit Repair", sensitiveOnly: true },
   { to: "/tasks", label: "Tasks" },
   { to: "/drafts", label: "Drafts & reports" },
+  { to: "/outbox", label: "Outbox" },
   { to: "/schedules", label: "Schedules" },
   { to: "/integrations", label: "Integrations" },
   { to: "/activity", label: "Activity log", adminOnly: true },
@@ -62,7 +70,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
             </div>
           </div>
           <nav>
-            {NAV.filter((item) => !item.adminOnly || user.role === "admin").map((item) => {
+            {NAV.filter((item) => (!item.adminOnly || user.role === "admin") && (!item.sensitiveOnly || user.role === "admin" || user.can_access_sensitive)).map((item) => {
               const count = s && item.badge ? item.badge(s) : 0;
               return (
                 <NavLink key={item.to} to={item.to} end={item.to === "/"} className={({ isActive }) => (isActive ? "active" : "")}>
@@ -98,8 +106,12 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
             <Route path="/agents" element={<Agents />} />
             <Route path="/websites" element={<Websites />} />
             <Route path="/approvals" element={<Approvals />} />
+            <Route path="/leads" element={<Leads />} />
+            <Route path="/support" element={<Support />} />
+            <Route path="/credit-repair" element={<CreditRepair />} />
             <Route path="/tasks" element={<Tasks />} />
             <Route path="/drafts" element={<Drafts />} />
+            <Route path="/outbox" element={<Outbox />} />
             <Route path="/schedules" element={<Schedules />} />
             <Route path="/integrations" element={<Integrations />} />
             <Route path="/activity" element={<Activity />} />

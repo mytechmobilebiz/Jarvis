@@ -23,7 +23,9 @@ if ($LASTEXITCODE -ne 0) { Fail "fix the preflight problems above, then run inst
 
 Step "2/5 Configuration"
 if (Test-Path (Join-Path $root ".env")) {
-  Write-Host "Keeping the existing .env."
+  Write-Host "Keeping the existing .env (adding any keys this version needs; existing values are not changed)."
+  & (Join-Path $scripts "init-env.ps1") -AddMissing
+  if ($LASTEXITCODE -ne 0) { Fail "could not update .env" }
 } else {
   if (-not $AdminEmail) { $AdminEmail = Read-Host "Email address for the first admin account" }
   if ($AdminEmail -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { Fail "'$AdminEmail' is not an email address" }

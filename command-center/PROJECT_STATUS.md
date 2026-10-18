@@ -1,6 +1,6 @@
 # Project status: Infinite AI Command Center
 
-Last updated: 2026-10-18 (UTC) · version 0.1.0 · branch `ccr-eb27a2af-8u7i39`
+Last updated: 2026-10-18 (UTC) · version 0.2.0 · branch `ccr-eb27a2af-8u7i39`
 
 ## Where it is being built
 
@@ -13,14 +13,34 @@ verified on Windows yet; see "Cloud sandbox vs Windows" below.
 
 | Milestone | State |
 |---|---|
-| M1: dashboard, PostgreSQL, n8n, AI supervisor, read-only WordPress monitor | **Done** in the cloud sandbox (tests below) |
+| M1: dashboard, PostgreSQL, n8n, AI supervisor, read-only WordPress monitor | **Done** in the cloud sandbox |
 | M1b: Windows 11 deployment package (Docker Desktop + WSL 2) | **Done** in the sandbox; needs one run on the PC (`install.ps1`) |
 | M2: commercial-ready architecture (workflow-engine interface, editions, settings split, SBOM) | **Done** in the sandbox; plan and blockers in COMMERCIALIZATION.md |
-| M3: remaining agent modules, incl. the isolated Credit Repair Agent | Planned |
+| M3: the seven specialist agents, incl. the isolated Credit Repair module | **Done** in the sandbox, with **mock** outward integrations |
 | M4: real integrations (email, publishing, ads, notifications) | Needs owner approval and credentials |
 
-Estimated MVP completion: **about 55%**. This is an estimate, weighted by
-the work remaining, not a measurement.
+Estimated MVP completion: **about 70%**. This is an estimate, weighted by the
+work remaining (Windows verification, real integrations, owner decisions),
+not a measurement.
+
+## The agents (M3)
+
+The seven agents below are **inferred** from the Foundation Starter and the
+brief; the full handoff never arrived. Please confirm or correct them.
+
+| Agent | Works for real today | Mock / sample in this build | Needs approval |
+|---|---|---|---|
+| AI Supervisor | Plans requests (Claude or rules), delegates, summarises, daily briefing, health review | | |
+| WordPress & Hosting Monitor | Read-only website checks; read-only server checks (DNS, one TCP connect per port, TLS on 443); never SSH or panel credentials | | |
+| Sales & Proposals | Lead scoring, spam detection, proposal drafts (HTML) from your template or a built-in one without prices; n8n lead-intake webhook | Sending (mock email) | sending a proposal |
+| Client Support | Triage (category, priority, sentiment), reply drafts (Claude or templates) | Sending (mock email) | sending a reply |
+| Content & Social | Blog and social drafts (Claude or templates) | Publishing (mock WordPress / social) | publishing |
+| SEO & Research | Read-only on-page audit (title, description, headings, indexability, images, structured data, robots.txt, sitemap); keyword briefs | | |
+| Ads & Analytics | ROAS / CPA report and anomaly flags | **Sample data** (no ad account connected); budget changes are mock | any budget change (financial) |
+| Credit Repair (isolated) | Encrypted client store in its own database; compliance timing checks (contract, 3-business-day wait, advance fees); FCRA dispute-letter drafts, one per bureau | Mailing (mock postal mail) | mailing a letter; module off until an admin enables it |
+
+Every approved mock action is listed on the **Outbox** page as
+"recorded, not sent". Nothing leaves the machine.
 
 ## Completed
 
@@ -31,57 +51,55 @@ the work remaining, not a measurement.
   task layer; a read-only HTTP client that blocks private addresses; worker
   with `SKIP LOCKED` claiming, timeouts, retries, stale-task reaping; cron
   scheduler; events with delivery to n8n and backoff.
-- AI supervisor: plans requests with Claude (structured output, refusal
-  handling, daily request cap) or, with no API key, with deterministic rules;
-  summaries; daily briefing; hourly platform health review.
-- WordPress Monitor (read-only): uptime, response time, TLS expiry and
-  validity, WordPress detection and version, plugins and themes seen,
-  XML-RPC, public user listing (count only), readme.html, debug.log,
-  directory listing, end-of-life PHP; alerts on change only.
-- n8n 2.43.7 on PostgreSQL: owner account, credentials and workflows
-  provisioned at start-up; event router (with a placeholder notification step
-  that sends nothing) and the weekday morning-briefing workflow.
-- Dashboard: sign-in, overview, supervisor console, agents, websites,
-  approvals, tasks, drafts and reports, schedules, integrations, activity log.
+- AI supervisor: plans with Claude (structured output, refusal handling,
+  daily request cap) or deterministic rules; never plans Credit Repair work.
+- The seven agents above, the Leads, Client support, Outbox and Credit Repair
+  pages, a sensitive-data permission per user, and an n8n lead-intake
+  webhook (header secret) that hands web-form leads to the Sales agent.
+- Credit Repair isolation: separate database and login role (the main role
+  cannot connect), field encryption with its own key, per-user permission
+  (off for admins too), read-only for viewers, own access log, references
+  only (`CR-0001`) anywhere else. Details in COMMERCIALIZATION.md section 4.
+- n8n 2.43.7 on PostgreSQL: owner, credentials and three workflows
+  provisioned at start-up (event router with a placeholder notification step
+  that sends nothing, weekday morning briefing, lead intake).
 - Windows scripts (PowerShell 5.1+): `install`, `preflight` (read-only),
-  `init-env`, `start`, `status`, `stop`, `backup`, `smoke`, `uninstall`.
-- Clean package builder: only git-tracked files, no tests or dev files,
-  refuses to build if a local secret would be included.
-- Commercial-ready architecture (M2): a `WorkflowEngine` interface (n8n,
-  generic HMAC-signed webhook, none); Personal / Professional / Agency
-  editions with enforced agent, site and user limits; offline Ed25519-signed
-  license files; customer settings (database, admin-only) separated from
-  deployment settings (.env); customer API keys stored encrypted and never
-  shown again; per-task AI provider resolution; user management; SBOM
-  (CycloneDX); COMMERCIALIZATION.md with the blockers to distribution.
-
-## Active
-
-- M3: the remaining agent modules, starting with the isolated Credit Repair
-  Agent's data layer (design in COMMERCIALIZATION.md section 4).
+  `init-env` (now also `-AddMissing` for upgrades), `start`, `status`,
+  `stop`, `backup` (all three databases), **`restore`** (new; safety backup
+  first, typed confirmation), `smoke`, `uninstall`.
+- Commercial-ready architecture (M2): workflow-engine interface, editions
+  with enforced limits, signed offline licenses, customer vs deployment
+  settings, encrypted customer API keys, SBOM.
 
 ## Test results (latest runs, cloud sandbox)
 
 | Suite | Result | What it covers |
 |---|---|---|
-| Backend unit + integration (pytest, real PostgreSQL 18) | **130 passed, 0 failed** | API, auth, roles, approvals, worker, scheduler, supervisor, WordPress checks, TLS probe, Claude provider (mocked API), schema, licenses, editions, encrypted secrets, settings, users, workflow engines |
-| Dashboard (Vitest) | **9 passed, 0 failed** | sign-in, approvals, supervisor, viewer restrictions, safe Markdown |
-| End-to-end, running stack (pytest + Playwright Chromium) | **21 passed**; 8 further consecutive full runs passed (one earlier intermittent failure, not reproduced since) | real n8n round trip, real local WordPress, read-only verified from WordPress's access log, browser flows, Settings page |
-| `smoke.ps1` against the stack (PowerShell 7.4) | **6 of 6 passed** | health, sign-in, worker, n8n round trip, supervisor |
-| Package lifecycle from the zip (PowerShell 7.4) | **all steps passed** | install, status, backup (restorable), stop/start, uninstall keeping data, reinstall, uninstall deleting data; a decoy Docker project left untouched |
+| Backend unit + integration (pytest, real PostgreSQL 18) | **158 passed, 0 failed** | API, auth, roles, approvals, worker, supervisor, all agents, mock integrations and their approval gates, Credit Repair isolation and compliance gates, prompt-injection wrapping, schema, licenses, editions, secrets, settings, users |
+| Dashboard (Vitest) | **13 passed, 0 failed** | sign-in, approvals, supervisor, viewer restrictions, Credit Repair menu and enable gate, leads, outbox |
+| End-to-end, running stack (pytest + Playwright Chromium) | **27 passed** in each of the last 3 consecutive full runs | real n8n round trip and lead-intake webhook, real local WordPress, read-only verified from WordPress's access log (monitor and SEO audit), mock proposal email after approval, support triage, Credit Repair data absent from the main database and the main role refused by the Credit Repair database, all dashboard pages in a browser |
+| Upgrade 0.1.0 → 0.2.0 from the zips (PowerShell 7.4) | **passed** | the shipped 0.1.0 installed and smoke-tested; 0.2.0 installed over it with the copied `.env`: missing keys added, migrations applied, data kept, smoke test passed |
+| Backup and restore (PowerShell 7.4) | **passed** | three dumps; changes made after the backup rolled back in both the main and Credit Repair databases; smoke test passed after restore |
+| Package lifecycle from the 0.2.0 zip (PowerShell 7.4) | **all steps passed** | fresh install, status, stop/start, uninstall keeping data, reinstall with data kept, uninstall deleting data (final backup taken); a decoy Docker project left untouched |
 | `docker compose config` | valid, base and test overlay | |
+
+Problems found and fixed during this milestone's runs: two support tasks for
+the same message could overwrite each other's result (fixed with a row lock;
+5 repeated runs clean); the sidebar could not scroll on a 720-pixel-high
+window, hiding Sign out (fixed); a test locator matched two "Settings" links
+(test fixed); upgrading from 0.1.0 would have stopped on missing `.env` keys
+(fixed: `install.ps1` adds them).
 
 ## Cloud sandbox vs Windows
 
 | Item | Cloud sandbox | Windows 11 PC |
 |---|---|---|
 | Containers build and run, all services healthy | verified | **not yet** |
-| n8n provisioning, webhook round trip, n8n calling the API | verified | not yet |
-| WordPress monitor against a real (local, throwaway) WordPress | verified | not yet |
-| Scripts under PowerShell **7.4** (Linux) | verified | n/a |
-| Scripts under Windows PowerShell **5.1** | static checks only (ASCII-only, no 6/7-only syntax or parameters); Microsoft's analyzer could not be installed (PowerShell Gallery blocked here) | **not yet** |
+| n8n provisioning, webhook round trip, lead intake, n8n calling the API | verified | not yet |
+| WordPress monitor and SEO audit against a real (local, throwaway) WordPress | verified | not yet |
+| Install, upgrade, backup, restore, uninstall under PowerShell **7.4** (Linux) | verified | n/a |
+| Scripts under Windows PowerShell **5.1** | static checks only (ASCII-only, no 6/7-only syntax); Microsoft's analyzer could not be installed (PowerShell Gallery blocked here) | **not yet** |
 | `preflight.ps1` Windows-only parts (`Get-NetTCPConnection`, `wsl.exe`) | not runnable | not yet |
-| Bind mounts from a Windows path through Docker Desktop | not testable | not yet |
 | Monitoring real internet sites, `api.wordpress.org` version lookup | blocked by the sandbox's DNS | not yet |
 | Claude API with a real key | mocked only (no key) | not yet |
 
@@ -89,41 +107,40 @@ Verification on the PC = `install.ps1` finishing with `SMOKE TEST PASSED`.
 
 ## Blockers and open questions
 
-1. **Full handoff not received.** Only the Foundation Starter arrived. The
-   seven agents are inferred and need your confirmation (proposed:
-   WordPress & Hosting Monitor, Credit Repair, Sales & Proposals, Client
-   Support, Content & Social, SEO & Research, Ads & Analytics).
+1. **Full handoff not received.** The seven agents are inferred; please
+   confirm them or send the handoff.
 2. **Not yet run on Windows** (see the table above).
-3. **Credit Repair Agent** needs your decisions and legal review before it
-   handles real client data (federal CROA and FCRA rules and state law);
-   see COMMERCIALIZATION.md once written.
-4. **n8n licensing for a commercial edition**: n8n's Sustainable Use License
-   does not allow including it in a paid product without a commercial (Embed)
-   agreement. The personal deployment is fine; distribution is blocked until
-   resolved (a workflow-engine interface is planned in M2).
-5. **Repository**: the Command Center sits inside the Jarvis repository,
-   which also holds the purchased Jarvis source. Before distribution it
-   should move to its own repository.
-6. **Intermittent UI test** (`test_supervisor_console`): failed twice, both
-   times right after a stack restart; not reproduced in 8 consecutive full
-   runs since. The suite now keeps a screenshot of any failure.
+3. **Credit Repair** must not hold real client data before legal review
+   (CROA, FCRA, the FTC Telemarketing Sales Rule, Georgia and other state
+   law, data-security rules): COMMERCIALIZATION.md blocker B5.
+4. **n8n licensing for a commercial edition** (B1): fine for your own use;
+   distribution needs n8n's commercial agreement or another engine.
+5. **Repository** (B3): the Command Center sits inside the Jarvis
+   repository; it should move to its own repository before distribution.
+6. **Intermittent UI test** (`test_supervisor_console`) seen twice in
+   earlier milestones right after stack restarts; not seen in the 15 full
+   end-to-end runs since.
 
 ## Remaining integrations (all need owner approval and credentials)
 
 | Integration | State today |
 |---|---|
-| Claude (Anthropic API) | Implemented; inactive until `ANTHROPIC_API_KEY` is set (metered) |
+| Claude (Anthropic API) | Implemented; inactive until a key is entered on the Settings page (metered) |
 | Owner notifications (email, Slack, WhatsApp) | Placeholder node in n8n; sends nothing |
-| Email sending (proposals, replies) | Not implemented (mock planned) |
-| WordPress publishing / changes | Not implemented; monitor is read-only by design |
-| Social (Postiz / Meta), ads (Meta / Google), analytics | Not implemented (mock planned) |
-| CWP server checks | Planned as read-only network checks only; never SSH or root credentials |
-| Credit bureau / dispute services | Not planned without legal review |
+| Email sending (proposals, support replies) | Mock: recorded in the Outbox |
+| WordPress publishing | Mock; the monitor and SEO audit are read-only by design |
+| Social publishing (Postiz / Meta) | Mock |
+| Ad platforms (Meta / Google Ads) | Sample data; budget changes mock |
+| Certified mail for dispute letters | Mock; only after legal review |
+| CWP servers | Read-only network checks only; never SSH, root or panel credentials |
 
 ## Next steps
 
-1. Owner: run `install.ps1` on the PC and send back the `smoke.ps1` output.
-2. Owner: confirm the seven agents, or send the full handoff.
-3. Owner: decide on blockers B1 (n8n licensing) and B3 (own repository) in COMMERCIALIZATION.md.
-4. M3: the remaining agents (mock integrations, approval-gated), Credit Repair
-   in an isolated database.
+1. Owner: run `install.ps1` on the PC (or upgrade an existing 0.1.0 install,
+   see docs/DEPLOY_WINDOWS.md) and send back the smoke-test output.
+2. Owner: confirm the seven agents; add your proposal template to
+   `templates\proposal-template.html` if you want it used.
+3. Owner: decide which real integration comes first (for example email
+   through your SMTP account) and provide credentials through the dashboard
+   once that integration exists.
+4. Owner: decisions on B1, B3 and B5 in COMMERCIALIZATION.md.

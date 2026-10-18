@@ -15,6 +15,9 @@ os.environ["MONITOR_RETRY_DELAY_SECONDS"] = "0"
 os.environ["LLM_PROVIDER"] = "rule_based"
 os.environ["CC_SECRETS_KEY"] = "test-secrets-key-0123456789abcdef"
 os.environ["CC_EDITION"] = "developer"
+os.environ.setdefault("TEST_CREDIT_REPAIR_DATABASE_URL", os.environ["TEST_DATABASE_URL"].rsplit("/", 1)[0] + "/cc_test_cr")
+os.environ["CREDIT_REPAIR_DATABASE_URL"] = os.environ["TEST_CREDIT_REPAIR_DATABASE_URL"]
+os.environ["CREDIT_REPAIR_DATA_KEY"] = "test-credit-repair-key-0123456789"
 os.environ.pop("ANTHROPIC_API_KEY", None)
 os.environ.pop("HTTPS_PROXY", None)
 os.environ.pop("https_proxy", None)
@@ -45,13 +48,30 @@ def settings():
 
 @pytest.fixture(scope="session")
 async def migrated(settings):
+    from app.credit_repair import store as cr_store
+
+    import asyncpg
+
     engine = db.get_engine()
+    cr_db = settings.credit_repair_database_url.rsplit("/", 1)[1]
+    admin_conn = await asyncpg.connect(settings.database_url.replace("postgresql+asyncpg://", "postgresql://"))
+    try:
+        if not await admin_conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", cr_db):
+            await admin_conn.execute(f'CREATE DATABASE "{cr_db}"')
+    finally:
+        await admin_conn.close()
     async with engine.begin() as conn:
         await conn.execute(text("DROP SCHEMA public CASCADE"))
         await conn.execute(text("CREATE SCHEMA public"))
     await db.run_migrations()
+    cr_store._maker(settings)
+    async with cr_store._engines[settings.credit_repair_database_url][0].begin() as conn:
+        await conn.execute(text("DROP SCHEMA public CASCADE"))
+        await conn.execute(text("CREATE SCHEMA public"))
+    await cr_store.migrate(settings)
     yield engine
     await db.dispose_engine()
+    await cr_store.dispose()
 
 
 @pytest.fixture
@@ -61,6 +81,10 @@ async def clean_db(migrated, settings):
             text("SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename <> 'schema_migrations'")
         )]
         await conn.execute(text(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE"))
+    from app.credit_repair import store as cr_store
+
+    async with cr_store._engines[settings.credit_repair_database_url][0].begin() as conn:
+        await conn.execute(text("TRUNCATE cr_clients, cr_items, cr_letters, cr_access_log RESTART IDENTITY CASCADE"))
     await ensure_admin(settings)
     from app import customer_settings, licensing
     from app.agents.wordpress_monitor import agent as wp_agent

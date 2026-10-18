@@ -9,11 +9,24 @@ _AGENTS: dict[str, BaseAgent] | None = None
 
 def _build() -> dict[str, BaseAgent]:
     from ..supervisor.agent import SupervisorAgent
+    from .ads import AdsAgent
+    from .content import ContentAgent
+    from .credit_repair import CreditRepairAgent
+    from .sales import SalesAgent
+    from .seo import SEOAgent
+    from .support import SupportAgent
     from .wordpress_monitor.agent import WordPressMonitorAgent
 
+    # The supervisor and the seven specialist modules.
     agents: list[BaseAgent] = [
         SupervisorAgent(),
         WordPressMonitorAgent(),
+        SalesAgent(),
+        SupportAgent(),
+        ContentAgent(),
+        SEOAgent(),
+        AdsAgent(),
+        CreditRepairAgent(),
     ]
     return {a.name: a for a in agents}
 

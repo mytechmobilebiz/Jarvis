@@ -17,6 +17,8 @@ x-api-env: &api-env
   ADMIN_PASSWORD: ${ADMIN_PASSWORD:?}
   CC_SERVICE_TOKEN: ${CC_SERVICE_TOKEN:?}
   CC_SECRETS_KEY: ${CC_SECRETS_KEY:?run scripts/init-env (CC_SECRETS_KEY encrypts customer secrets)}
+  CREDIT_REPAIR_DATABASE_URL: postgresql+asyncpg://credit_repair:${CREDIT_REPAIR_DB_PASSWORD:?run scripts/init-env}@postgres:5432/credit_repair
+  CREDIT_REPAIR_DATA_KEY: ${CREDIT_REPAIR_DATA_KEY:?run scripts/init-env}
   CC_EDITION: ${CC_EDITION:-developer}
   CC_LICENSE_PUBLIC_KEY: ${CC_LICENSE_PUBLIC_KEY:-}
   WORKFLOW_ENGINE: ${WORKFLOW_ENGINE:-n8n}
@@ -43,17 +45,31 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
       POSTGRES_DB: postgres
-      CC_DB_PASSWORD: ${CC_DB_PASSWORD:?}
-      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD:?}
     volumes:
       # PostgreSQL 18 layout: the volume holds /var/lib/postgresql/18/docker.
       - pgdata:/var/lib/postgresql
-      - ./postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d command_center && pg_isready -U postgres -d n8n"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
       interval: 5s
       timeout: 5s
       retries: 20
+    networks: [internal]
+
+  # One-shot, every start: creates missing roles and databases (also on upgrades).
+  db-init:
+    image: ${REGISTRY:-docker.io}/library/postgres:18.6-alpine
+    restart: "no"
+    entrypoint: ["/bin/sh", "/provision.sh"]
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      CC_DB_PASSWORD: ${CC_DB_PASSWORD:?}
+      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD:?}
+      CREDIT_REPAIR_DB_PASSWORD: ${CREDIT_REPAIR_DB_PASSWORD:?run scripts/init-env}
+    volumes:
+      - ./postgres/provision.sh:/provision.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks: [internal]
 
   api:
@@ -66,8 +82,8 @@ services:
     restart: unless-stopped
     environment: *api-env
     depends_on:
-      postgres:
-        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
     networks: [internal]
 
   worker:
@@ -77,6 +93,9 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "app.worker"]
     environment: *api-env
+    volumes:
+      # Optional owner content, e.g. templates/proposal-template.html
+      - ./templates:/app/templates:ro
     healthcheck:
       disable: true
     depends_on:
@@ -141,8 +160,8 @@ services:
       start_period: 60s
       retries: 12
     depends_on:
-      postgres:
-        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
     networks: [internal, egress]
 
 networks:

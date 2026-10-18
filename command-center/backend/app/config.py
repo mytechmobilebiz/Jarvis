@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     # it, uploaded licenses cannot be verified and are ignored.
     license_public_key: str = Field(default="", validation_alias="CC_LICENSE_PUBLIC_KEY")
 
+    # Credit Repair module: its own database (own login role) and its own
+    # field-encryption key, never shared with the rest of the platform.
+    credit_repair_database_url: str = ""
+    credit_repair_data_key: SecretStr | None = None
+
     # Workflow engine the platform hands events to: n8n, a generic signed
     # webhook (any engine), or none.
     workflow_engine: Literal["n8n", "webhook", "none"] = "n8n"

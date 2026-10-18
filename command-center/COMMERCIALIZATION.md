@@ -18,7 +18,7 @@ marked **legal review** needs a qualified lawyer before distribution.
 | 7 | Developer settings separate from customer settings | Deployment/developer settings: environment only (`app/config.py`, `.env`), never shown in the UI. Customer settings: a whitelist in `app/customer_settings.py`, stored in the database, admin-only. | Per-customer branding settings (white-label). |
 | 8 | Activation, updates, backups, license management | Offline license files signed with Ed25519 (`app/licensing.py`); the private key never ships. Expired or invalid licenses fall back to the configured edition and never delete or lock data. Backups via `backup.ps1`. | Activation service (optional online check-in, seat transfer), signed update packages and an update channel, encrypted and scheduled backups with tested restore. |
 | 9 | Personal, Professional, Agency editions | `EDITIONS` with per-edition agents, features, site and user limits, enforced on task creation, planning, site creation and user creation. The owner's installation runs the internal, unsellable `developer` edition. | Final edition contents and prices (business decision). |
-| 10 | Credit Repair data isolated from marketing data | Design below (section 4). | Build with the Credit Repair Agent; legal review (B5). |
+| 10 | Credit Repair data isolated from marketing data | Built (0.2.0): own database and login role, own encryption key, per-user permission, own access log, never routed by the supervisor or sent to the AI (section 4). | Separate service/container for the module; separately encrypted backup set; legal review (B5). |
 
 ### Editions as configured today
 
@@ -71,28 +71,30 @@ These are placeholders for a business decision; they live in one table in
 - **Updates are forward-only migrations**, preceded by an automatic backup and
   followed by the smoke test; a failed update restores the backup.
 
-## 4. Credit Repair data isolation (design)
+## 4. Credit Repair data isolation (built in 0.2.0)
 
-The Credit Repair Agent's data never shares a database, role, key or code path
-with marketing data:
+The Credit Repair module's data never shares a database, login role or key
+with marketing data. What is built, and what is still open:
 
-| Control | Design |
-|---|---|
-| Storage | A separate PostgreSQL database `credit_repair` with its own login role; the main application role has no grant on it. |
-| Encryption | Sensitive fields (SSN, date of birth, account numbers, report contents) encrypted in the application with a separate key, `CREDIT_REPAIR_DATA_KEY`, that the rest of the platform never loads. |
-| Access | A per-user permission (`sensitive_data`), off by default even for admins; every read and write recorded in a separate access log. |
-| Leakage | Events and summaries about credit-repair work carry ids only: nothing personal goes to the workflow engine, the activity feed, logs or the AI model. Sending personal data to an AI model requires an explicit, per-installation opt-in, with redaction by default. |
-| Edition | Agency only, and off until an admin enables it after accepting the compliance notice. |
-| Backups | Separate, encrypted backup set; retention and deletion rules configurable per customer. |
-| Outbound actions | Dispute letters and client messages are drafts that require approval; nothing is sent to bureaus or clients automatically. |
+| Control | Built | Still open |
+|---|---|---|
+| Storage | A separate PostgreSQL database `credit_repair` with its own login role. The main application role has no `CONNECT` on it (verified by the end-to-end tests). | The module runs inside the same API and worker processes as the rest of the platform; a separate container with its own process would isolate it further. |
+| Encryption | Every client field (name, address, email, phone, date of birth, SSN last 4, notes, creditor, account digits, dispute details, letter text) is encrypted in the application with `CREDIT_REPAIR_DATA_KEY`, which only the module's code uses. Only the last 4 SSN digits are accepted. | Key rotation. |
+| Access | A per-user permission (`can_access_sensitive`), off by default for everyone, admins included. Viewers with the permission can read but not change. Every read and write goes to the module's own access log. Approving a mailing also needs the permission. | Per-client assignment (which staff see which client). |
+| Leakage | Outside the store a client is only a reference such as `CR-0001`: tasks, events, the workflow engine, the activity feed and the outbox carry ids only (asserted in tests). The supervisor never plans Credit Repair work and the AI model never receives its data; letters are filled from a fixed template. | An opt-in, redacted AI path, if ever wanted. |
+| Edition | Agency (and the internal developer edition) only; off until an admin enables it after accepting the compliance notice, which is recorded. | |
+| Compliance support | No dispute letters without a signed contract, nor before 3 business days have passed since signing (weekends skipped; public holidays are not yet); the compliance review flags fees collected before services are complete. | Holiday calendar, contract and disclosure documents, state-specific rules: all after legal review (B5). |
+| Backups | `backup.ps1` dumps `credit_repair` to its own file; the sensitive fields stay encrypted inside it. | A separately encrypted backup set, retention and deletion rules per customer. |
+| Outbound actions | Mailing a dispute letter is an external action: approval required, and in this build the postal service is a mock that records the letter id only. | A real certified-mail integration, after legal review. |
 
 ## 5. Roadmap to a first commercial release
 
 1. Owner decisions: confirm the seven agents, edition contents and prices.
 2. Resolve B1 (n8n) and B3 (own repository); legal review of B5 before building
    credit-repair features that store real data.
-3. Credit Repair Agent with the isolation above; remaining agents with mock
-   integrations, then real ones as each is approved.
+3. Done in 0.2.0: the remaining agents with mock integrations and the Credit
+   Repair module with the isolation above. Next: real integrations as each is
+   approved, and the open items in section 4.
 4. Activation service and update channel; scheduled encrypted backups with a
    tested restore.
 5. Signed installer, EULA and privacy documents, support process; pilot with

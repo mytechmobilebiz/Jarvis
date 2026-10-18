@@ -14,7 +14,7 @@ from .. import audit, licensing
 from .. import tasks as task_service
 from ..agents.registry import all_agents, get_agent
 from ..config import Settings, get_settings
-from ..models import AgentState, Approval, Task, TaskLog
+from ..models import AgentState, Approval, Task, TaskLog, User
 from .deps import Principal, client_ip, get_db, require_operator, require_user, to_dict
 
 router = APIRouter(prefix="/api", tags=["work"])
@@ -32,6 +32,16 @@ class RunBody(BaseModel):
 class DecisionBody(BaseModel):
     approve: bool
     note: str = Field("", max_length=2000)
+
+
+async def require_sensitive_access(session: AsyncSession, principal: Principal, agent_name: str) -> None:
+    """Sensitive agents (Credit Repair) need the per-user sensitive-data permission."""
+    agent = get_agent(agent_name)
+    if agent is None or not agent.sensitive:
+        return
+    user = await session.get(User, principal.user_id) if principal.user_id else None
+    if user is None or not user.can_access_sensitive:
+        raise HTTPException(403, "this agent handles protected personal data; your account needs the sensitive-data permission")
 
 
 def task_view(task: Task) -> dict[str, Any]:
@@ -103,6 +113,7 @@ async def run_capability(
 ) -> dict:
     if name == "supervisor" and body.capability in task_service.SUPERVISOR_INTERNAL:
         raise HTTPException(400, "internal supervisor capability")
+    await require_sensitive_access(session, principal, name)
     task = await task_service.create_task(
         session,
         settings,
@@ -217,6 +228,7 @@ async def decide(
     approval = await session.get(Approval, approval_id, with_for_update=True)
     if approval is None:
         raise HTTPException(404, "no such approval")
+    await require_sensitive_access(session, principal, approval.agent)
     task = await task_service.decide_approval(
         session, settings, approval, approve=body.approve, actor=principal.name, note=body.note
     )

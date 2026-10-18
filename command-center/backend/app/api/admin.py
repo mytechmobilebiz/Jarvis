@@ -38,6 +38,7 @@ class UserBody(BaseModel):
 
 
 class UserPatch(BaseModel):
+    can_access_sensitive: bool | None = None
     display_name: str | None = Field(None, max_length=200)
     role: str | None = Field(None, pattern="^(admin|operator|viewer)$")
     is_active: bool | None = None
@@ -172,6 +173,7 @@ def user_view(u: User) -> dict:
         "display_name": u.display_name,
         "role": u.role,
         "is_active": u.is_active,
+        "can_access_sensitive": u.can_access_sensitive,
         "created_at": u.created_at.isoformat() if u.created_at else None,
         "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
     }

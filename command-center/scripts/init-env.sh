@@ -2,18 +2,36 @@
 # Writes command-center/.env with fresh random secrets. Refuses to overwrite.
 #
 #   ./scripts/init-env.sh [admin-email]
+#   ./scripts/init-env.sh --add-missing   # upgrade an older .env
 #
 # Prints the generated admin and n8n passwords once; they are also in .env
 # (which git ignores). Change them after the first sign-in if you prefer.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+secret() { python3 -c "import secrets; print(secrets.token_urlsafe($1))"; }
+
+# Upgrade: append keys added since 0.1.0 to an existing .env; never changes existing values.
+if [[ "${1:-}" == "--add-missing" ]]; then
+  [[ -e .env ]] || { echo "No .env to upgrade." >&2; exit 1; }
+  added=()
+  for spec in CC_SECRETS_KEY:32 CREDIT_REPAIR_DB_PASSWORD:24 CREDIT_REPAIR_DATA_KEY:32; do
+    key="${spec%%:*}"
+    if ! grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*[^[:space:]]" .env; then
+      sed -i -E "/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*$/d" .env
+      [[ ${#added[@]} -eq 0 ]] && printf '\n# Added by init-env.sh --add-missing on %s (upgrade).\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> .env
+      echo "${key}=$(secret "${spec##*:}")" >> .env
+      added+=("$key")
+    fi
+  done
+  echo "Added to .env: ${added[*]:-nothing}"
+  exit 0
+fi
+
 if [[ -e .env ]]; then
   echo ".env already exists; not overwriting it." >&2
   exit 1
 fi
-
-secret() { python3 -c "import secrets; print(secrets.token_urlsafe($1))"; }
 
 ADMIN_EMAIL="${1:-admin@infinitemarketing.local}"
 ADMIN_PASSWORD="$(secret 18)"
@@ -29,9 +47,11 @@ ADMIN_PASSWORD=${ADMIN_PASSWORD}
 POSTGRES_PASSWORD=$(secret 24)
 CC_DB_PASSWORD=$(secret 24)
 N8N_DB_PASSWORD=$(secret 24)
+CREDIT_REPAIR_DB_PASSWORD=$(secret 24)
 
 CC_SERVICE_TOKEN=$(secret 32)
 CC_SECRETS_KEY=$(secret 32)
+CREDIT_REPAIR_DATA_KEY=$(secret 32)
 N8N_WEBHOOK_SECRET=$(secret 32)
 N8N_ENCRYPTION_KEY=$(secret 32)
 N8N_OWNER_PASSWORD=${N8N_OWNER_PASSWORD}

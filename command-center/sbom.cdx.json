@@ -1,14 +1,14 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:31367a45-ea79-4d35-bcdd-d454e34d0783",
+  "serialNumber": "urn:uuid:4513b264-b50c-42e3-9a7a-91bfc3319720",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-18T07:17:04+00:00",
+    "timestamp": "2026-10-18T08:03:02+00:00",
     "component": {
       "type": "application",
       "name": "Infinite AI Command Center",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "licenses": [
         {
           "license": {

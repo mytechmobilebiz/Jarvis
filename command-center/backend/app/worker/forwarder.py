@@ -6,6 +6,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from ..db import session_scope
 from ..models import Event, IntegrationStatus
@@ -17,20 +18,20 @@ BASE_DELAY_SECONDS = 5
 
 
 async def record_integration(name: str, ok: bool, error: str = "", detail: dict | None = None) -> None:
+    """Upsert, so concurrent workers recording the same integration never collide."""
     now = datetime.now(UTC)
+    values: dict = {"name": name, "updated_at": now}
+    if ok:
+        values["last_ok_at"] = now
+    else:
+        values["last_error_at"] = now
+        values["last_error"] = error[:500]
+    if detail is not None:
+        values["detail"] = detail
+    stmt = pg_insert(IntegrationStatus).values(**values)
+    stmt = stmt.on_conflict_do_update(index_elements=[IntegrationStatus.name], set_={k: v for k, v in values.items() if k != "name"})
     async with session_scope() as session:
-        row = await session.get(IntegrationStatus, name, with_for_update=True)
-        if row is None:
-            row = IntegrationStatus(name=name, detail={})
-            session.add(row)
-        if ok:
-            row.last_ok_at = now
-        else:
-            row.last_error_at = now
-            row.last_error = error[:500]
-        if detail is not None:
-            row.detail = detail
-        row.updated_at = now
+        await session.execute(stmt)
 
 
 async def forward_pending(engine, limit: int = 20) -> int:

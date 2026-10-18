@@ -7,7 +7,7 @@ import re
 
 import httpx
 
-from .conftest import compose, wait_for, wait_request, wait_task
+from .conftest import compose, wait_for, wait_request, wait_task, worker_access_lines
 
 
 def test_health_is_public_and_minimal(base_url):
@@ -68,16 +68,7 @@ def test_wordpress_monitor_reads_local_wordpress(api, test_site):
 def test_monitor_only_ever_sent_get_requests(api, test_site):
     """Read-only, verified from the test WordPress's own Apache access log."""
     api.post(f"/api/sites/{test_site['id']}/check", json={"deep": True})
-    worker_ip = compose("exec", "-T", "worker", "python", "-c",
-                        "import socket; print(socket.gethostbyname(socket.gethostname()))").stdout.strip()
-    ips = set(compose("exec", "-T", "worker", "hostname", "-i").stdout.split()) | {worker_ip}
-    assert ips - {""}, "could not determine the worker's address"
-
-    def worker_lines():
-        log = compose("logs", "--no-color", "wp-test").stdout
-        return [line for line in log.splitlines() if any(f" {ip} - " in line or f"| {ip} - " in line for ip in ips)]
-
-    lines = wait_for(lambda: len(worker_lines()) >= 7 and worker_lines(), timeout=60, what="worker requests in the access log")
+    lines = wait_for(lambda: len(worker_access_lines()) >= 7 and worker_access_lines(), timeout=60, what="worker requests in the access log")
     methods = {m.group(1) for line in lines if (m := re.search(r'"([A-Z]+) /', line))}
     assert methods == {"GET"}, methods
     assert any("/wp-json/wp/v2/users" in line for line in lines)
