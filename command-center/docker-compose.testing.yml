@@ -1,4 +1,6 @@
-# Test overlay: adds a throwaway local WordPress for the monitor to watch.
+# Test overlay: adds throwaway local WordPress sites: wp-test for the monitor to
+# watch, and wp-repair (with a real OpenSSH server, sudo, WP-CLI and cc-gate)
+# for the SSH and repair workflows.
 #
 #   docker compose -f docker-compose.yml -f docker-compose.testing.yml up -d --build
 #
@@ -8,10 +10,12 @@
 services:
   api:
     environment:
-      MONITOR_ALLOWED_PRIVATE_HOSTS: wp-test
+      MONITOR_ALLOWED_PRIVATE_HOSTS: wp-test,wp-repair
+      SSH_ALLOWED_PRIVATE_HOSTS: wp-repair
   worker:
     environment:
-      MONITOR_ALLOWED_PRIVATE_HOSTS: wp-test
+      MONITOR_ALLOWED_PRIVATE_HOSTS: wp-test,wp-repair
+      SSH_ALLOWED_PRIVATE_HOSTS: wp-repair
 
   wp-test-db:
     image: ${REGISTRY:-docker.io}/library/mariadb:11
@@ -58,6 +62,38 @@ services:
       wp-test:
         condition: service_started
     networks: [internal]
+
+  wp-repair-db:
+    image: ${REGISTRY:-docker.io}/library/mariadb:11
+    environment:
+      MARIADB_DATABASE: wordpress
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: wp-repair-test-only
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks: [internal]
+
+  wp-repair:
+    build:
+      context: .
+      dockerfile: testing/wp-repair/Dockerfile
+      args:
+        REGISTRY: ${REGISTRY:-docker.io}
+    image: infinite-command-center/wp-repair:test
+    pull_policy: never
+    environment:
+      WP_DB_PASSWORD: wp-repair-test-only
+    depends_on:
+      wp-repair-db:
+        condition: service_healthy
+    # SSH published on the loopback only, for the end-to-end tests' own probes.
+    ports:
+      - "127.0.0.1:${WP_REPAIR_SSH_PORT:-2222}:22"
+    networks: [internal, edge]
 
 volumes:
   wp_test_html:

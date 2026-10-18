@@ -6,8 +6,11 @@ import { Card, Empty, ErrorNote, JsonView, Pill, RiskBadge, Time } from "../comp
 import { usePoll } from "../hooks";
 
 function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: () => void }) {
-  const { canOperate } = useAuth();
+  const { user, canOperate } = useAuth();
   const [note, setNote] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const production = approval.details.production === true;
+  const confirmText = approval.details.confirm ?? "";
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -15,7 +18,7 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
     setBusy(true);
     setError(null);
     try {
-      await api.post(`/api/approvals/${approval.id}/decision`, { approve, note });
+      await api.post(`/api/approvals/${approval.id}/decision`, { approve, note, confirm: approve ? confirm : "" });
       onDecided();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -31,12 +34,21 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
           #{approval.id} {approval.summary}
         </>
       }
-      actions={<RiskBadge risk={approval.risk} />}
+      actions={
+        <>
+          {production ? <Pill value="critical" label="PRODUCTION" /> : null} <RiskBadge risk={approval.risk} />
+        </>
+      }
     >
       <p className="muted small">
         {approval.agent}.{approval.capability} · requested <Time iso={approval.created_at} /> · <Link to={`/tasks?id=${approval.task_id}`}>task #{approval.task_id}</Link>
       </p>
       {approval.details.capability_description ? <p>{approval.details.capability_description}</p> : null}
+      {approval.details.target ? (
+        <p className="small">
+          Target: <strong>{approval.details.target}</strong> ({approval.details.environment})
+        </p>
+      ) : null}
       <details>
         <summary>Exact parameters</summary>
         <JsonView value={approval.details.params ?? {}} />
@@ -45,7 +57,19 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
         canOperate ? (
           <div className="decision">
             <input aria-label="Decision note" placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} maxLength={2000} />
-            <button className="btn primary" disabled={busy} onClick={() => void decide(true)}>
+            {production ? (
+              user.role === "admin" ? (
+                <input
+                  aria-label="Type the name to confirm"
+                  placeholder={`type ${confirmText} to approve`}
+                  value={confirm}
+                  onChange={(e) => setConfirm(e.target.value)}
+                />
+              ) : (
+                <span className="small muted">Production change: an admin must approve it.</span>
+              )
+            ) : null}
+            <button className="btn primary" disabled={busy || (production && (user.role !== "admin" || confirm !== confirmText))} onClick={() => void decide(true)}>
               Approve
             </button>
             <button className="btn danger" disabled={busy} onClick={() => void decide(false)}>
@@ -75,8 +99,9 @@ export default function Approvals() {
         <div>
           <h1>Approvals</h1>
           <p className="muted">
-            Actions that would reach the outside world, spend money or delete something wait here. Approving runs exactly the parameters shown; in this build
-            every outward integration is a mock, so approved actions are recorded but not sent.
+            Actions that would reach the outside world, change a website or server, spend money or delete something wait here. Approving runs exactly the
+            parameters shown. Production changes need an admin who types the target's name. Email, publishing and ad changes are mocks in this build (recorded,
+            not sent); server and WordPress repairs are real and go through the restricted cc-gate.
           </p>
         </div>
         <div className="tabs">

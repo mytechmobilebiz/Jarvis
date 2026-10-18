@@ -13,6 +13,7 @@ import Login from "./pages/Login";
 import Outbox from "./pages/Outbox";
 import Overview from "./pages/Overview";
 import Schedules from "./pages/Schedules";
+import Servers from "./pages/Servers";
 import Settings from "./pages/Settings";
 import Supervisor from "./pages/Supervisor";
 import Support from "./pages/Support";
@@ -38,6 +39,7 @@ const NAV: { to: string; label: string; badge?: (s: SystemStatus) => number; adm
   { to: "/supervisor", label: "Supervisor" },
   { to: "/agents", label: "Agents" },
   { to: "/websites", label: "Websites", badge: (s) => (s.counts.sites.down ?? 0) + (s.counts.sites.degraded ?? 0) },
+  { to: "/servers", label: "Servers" },
   { to: "/approvals", label: "Approvals", badge: (s) => s.counts.approvals_pending },
   { to: "/leads", label: "Leads" },
   { to: "/support", label: "Client support" },
@@ -105,6 +107,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
             <Route path="/supervisor" element={<Supervisor />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/websites" element={<Websites />} />
+            <Route path="/servers" element={<Servers />} />
             <Route path="/approvals" element={<Approvals />} />
             <Route path="/leads" element={<Leads />} />
             <Route path="/support" element={<Support />} />

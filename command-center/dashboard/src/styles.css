@@ -895,3 +895,18 @@ pre.boxed {
   font-size: 12px;
   margin-right: 6px;
 }
+
+.boxed-section {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 12px 0;
+}
+.boxed-section h3 {
+  margin-top: 0;
+}
+.repair-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 6px;
+}

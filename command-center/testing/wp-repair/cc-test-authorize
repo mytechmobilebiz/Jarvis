@@ -1,0 +1,3 @@
+#!/bin/sh
+# Test helper: install the Command Center's public key the way the owner would on a real server.
+exec sh /opt/cc-gate/install-gate.sh --public-key "$1"

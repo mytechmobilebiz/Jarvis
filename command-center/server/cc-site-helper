@@ -54,13 +54,13 @@ def main(argv):
     if not stat.S_ISREG(info.st_mode):
         return answer(False, error="wp-content/debug.log is not a regular file (symlink or other); not touching it")
     status = {"exists": True, "bytes": info.st_size,
-              "modified": datetime.datetime.utcfromtimestamp(info.st_mtime).isoformat() + "Z"}
+              "modified": datetime.datetime.fromtimestamp(info.st_mtime, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     if op == "debug_log_status":
         return answer(True, status)
     target_dir = os.path.join(config.get("backup_dir", "/var/lib/cc-gate/backups"), key)
     if not os.path.isdir(target_dir):
         return answer(False, error="backup folder %s does not exist (run install-gate.sh --sync-sites)" % target_dir)
-    target = os.path.join(target_dir, "debug-%s.log" % datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"))
+    target = os.path.join(target_dir, "debug-%s.log" % datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
     shutil.move(log, target)
     return answer(True, {**status, "moved_to": target})
 

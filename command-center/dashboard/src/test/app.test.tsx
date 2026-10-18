@@ -70,7 +70,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.path === "/api/approvals/9/decision")).toBe(true));
     const decision = calls.find((c) => c.path === "/api/approvals/9/decision")!;
-    expect(decision.body).toEqual({ approve: true, note: "go ahead" });
+    expect(decision.body).toEqual({ approve: true, note: "go ahead", confirm: "" });
   });
 
   it("submits a supervisor request", async () => {

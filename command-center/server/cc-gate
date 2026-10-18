@@ -218,7 +218,7 @@ def helper(site, op, site_key):
 
 
 def utc_stamp():
-    return datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 # ------------------------------------------------------------------ operations
@@ -434,7 +434,7 @@ def main():
         payload, code = {"ok": False, "op": op, "gate_version": GATE_VERSION, "refused": False,
                          "error": "internal error: %s" % exc.__class__.__name__}, 1
     log_line({
-        "at": datetime.datetime.utcnow().isoformat() + "Z", "user": current_user(), "client": os.environ.get("SSH_CLIENT", "").split(" ")[0],
+        "at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "user": current_user(), "client": os.environ.get("SSH_CLIENT", "").split(" ")[0],
         "op": op, "args": args, "request": (raw or "")[:300], "exit": code, "ms": int((time.time() - started) * 1000),
     })
     return emit(payload, code)

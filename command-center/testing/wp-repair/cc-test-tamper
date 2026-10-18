@@ -1,0 +1,22 @@
+#!/bin/sh
+# Test helper: simulate common WordPress compromises on the DISPOSABLE test site.
+#   cc-test-tamper redirect | cloak | debug-log | reset
+set -eu
+DOCROOT=/var/www/html
+as_www() { su -s /bin/sh -c "cd $DOCROOT && $1" www-data; }
+case "${1:-}" in
+  redirect)  as_www "wp option update home http://evil.invalid --quiet" ;;
+  cloak)
+    mkdir -p "$DOCROOT/wp-content/plugins/cc-test-cloak"
+    cp /opt/wp-repair/cc-test-cloak.php "$DOCROOT/wp-content/plugins/cc-test-cloak/cc-test-cloak.php"
+    chown -R www-data:www-data "$DOCROOT/wp-content/plugins/cc-test-cloak"
+    as_www "wp plugin activate cc-test-cloak --quiet" ;;
+  debug-log)
+    printf '[18-Oct-2026 10:01:02 UTC] PHP Warning:  Undefined variable $x in %s/wp-content/plugins/x.php on line 3\n' "$DOCROOT" > "$DOCROOT/wp-content/debug.log"
+    chown www-data:www-data "$DOCROOT/wp-content/debug.log" ;;
+  reset)
+    as_www "wp option update home http://wp-repair:8080 --quiet && wp option update siteurl http://wp-repair:8080 --quiet"
+    as_www "wp plugin deactivate cc-test-cloak --quiet" 2>/dev/null || true
+    rm -rf "$DOCROOT/wp-content/plugins/cc-test-cloak" "$DOCROOT/wp-content/debug.log" ;;
+  *) echo "usage: cc-test-tamper redirect|cloak|debug-log|reset" >&2; exit 2 ;;
+esac

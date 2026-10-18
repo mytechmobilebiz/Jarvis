@@ -1,0 +1,11 @@
+#!/bin/sh
+# Test stand-in for systemctl (this container has no systemd): one service, php-web.
+# A restart must arrive as root (through the sudo rule install-gate.sh wrote).
+case "$1" in
+  is-active) [ "$2" = php-web ] && { echo active; exit 0; }; echo inactive; exit 3 ;;
+  restart)
+    [ "$(id -u)" = 0 ] || { echo "restart needs root" >&2; exit 1; }
+    [ "$2" = php-web ] || { echo "unknown service $2" >&2; exit 5; }
+    echo "$(date -u +%FT%TZ) restart $2" >> /var/log/cc-test-systemctl.log; exit 0 ;;
+  *) echo "unsupported: $*" >&2; exit 1 ;;
+esac

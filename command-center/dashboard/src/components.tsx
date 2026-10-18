@@ -47,9 +47,13 @@ const STATUS_TONE: Record<string, string> = {
   disabled: "muted",
   draft: "info",
   archived: "muted",
+  production: "warn",
+  staging: "info",
+  test: "muted",
 };
 
-export function Pill({ value, label }: { value: string; label?: string }) {
+export function Pill({ value, label }: { value: string | undefined | null; label?: string }) {
+  value = value ?? "unknown";
   const text = label ?? value.replace(/_/g, " ");
   return <span className={`pill tone-${STATUS_TONE[value] ?? "muted"}`}>{label ? text : text.charAt(0).toUpperCase() + text.slice(1)}</span>;
 }

@@ -1,0 +1,4 @@
+# Build context is command-center/; only these are needed.
+*
+!server/
+!testing/wp-repair/

@@ -131,7 +131,7 @@ export interface Approval {
   capability: string;
   risk: Risk;
   summary: string;
-  details: { params?: Json; capability_description?: string };
+  details: { params?: Json; capability_description?: string; target?: string; environment?: string; production?: boolean; confirm?: string };
   decided_by: string;
   decided_at: string | null;
   decision_note: string;
@@ -165,7 +165,46 @@ export interface SiteCheck {
   is_wordpress: boolean;
   wp_version: string;
   findings: Finding[];
-  details: Json & { deep?: boolean; plugins_detected?: string[]; themes_detected?: string[]; latest_wp_version?: string };
+  details: Json & {
+    deep?: boolean;
+    plugins_detected?: string[];
+    themes_detected?: string[];
+    latest_wp_version?: string;
+    external_scripts?: string[];
+    tls?: { expires_at?: string; protocol?: string; issuer?: string };
+    redirect_check?: { chain?: string[]; offsite?: boolean; variants?: Record<string, { offsite_target?: string; final_url?: string }> };
+  };
+}
+
+export type Environment = "production" | "staging" | "test";
+
+export interface Uptime {
+  "24h": number | null;
+  "7d": number | null;
+  "30d": number | null;
+  checks_30d: number;
+  avg_response_ms_24h: number | null;
+}
+
+export interface Incident {
+  start: string;
+  end: string | null;
+  minutes: number;
+  reason: string;
+}
+
+export interface Diagnosis {
+  at?: string;
+  server?: string;
+  core_version?: string;
+  site_urls?: { home: string; siteurl: string; expected: string; matches: boolean };
+  plugins?: { name: string; status: string; version: string; update: string; update_version: string }[];
+  themes?: { name: string; status: string; version: string; update: string }[];
+  admins?: { ID: number; user_login: string; user_registered: string }[];
+  maintenance?: { active: boolean };
+  debug_log?: { exists: boolean; bytes?: number };
+  core_verify?: { verified: boolean | null; detail?: string; files?: string[] };
+  findings?: Finding[];
 }
 
 export interface Site {
@@ -178,6 +217,68 @@ export interface Site {
   last_status: "unknown" | "up" | "degraded" | "down";
   last_checked_at: string | null;
   last_check: SiteCheck | null;
+  environment: Environment;
+  server_id: number | null;
+  server_site_key: string;
+  uptime: Uptime | null;
+  incidents_30d?: Incident[];
+  last_diagnosis: Diagnosis;
+  last_diagnosis_at: string | null;
+}
+
+export interface Server {
+  id: number;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  environment: Environment;
+  host_key_pinned: boolean;
+  host_key_fingerprint: string;
+  host_key_trusted_by: string;
+  host_key_trusted_at: string | null;
+  enabled: boolean;
+  notes: string;
+  last_hello: {
+    gate_version?: string;
+    user?: string;
+    uid?: number;
+    hostname?: string;
+    allow_changes?: boolean;
+    sites?: Record<string, { url: string }>;
+    services?: string[];
+    restartable_services?: string[];
+    at?: string;
+  };
+  last_seen_at: string | null;
+  created_at: string;
+  sites: { id: number; name: string; server_site_key: string; environment: Environment }[];
+}
+
+export interface ServerCommand {
+  id: number;
+  server_id: number;
+  task_id: number | null;
+  op: string;
+  args: Record<string, string>;
+  kind: "read" | "change";
+  requested_by: string;
+  approved_by: string;
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+  exit_status: number | null;
+  ok: boolean | null;
+  refused: boolean;
+  error: string;
+}
+
+export interface SshKey {
+  openssh: string;
+  fingerprint: string;
+  created_at: string;
+  created_by: string;
+  authorized_keys_line: string;
 }
 
 export interface CCEvent {
