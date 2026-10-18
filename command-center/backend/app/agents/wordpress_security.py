@@ -20,7 +20,7 @@ from ..models import Site, SiteCheck
 from .base import AgentContext, AgentResult, ArtifactSpec, BaseAgent, EventSpec, Finding, Intent, NoParams, Params, Risk, capability
 from .monitoring.agent import latest_wordpress_version, make_checker, record_check
 from .monitoring.checks import SiteReport
-from .wp_server import ServerSideCapabilities, site_approval_context
+from .wp_server import REPAIR_TIMEOUT, ServerSideCapabilities, site_approval_context
 
 # What to do about each finding, and which approval-based repair (if any) applies.
 REMEDIATION: dict[str, tuple[str, str | None]] = {
@@ -106,8 +106,8 @@ class WordPressSecurityAgent(ServerSideCapabilities, BaseAgent):
         }
     ]
 
-    async def approval_context(self, session: Any, capability: str, params: dict[str, Any]) -> dict[str, Any]:
-        return await site_approval_context(session, params.get("site_id"))
+    async def approval_context(self, session: Any, capability: str, params: dict[str, Any], *, lock: bool = False) -> dict[str, Any]:
+        return await site_approval_context(session, params.get("site_id"), lock=lock)
 
     def intents(self) -> list[Intent]:
         return [
@@ -141,6 +141,7 @@ class WordPressSecurityAgent(ServerSideCapabilities, BaseAgent):
         "(read-only GET requests).",
         params=ScanParams,
         examples=("Run a security scan on site 3",),
+        timeout_seconds=REPAIR_TIMEOUT,
     )
     async def security_scan(self, ctx: AgentContext, params: ScanParams) -> AgentResult:
         site = await ctx.session.get(Site, params.site_id)
@@ -152,12 +153,15 @@ class WordPressSecurityAgent(ServerSideCapabilities, BaseAgent):
         if site.server_id and site.server_site_key and ctx.ssh is not None:
             from .wp_server import SiteParams
 
+            await ctx.session.commit()  # keep the HTTP scan (and release the site row) whatever the server part does
+            left = ctx.time_left()
             try:
-                diag = await self.wp_diagnose(ctx, SiteParams(site_id=site.id))
+                async with asyncio.timeout(None if left is None else max(left - 30, 1)):
+                    diag = await self.wp_diagnose(ctx, SiteParams(site_id=site.id))
                 findings.extend(diag.findings)
                 events.extend(diag.events)
                 server_note = " Server-side check done."
-            except Exception as exc:  # noqa: BLE001 - the HTTP scan stands on its own
+            except Exception as exc:  # noqa: BLE001 - the HTTP scan stands on its own (TimeoutError included)
                 findings.append(Finding(code="server_check_failed", severity="warning", title=f"Server-side check failed: {exc}"[:300]))
         serious = [f for f in findings if f.severity != "info"]
         summary = f"{site.name}: {rating([f.model_dump() for f in findings])}, {len(serious)} issue(s). " + report.summary() + server_note

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Server
 from .base import AgentContext, AgentResult, BaseAgent, Finding, Params, Risk, capability
+from .wp_server import server_binding
 
 
 class ServerParams(Params):
@@ -36,12 +37,15 @@ async def load_server(ctx: AgentContext, server_id: int) -> Server:
     return server
 
 
-async def server_approval_context(session: AsyncSession, server_id: int | None) -> dict[str, Any]:
-    server = await session.get(Server, server_id) if server_id else None
-    if server is None:
+async def server_approval_context(session: AsyncSession, server_id: int | None, *, lock: bool = False) -> dict[str, Any]:
+    if server_id is None:
         return {}
+    server = await session.get(Server, server_id, with_for_update=lock)
+    if server is None:
+        raise ValueError(f"no server with id {server_id}")
     return {"target": f"server {server.name}", "environment": server.environment,
-            "production": server.environment == "production", "confirm": server.name}
+            "production": server.environment == "production", "confirm": server.name,
+            "binding": {"server": server_binding(server)}}
 
 
 class ServerManagementAgent(BaseAgent):
@@ -54,8 +58,9 @@ class ServerManagementAgent(BaseAgent):
     )
     integrations = ("ssh",)
 
-    async def approval_context(self, session: AsyncSession, capability: str, params: dict[str, Any]) -> dict[str, Any]:
-        return await server_approval_context(session, params.get("server_id"))
+    async def approval_context(self, session: AsyncSession, capability: str, params: dict[str, Any], *,
+                               lock: bool = False) -> dict[str, Any]:
+        return await server_approval_context(session, params.get("server_id"), lock=lock)
 
     @capability(risk=Risk.READ, description="Connect through cc-gate and report the gate version, account, configured sites and services.",
                 params=ServerParams, examples=("Test the connection to server 1",))

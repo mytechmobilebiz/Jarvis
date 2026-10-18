@@ -20,7 +20,7 @@ import httpx
 
 from ...config import Settings
 from ..base import Finding
-from ..http import BlockedTarget, FetchResult, ReadOnlyHttpClient
+from ..http import BlockedTarget, FetchResult, ReadOnlyHttpClient, open_public_connection
 from . import integrity
 from .integrity import Hop, Trace
 
@@ -146,14 +146,17 @@ def parse_version(v: str) -> tuple[int, ...]:
     return tuple(int(p) for p in re.findall(r"\d+", v)[:3])
 
 
-async def probe_tls(host: str, port: int, timeout: float, context: ssl.SSLContext | None = None) -> TLSInfo:
+async def probe_tls(host: str, port: int, timeout: float, context: ssl.SSLContext | None = None,
+                    allowed_private: set[str] | frozenset[str] = frozenset()) -> TLSInfo:
     ctx = context or ssl.create_default_context()
     try:
         _, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port, ssl=ctx, server_hostname=host), timeout=timeout
+            open_public_connection(host, port, set(allowed_private), ssl=ctx, server_hostname=host), timeout=timeout
         )
     except ssl.SSLCertVerificationError as exc:
         return TLSInfo(error=exc.verify_message or str(exc))
+    except BlockedTarget as exc:
+        return TLSInfo(error=f"probe failed: {exc}")
     except (OSError, TimeoutError, ssl.SSLError) as exc:
         return TLSInfo(error=f"probe failed: {exc.__class__.__name__}: {exc}")
     try:
@@ -399,7 +402,8 @@ class SiteChecker:
             await self.http.check_target(host)
         except BlockedTarget:
             return
-        info = await probe_tls(host, parts.port or 443, self.settings.monitor_timeout_seconds, self.tls_context)
+        info = await probe_tls(host, parts.port or 443, self.settings.monitor_timeout_seconds, self.tls_context,
+                               self.http.allowed_private)
         if info.error:
             if info.error.startswith("probe failed"):
                 report.add("tls_probe_failed", "info", "Could not inspect the TLS certificate directly", info.error)

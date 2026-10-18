@@ -92,6 +92,9 @@ services:
     pull_policy: never
     restart: unless-stopped
     command: ["python", "-m", "app.worker"]
+    # Time for running tasks (e.g. a server operation) to finish on stop; longer
+    # repairs are reported as interrupted when the worker is back.
+    stop_grace_period: 2m
     environment: *api-env
     volumes:
       # Optional owner content, e.g. templates/proposal-template.html

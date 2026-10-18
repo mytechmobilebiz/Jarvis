@@ -8,6 +8,7 @@ task before it runs. Agents therefore cannot talk their way past an approval.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -100,6 +101,12 @@ class AgentContext:
     ssh: Any = None  # app.ssh.gateway.SSHGateway: servers, only through cc-gate
     requested_by: str = ""
     agent_name: str = ""
+    deadline: float | None = None  # loop.time() when the task's time runs out
+
+    def time_left(self) -> float | None:
+        if self.deadline is None:
+            return None
+        return self.deadline - asyncio.get_running_loop().time()
 
     def log(self, message: str, level: str = "info") -> None:
         self.logs.append((level, message))
@@ -192,11 +199,15 @@ class BaseAgent:
     def intents(self) -> list[Intent]:
         return []
 
-    async def approval_context(self, session: AsyncSession, capability: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def approval_context(self, session: AsyncSession, capability: str, params: dict[str, Any], *,
+                               lock: bool = False) -> dict[str, Any]:
         """Facts shown with an approval request: {"target": ..., "environment": ...}.
 
         "production": True makes the approval need an admin who types the
-        "confirm" text (the target's name) before it is accepted.
+        "confirm" text (the target's name) before it is accepted. "binding"
+        identifies the exact target; it is computed again when the approval is
+        decided and before the task runs, and a difference refuses the change.
+        Raises ValueError when the target does not exist; lock=True locks its rows.
         """
         return {}
 

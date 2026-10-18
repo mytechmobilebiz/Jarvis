@@ -102,7 +102,10 @@ async def create_task(
     session.add(task)
     await session.flush()
     if needs_approval:
-        extra = await get_agent(agent).approval_context(session, capability, clean)  # type: ignore[union-attr]
+        try:
+            extra = await get_agent(agent).approval_context(session, capability, clean)  # type: ignore[union-attr]
+        except ValueError as exc:
+            raise TaskError(str(exc)) from exc
         action = summary or describe_action(agent, capability, clean)
         if extra.get("target"):
             action += f" on {extra['target']}" + (" (PRODUCTION)" if extra.get("production") else "")
@@ -133,6 +136,24 @@ class ConfirmationRequired(TaskError):
     pass
 
 
+class TargetChanged(TaskError):
+    pass
+
+
+async def current_target(session: AsyncSession, approval: Approval, params: dict[str, Any], *, lock: bool = False) -> dict[str, Any]:
+    """The approval context as it is now; raises TargetChanged if it no longer matches the approved one."""
+    agent = get_agent(approval.agent)
+    try:
+        fresh = await agent.approval_context(session, approval.capability, params, lock=lock) if agent else {}
+    except ValueError as exc:
+        raise TargetChanged(f"{exc}; the approval no longer applies") from exc
+    stored = approval.details or {}
+    if fresh.get("binding") != stored.get("binding"):
+        raise TargetChanged(f"the target changed since this was requested (now: {fresh.get('target') or 'none'}); "
+                            "reject it and request the change again")
+    return fresh
+
+
 async def decide_approval(
     session: AsyncSession, settings: Settings, approval: Approval, *, approve: bool, actor: str, note: str = "",
     actor_role: str = "", confirm: str = "",
@@ -140,11 +161,21 @@ async def decide_approval(
     if approval.status != "pending":
         raise TaskError(f"approval {approval.id} was already {approval.status}")
     details = approval.details or {}
-    if approve and details.get("production"):
-        if actor_role != "admin":
-            raise ConfirmationRequired("changes to production need an admin's approval")
-        if confirm.strip() != str(details.get("confirm", "")):
-            raise ConfirmationRequired(f"type '{details.get('confirm', '')}' to confirm this production change")
+    if approve:
+        task = await session.get(Task, approval.task_id)
+        assert task is not None
+        # Computed again now: the site or server may have moved to production, been
+        # re-linked or renamed since the request was made.
+        fresh = await current_target(session, approval, task.params, lock=True)
+        if details.get("production") or fresh.get("production"):
+            if not details.get("production"):
+                raise TargetChanged(f"{fresh.get('target')} became a production target after this was requested; "
+                                    "reject it and request the change again")
+            if actor_role != "admin":
+                raise ConfirmationRequired("changes to production need an admin's approval")
+            expected = str(details.get("confirm", "")).strip()
+            if not expected or confirm.strip() != expected:
+                raise ConfirmationRequired(f"type '{expected}' to confirm this production change")
     task = await session.get(Task, approval.task_id, with_for_update=True)
     assert task is not None
     if task.status != "awaiting_approval":

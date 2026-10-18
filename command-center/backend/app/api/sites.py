@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,10 +23,12 @@ router = APIRouter(prefix="/api/sites", tags=["sites"])
 
 ENVIRONMENTS = ("production", "staging", "test")
 SITE_KEY_PATTERN = r"^([a-z0-9][a-z0-9_-]{0,63})?$"
+# Stripped, and never empty: a production approval is confirmed by typing this name.
+SiteName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 
 
 class SiteBody(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
+    name: SiteName
     url: str = Field(min_length=3, max_length=2000)
     client: str = Field("", max_length=200)
     notes: str = Field("", max_length=4000)
@@ -39,7 +42,7 @@ class SiteBody(BaseModel):
 
 
 class SitePatch(BaseModel):
-    name: str | None = Field(None, min_length=1, max_length=200)
+    name: SiteName | None = None
     client: str | None = Field(None, max_length=200)
     notes: str | None = Field(None, max_length=4000)
     enabled: bool | None = None

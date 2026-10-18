@@ -3,8 +3,9 @@
 It accepts one public key for one user, ignores whatever command the client
 asks for, and runs the real server/cc-gate instead, as the unprivileged user
 "nobody", with SSH_ORIGINAL_COMMAND set - exactly what sshd does for an
-authorized_keys line with command="cc-gate". WP-CLI and systemctl are small
-fakes that record their arguments.
+authorized_keys line with command="cc-gate". WP-CLI, cc-wp, sudo and
+systemctl are small fakes that record their arguments (the real cc-wp and
+cc-site-helper are tested in tests/unit/test_gate.py).
 """
 
 from __future__ import annotations
@@ -45,11 +46,19 @@ case "$1 $2" in
   "core verify-checksums") echo "Success: WordPress installation verifies against checksums." ;;
   "plugin list")
     D="$(dirname "$0")"; a=$(cat "$D/plugin-akismet" 2>/dev/null || echo active); e=$(cat "$D/plugin-evil-cloak" 2>/dev/null || echo active)
-    echo "[{\"name\":\"akismet\",\"status\":\"$a\",\"version\":\"5.3\",\"update\":\"available\",\"update_version\":\"5.4\"},{\"name\":\"evil-cloak\",\"status\":\"$e\",\"version\":\"1.0\",\"update\":\"none\",\"update_version\":\"\"}]" ;;
+    v=$(cat "$D/version-akismet" 2>/dev/null || echo 5.3); [ "$v" = 5.3 ] && u=available || u=none
+    m=""; [ -f "$D/mu-plugin" ] && m=",{\"name\":\"$(cat "$D/mu-plugin")\",\"status\":\"must-use\",\"version\":\"\",\"update\":\"none\",\"update_version\":\"\"}"
+    echo "[{\"name\":\"akismet\",\"status\":\"$a\",\"version\":\"$v\",\"update\":\"$u\",\"update_version\":\"5.4\"},{\"name\":\"evil-cloak\",\"status\":\"$e\",\"version\":\"1.0\",\"update\":\"none\",\"update_version\":\"\"}$m]" ;;
+  "plugin update")
+    [ -f "$(dirname "$0")/update-fails" ] && { echo "Error: Download failed." >&2; exit 1; }
+    echo 5.4 > "$(dirname "$0")/version-$3"; echo "Success: Updated 1 of 1 plugins." ;;
+  "super-admin list") echo "Error: This is not a multisite installation." >&2; exit 1 ;;
   "plugin deactivate") echo inactive > "$(dirname "$0")/plugin-$3"; echo "Success: Deactivated 1 of 1 plugins." ;;
   "plugin activate") echo active > "$(dirname "$0")/plugin-$3"; echo "Success: Activated 1 of 1 plugins." ;;
   "theme list") echo '[{"name":"astra","status":"active","version":"4.0","update":"none","update_version":""}]' ;;
-  "user list") echo '[{"ID":1,"user_login":"owner","user_registered":"2024-01-01 00:00:00"}]' ;;
+  "user list")
+    [ -f "$(dirname "$0")/users-broken" ] && { echo "Error: Error establishing a database connection." >&2; exit 1; }
+    echo '[{"ID":1,"user_login":"owner","user_registered":"2024-01-01 00:00:00"}]' ;;
   "option get") cat "$(dirname "$0")/option-$3" 2>/dev/null || echo "http://site.test" ;;
   "option update") printf '%s' "$4" > "$(dirname "$0")/option-$3"; echo "Success: Updated '$3' option." ;;
   "maintenance-mode is-active") exit 1 ;;
@@ -58,10 +67,17 @@ case "$1 $2" in
 esac
 """
 
+FAKE_RUNNER = r"""#!/bin/sh
+# Fake cc-wp: like the real one, WP-CLI with an empty environment and no packages.
+echo "$*" >> "$(dirname "$0")/runner-calls.log"
+exec env -i PATH=/usr/bin:/bin "$(dirname "$0")/wp-cli" --skip-packages "$@"
+"""
+
 FAKE_HELPER = r"""#!/bin/sh
-# Fake cc-site-helper: a debug.log in the fake site folder.
+# Fake cc-site-helper: a debug.log in the fake site folder; plugin headers from update-uri-<plugin> files.
 D="$(dirname "$0")"; LOG="$D/wp/wp-content/debug.log"
 case "$1" in
+  plugin_update_uri) echo "{\"ok\": true, \"result\": {\"found\": true, \"update_uri\": \"$(cat "$D/update-uri-$3" 2>/dev/null)\"}}" ;;
   debug_log_status) if [ -f "$LOG" ]; then echo "{\"ok\": true, \"result\": {\"exists\": true, \"bytes\": $(wc -c < "$LOG")}}"; else echo '{"ok": true, "result": {"exists": false}}'; fi ;;
   debug_log_quarantine) mv "$LOG" "$D/backups/debug-moved.log" && echo "{\"ok\": true, \"result\": {\"exists\": true, \"moved_to\": \"$D/backups/debug-moved.log\"}}" ;;
 esac
@@ -95,10 +111,12 @@ class FakeGateServer:
         self.requests: list[str | None] = []
         self.config = {
             "allow_changes": allow_changes,
-            "sites": {"site-one": {"path": str(self.dir / "wp"), "user": "nobody", "url": "http://site.test"}},
+            # The gate runs as "nobody"; a site must have its own user (the fake sudo does not switch users).
+            "sites": {"site-one": {"path": str(self.dir / "wp"), "user": "daemon", "url": "http://site.test"}},
             "services": ["httpd", "php-fpm"],
             "restartable_services": ["httpd"],
             "wp_cli": str(self.dir / "wp-cli"),
+            "wp_runner": str(self.dir / "cc-wp"),
             "systemctl": str(self.dir / "systemctl"),
             "sudo": str(self.dir / "sudo"),
             "site_helper": str(self.dir / "cc-site-helper"),
@@ -112,8 +130,8 @@ class FakeGateServer:
         (self.dir / "config.json").write_text(json.dumps(self.config))
 
     async def __aenter__(self) -> FakeGateServer:
-        for name, body in (("wp-cli", FAKE_WP), ("systemctl", FAKE_SYSTEMCTL), ("sudo", FAKE_SUDO), ("cc-site-helper", FAKE_HELPER),
-                           ("harness.py", HARNESS)):
+        for name, body in (("wp-cli", FAKE_WP), ("cc-wp", FAKE_RUNNER), ("systemctl", FAKE_SYSTEMCTL), ("sudo", FAKE_SUDO),
+                           ("cc-site-helper", FAKE_HELPER), ("harness.py", HARNESS)):
             path = self.dir / name
             path.write_text(body)
             path.chmod(0o755)

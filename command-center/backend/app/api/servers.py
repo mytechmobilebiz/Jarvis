@@ -6,9 +6,10 @@ import base64
 import hashlib
 import re
 from datetime import UTC, datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +25,8 @@ router = APIRouter(tags=["servers"])
 
 HOST_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$|^[0-9a-f:.]{2,45}$")
 USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+# Stripped, and never empty: a production approval is confirmed by typing this name.
+ServerName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 HOST_KEY_RE = re.compile(r"^(ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-rsa) [A-Za-z0-9+/]+={0,3}$")
 
 
@@ -34,7 +37,7 @@ def _env(v: str) -> str:
 
 
 class ServerBody(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
+    name: ServerName
     host: str = Field(min_length=1, max_length=253)
     port: int = Field(22, ge=1, le=65535)
     username: str = Field("ccagent", max_length=32)
@@ -63,7 +66,7 @@ class ServerBody(BaseModel):
 
 
 class ServerPatch(BaseModel):
-    name: str | None = Field(None, min_length=1, max_length=100)
+    name: ServerName | None = None
     environment: str | None = None
     enabled: bool | None = None
     notes: str | None = Field(None, max_length=4000)

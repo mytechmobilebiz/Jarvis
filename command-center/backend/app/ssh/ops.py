@@ -36,7 +36,7 @@ OPS: dict[str, Op] = {
     "wp_core_verify": Op("read", ("site",), "Verify core files against WordPress.org checksums", slow=True),
     "wp_plugin_list": Op("read", ("site",), "Plugins with versions and available updates"),
     "wp_theme_list": Op("read", ("site",), "Themes with versions and available updates"),
-    "wp_admins": Op("read", ("site",), "Administrator accounts"),
+    "wp_admins": Op("read", ("site",), "Administrator accounts (and super admins on multisite)"),
     "wp_site_urls": Op("read", ("site",), "home and siteurl options compared with the registered URL"),
     "wp_maintenance_status": Op("read", ("site",), "Whether maintenance mode is on"),
     "wp_debug_log_status": Op("read", ("site",), "Whether wp-content/debug.log exists"),
@@ -49,8 +49,8 @@ OPS: dict[str, Op] = {
     "wp_core_reinstall": Op("change", ("site",), "Reinstall the current WordPress version's core files", slow=True),
     "wp_maintenance": Op("change", ("site", "onoff"), "Switch maintenance mode on or off"),
     "wp_cache_flush": Op("change", ("site",), "Flush the object cache"),
-    "wp_rewrite_flush": Op("change", ("site",), "Flush rewrite rules"),
-    "debug_log_quarantine": Op("change", ("site",), "Move wp-content/debug.log into the backup folder"),
+    "wp_rewrite_flush": Op("change", ("site",), "Flush rewrite rules (with plugins and themes loaded)"),
+    "debug_log_quarantine": Op("change", ("site",), "Move wp-content/debug.log into the backup folder", slow=True),
     "service_restart": Op("change", ("service",), "Restart an allowlisted service"),
 }
 

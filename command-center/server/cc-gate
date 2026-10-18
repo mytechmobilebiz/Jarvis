@@ -13,7 +13,14 @@ asked for, and passes that request in SSH_ORIGINAL_COMMAND. The request must be
 Only the operations in OPS exist; their arguments are checked against strict
 patterns and the root-owned configuration (/etc/cc-gate/config.json); programs
 are started without a shell. Operations that change anything are refused unless
-the configuration sets "allow_changes": true. The gate never runs as root.
+the configuration sets "allow_changes": true. The gate never runs as root, and
+never runs a site's commands as root or as its own account: WP-CLI runs as the
+site's user through cc-wp, which gives it an environment the site cannot change.
+
+Each operation has a time budget (timeout_seconds, or slow_timeout_seconds for
+the slow ones). When it runs out, the program is asked to stop (SIGTERM, which
+sudo passes on), then killed, and the answer says the operation may not have
+finished.
 
 Answers are one JSON object on stdout. Exit status: 0 done, 1 the operation
 failed, 2 the request was refused.
@@ -26,6 +33,7 @@ import json
 import os
 import pwd
 import re
+import selectors
 import shlex
 import socket
 import stat
@@ -72,7 +80,10 @@ OPS = {
     "debug_log_quarantine": ("change", ["site"]),
     "service_restart": ("change", ["service"]),
 }
-SLOW_OPS = {"wp_core_verify", "wp_plugin_update", "wp_plugin_reinstall", "wp_core_reinstall", "wp_db_export"}
+SLOW_OPS = {"wp_core_verify", "wp_plugin_update", "wp_plugin_reinstall", "wp_core_reinstall", "wp_db_export", "debug_log_quarantine"}
+STOP_GRACE_SECONDS = 10
+# Update URI values WordPress itself treats as WordPress.org.
+WPORG_UPDATE_URI = re.compile(r"^(https?://)?(www\.)?(w\.org|wordpress\.org)(/|$)", re.I)
 
 
 class Refused(Exception):
@@ -81,6 +92,10 @@ class Refused(Exception):
 
 class Failed(Exception):
     """The operation ran and failed (exit status 1)."""
+
+
+class TimedOut(Failed):
+    """The operation ran out of time and was stopped; it may have been partly done."""
 
 
 def emit(payload, code):
@@ -103,6 +118,7 @@ def load_config():
     config.setdefault("services", [])
     config.setdefault("restartable_services", [])
     config.setdefault("wp_cli", "/usr/local/bin/wp")
+    config.setdefault("wp_runner", "/usr/local/lib/cc-gate/cc-wp")
     config.setdefault("sudo", "/usr/bin/sudo")
     config.setdefault("systemctl", "/usr/bin/systemctl")
     config.setdefault("site_helper", "/usr/local/lib/cc-gate/cc-site-helper")
@@ -143,6 +159,13 @@ def validate(op, args, config):
         for key in ("path", "user", "url"):
             if not site.get(key):
                 raise Refused("site %r is missing %r in the configuration" % (args["site"], key))
+        try:
+            uid = pwd.getpwnam(site["user"]).pw_uid
+        except KeyError:
+            raise Refused("site %r: user %r does not exist" % (args["site"], site["user"]))
+        if uid == 0 or uid == os.getuid():
+            # The gate's own account holds the sudo rules for every site; a site must never run as it (or as root).
+            raise Refused("site %r must run as its own unprivileged user, not as root or the gate account" % args["site"])
     if "slug" in args and not SLUG_RE.match(args["slug"]):
         raise Refused("invalid plugin name")
     if "service" in args:
@@ -158,41 +181,86 @@ def current_user():
     return pwd.getpwuid(os.getuid()).pw_name
 
 
-def run(argv, config, slow=False):
-    timeout = config["slow_timeout_seconds"] if slow else config["timeout_seconds"]
+DEADLINE = [0.0]  # monotonic time when the current operation's budget runs out
+
+
+def child_env():
+    return {"PATH": SAFE_PATH, "LANG": "C.UTF-8", "HOME": pwd.getpwuid(os.getuid()).pw_dir or "/"}
+
+
+def stop(proc):
+    """Ask the program to stop (sudo passes SIGTERM on to the command), then kill it."""
     try:
-        proc = subprocess.run(
-            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd="/",
-            env={"PATH": SAFE_PATH, "LANG": "C.UTF-8", "HOME": "/tmp"}, timeout=timeout,
-        )
+        proc.terminate()
+        proc.wait(timeout=STOP_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
-        raise Failed("timed out after %d seconds" % timeout)
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+    except OSError:
+        pass
+
+
+def run(argv, config):
+    """Run argv without a shell within the operation's time budget; (exit status, stdout, stderr), output capped."""
+    left = DEADLINE[0] - time.monotonic()
+    if left <= 0:
+        raise TimedOut("ran out of time before %s could start" % os.path.basename(argv[0]))
+    try:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd="/",
+                                env=child_env())
     except OSError as exc:
         raise Failed("could not start %s: %s" % (argv[0], exc))
     limit = config["max_output_bytes"]
-    out = proc.stdout[:limit].decode("utf-8", "replace")
-    err = proc.stderr[: limit // 4].decode("utf-8", "replace")
-    return proc.returncode, out, err
+    kept = {proc.stdout.fileno(): (bytearray(), limit), proc.stderr.fileno(): (bytearray(), limit // 4)}
+    out_fd, err_fd = proc.stdout.fileno(), proc.stderr.fileno()
+    sel = selectors.DefaultSelector()
+    try:
+        for fd in kept:
+            sel.register(fd, selectors.EVENT_READ)
+        while sel.get_map():
+            left = DEADLINE[0] - time.monotonic()
+            if left <= 0:
+                stop(proc)
+                raise TimedOut("did not finish within the time limit and was stopped; the operation may be incomplete")
+            for key, _ in sel.select(left):
+                chunk = os.read(key.fd, 65536)
+                if not chunk:
+                    sel.unregister(key.fd)
+                    continue
+                buf, cap = kept[key.fd]
+                if len(buf) < cap:  # keep the start; drain the rest so the program never blocks on a full pipe
+                    buf.extend(chunk[:cap - len(buf)])
+        try:
+            code = proc.wait(timeout=max(DEADLINE[0] - time.monotonic(), 1))
+        except subprocess.TimeoutExpired:
+            stop(proc)
+            raise TimedOut("did not finish within the time limit and was stopped; the operation may be incomplete")
+    finally:
+        sel.close()
+        proc.stdout.close()
+        proc.stderr.close()
+    return code, bytes(kept[out_fd][0]).decode("utf-8", "replace"), bytes(kept[err_fd][0]).decode("utf-8", "replace")
 
 
 def as_site_user(site, argv):
-    """Run argv as the site's own system user (through sudo unless the gate already is that user)."""
-    if site["user"] == current_user():
-        return argv
-    return [CONFIG["sudo"], "-n", "-H", "-u", site["user"], "--"] + argv
+    """Run argv as the site's own system user (validate() made sure that is neither root nor the gate account)."""
+    return [CONFIG["sudo"], "-n", "-u", site["user"], "--"] + argv
 
 
 def wp(site, *wp_args, skip_code=True):
-    argv = [CONFIG["wp_cli"], "--path=" + site["path"], "--no-color"]
+    argv = [CONFIG["wp_runner"], "--path=" + site["path"], "--no-color"]
     if skip_code:
-        # Do not run plugin or theme code for maintenance commands; a broken
-        # or infected plugin then cannot interfere.
+        # Plugin and theme code is not loaded for these commands (must-use
+        # plugins, drop-ins and wp-config.php still are, whenever WordPress loads).
         argv += ["--skip-plugins", "--skip-themes"]
     return as_site_user(site, argv + list(wp_args))
 
 
-def wp_ok(site, *wp_args, slow=False, skip_code=True):
-    code, out, err = run(wp(site, *wp_args, skip_code=skip_code), CONFIG, slow=slow)
+def wp_ok(site, *wp_args, skip_code=True):
+    code, out, err = run(wp(site, *wp_args, skip_code=skip_code), CONFIG)
     if code != 0:
         raise Failed((err or out).strip()[-2000:] or "wp-cli exited with status %d" % code)
     return out.strip()
@@ -206,8 +274,8 @@ def wp_json(site, *wp_args):
         raise Failed("wp-cli did not return JSON")
 
 
-def helper(site, op, site_key):
-    code, out, err = run(as_site_user(site, [CONFIG["site_helper"], op, site_key]), CONFIG)
+def helper(site, op, site_key, *extra):
+    code, out, err = run(as_site_user(site, [CONFIG["site_helper"], op, site_key] + list(extra)), CONFIG)
     try:
         data = json.loads(out)
     except ValueError:
@@ -281,14 +349,19 @@ def op_wp_core_version(args):
 
 
 def op_wp_core_verify(args):
-    code, out, err = run(wp(SITE, "core", "verify-checksums"), CONFIG, slow=True)
+    # verify-checksums runs before WordPress loads, so the site's own code cannot answer for it.
+    code, out, err = run(wp(SITE, "core", "verify-checksums"), CONFIG)
     text = (out + "\n" + err).strip()
-    if code == 0:
-        return {"verified": True, "detail": text[-4000:]}
-    if "checksums" in text.lower() and ("couldn't get" in text.lower() or "could not get" in text.lower()):
+    warnings = [line for line in text.splitlines() if line.startswith("Warning:")]
+    # Extra files in wp-admin, wp-includes or the root are only warnings (exit 0) to WP-CLI,
+    # but an unknown PHP file there is the usual place for a backdoor.
+    extra = [line for line in warnings if "should not exist" in line][:200]
+    if code == 0 and not extra:
+        return {"verified": True, "extra_files": [], "detail": text[-4000:]}
+    if code != 0 and "checksums" in text.lower() and ("couldn't get" in text.lower() or "could not get" in text.lower()):
         return {"verified": None, "detail": "checksums could not be downloaded from WordPress.org: " + text[-1000:]}
-    problems = [line for line in text.splitlines() if line.startswith("Warning:")][:200]
-    return {"verified": False, "files": problems, "detail": text[-4000:]}
+    problems = [line for line in warnings if "should not exist" not in line][:200]
+    return {"verified": False, "files": problems, "extra_files": extra, "detail": text[-4000:]}
 
 
 def op_wp_plugin_list(args):
@@ -300,20 +373,41 @@ def op_wp_theme_list(args):
 
 
 def op_wp_admins(args):
-    return {"admins": wp_json(SITE, "user", "list", "--role=administrator", "--format=json", "--fields=ID,user_login,user_registered")}
+    admins = wp_json(SITE, "user", "list", "--role=administrator", "--format=json", "--fields=ID,user_login,user_registered")
+    code, out, err = run(wp(SITE, "super-admin", "list", "--format=json"), CONFIG)
+    supers = []
+    if code == 0:
+        try:
+            supers = [u for u in json.loads(out or "[]") if isinstance(u, str)][:500]
+        except ValueError:
+            pass
+    elif "multisite" not in (out + err).lower():  # a single site has no super admins
+        raise Failed((err or out).strip()[-2000:] or "wp-cli exited with status %d" % code)
+    return {"admins": admins, "super_admins": supers}
+
+
+def expected_urls():
+    """(home, siteurl) as configured; "siteurl" is only needed when WordPress lives in its own folder."""
+    home = SITE["url"].rstrip("/")
+    return home, (SITE.get("siteurl") or home).rstrip("/")
 
 
 def op_wp_site_urls(args):
     home = wp_ok(SITE, "option", "get", "home")
     siteurl = wp_ok(SITE, "option", "get", "siteurl")
-    expected = SITE["url"].rstrip("/")
-    return {"home": home, "siteurl": siteurl, "expected": expected,
-            "matches": home.rstrip("/") == expected and siteurl.rstrip("/") == expected}
+    want_home, want_siteurl = expected_urls()
+    return {"home": home, "siteurl": siteurl, "expected": want_home, "expected_siteurl": want_siteurl,
+            "matches": home.rstrip("/") == want_home and siteurl.rstrip("/") == want_siteurl}
 
 
 def op_wp_maintenance_status(args):
     code, out, err = run(wp(SITE, "maintenance-mode", "is-active"), CONFIG)
-    return {"active": code == 0}
+    if code == 0:
+        return {"active": True}
+    if code == 1 and "Error:" not in out + err:
+        return {"active": False}
+    # Anything else (database down, PHP fatal error) is not an answer.
+    raise Failed((err or out).strip()[-2000:] or "wp-cli exited with status %d" % code)
 
 
 def op_wp_debug_log_status(args):
@@ -322,17 +416,21 @@ def op_wp_debug_log_status(args):
 
 def op_wp_db_export(args):
     target_dir = os.path.join(CONFIG.get("backup_dir", "/var/lib/cc-gate/backups"), args["site"])
-    target = os.path.join(target_dir, "%s-%s.sql" % (args["site"], utc_stamp()))
-    wp_ok(SITE, "db", "export", target, "--add-drop-table", slow=True)
+    # Unique even when two exports start in the same second (WP-CLI overwrites an existing file).
+    target = os.path.join(target_dir, "%s-%s-%s.sql" % (args["site"], utc_stamp(), os.urandom(4).hex()))
+    wp_ok(SITE, "db", "export", target, "--add-drop-table")
     return {"file": target}
 
 
 def op_wp_set_site_urls(args):
-    url = SITE["url"].rstrip("/")
+    home, siteurl = expected_urls()
     before = op_wp_site_urls(args)
-    wp_ok(SITE, "option", "update", "home", url)
-    wp_ok(SITE, "option", "update", "siteurl", url)
-    return {"before": {"home": before["home"], "siteurl": before["siteurl"]}, "after": url}
+    wp_ok(SITE, "option", "update", "home", home)
+    try:
+        wp_ok(SITE, "option", "update", "siteurl", siteurl)
+    except Failed as exc:
+        raise Failed("home was set to %s, but setting siteurl failed (it is still %s): %s" % (home, before["siteurl"], exc))
+    return {"before": {"home": before["home"], "siteurl": before["siteurl"]}, "after": home, "after_siteurl": siteurl}
 
 
 def op_wp_plugin_deactivate(args):
@@ -345,14 +443,27 @@ def op_wp_plugin_activate(args):
 
 
 def op_wp_plugin_update(args):
-    return {"output": wp_ok(SITE, "plugin", "update", args["slug"], slow=True)}
+    return {"output": wp_ok(SITE, "plugin", "update", args["slug"])}
 
 
 def op_wp_plugin_reinstall(args):
-    version = wp_ok(SITE, "plugin", "get", args["slug"], "--field=version")
+    slug = args["slug"]
+    # Only plugins that really come from WordPress.org: a custom or premium plugin
+    # with the same folder name must never be replaced by WordPress.org's code.
+    header = helper(SITE, "plugin_update_uri", ARGS["site"], slug)
+    if not header.get("found"):
+        raise Failed("plugin %s was not found in wp-content/plugins" % slug)
+    uri = (header.get("update_uri") or "").strip()
+    if uri and not WPORG_UPDATE_URI.match(uri):
+        raise Refused("plugin %s declares Update URI %r, so it is not a WordPress.org plugin; it is not reinstalled from there" % (slug, uri))
+    version = wp_ok(SITE, "plugin", "get", slug, "--field=version")
     if not re.match(r"^[0-9][0-9A-Za-z.\-]{0,40}$", version):
         raise Failed("unexpected plugin version %r" % version)
-    out = wp_ok(SITE, "plugin", "install", args["slug"], "--force", "--version=" + version, slow=True)
+    code, out, err = run(wp(SITE, "plugin", "verify-checksums", slug, "--version=" + version), CONFIG)
+    if code != 0 and "could not retrieve the checksums" in (out + err).lower():
+        raise Failed("WordPress.org has no checksums for %s %s (not a WordPress.org plugin, or WordPress.org could not be "
+                     "reached); not reinstalling" % (slug, version))
+    out = wp_ok(SITE, "plugin", "install", slug, "--force", "--version=" + version)
     return {"version": version, "output": out}
 
 
@@ -360,7 +471,7 @@ def op_wp_core_reinstall(args):
     version = wp_ok(SITE, "core", "version")
     if not re.match(r"^[0-9]+\.[0-9]+(\.[0-9]+)?$", version):
         raise Failed("unexpected WordPress version %r" % version)
-    out = wp_ok(SITE, "core", "download", "--skip-content", "--force", "--version=" + version, slow=True)
+    out = wp_ok(SITE, "core", "download", "--skip-content", "--force", "--version=" + version)
     return {"version": version, "output": out}
 
 
@@ -374,7 +485,9 @@ def op_wp_cache_flush(args):
 
 
 def op_wp_rewrite_flush(args):
-    return {"output": wp_ok(SITE, "rewrite", "flush")}
+    # Rewrite rules come from plugins and themes too (shop, custom post types):
+    # flushing without them would save rules that break those URLs.
+    return {"output": wp_ok(SITE, "rewrite", "flush", skip_code=False)}
 
 
 def op_debug_log_quarantine(args):
@@ -421,6 +534,8 @@ def main():
             raise Refused("cc-gate must not run as root; use a dedicated unprivileged account")
         CONFIG = load_config()
         op, args = parse_request(raw)
+        budget = CONFIG["slow_timeout_seconds"] if op in SLOW_OPS else CONFIG["timeout_seconds"]
+        DEADLINE[0] = time.monotonic() + budget
         validate(op, args, CONFIG)
         ARGS = args
         SITE = CONFIG["sites"].get(args.get("site", ""), {})
@@ -428,6 +543,8 @@ def main():
         payload, code = {"ok": True, "op": op, "gate_version": GATE_VERSION, "result": result}, 0
     except Refused as exc:
         payload, code = {"ok": False, "op": op, "gate_version": GATE_VERSION, "refused": True, "error": str(exc)}, 2
+    except TimedOut as exc:
+        payload, code = {"ok": False, "op": op, "gate_version": GATE_VERSION, "refused": False, "timed_out": True, "error": str(exc)}, 1
     except Failed as exc:
         payload, code = {"ok": False, "op": op, "gate_version": GATE_VERSION, "refused": False, "error": str(exc)}, 1
     except Exception as exc:  # noqa: BLE001 - never leak a traceback to the client

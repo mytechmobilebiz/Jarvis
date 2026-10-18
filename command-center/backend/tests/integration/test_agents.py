@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import select, text
 
 from app.db import session_scope
-from app.models import Artifact, Lead, OutboxEntry, User
+from app.models import Artifact, Lead, OutboxEntry, Task, User
 from app.security import hash_password
 
 from ..fakes import FakeLLM, static_site
@@ -143,6 +143,17 @@ async def grant_sensitive(email: str) -> None:
     async with session_scope() as s:
         user = await s.scalar(select(User).where(User.email == email))
         user.can_access_sensitive = True
+
+
+async def test_retry_and_cancel_of_credit_repair_tasks_need_the_sensitive_permission(admin):
+    async with session_scope() as s:
+        failed = Task(agent="credit_repair", capability="compliance_review", params={}, risk="read", status="failed")
+        queued = Task(agent="credit_repair", capability="compliance_review", params={}, risk="read", status="queued")
+        s.add_all([failed, queued])
+    assert (await admin.post(f"/api/tasks/{failed.id}/retry")).status_code == 403
+    assert (await admin.post(f"/api/tasks/{queued.id}/cancel")).status_code == 403
+    await grant_sensitive("admin@test.local")
+    assert (await admin.post(f"/api/tasks/{queued.id}/cancel")).status_code == 200
 
 
 async def test_credit_repair_is_off_and_gated_until_enabled(admin):

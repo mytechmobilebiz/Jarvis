@@ -84,12 +84,16 @@ async def test_deactivating_a_plugin_and_noticing_the_site_went_down(admin, web,
     async with FakeGateServer(key["openssh"]) as srv:
         site, _ = await linked_site(admin, srv, web)
         await make_worker().run_until_idle()
-        web.add("site.test", lambda r: httpx.Response(500, text="<html>Fatal error</html>"))  # the site breaks after the change
+        healthy = wordpress_site("http://site.test", exposed=False)
+        # The site breaks once the plugin is deactivated.
+        web.add("site.test", lambda r: httpx.Response(500, text="<html>Fatal error</html>") if (srv.dir / "plugin-evil-cloak").exists()
+                else healthy(r))
         task = await run_task(admin, make_worker, "wordpress_security", "repair_deactivate_plugin", {"site_id": site["id"], "slug": "evil-cloak"})
         done = await approve(admin, make_worker, task)
         assert done["status"] == "succeeded"
         assert (srv.dir / "plugin-evil-cloak").read_text().strip() == "inactive"
-        assert {f["code"] for f in done["result"]["findings"]} == {"site_down_after_repair"}
+        assert {f["code"] for f in done["result"]["findings"]} == {"site_worse_after_repair"}
+        assert "(was up)" in done["result"]["findings"][0]["title"]
         events = (await admin.get("/api/events")).json()["events"]
         assert any(e["kind"] == "repair.site_down" and e["severity"] == "critical" for e in events)
 
@@ -152,3 +156,128 @@ async def test_security_report_includes_the_server_side_check(admin, web, make_w
         report = await s.scalar(select(Artifact).where(Artifact.kind == "security_report"))
     assert "### Server-side checks (WP-CLI on srv1" in report.content
     assert "repair_restore_site_url" in report.content and "**AT RISK**" in report.content
+
+
+async def test_a_repair_that_fails_part_way_is_checked_and_reported_loudly(admin, web, make_worker):
+    key = await ssh_key(admin)
+    async with FakeGateServer(key["openssh"]) as srv:
+        site, _ = await linked_site(admin, srv, web)
+        put(srv.dir / "update-fails", "1")
+        task = await run_task(admin, make_worker, "wordpress_security", "repair_update_plugin", {"site_id": site["id"], "slug": "akismet"})
+        done = await approve(admin, make_worker, task)
+        assert done["status"] == "failed" and "Download failed" in done["error"]
+        failed = next(e for e in (await admin.get("/api/events")).json()["events"] if e["kind"] == "repair.failed")
+        assert failed["severity"] == "critical" and "it responds: up" in failed["title"]
+        assert any(n.startswith("database backup:") for n in failed["detail"]["notes"])
+
+
+async def test_a_plugin_update_is_confirmed_and_a_refused_reinstall_changes_nothing(admin, web, make_worker):
+    key = await ssh_key(admin)
+    async with FakeGateServer(key["openssh"]) as srv:
+        site, _ = await linked_site(admin, srv, web)
+        done = await approve(admin, make_worker, await run_task(admin, make_worker, "wordpress_security", "repair_update_plugin",
+                                                                {"site_id": site["id"], "slug": "akismet"}))
+        assert done["status"] == "succeeded" and "now version 5.4" in done["summary"]
+        put(srv.dir / "update-uri-evil-cloak", "https://updates.example.com/evil-cloak")
+        done = await approve(admin, make_worker, await run_task(admin, make_worker, "wordpress_security", "repair_reinstall_plugin",
+                                                                {"site_id": site["id"], "slug": "evil-cloak"}))
+        assert done["status"] == "failed" and "not a WordPress.org plugin" in done["error"]
+        assert not any(e["kind"] == "repair.failed" for e in (await admin.get("/api/events")).json()["events"])
+        assert not any("plugin install" in c for c in srv.calls("wp"))
+
+
+async def test_a_diagnosis_keeps_what_it_could_read_and_notices_new_must_use_plugins(admin, web, make_worker):
+    key = await ssh_key(admin)
+    async with FakeGateServer(key["openssh"]) as srv:
+        site, _ = await linked_site(admin, srv, web)
+        await make_worker().run_until_idle()  # baseline (includes the first server-side check)
+        put(srv.dir / "users-broken", "1")
+        put(srv.dir / "mu-plugin", "wp-cache-helper")
+        diag = await run_task(admin, make_worker, "wordpress_security", "wp_diagnose", {"site_id": site["id"]})
+        assert diag["status"] == "succeeded", diag["error"]
+        codes = {f["code"]: f for f in diag["result"]["findings"]}
+        assert codes["server_check_incomplete"]["severity"] == "warning" and "admins" in codes["server_check_incomplete"]["title"]
+        assert codes["new_mu_plugin"]["severity"] == "critical" and "wp-cache-helper" in codes["new_mu_plugin"]["title"]
+        assert "plugin_update_available" in codes  # the parts that could be read still count
+        stored = (await admin.get(f"/api/sites/{site['id']}")).json()["site"]
+        assert [a["user_login"] for a in stored["last_diagnosis"]["admins"]] == ["owner"]  # kept from last time
+
+
+async def test_a_change_whose_answer_never_came_is_recorded_as_outcome_unknown(admin, web):
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.config import get_settings
+    from app.models import Server
+    from app.ssh.client import GateTimeout
+    from app.ssh.gateway import GateSession, SSHGateway
+
+    server = (await admin.post("/api/servers", json={"name": "srv9", "host": "srv9.example", "username": "ccagent"})).json()["server"]
+    async with session_scope() as s:
+        row = await s.get(Server, server["id"])
+    ctx = SimpleNamespace(approved_by="admin@test.local", requested_by="admin@test.local", task_id=None, agent_name="server_management",
+                          time_left=lambda: None, log=lambda *a, **k: None)
+    for failure, reason in ((GateTimeout("no answer within 1 seconds; the operation may still be running"), "may still be running"),
+                            (asyncio.CancelledError(), "cancelled before the server answered")):
+        session = GateSession(SSHGateway(get_settings()), ctx, row)
+
+        async def request(command, timeout, failure=failure):
+            raise failure
+
+        session._conn = SimpleNamespace(request=request)
+        try:
+            await session.run("wp_cache_flush", site="site-one")
+        except (GateTimeout, asyncio.CancelledError):
+            pass
+        async with session_scope() as s:
+            audit = (await s.scalars(select(ServerCommand).order_by(ServerCommand.id.desc()))).first()
+        assert audit.finished_at and audit.ok is False and audit.error.startswith("outcome unknown") and reason in audit.error
+    events = [e for e in (await admin.get("/api/events")).json()["events"] if e["kind"] == "server.change_outcome_unknown"]
+    assert len(events) == 2 and all(e["severity"] == "critical" for e in events)
+
+
+async def test_a_change_is_not_started_without_time_to_finish_it(admin):
+    from types import SimpleNamespace
+
+    from app.config import get_settings
+    from app.models import Server
+    from app.ssh.client import SSHError
+    from app.ssh.gateway import GateSession, SSHGateway
+
+    server = (await admin.post("/api/servers", json={"name": "srv8", "host": "srv8.example", "username": "ccagent"})).json()["server"]
+    async with session_scope() as s:
+        row = await s.get(Server, server["id"])
+    ctx = SimpleNamespace(approved_by="admin@test.local", requested_by="", task_id=None, agent_name="", time_left=lambda: 30.0,
+                          log=lambda *a, **k: None)
+    session = GateSession(SSHGateway(get_settings()), ctx, row)
+    session._conn = SimpleNamespace()
+    try:
+        await session.run("wp_db_export", site="site-one")
+        raise AssertionError("should have refused")
+    except SSHError as exc:
+        assert "not enough time left" in str(exc)
+    async with session_scope() as s:
+        assert (await s.scalars(select(ServerCommand))).all() == []
+
+
+async def test_an_interrupted_repair_is_reported_when_the_worker_comes_back(admin, make_worker):
+    from datetime import UTC, datetime, timedelta
+
+    from app.models import Server, Task
+
+    server = (await admin.post("/api/servers", json={"name": "srv7", "host": "srv7.example", "username": "ccagent"})).json()["server"]
+    async with session_scope() as s:
+        task = Task(agent="server_management", capability="restart_service", params={"server_id": server["id"], "service": "httpd"},
+                    risk="change", status="running", heartbeat_at=datetime.now(UTC) - timedelta(hours=1), locked_by="gone")
+        s.add(task)
+        await s.flush()
+        s.add(ServerCommand(server_id=server["id"], task_id=task.id, op="service_restart", args={"service": "httpd"}, kind="change"))
+        task_id = task.id
+    await make_worker().reap_stale()
+    async with session_scope() as s:
+        audit = await s.scalar(select(ServerCommand).where(ServerCommand.task_id == task_id))
+        assert (await s.get(Task, task_id)).status == "failed"
+    assert audit.finished_at and audit.error.startswith("outcome unknown")
+    event = next(e for e in (await admin.get("/api/events")).json()["events"] if e["kind"] == "task.failed")
+    assert event["severity"] == "critical" and "service_restart may not have finished" in event["title"]
+    assert Server  # imported for the model registry

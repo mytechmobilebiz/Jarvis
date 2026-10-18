@@ -93,8 +93,10 @@ class Settings(BaseSettings):
     # unless listed here (the disposable test server, for example).
     ssh_allowed_private_hosts: str = ""
     ssh_connect_timeout_seconds: float = 15.0
-    ssh_command_timeout_seconds: int = 120
-    ssh_slow_command_timeout_seconds: int = 840
+    # Longer than the gate's own budget per operation (120 s / 600 s by default, plus
+    # its stop grace period), so the gate normally answers "timed out" itself.
+    ssh_command_timeout_seconds: int = 150
+    ssh_slow_command_timeout_seconds: int = 660
     wp_core_version_check: bool = True
     wp_version_api_url: str = "https://api.wordpress.org/core/version-check/1.7/"
 

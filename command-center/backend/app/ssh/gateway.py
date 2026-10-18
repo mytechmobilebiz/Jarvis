@@ -8,6 +8,7 @@ unless the task carries a human approval, whatever the capability declared.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -17,7 +18,7 @@ from ..db import session_scope
 from ..integrations import ApprovalRequired
 from ..models import Server, ServerCommand
 from . import keys
-from .client import GateAnswer, GateConnection, HostKeyMismatch, SSHError
+from .client import GateAnswer, GateConnection, GateTimeout, HostKeyMismatch, SSHError
 from .ops import OPS, build_command
 
 if TYPE_CHECKING:
@@ -95,18 +96,32 @@ class GateSession:
             raise ApprovalRequired(f"{op} changes the server and needs a human approval first")
         command = build_command(op, args)
         assert self._conn is not None, "use 'async with gateway.open(...)'"
+        timeout = self.settings.ssh_slow_command_timeout_seconds if spec.slow else self.settings.ssh_command_timeout_seconds
+        left = self.ctx.time_left()
+        if spec.kind == "change" and left is not None and left < timeout:
+            # Better not to start a change than to lose track of it halfway.
+            raise SSHError(f"not enough time left in this task to run {op} safely ({left:.0f}s of {timeout}s); nothing was sent")
         async with session_scope() as s:
             row = ServerCommand(server_id=self.server.id, task_id=self.ctx.task_id, op=op, args=args, kind=spec.kind,
                                 requested_by=self.ctx.requested_by, approved_by=self.ctx.approved_by)
             s.add(row)
             await s.flush()
             audit_id = row.id
-        timeout = self.settings.ssh_slow_command_timeout_seconds if spec.slow else self.settings.ssh_command_timeout_seconds
         try:
             answer = await self._conn.request(command, timeout)
+        except GateTimeout as exc:
+            await self._unknown(audit_id, op, spec.kind, str(exc))
+            raise
         except SSHError as exc:
             await self._finish(audit_id, GateAnswer(ok=False, refused=False, exit_status=None, error=str(exc)))
             raise
+        except BaseException:
+            # Cancelled (the task's time ran out) while the server was working: record it anyway.
+            await asyncio.shield(self._unknown(audit_id, op, spec.kind, "cancelled before the server answered"))
+            raise
+        if answer.payload.get("timed_out"):
+            await self._unknown(audit_id, op, spec.kind, answer.error, answer)
+            raise GateFailed(f"{op} timed out on {self.server.name}: {answer.error}")
         await self._finish(audit_id, answer)
         self.ctx.log(f"{self.server.name}: {op} {args or ''} -> " + ("ok" if answer.ok else f"{'refused' if answer.refused else 'failed'}: {answer.error}"),
                      "info" if answer.ok else "warning")
@@ -115,6 +130,19 @@ class GateSession:
         if not answer.ok:
             raise GateFailed(f"{op} failed on {self.server.name}: {answer.error}")
         return answer.result
+
+    async def _unknown(self, audit_id: int, op: str, kind: str, reason: str, answer: GateAnswer | None = None) -> None:
+        """The outcome is not known: it may have finished, or be partly done."""
+        error = f"outcome unknown: {reason}"
+        await self._finish(audit_id, GateAnswer(ok=False, refused=False, exit_status=answer.exit_status if answer else None, error=error,
+                                                output_sha256=answer.output_sha256 if answer else "",
+                                                duration_ms=answer.duration_ms if answer else 0))
+        self.ctx.log(f"{self.server.name}: {op} -> {error}", "warning")
+        if kind == "change":
+            async with session_scope() as s:
+                await events.emit(s, self.settings, kind="server.change_outcome_unknown", severity="critical", source=self.ctx_agent,
+                                  title=f"{self.server.name}: {op} may not have finished ({reason}); check the server",
+                                  detail={"server_id": self.server.id, "op": op, "audit_id": audit_id}, task_id=self.ctx.task_id)
 
     async def _finish(self, audit_id: int, answer: GateAnswer) -> None:
         async with session_scope() as s:

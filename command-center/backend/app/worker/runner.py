@@ -22,7 +22,7 @@ from ..config import Settings
 from ..db import session_scope, sessionmaker
 from ..integrations import IntegrationHub, build_hub
 from ..llm import LLMProvider, runtime_provider
-from ..models import Approval, Artifact, Task, TaskLog, WorkerHeartbeat
+from ..models import Approval, Artifact, ServerCommand, Task, TaskLog, WorkerHeartbeat
 from ..workflow import WorkflowEngine, build_engine
 from . import forwarder, scheduler
 
@@ -167,6 +167,20 @@ class Worker:
                 task.error = f"worker {task.locked_by or '?'} stopped responding while running this task"
                 task.finished_at = _now()
                 task.updated_at = _now()
+                # Server commands it left unanswered may have finished, or be half done.
+                open_commands = (await session.scalars(
+                    select(ServerCommand).where(ServerCommand.task_id == task.id, ServerCommand.finished_at.is_(None))
+                )).all()
+                for row in open_commands:
+                    row.finished_at, row.ok, row.error = _now(), False, "outcome unknown: the worker stopped while this was running"
+                changes = [row.op for row in open_commands if row.kind == "change"]
+                change_task = task.risk not in ("read", "draft")
+                await events.emit(
+                    session, self.settings, kind="task.failed", severity="critical" if change_task else "warning", source=task.agent,
+                    title=f"Task {task.id} ({task.agent}.{task.capability}) was interrupted: the worker stopped"
+                          + (f"; {', '.join(changes)} may not have finished - check the server" if changes else ""),
+                    detail={"task_id": task.id, "unfinished_server_commands": [row.id for row in open_commands]}, task_id=task.id,
+                )
                 await task_service.on_task_terminal(session, self.settings, task)
 
     async def claim(self) -> int | None:
@@ -185,7 +199,17 @@ class Worker:
                 requested_by = task.created_by
                 approval = await session.scalar(select(Approval).where(Approval.task_id == task_id))
                 approved_by = approval.decided_by if approval and approval.status == "approved" else ""
+                refused = ""
+                if approved_by:
+                    # The approval covers the target as it was then; refuse if it was re-linked or changed since.
+                    try:
+                        await task_service.current_target(session, approval, params)
+                    except task_service.TargetChanged as exc:
+                        refused = str(exc)
                 llm = self._fixed_llm or await runtime_provider(session, self.settings)
+            if refused:
+                await self._fail(task_id, f"refused: {refused}", [("error", refused)])
+                return
 
             http = ReadOnlyHttpClient(self.settings, transport=self.http_transport)
             logs: list[tuple[str, str]] = []
@@ -212,6 +236,7 @@ class Worker:
                         ssh=self.ssh,
                         requested_by=requested_by,
                         agent_name=agent_name,
+                        deadline=asyncio.get_running_loop().time() + timeout,
                     )
                     try:
                         result = await asyncio.wait_for(agent.run(ctx, cap_name, params), timeout=timeout)

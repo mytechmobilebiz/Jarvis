@@ -150,3 +150,57 @@ async def test_production_changes_need_an_admin_who_types_the_name(admin, app_cl
         assert task["status"] == "succeeded", task["error"]
         assert srv.calls("systemctl")[-2:] == ["restart httpd", "is-active httpd"]
         assert srv.calls("sudo")[-1].endswith("systemctl restart httpd")  # restarts go through sudo
+
+
+async def server_request(admin, *, environment: str = "staging") -> tuple[dict, dict]:
+    r = await admin.post("/api/servers", json={"name": "srv2", "host": "srv2.example", "username": "ccagent", "environment": environment})
+    server = r.json()["server"]
+    r = await admin.post("/api/agents/server_management/tasks", json={"capability": "restart_service",
+                                                                     "params": {"server_id": server["id"], "service": "httpd"}})
+    assert r.status_code == 201, r.text
+    approval = next(a for a in (await admin.get("/api/approvals")).json()["approvals"] if a["task_id"] == r.json()["task"]["id"])
+    return server, approval
+
+
+async def test_a_target_that_became_production_or_changed_is_not_approved_on_stale_facts(admin):
+    server, approval = await server_request(admin)
+    assert approval["details"]["production"] is False
+    await admin.patch(f"/api/servers/{server['id']}", json={"environment": "production"})
+    r = await admin.post(f"/api/approvals/{approval['id']}/decision", json={"approve": True})
+    assert r.status_code == 400 and "became a production target" in r.text
+    # Renamed since the request: the approval no longer describes the target.
+    await admin.patch(f"/api/servers/{server['id']}", json={"environment": "staging", "name": "srv2-renamed"})
+    r = await admin.post(f"/api/approvals/{approval['id']}/decision", json={"approve": True})
+    assert r.status_code == 400 and "target changed" in r.text
+    assert (await admin.post(f"/api/approvals/{approval['id']}/decision", json={"approve": False})).status_code == 200
+
+
+async def test_changes_for_targets_that_do_not_exist_are_refused(admin):
+    r = await admin.post("/api/agents/server_management/tasks", json={"capability": "restart_service",
+                                                                     "params": {"server_id": 9999, "service": "httpd"}})
+    assert r.status_code == 400 and "no server with id 9999" in r.text
+    r = await admin.post("/api/agents/wordpress_security/tasks", json={"capability": "repair_flush_caches", "params": {"site_id": 9999}})
+    assert r.status_code == 400 and "no monitored site with id 9999" in r.text
+    assert (await admin.get("/api/approvals")).json()["approvals"] == []
+
+
+async def test_the_worker_refuses_an_approved_change_whose_target_changed(admin, make_worker):
+    server, approval = await server_request(admin)
+    assert (await admin.post(f"/api/approvals/{approval['id']}/decision", json={"approve": True})).status_code == 200
+    await admin.patch(f"/api/servers/{server['id']}", json={"name": "somewhere-else"})  # before the worker picks it up
+    await make_worker().run_until_idle()
+    task = (await admin.get(f"/api/tasks/{approval['task_id']}")).json()["task"]
+    assert task["status"] == "failed" and task["error"].startswith("refused: the target changed")
+    async with session_scope() as s:
+        assert (await s.scalars(select(ServerCommand))).all() == []  # nothing was sent
+
+
+async def test_names_used_for_typed_confirmation_are_trimmed_and_never_empty(admin):
+    assert (await admin.post("/api/sites", json={"name": "   ", "url": "https://blank.example"})).status_code == 422
+    site = (await admin.post("/api/sites", json={"name": " Shop ", "url": "https://shop.example"})).json()["site"]
+    assert site["name"] == "Shop"
+    assert (await admin.patch(f"/api/sites/{site['id']}", json={"name": " "})).status_code == 422
+    assert (await admin.patch(f"/api/sites/{site['id']}", json={"name": "Shop 2 "})).json()["site"]["name"] == "Shop 2"
+    r = await admin.post("/api/servers", json={"name": " cwp ", "host": "cwp.example", "username": "ccagent"})
+    assert r.json()["server"]["name"] == "cwp"
+    assert (await admin.patch(f"/api/servers/{r.json()['server']['id']}", json={"name": "  "})).status_code == 422

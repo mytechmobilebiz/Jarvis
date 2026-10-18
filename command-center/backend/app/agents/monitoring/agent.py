@@ -14,6 +14,7 @@ from sqlalchemy import select
 from ... import uptime
 from ...models import Site, SiteCheck
 from ..base import AgentContext, AgentResult, ArtifactSpec, BaseAgent, EventSpec, Finding, Intent, NoParams, Params, Risk, capability
+from ..http import BlockedTarget, open_public_connection
 from .checks import SiteChecker, SiteReport
 
 _LATEST_CACHE: dict[str, tuple[float, str | None]] = {}
@@ -171,16 +172,16 @@ class MonitoringAgent(BaseAgent):
         ports: dict[int, str] = {}
         for port in params.ports if addresses else []:
             try:
-                _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=5)
+                _, writer = await asyncio.wait_for(open_public_connection(host, port, ctx.http.allowed_private), timeout=5)
                 writer.close()
                 ports[port] = "open"
-            except (OSError, TimeoutError):
+            except (OSError, TimeoutError, BlockedTarget):
                 ports[port] = "closed or filtered"
                 severity = "critical" if port in (80, 443) else "warning"
                 findings.append(Finding(code="port_unreachable", severity=severity, title=f"{host}:{port} did not accept a connection"))
         tls = None
         if ports.get(443) == "open":
-            info = await probe_tls(host, 443, ctx.settings.monitor_timeout_seconds)
+            info = await probe_tls(host, 443, ctx.settings.monitor_timeout_seconds, allowed_private=ctx.http.allowed_private)
             tls = {"days_left": info.days_left, "issuer": info.issuer, "error": info.error}
             if info.error and not info.error.startswith("probe failed"):
                 findings.append(Finding(code="tls_invalid", severity="critical", title=f"TLS certificate problem: {info.error}"))

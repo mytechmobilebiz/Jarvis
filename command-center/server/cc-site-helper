@@ -5,10 +5,13 @@ cc-gate starts it through sudo as the configured site user:
 
     cc-site-helper debug_log_status <site>
     cc-site-helper debug_log_quarantine <site>
+    cc-site-helper plugin_update_uri <site> <plugin folder>
 
-It only touches <site path>/wp-content/debug.log, and quarantining moves the
-file into the site's backup folder (nothing is deleted). It refuses to run as
-root and refuses unless it runs as exactly the user configured for that site.
+It only changes <site path>/wp-content/debug.log: quarantining moves the file
+into the site's backup folder (nothing is deleted), and only when that folder's
+disk has room for it. plugin_update_uri reads the plugin's header. It refuses
+to run as root and refuses unless it runs as exactly the user configured for
+that site.
 """
 
 import datetime
@@ -23,6 +26,10 @@ import sys
 CONFIG_PATH = "/etc/cc-gate/config.json"
 REQUIRE_ROOT_OWNED_CONFIG = True
 SITE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,99}$")
+SPACE_MARGIN = 256 * 1024 * 1024  # keep this much free on the backup disk after a copy
+# The way WordPress reads plugin headers (get_file_data): first 8 KB of the file.
+HEADER_RE = re.compile(r"^(?:[ \t]*<\?php)?[ \t/*#@]*(Plugin Name|Update URI):(.*)$", re.M | re.I)
 
 
 def answer(ok, result=None, error=""):
@@ -30,11 +37,53 @@ def answer(ok, result=None, error=""):
     return 0 if ok else 1
 
 
+def quarantine(log, info, target_dir):
+    if not os.path.isdir(target_dir):
+        raise RuntimeError("backup folder %s does not exist (run install-gate.sh --sync-sites)" % target_dir)
+    target = os.path.join(target_dir, "debug-%s.log" % datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+    if os.path.lexists(target):
+        raise RuntimeError("%s already exists; try again in a second" % target)
+    if os.stat(target_dir).st_dev == info.st_dev:
+        os.rename(log, target)  # same disk: instant, nothing copied
+        return target
+    sv = os.statvfs(target_dir)
+    if sv.f_bavail * sv.f_frsize < info.st_size + SPACE_MARGIN:
+        raise RuntimeError("not enough free space in %s for the %d-byte debug.log; nothing was moved" % (target_dir, info.st_size))
+    try:
+        shutil.copy2(log, target)
+        os.unlink(log)
+    except BaseException:
+        try:
+            if os.path.exists(log) and os.path.lexists(target):
+                os.unlink(target)  # never leave a partial copy filling the disk
+        except OSError:
+            pass
+        raise
+    return target
+
+
+def plugin_update_uri(path, slug):
+    folder = os.path.join(path, "wp-content", "plugins", slug)
+    if os.path.islink(folder) or not os.path.isdir(folder):
+        return {"found": False}
+    for name in sorted(os.listdir(folder)):
+        file = os.path.join(folder, name)
+        if not name.endswith(".php") or os.path.islink(file) or not os.path.isfile(file):
+            continue
+        with open(file, "rb") as fh:
+            head = fh.read(8192).decode("utf-8", "replace").replace("\r", "\n")
+        headers = {m.group(1).lower(): m.group(2).strip() for m in HEADER_RE.finditer(head)}
+        if headers.get("plugin name"):
+            return {"found": True, "file": name, "update_uri": headers.get("update uri", "")}
+    return {"found": False}
+
+
 def main(argv):
     if os.geteuid() == 0 or os.getuid() == 0:
         return answer(False, error="cc-site-helper must not run as root")
-    if len(argv) != 3 or argv[1] not in ("debug_log_status", "debug_log_quarantine") or not SITE_RE.match(argv[2]):
-        return answer(False, error="usage: cc-site-helper debug_log_status|debug_log_quarantine <site>")
+    ops = {"debug_log_status": 3, "debug_log_quarantine": 3, "plugin_update_uri": 4}
+    if len(argv) < 2 or ops.get(argv[1]) != len(argv) or not SITE_RE.match(argv[2]) or (len(argv) == 4 and not SLUG_RE.match(argv[3])):
+        return answer(False, error="usage: cc-site-helper debug_log_status|debug_log_quarantine <site> | plugin_update_uri <site> <plugin>")
     op, key = argv[1], argv[2]
     st = os.stat(CONFIG_PATH)
     if REQUIRE_ROOT_OWNED_CONFIG and (st.st_uid != 0 or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
@@ -46,23 +95,27 @@ def main(argv):
         return answer(False, error="site is not configured")
     if pwd.getpwnam(site["user"]).pw_uid != os.getuid():
         return answer(False, error="must run as the site's user")
+    if op == "plugin_update_uri":
+        return answer(True, plugin_update_uri(site["path"], argv[3]))
     log = os.path.join(site["path"], "wp-content", "debug.log")
     try:
         info = os.lstat(log)
     except FileNotFoundError:
         return answer(True, {"exists": False})
+    modified = datetime.datetime.fromtimestamp(info.st_mtime, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if not stat.S_ISREG(info.st_mode):
-        return answer(False, error="wp-content/debug.log is not a regular file (symlink or other); not touching it")
-    status = {"exists": True, "bytes": info.st_size,
-              "modified": datetime.datetime.fromtimestamp(info.st_mtime, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        kind = "symlink" if stat.S_ISLNK(info.st_mode) else "other"
+        if op == "debug_log_status":
+            return answer(True, {"exists": True, "type": kind, "bytes": 0, "modified": modified})
+        return answer(False, error="wp-content/debug.log is not a regular file (%s); not touching it" % kind)
+    status = {"exists": True, "type": "file", "bytes": info.st_size, "modified": modified}
     if op == "debug_log_status":
         return answer(True, status)
-    target_dir = os.path.join(config.get("backup_dir", "/var/lib/cc-gate/backups"), key)
-    if not os.path.isdir(target_dir):
-        return answer(False, error="backup folder %s does not exist (run install-gate.sh --sync-sites)" % target_dir)
-    target = os.path.join(target_dir, "debug-%s.log" % datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
-    shutil.move(log, target)
-    return answer(True, {**status, "moved_to": target})
+    try:
+        target = quarantine(log, info, os.path.join(config.get("backup_dir", "/var/lib/cc-gate/backups"), key))
+    except (OSError, RuntimeError) as exc:
+        return answer(False, error="debug.log was not moved: %s" % exc)
+    return answer(True, dict(status, moved_to=target))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""cc-wp: runs WP-CLI for cc-gate, as a site's own user, in an environment the site cannot influence.
+
+cc-gate starts it through sudo (the only WP-CLI rule in /etc/sudoers.d/cc-gate):
+
+    sudo -n -u <site user> -- /usr/local/lib/cc-gate/cc-wp --path=<site path> <wp-cli arguments>
+
+WP-CLI normally reads configuration, packages and cached downloads from the
+user's home directory (~/.wp-cli), which malware running as the site user
+could rewrite to change what WP-CLI does or reports. cc-wp therefore starts
+WP-CLI with an empty environment, a fresh private HOME and cache, no global or
+user configuration and no packages, from "/". The WP-CLI program itself comes
+from the root-owned configuration ("wp_cli"), never from the caller.
+
+Commands that load WordPress still run the site's wp-config.php, must-use
+plugins and drop-ins; only checks that run before WordPress loads (such as
+core checksum verification) are independent of the site's own code.
+
+Termination signals are passed on to WP-CLI, so cc-gate's timeout can stop it.
+"""
+
+import json
+import os
+import pwd
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+
+CONFIG_PATH = "/etc/cc-gate/config.json"
+REQUIRE_ROOT_OWNED_CONFIG = True
+SAFE_PATH = "/usr/local/bin:/usr/bin:/bin"
+
+
+def fail(message):
+    sys.stderr.write("cc-wp: %s\n" % message)
+    return 125
+
+
+def main(argv):
+    if os.geteuid() == 0 or os.getuid() == 0:
+        return fail("must not run as root")
+    if len(argv) < 3 or not argv[1].startswith("--path="):
+        return fail("usage: cc-wp --path=<site path> <wp-cli arguments>")
+    try:
+        st = os.stat(CONFIG_PATH)
+        if REQUIRE_ROOT_OWNED_CONFIG and (st.st_uid != 0 or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            return fail("configuration must be owned by root and not writable by group or others")
+        with open(CONFIG_PATH) as fh:
+            config = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return fail("cannot read %s: %s" % (CONFIG_PATH, exc))
+    path = argv[1][len("--path="):]
+    me = pwd.getpwuid(os.getuid()).pw_name
+    # Only the sites configured for exactly this user.
+    if not any(s.get("path") == path and s.get("user") == me for s in config.get("sites", {}).values()):
+        return fail("%s is not a site configured for user %s" % (path, me))
+    home = tempfile.mkdtemp(prefix="cc-wp-")
+    env = {
+        "PATH": SAFE_PATH,
+        "HOME": home,
+        "LANG": "C.UTF-8",
+        "WP_CLI_CONFIG_PATH": os.path.join(home, "no-config.yml"),
+        "WP_CLI_PACKAGES_DIR": os.path.join(home, "no-packages"),
+        "WP_CLI_CACHE_DIR": os.path.join(home, "cache"),
+        "WP_CLI_DISABLE_AUTO_CHECK_UPDATE": "1",
+    }
+    try:
+        os.chdir("/")
+        try:
+            child = subprocess.Popen([config.get("wp_cli", "/usr/local/bin/wp"), "--skip-packages"] + argv[1:],
+                                     stdin=subprocess.DEVNULL, env=env, cwd="/")
+        except OSError as exc:
+            return fail("could not start WP-CLI: %s" % exc)
+
+        def forward(signum, frame):
+            try:
+                child.send_signal(signum)
+            except OSError:
+                pass
+
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(sig, forward)
+        code = child.wait()
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    return 128 - code if code < 0 else code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -4,11 +4,15 @@ Two guarantees, both enforced on every request including each redirect hop:
 
 * only GET, HEAD and OPTIONS leave the process; anything else raises
   WriteAttemptBlocked before a byte is sent;
-* a URL whose host resolves to a loopback, private, link-local or otherwise
-  non-public address is refused (BlockedTarget), unless the host is listed in
-  MONITOR_ALLOWED_PRIVATE_HOSTS. Monitoring a client site can therefore never
-  be turned into a request against PostgreSQL, n8n or the cloud metadata
-  endpoint.
+* a URL whose host resolves to a loopback, private, link-local, shared
+  (100.64/10) or otherwise non-global address is refused (BlockedTarget),
+  unless the host is listed in MONITOR_ALLOWED_PRIVATE_HOSTS. Monitoring a
+  client site can therefore never be turned into a request against
+  PostgreSQL, n8n or the cloud metadata endpoint.
+
+The name is resolved once per connection and the connection is made to an
+address that passed the check (PublicOnlyBackend), so a DNS answer that
+changes between the check and the connection (rebinding) cannot slip through.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import socket
 import time
 from dataclasses import dataclass, field
 
+import httpcore
 import httpx
 
 from ..config import Settings
@@ -51,17 +56,23 @@ class FetchResult:
         return json.loads(self.text)
 
 
+NAT64 = ipaddress.IPv6Network("64:ff9b::/96")
+
+
 def _is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
-        ip = ip.ipv4_mapped
-    return not (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified
-    )
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.is_site_local:
+            return False
+        # An IPv4 address carried inside IPv6 is judged as that IPv4 address.
+        if ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        elif ip.sixtofour:
+            ip = ip.sixtofour
+        elif ip.teredo:
+            ip = ip.teredo[1]
+        elif ip in NAT64:
+            ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return ip.is_global and not ip.is_multicast
 
 
 async def default_resolver(host: str) -> list[str]:
@@ -70,36 +81,97 @@ async def default_resolver(host: str) -> list[str]:
     return [info[4][0] for info in infos]
 
 
-async def check_public_host(host: str | None, allowed_private: set[str], resolver=None) -> None:
-    """Refuse hosts that are, or resolve to, loopback, private, link-local or other non-public addresses.
+async def resolve_public(host: str | None, allowed_private: set[str], resolver=None) -> list[str]:
+    """The addresses to connect to for host, all of them public.
 
-    Hosts listed in allowed_private are let through (e.g. a local test server).
-    Shared by the read-only HTTP client and the SSH client.
+    Raises BlockedTarget for internal names and for names with any non-public
+    address (unless listed in allowed_private, e.g. a local test server), and
+    OSError when the name does not resolve.
     """
     if not host:
         raise BlockedTarget("no host")
     host = host.lower().strip("[]")
-    if host in allowed_private:
-        return
     try:
         literal = ipaddress.ip_address(host)
     except ValueError:
         literal = None
     if literal is not None:
-        if not _is_public(literal):
+        if host not in allowed_private and not _is_public(literal):
             raise BlockedTarget(f"{host} is not a public address")
-        return
-    if host == "localhost" or host.endswith((".localhost", ".internal", ".local")):
+        return [host]
+    if host not in allowed_private and (host == "localhost" or host.endswith((".localhost", ".internal", ".local"))):
         raise BlockedTarget(f"{host} is an internal hostname")
+    addresses = await (resolver or default_resolver)(host)
+    if not addresses:
+        raise socket.gaierror(socket.EAI_NONAME, f"{host} has no addresses")
+    if host not in allowed_private:
+        for addr in addresses:
+            if not _is_public(ipaddress.ip_address(addr.split("%")[0])):
+                raise BlockedTarget(f"{host} resolves to non-public address {addr}")
+    return addresses
+
+
+async def check_public_host(host: str | None, allowed_private: set[str], resolver=None) -> None:
+    """Early refusal of internal and non-public hosts (see resolve_public).
+
+    A name that does not resolve is let through here: the connection itself
+    resolves it again through resolve_public and fails closed.
+    """
     try:
-        addresses = await (resolver or default_resolver)(host)
+        await resolve_public(host, allowed_private, resolver)
     except OSError:
-        # Unresolvable here: the connection itself will fail (or an
-        # egress proxy resolves it outside our network), so let it through.
         return
-    for addr in addresses:
-        if not _is_public(ipaddress.ip_address(addr.split("%")[0])):
-            raise BlockedTarget(f"{host} resolves to non-public address {addr}")
+
+
+class PublicOnlyBackend(httpcore.AsyncNetworkBackend):
+    """httpcore network backend that connects only to addresses resolve_public accepted."""
+
+    def __init__(self, allowed_private: set[str], resolver=None) -> None:
+        self._allowed_private = allowed_private
+        self._resolver = resolver
+        self._inner = httpcore.AnyIOBackend()
+
+    async def connect_tcp(self, host: str, port: int, timeout: float | None = None, local_address: str | None = None,
+                          socket_options=None) -> httpcore.AsyncNetworkStream:
+        try:
+            addresses = await resolve_public(host, self._allowed_private, self._resolver)
+        except OSError as exc:
+            raise httpcore.ConnectError(f"getaddrinfo failed for {host}: {exc}") from exc
+        error: Exception | None = None
+        for address in addresses:
+            try:
+                return await self._inner.connect_tcp(address, port, timeout=timeout, local_address=local_address,
+                                                     socket_options=socket_options)
+            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                error = exc
+        assert error is not None
+        raise error
+
+    async def connect_unix_socket(self, path: str, timeout: float | None = None, socket_options=None) -> httpcore.AsyncNetworkStream:
+        raise BlockedTarget("unix sockets are not allowed")
+
+    async def sleep(self, seconds: float) -> None:
+        await self._inner.sleep(seconds)
+
+
+def public_only_transport(allowed_private: set[str], resolver=None) -> httpx.AsyncHTTPTransport:
+    transport = httpx.AsyncHTTPTransport(trust_env=False)
+    transport._pool = httpcore.AsyncConnectionPool(  # same pool httpx builds, with the checking backend
+        ssl_context=httpx.create_ssl_context(trust_env=False), network_backend=PublicOnlyBackend(allowed_private, resolver),
+    )
+    return transport
+
+
+async def open_public_connection(host: str, port: int, allowed_private: set[str], **kwargs) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """asyncio.open_connection to host, connecting only to a checked address (kwargs as for open_connection)."""
+    error: OSError | None = None
+    for address in await resolve_public(host, allowed_private):
+        try:
+            return await asyncio.open_connection(address, port, **kwargs)
+        except OSError as exc:
+            error = exc
+    assert error is not None
+    raise error
 
 
 class ReadOnlyHttpClient:
@@ -117,7 +189,8 @@ class ReadOnlyHttpClient:
             headers={"User-Agent": settings.monitor_user_agent, "Accept": "text/html,application/json,*/*"},
             follow_redirects=True,
             max_redirects=5,
-            transport=transport,
+            transport=transport or public_only_transport(self._allowed_private, resolver),
+            trust_env=False,  # an environment proxy would bypass the address checks
             event_hooks={"request": [self._guard]},
         )
 
@@ -131,6 +204,10 @@ class ReadOnlyHttpClient:
         await self._client.aclose()
 
     _default_resolver = staticmethod(default_resolver)
+
+    @property
+    def allowed_private(self) -> set[str]:
+        return set(self._allowed_private)
 
     async def check_target(self, host: str | None) -> None:
         if not host:

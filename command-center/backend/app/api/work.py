@@ -184,7 +184,9 @@ async def cancel(
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> dict:
-    task = await task_service.cancel_task(session, settings, await _locked_task(session, task_id), principal.name)
+    task = await _locked_task(session, task_id)
+    await require_sensitive_access(session, principal, task.agent)
+    task = await task_service.cancel_task(session, settings, task, principal.name)
     await audit.record(session, principal.name, "task.cancelled", "task", task_id, ip=client_ip(request))
     await session.commit()
     return {"task": task_view(task)}
@@ -198,7 +200,9 @@ async def retry(
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> dict:
-    task = await task_service.retry_task(session, settings, await _locked_task(session, task_id), principal.name)
+    task = await _locked_task(session, task_id)
+    await require_sensitive_access(session, principal, task.agent)
+    task = await task_service.retry_task(session, settings, task, principal.name)
     await audit.record(session, principal.name, "task.retried", "task", task_id, {"new_task_id": task.id}, ip=client_ip(request))
     await session.commit()
     return {"task": task_view(task)}
