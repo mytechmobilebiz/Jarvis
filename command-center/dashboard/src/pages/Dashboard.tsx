@@ -3,7 +3,7 @@ import { api, type CCEvent, type Site, type SupervisorRequest, type SystemStatus
 import { Card, Empty, ErrorNote, Pill, SeverityIcon, Stat, Time } from "../components";
 import { usePoll } from "../hooks";
 
-export default function Overview({ status }: { status: SystemStatus | null }) {
+export default function Dashboard({ status }: { status: SystemStatus | null }) {
   const events = usePoll(() => api.get<{ events: CCEvent[] }>("/api/events?limit=12"), 10_000);
   const sites = usePoll(() => api.get<{ sites: Site[] }>("/api/sites"), 15_000);
   const requests = usePoll(() => api.get<{ requests: SupervisorRequest[] }>("/api/supervisor/requests?limit=6"), 10_000);
