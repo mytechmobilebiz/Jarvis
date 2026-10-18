@@ -362,9 +362,10 @@ class SiteChecker:
         return trace
 
     def _assess_redirects(self, report: SiteReport, url: str, home: FetchResult, offsite_target: str = "") -> bool:
-        chain = [*home.redirects, home.final_url] if home.redirects else [home.final_url]
-        if chain[0] != url and not home.redirects:
-            chain = [url, home.final_url]
+        if home.redirects:
+            chain = [*home.redirects, home.final_url]
+        else:
+            chain = [url] if offsite_target or home.final_url == url else [url, home.final_url]
         if offsite_target:
             chain.append(offsite_target)
         findings = integrity.chain_findings(url, chain)

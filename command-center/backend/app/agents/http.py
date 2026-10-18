@@ -191,7 +191,7 @@ class ReadOnlyHttpClient:
             max_redirects=5,
             transport=transport or public_only_transport(self._allowed_private, resolver),
             trust_env=False,  # an environment proxy would bypass the address checks
-            event_hooks={"request": [self._guard]},
+            event_hooks={"request": [self._guard], "response": [self._clean_location]},
         )
 
     async def __aenter__(self) -> ReadOnlyHttpClient:
@@ -213,6 +213,13 @@ class ReadOnlyHttpClient:
         if not host:
             raise BlockedTarget("URL has no host")
         await check_public_host(host, self._allowed_private, self._resolver)
+
+    @staticmethod
+    async def _clean_location(response: httpx.Response) -> None:
+        """Browsers drop tabs and line breaks from a Location; httpx refuses it, which would hide the redirect."""
+        location = response.headers.get("location")
+        if location is not None and any(c in location for c in "\t\r\n"):
+            response.headers["location"] = location.replace("\t", "").replace("\r", "").replace("\n", "")
 
     async def _guard(self, request: httpx.Request) -> None:
         if request.method.upper() not in READ_ONLY_METHODS:

@@ -18,7 +18,7 @@ from sqlalchemy import select
 from .. import __version__, uptime
 from ..models import Site, SiteCheck
 from .base import AgentContext, AgentResult, ArtifactSpec, BaseAgent, EventSpec, Finding, Intent, NoParams, Params, Risk, capability
-from .monitoring.agent import latest_wordpress_version, make_checker, record_check
+from .monitoring.agent import SWEEP_TIMEOUT_SECONDS, check_sites
 from .monitoring.checks import SiteReport
 from .wp_server import REPAIR_TIMEOUT, ServerSideCapabilities, site_approval_context
 
@@ -61,7 +61,17 @@ REMEDIATION: dict[str, tuple[str, str | None]] = {
     "maintenance_on": ("Switch maintenance mode off if no update is running.", "repair_maintenance_mode"),
     "debug_log_present": ("Move debug.log out of the web root and turn off WP_DEBUG_LOG.", "repair_quarantine_debug_log"),
     "new_admin_account": ("Confirm the new administrator with the site owner; remove it if unknown.", None),
+    "new_mu_plugin": ("Check the new must-use plugin or drop-in in wp-content; remove it if nobody installed it.", None),
+    "debug_log_not_a_file": ("Look at where wp-content/debug.log points on the server; remove the link if nobody made it.", None),
+    "server_check_incomplete": ("See which parts the server could not answer (database down, PHP errors) and run the check again.", None),
+    "site_worse_after_repair": ("Undo the last repair (for a plugin: repair_activate_plugin) and check the error log.", None),
     "site_down_after_repair": ("Undo the last repair (for a plugin: repair_activate_plugin) and check the error log.", None),
+    # From the monitoring checks:
+    "cloaked_injection": ("Code shown only to some visitors (phone, search engines). Review the active plugins, the theme and "
+                          ".htaccess; verify the core files.", "repair_reinstall_core"),
+    "hidden_iframe_noscript": ("Usually a tracking pixel; confirm someone added it.", None),
+    "check_timeout": ("The site answers very slowly or not at all; check the server and run the scan again.", None),
+    "check_failed": ("The check itself failed; run it again, and look at the task log if it keeps failing.", None),
 }
 SEVERITY_ORDER = {"critical": 0, "warning": 1, "info": 2}
 
@@ -119,21 +129,9 @@ class WordPressSecurityAgent(ServerSideCapabilities, BaseAgent):
 
     # ------------------------------------------------------------------ scans
 
-    async def _scan(self, ctx: AgentContext, sites: list[Site]) -> tuple[list[tuple[Site, SiteReport]], list[EventSpec]]:
-        latest = await latest_wordpress_version(ctx)
-        checker = make_checker(ctx, latest)
-        sem = asyncio.Semaphore(4)
-
-        async def run(site: Site) -> SiteReport:
-            async with sem:
-                return await checker.check(site.url, deep=True)
-
-        reports = await asyncio.gather(*(run(s) for s in sites))
-        events: list[EventSpec] = []
-        for site, report in zip(sites, reports, strict=True):
-            events.extend(await record_check(ctx, site, True, report))
-            ctx.log(report.summary())
-        return list(zip(sites, reports, strict=True)), events
+    async def _scan(self, ctx: AgentContext, sites: list[Site]) -> tuple[list[tuple[Site, SiteReport]], list[tuple[Site, str]]]:
+        """Deep checks, each site within its own deadline and recorded (events emitted) as soon as it is done."""
+        return await check_sites(ctx, sites, deep=True)
 
     @capability(
         risk=Risk.READ,
@@ -147,7 +145,11 @@ class WordPressSecurityAgent(ServerSideCapabilities, BaseAgent):
         site = await ctx.session.get(Site, params.site_id)
         if site is None:
             raise ValueError(f"no monitored site with id {params.site_id}")
-        [(site, report)], events = await self._scan(ctx, [site])
+        checked, failed = await self._scan(ctx, [site])
+        if failed:
+            raise RuntimeError(f"the security scan of {site.name} failed: {failed[0][1]}")
+        report = checked[0][1]
+        events: list[EventSpec] = []
         findings = list(report.findings)
         server_note = ""
         if site.server_id and site.server_site_key and ctx.ssh is not None:
@@ -172,17 +174,21 @@ class WordPressSecurityAgent(ServerSideCapabilities, BaseAgent):
         description="Security scan of every enabled site (read-only GET requests). Runs nightly.",
         params=NoParams,
         examples=("Run a security scan on every site",),
+        timeout_seconds=SWEEP_TIMEOUT_SECONDS,
     )
     async def security_scan_all(self, ctx: AgentContext, params: NoParams) -> AgentResult:
         sites = (await ctx.session.scalars(select(Site).where(Site.enabled.is_(True)).order_by(Site.id))).all()
         if not sites:
             return AgentResult(summary="No sites are being monitored yet. Add one on the Websites page.")
-        pairs, events = await self._scan(ctx, list(sites))
+        pairs, failed = await self._scan(ctx, list(sites))
         ratings = {s.name: rating([f.model_dump() for f in r.findings]) for s, r in pairs}
         at_risk = [n for n, v in ratings.items() if v == "AT RISK"]
         summary = f"Security scan of {len(sites)} site(s): {len(at_risk)} at risk" + (f" ({', '.join(at_risk[:5])})" if at_risk else "") + "."
         findings = [f for _, r in pairs for f in r.findings if f.severity != "info"]
-        return AgentResult(summary=summary, data={"ratings": ratings}, findings=findings, events=events)
+        if failed:
+            summary += f" {len(failed)} could not be scanned: " + ", ".join(s.name for s, _ in failed[:5]) + "."
+            findings += [Finding(code="check_failed", severity="warning", title=f"{s.name}: the scan failed ({error})"[:300]) for s, error in failed]
+        return AgentResult(summary=summary, data={"ratings": ratings, "failed": [s.name for s, _ in failed]}, findings=findings)
 
     # ---------------------------------------------------------------- reports
 

@@ -147,12 +147,6 @@ class MonitoringAgent(BaseAgent):
 
     # ------------------------------------------------------------------ helpers
 
-    def _checker(self, ctx: AgentContext, latest: str | None) -> SiteChecker:
-        return make_checker(ctx, latest)
-
-    async def _record(self, ctx: AgentContext, site: Site, deep: bool, report: SiteReport) -> list[EventSpec]:
-        return await record_check(ctx, site, deep, report)
-
     # ------------------------------------------------------------- capabilities
 
     @capability(
@@ -204,34 +198,37 @@ class MonitoringAgent(BaseAgent):
         description="Check one monitored site now and record the result.",
         params=CheckSiteParams,
         examples=("Check site 3",),
+        timeout_seconds=SWEEP_TIMEOUT_SECONDS,
     )
     async def check_site(self, ctx: AgentContext, params: CheckSiteParams) -> AgentResult:
         site = await ctx.session.get(Site, params.site_id)
         if site is None:
             raise ValueError(f"no monitored site with id {params.site_id}")
-        latest = await latest_wordpress_version(ctx) if params.deep else None
-        report = await self._checker(ctx, latest).check(site.url, deep=params.deep)
-        events = await self._record(ctx, site, params.deep, report)
-        ctx.log(report.summary())
-        return AgentResult(
-            summary=report.summary(),
-            data={"site_id": site.id, "report": _report_data(report)},
-            findings=report.findings,
-            events=events,
-        )
+        # Recorded, with its events emitted, as soon as it is done (see check_sites).
+        checked, failed = await check_sites(ctx, [site], deep=params.deep)
+        if failed:
+            raise RuntimeError(f"the check of {site.name} failed: {failed[0][1]}")
+        report = checked[0][1]
+        return AgentResult(summary=report.summary(), data={"site_id": site.id, "report": _report_data(report)}, findings=report.findings)
 
     @capability(
         risk=Risk.READ,
         description="Check any URL or domain now. Uses the monitored site's history if the URL is registered.",
         params=CheckUrlParams,
         examples=("Is example.com up?", "Check https://example.com"),
+        timeout_seconds=SWEEP_TIMEOUT_SECONDS,
     )
     async def check_url(self, ctx: AgentContext, params: CheckUrlParams) -> AgentResult:
         site = await ctx.session.scalar(select(Site).where(Site.url == params.url))
         if site is not None:
             return await self.check_site(ctx, CheckSiteParams(site_id=site.id, deep=params.deep))
         latest = await latest_wordpress_version(ctx) if params.deep else None
-        report = await self._checker(ctx, latest).check(params.url, deep=params.deep)
+        deadline = ctx.settings.monitor_timeout_seconds * SITE_DEADLINE_FACTOR[params.deep]
+        report = SiteReport(url=params.url)
+        try:
+            await asyncio.wait_for(make_checker(ctx, latest).check(params.url, deep=params.deep, report=report), deadline)
+        except TimeoutError:
+            _cut_short(report, deadline)
         ctx.log(report.summary())
         return AgentResult(
             summary=report.summary() + " (not a monitored site; result not stored in site history)",

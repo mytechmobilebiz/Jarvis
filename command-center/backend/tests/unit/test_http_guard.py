@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 import httpx
 import pytest
 
 from app.agents.http import BlockedTarget, ReadOnlyHttpClient, WriteAttemptBlocked
+from app.agents.monitoring.checks import describe_fetch_error
 from app.config import Settings
 
 
@@ -110,3 +114,35 @@ async def test_fetch_caps_body_size():
         result = await http.fetch("https://example.test/", max_bytes=1000)
     assert len(result.text) == 1000
     assert result.truncated
+
+
+async def test_fetch_gives_up_on_a_body_that_trickles_in():
+    async def trickle():
+        for _ in range(100):
+            await asyncio.sleep(0.05)  # each read is quick, so the read timeout alone never fires
+            yield b"x"
+
+    async with client(httpx.MockTransport(lambda r: httpx.Response(200, content=trickle())), monitor_timeout_seconds=0.1) as http:
+        started = time.perf_counter()
+        with pytest.raises(httpx.TimeoutException) as raised:
+            await http.fetch("https://example.test/")
+    assert time.perf_counter() - started < 1.5
+    assert describe_fetch_error(raised.value, 0.1).startswith("no response within")
+
+
+async def test_a_location_with_tabs_is_read_the_way_a_browser_reads_it():
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.host == "acme.test":
+            return httpx.Response(302, headers={"location": "https://ac\tme.test/n\new"})
+        return httpx.Response(200, text="ok")
+
+    async def resolver(host):
+        return ["93.184.215.14"]
+
+    http = ReadOnlyHttpClient(Settings(), transport=httpx.MockTransport(handler), resolver=resolver)
+    result = await http.fetch("https://acme.test/", follow_redirects=False)
+    assert result.status == 302 and result.headers["location"] == "https://acme.test/new"
+    await http.aclose()
