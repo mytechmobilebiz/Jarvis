@@ -37,7 +37,7 @@ the work to the seven agents; it never acts on a site or server itself.
 
 | Agent | Does | Needs approval for |
 |---|---|---|
-| WordPress Security & Repair | Security scans (exposures, suspicious redirects, cloaking, injected scripts/spam, TLS), security reports, WP-CLI diagnosis over restricted SSH | every repair (restore home/siteurl, plugin deactivate/activate/update/reinstall, core reinstall, maintenance mode, cache flush, quarantine debug.log) |
+| WordPress Security & Repair | Security scans (exposures, suspicious redirects, cloaking, injected scripts/spam, TLS), security reports, WP-CLI diagnosis over restricted SSH | every repair (restore home/siteurl, plugin deactivate/activate/update, reinstall of a WordPress.org plugin, core reinstall, maintenance mode, cache flush, quarantine debug.log); each one checks its result and reports a part-way failure loudly |
 | SEO & Content | Read-only SEO audits, keyword briefs, blog drafts | publishing to WordPress (mock) |
 | Social Media & Marketing (Postonomous) | Social drafts; ad report on **sample data** | publishing via Postonomous (mock); budget changes (mock) |
 | VPS & Server Management (CWP/SSH) | Server overview and service checks through cc-gate | restarting an allowlisted service |
@@ -57,7 +57,7 @@ See [docs/SERVER_SETUP.md](docs/SERVER_SETUP.md).
 | `backend/app/credit_repair` | The Credit Repair store: its own database, login role, encryption key and access log |
 | `backend/app/integrations` | Outward integrations (all mocks in this build) and the n8n client |
 | `backend/app/ssh` | SSH to servers: key, pinned host keys, the allowlist, audit trail (cc-gate only) |
-| `server/` | What you install on a server: cc-gate, cc-site-helper, install-gate.sh, example config |
+| `server/` | What you install on a server: cc-gate, cc-wp (WP-CLI in a clean environment), cc-site-helper, install-gate.sh, example config |
 | `backend/app/supervisor` | The AI supervisor: plans requests (Claude or rules), summarises, daily briefing, health review |
 | `backend/app/worker` | Runs tasks (PostgreSQL `SKIP LOCKED` queue), cron schedules, delivers events to n8n |
 | `backend/app/migrations` | The database schema, as plain SQL |
@@ -79,13 +79,16 @@ See [docs/SERVER_SETUP.md](docs/SERVER_SETUP.md).
 - **Outward integrations are mocks** in this build and additionally refuse to
   run without an approval on the task.
 - **Monitoring is read-only**: the agents' HTTP client sends only GET/HEAD and
-  refuses private, loopback and metadata addresses (no SSRF into the stack);
-  redirects to foreign domains are recorded, never followed by the checks.
+  refuses private, loopback, shared (100.64/10) and metadata addresses, and
+  connects only to the address it checked (no SSRF or DNS rebinding into the
+  stack); redirects to foreign domains are recorded, never followed by the checks.
 - **Servers only through cc-gate**: a non-root account whose key can run nothing
   but an allowlist of operations; host keys pinned after a person compares the
   fingerprint; every command audited; changes need approval, production changes
-  an admin who types the target's name; the server's own `allow_changes` switch
-  can refuse all changes.
+  an admin who types the target's name, and an approval only covers the exact
+  target it was given for (re-linked, renamed or newly production targets are
+  refused); WP-CLI runs as the site's own user in a clean environment; the
+  server's own `allow_changes` switch can refuse all changes.
 - **The n8n service token** can submit requests and acknowledge events; it
   cannot read dashboard data or approve anything.
 - **Model text is data**: agent output and fetched pages go to the summariser
