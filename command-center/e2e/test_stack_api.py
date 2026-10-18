@@ -67,8 +67,10 @@ def test_wordpress_monitor_reads_local_wordpress(api, test_site):
 
 def test_monitor_only_ever_sent_get_requests(api, test_site):
     """Read-only, verified from the test WordPress's own Apache access log."""
+    # Only lines written from now on: after a stack rebuild the worker can get an address another container had.
+    before = len(worker_access_lines())
     api.post(f"/api/sites/{test_site['id']}/check", json={"deep": True})
-    lines = wait_for(lambda: len(worker_access_lines()) >= 7 and worker_access_lines(), timeout=60, what="worker requests in the access log")
+    lines = wait_for(lambda: len(new := worker_access_lines()[before:]) >= 7 and new, timeout=60, what="worker requests in the access log")
     methods = {m.group(1) for line in lines if (m := re.search(r'"([A-Z]+) /', line))}
     assert methods == {"GET"}, methods
     assert any("/wp-json/wp/v2/users" in line for line in lines)
