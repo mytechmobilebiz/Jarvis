@@ -43,7 +43,11 @@ while [ $# -gt 0 ]; do case "$1" in --*) shift ;; *) break ;; esac; done
 case "$1 $2" in
   "core version") echo "6.8.3" ;;
   "core verify-checksums") echo "Success: WordPress installation verifies against checksums." ;;
-  "plugin list") echo '[{"name":"akismet","status":"active","version":"5.3","update":"available","update_version":"5.4"},{"name":"evil-cloak","status":"active","version":"1.0","update":"none","update_version":""}]' ;;
+  "plugin list")
+    D="$(dirname "$0")"; a=$(cat "$D/plugin-akismet" 2>/dev/null || echo active); e=$(cat "$D/plugin-evil-cloak" 2>/dev/null || echo active)
+    echo "[{\"name\":\"akismet\",\"status\":\"$a\",\"version\":\"5.3\",\"update\":\"available\",\"update_version\":\"5.4\"},{\"name\":\"evil-cloak\",\"status\":\"$e\",\"version\":\"1.0\",\"update\":\"none\",\"update_version\":\"\"}]" ;;
+  "plugin deactivate") echo inactive > "$(dirname "$0")/plugin-$3"; echo "Success: Deactivated 1 of 1 plugins." ;;
+  "plugin activate") echo active > "$(dirname "$0")/plugin-$3"; echo "Success: Activated 1 of 1 plugins." ;;
   "theme list") echo '[{"name":"astra","status":"active","version":"4.0","update":"none","update_version":""}]' ;;
   "user list") echo '[{"ID":1,"user_login":"owner","user_registered":"2024-01-01 00:00:00"}]' ;;
   "option get") cat "$(dirname "$0")/option-$3" 2>/dev/null || echo "http://site.test" ;;
@@ -51,6 +55,15 @@ case "$1 $2" in
   "maintenance-mode is-active") exit 1 ;;
   "plugin get") echo "1.0" ;;
   *) echo "Success: $*" ;;
+esac
+"""
+
+FAKE_HELPER = r"""#!/bin/sh
+# Fake cc-site-helper: a debug.log in the fake site folder.
+D="$(dirname "$0")"; LOG="$D/wp/wp-content/debug.log"
+case "$1" in
+  debug_log_status) if [ -f "$LOG" ]; then echo "{\"ok\": true, \"result\": {\"exists\": true, \"bytes\": $(wc -c < "$LOG")}}"; else echo '{"ok": true, "result": {"exists": false}}'; fi ;;
+  debug_log_quarantine) mv "$LOG" "$D/backups/debug-moved.log" && echo "{\"ok\": true, \"result\": {\"exists\": true, \"moved_to\": \"$D/backups/debug-moved.log\"}}" ;;
 esac
 """
 
@@ -99,7 +112,8 @@ class FakeGateServer:
         (self.dir / "config.json").write_text(json.dumps(self.config))
 
     async def __aenter__(self) -> FakeGateServer:
-        for name, body in (("wp-cli", FAKE_WP), ("systemctl", FAKE_SYSTEMCTL), ("sudo", FAKE_SUDO), ("harness.py", HARNESS)):
+        for name, body in (("wp-cli", FAKE_WP), ("systemctl", FAKE_SYSTEMCTL), ("sudo", FAKE_SUDO), ("cc-site-helper", FAKE_HELPER),
+                           ("harness.py", HARNESS)):
             path = self.dir / name
             path.write_text(body)
             path.chmod(0o755)

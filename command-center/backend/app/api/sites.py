@@ -14,10 +14,14 @@ from .. import audit, licensing, uptime
 from .. import tasks as task_service
 from ..agents.monitoring.agent import normalize_url
 from ..config import Settings, get_settings
-from ..models import Site, SiteCheck
+from ..models import Server, Site, SiteCheck
 from .deps import Principal, client_ip, get_db, require_operator, require_user, to_dict
 
 router = APIRouter(prefix="/api/sites", tags=["sites"])
+
+
+ENVIRONMENTS = ("production", "staging", "test")
+SITE_KEY_PATTERN = r"^([a-z0-9][a-z0-9_-]{0,63})?$"
 
 
 class SiteBody(BaseModel):
@@ -26,6 +30,7 @@ class SiteBody(BaseModel):
     client: str = Field("", max_length=200)
     notes: str = Field("", max_length=4000)
     enabled: bool = True
+    environment: str = Field("production", pattern="^(production|staging|test)$")
 
     @field_validator("url")
     @classmethod
@@ -38,6 +43,11 @@ class SitePatch(BaseModel):
     client: str | None = Field(None, max_length=200)
     notes: str | None = Field(None, max_length=4000)
     enabled: bool | None = None
+    # Admin only: these decide where approved repairs run and whether they count as production.
+    environment: str | None = Field(None, pattern="^(production|staging|test)$")
+    server_id: int | None = None
+    server_site_key: str | None = Field(None, pattern=SITE_KEY_PATTERN, description="The site's key in the server's cc-gate configuration")
+    unlink_server: bool = False
 
 
 class CheckBody(BaseModel):
@@ -70,7 +80,8 @@ async def create_site(
     count = await session.scalar(select(func.count()).select_from(Site))
     if ent.max_sites is not None and count >= ent.max_sites:
         raise HTTPException(403, f"the {ent.edition.title} edition monitors up to {ent.max_sites} sites")
-    site = Site(name=body.name.strip(), url=body.url, client=body.client.strip(), notes=body.notes, enabled=body.enabled)
+    site = Site(name=body.name.strip(), url=body.url, client=body.client.strip(), notes=body.notes, enabled=body.enabled,
+                environment=body.environment)
     session.add(site)
     try:
         await session.flush()
@@ -118,7 +129,14 @@ async def patch_site(
     principal: Principal = Depends(require_operator), session: AsyncSession = Depends(get_db),
 ) -> dict:
     site = await _site(session, site_id)
-    changes = body.model_dump(exclude_none=True)
+    changes = body.model_dump(exclude_none=True, exclude={"unlink_server"})
+    admin_fields = {"environment", "server_id", "server_site_key"} & set(changes) or body.unlink_server
+    if admin_fields and principal.role != "admin":
+        raise HTTPException(403, "only an admin can change a site's environment or server link")
+    if body.unlink_server:
+        changes.update(server_id=None, server_site_key="")
+    elif "server_id" in changes and await session.get(Server, changes["server_id"]) is None:
+        raise HTTPException(400, "no such server")
     for key, value in changes.items():
         setattr(site, key, value)
     site.updated_at = datetime.now(UTC)

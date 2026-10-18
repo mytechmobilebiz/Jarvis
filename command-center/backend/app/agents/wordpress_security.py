@@ -17,9 +17,10 @@ from sqlalchemy import select
 
 from .. import __version__, uptime
 from ..models import Site, SiteCheck
-from .base import AgentContext, AgentResult, ArtifactSpec, BaseAgent, EventSpec, Intent, NoParams, Params, Risk, capability
+from .base import AgentContext, AgentResult, ArtifactSpec, BaseAgent, EventSpec, Finding, Intent, NoParams, Params, Risk, capability
 from .monitoring.agent import latest_wordpress_version, make_checker, record_check
 from .monitoring.checks import SiteReport
+from .wp_server import ServerSideCapabilities, site_approval_context
 
 # What to do about each finding, and which approval-based repair (if any) applies.
 REMEDIATION: dict[str, tuple[str, str | None]] = {
@@ -53,6 +54,14 @@ REMEDIATION: dict[str, tuple[str, str | None]] = {
     "fetch_failed": ("Check the server, DNS and the domain's registration.", None),
     "page_problem": ("Check the hosting account, database and PHP error log.", None),
     "http_error": ("Check the server and PHP error logs.", None),
+    # From the server-side (WP-CLI) diagnosis:
+    "site_url_mismatch": ("Set home/siteurl back to the site's address.", "repair_restore_site_url"),
+    "core_modified": ("Replace the modified core files with the official ones.", "repair_reinstall_core"),
+    "plugin_update_available": ("Update the plugin after a backup.", "repair_update_plugin"),
+    "maintenance_on": ("Switch maintenance mode off if no update is running.", "repair_maintenance_mode"),
+    "debug_log_present": ("Move debug.log out of the web root and turn off WP_DEBUG_LOG.", "repair_quarantine_debug_log"),
+    "new_admin_account": ("Confirm the new administrator with the site owner; remove it if unknown.", None),
+    "site_down_after_repair": ("Undo the last repair (for a plugin: repair_activate_plugin) and check the error log.", None),
 }
 SEVERITY_ORDER = {"critical": 0, "warning": 1, "info": 2}
 
@@ -78,7 +87,7 @@ def _fmt_pct(v: float | None) -> str:
     return "n/a" if v is None else f"{v:g}%"
 
 
-class WordPressSecurityAgent(BaseAgent):
+class WordPressSecurityAgent(ServerSideCapabilities, BaseAgent):
     name = "wordpress_security"
     title = "WordPress Security & Repair"
     description = (
@@ -96,6 +105,9 @@ class WordPressSecurityAgent(BaseAgent):
             "cron": "43 6 * * 1",
         }
     ]
+
+    async def approval_context(self, session: Any, capability: str, params: dict[str, Any]) -> dict[str, Any]:
+        return await site_approval_context(session, params.get("site_id"))
 
     def intents(self) -> list[Intent]:
         return [
@@ -135,9 +147,21 @@ class WordPressSecurityAgent(BaseAgent):
         if site is None:
             raise ValueError(f"no monitored site with id {params.site_id}")
         [(site, report)], events = await self._scan(ctx, [site])
-        serious = [f for f in report.findings if f.severity != "info"]
-        summary = f"{site.name}: {rating([f.model_dump() for f in report.findings])}, {len(serious)} issue(s). " + report.summary()
-        return AgentResult(summary=summary, data={"site_id": site.id, "status": report.status}, findings=report.findings, events=events)
+        findings = list(report.findings)
+        server_note = ""
+        if site.server_id and site.server_site_key and ctx.ssh is not None:
+            from .wp_server import SiteParams
+
+            try:
+                diag = await self.wp_diagnose(ctx, SiteParams(site_id=site.id))
+                findings.extend(diag.findings)
+                events.extend(diag.events)
+                server_note = " Server-side check done."
+            except Exception as exc:  # noqa: BLE001 - the HTTP scan stands on its own
+                findings.append(Finding(code="server_check_failed", severity="warning", title=f"Server-side check failed: {exc}"[:300]))
+        serious = [f for f in findings if f.severity != "info"]
+        summary = f"{site.name}: {rating([f.model_dump() for f in findings])}, {len(serious)} issue(s). " + report.summary() + server_note
+        return AgentResult(summary=summary, data={"site_id": site.id, "status": report.status}, findings=findings, events=events)
 
     @capability(
         risk=Risk.READ,
@@ -170,7 +194,8 @@ class WordPressSecurityAgent(BaseAgent):
         check = await self._latest_check(ctx, site)
         findings = sorted(check.findings if check else [], key=lambda f: SEVERITY_ORDER.get(f.get("severity", "info"), 3))
         issues = [f for f in findings if f.get("severity") != "info"]
-        overall = rating(findings) if check else "NOT SCANNED"
+        server_issues = [f for f in (site.last_diagnosis or {}).get("findings") or [] if f.get("severity") != "info"]
+        overall = rating(findings + server_issues) if check else "NOT SCANNED"
         lines = [f"## {site.name}", "", f"{site.url} · **{overall}**", ""]
         if check is None:
             lines += ["No checks yet. Run a security scan for this site.", ""]
@@ -223,6 +248,26 @@ class WordPressSecurityAgent(BaseAgent):
             if scripts is not None:
                 lines.append("- Third-party script domains: " + (", ".join(scripts) if scripts else "none"))
             lines.append("")
+        diag = site.last_diagnosis or {}
+        if diag:
+            server_findings = [f for f in diag.get("findings") or [] if f.get("severity") != "info"]
+            verify = diag.get("core_verify") or {}
+            lines += [f"### Server-side checks (WP-CLI on {diag.get('server', 'the server')}, {str(diag.get('at', ''))[:16].replace('T', ' ')} UTC)", "",
+                      f"- WordPress {diag.get('core_version', '?')}; core files: "
+                      + {True: "match the official checksums", False: "**modified**", None: "could not be checked"}.get(verify.get("verified"), "not checked"),
+                      "- home/siteurl: " + ("correct" if (diag.get("site_urls") or {}).get("matches") else
+                                             f"**{(diag.get('site_urls') or {}).get('home')}** (expected {(diag.get('site_urls') or {}).get('expected')})"),
+                      f"- Plugins: {len(diag.get('plugins') or [])}, updates available: "
+                      + (", ".join(p["name"] for p in diag.get("plugins") or [] if p.get("update") == "available") or "none"),
+                      f"- Administrator accounts: {len(diag.get('admins') or [])}", ""]
+            if server_findings:
+                lines += ["| Severity | Issue | What to do | Repair (needs approval) |", "|---|---|---|---|"]
+                for f in server_findings:
+                    todo, repair = REMEDIATION.get(f.get("code", ""), ("Review this finding.", None))
+                    lines.append(f"| {f.get('severity')} | {str(f.get('title', '')).replace('|', '/')} | {todo} | {repair or '-'} |")
+                lines.append("")
+        elif site.server_id:
+            lines += ["_Linked to a server, but no server-side check yet: run wp_diagnose or a security scan._", ""]
         incidents = await uptime.incidents(ctx.session, site.id)
         if incidents:
             lines += ["### Downtime in the last 30 days", ""]
@@ -232,8 +277,8 @@ class WordPressSecurityAgent(BaseAgent):
             lines.append("")
         summary = {
             "site_id": site.id, "rating": overall,
-            "critical": sum(1 for f in issues if f.get("severity") == "critical"),
-            "warnings": sum(1 for f in issues if f.get("severity") == "warning"),
+            "critical": sum(1 for f in issues + server_issues if f.get("severity") == "critical"),
+            "warnings": sum(1 for f in issues + server_issues if f.get("severity") == "warning"),
         }
         return "\n".join(lines), summary
 

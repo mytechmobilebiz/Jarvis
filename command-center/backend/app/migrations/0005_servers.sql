@@ -52,6 +52,9 @@ ALTER TABLE sites ADD COLUMN environment TEXT NOT NULL DEFAULT 'production'
     CHECK (environment IN ('production', 'staging', 'test'));
 ALTER TABLE sites ADD COLUMN server_id BIGINT REFERENCES servers(id) ON DELETE SET NULL;
 ALTER TABLE sites ADD COLUMN server_site_key TEXT NOT NULL DEFAULT '';
+-- The latest server-side (WP-CLI) diagnosis, for reports and change detection.
+ALTER TABLE sites ADD COLUMN last_diagnosis JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE sites ADD COLUMN last_diagnosis_at TIMESTAMPTZ;
 
 -- The nightly security scan now belongs to the WordPress Security & Repair agent.
 UPDATE schedules

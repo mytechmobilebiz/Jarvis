@@ -190,6 +190,8 @@ class Site(Base):
     environment: Mapped[str] = mapped_column(Text, default="production")
     server_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("servers.id", ondelete="SET NULL"))
     server_site_key: Mapped[str] = mapped_column(Text, default="")
+    last_diagnosis: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    last_diagnosis_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class SiteCheck(Base):
