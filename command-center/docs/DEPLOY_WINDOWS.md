@@ -120,6 +120,16 @@ follow [SERVER_SETUP.md](SERVER_SETUP.md). The `server` folder of this package
 holds what you copy there. Until you do, everything else works as before and no
 SSH connection is made.
 
+## Remote access (optional, not set up)
+
+Reaching the dashboard from outside the PC (for example at
+`https://command.infinitemarketingai.com` through Cloudflare Tunnel and
+Cloudflare Access) is planned but **not switched on**: see
+[REMOTE_ACCESS_PLAN.md](REMOTE_ACCESS_PLAN.md). It needs the owner's approval at
+each step, opens no router ports and leaves the local http://localhost:8090
+unchanged. Its files (`docker-compose.tunnel.yml`, `remote-access\tunnel.conf`)
+do nothing until `.env` switches them on.
+
 ## Credit Repair module
 
 Off by default. To try it, sign in as admin, tick **Sensitive data** for your
@@ -171,6 +181,9 @@ Copy-Item .\.env ..\InfiniteAI-CommandCenter-new\.env
 Set-Location ..\InfiniteAI-CommandCenter-new
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1   # rebuilds; migrations apply automatically
 ```
+
+If remote access is switched on, the copied `.env` keeps it on; its token stays
+in `C:\InfiniteAI\secrets`, outside the installation folder.
 
 (With Git instead: `git pull`, then `install.ps1`.) Once the new folder is
 verified, the old one can be deleted; keep its `backups\` folder.

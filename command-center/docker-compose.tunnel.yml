@@ -1,16 +1,15 @@
 # OPTIONAL remote access through Cloudflare Tunnel. Not used unless enabled; see
 # docs/REMOTE_ACCESS_PLAN.md before turning it on (it needs the owner's approval,
-# a Cloudflare zone, a tunnel and an Access application first).
+# a Cloudflare zone, a tunnel and an Access application first, and the plan's
+# exact enable/disable commands).
 #
-# Enable:  add this line to .env (Windows separates the files with ';'):
-#            COMPOSE_FILE=docker-compose.yml;docker-compose.tunnel.yml
-#          put the tunnel token in secrets\cloudflared-token.txt, then run scripts\start.ps1
-# Disable: remove that line from .env, run:  docker compose -f docker-compose.yml -f docker-compose.tunnel.yml down cloudflared
-#          then scripts\start.ps1  (the local dashboard at http://localhost:8090 is unchanged either way)
-#
-# cloudflared joins only the private "tunnel" network. From there it can reach the
-# dashboard's tunnel listener (remote-access/tunnel.conf, port 8081, never published)
-# and the internet; it cannot reach the API, PostgreSQL, the worker or n8n.
+# What cloudflared can and cannot reach: it joins only the "tunnel" network below,
+# where the dashboard's tunnel listener (remote-access/tunnel.conf, port 8081, never
+# published) is the only Command Center service. It is not on the networks of the
+# API, PostgreSQL, the worker or n8n. Like any container on a Docker bridge network
+# it does have outbound internet access (it needs it to reach Cloudflare), so the
+# routes configured for the tunnel in Cloudflare must stay limited to
+# dashboard:8081 (the plan's monthly check).
 
 services:
   dashboard:
@@ -18,7 +17,14 @@ services:
       tunnel:
         ipv4_address: 172.29.37.12
     volumes:
-      - ./remote-access/tunnel.conf:/etc/nginx/conf.d/tunnel.conf:ro
+      # Long syntax: if the file is missing, fail instead of creating a directory there
+      # (which would stop nginx, including the local 127.0.0.1:8090 site).
+      - type: bind
+        source: ./remote-access/tunnel.conf
+        target: /etc/nginx/conf.d/tunnel.conf
+        read_only: true
+        bind:
+          create_host_path: false
 
   cloudflared:
     image: ${REGISTRY:-docker.io}/cloudflare/cloudflared:2026.10.1
@@ -31,6 +37,11 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    # Docker Desktop's names for the Windows host resolve to an unroutable address here,
+    # so a mistaken route such as http://host.docker.internal:5678 cannot reach the PC.
+    extra_hosts:
+      - "host.docker.internal:192.0.2.1"
+      - "gateway.docker.internal:192.0.2.1"
     depends_on:
       dashboard:
         condition: service_healthy
@@ -46,7 +57,10 @@ networks:
         # If Docker reports "Pool overlaps with other one on this address space", pick another
         # private /28 and change the two addresses here and set_real_ip_from in tunnel.conf.
         - subnet: 172.29.37.0/28
+          # Dynamic addresses come only from .0-.7, so no other container can ever get .10 or .12.
+          ip_range: 172.29.37.0/29
 
 secrets:
   cloudflared_token:
-    file: ./secrets/cloudflared-token.txt
+    # Kept outside the installation folder so updates (a new folder) keep using it.
+    file: ${CLOUDFLARED_TOKEN_FILE:-./secrets/cloudflared-token.txt}

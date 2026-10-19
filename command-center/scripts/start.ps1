@@ -12,6 +12,19 @@ foreach ($line in Get-Content ".env") { if ($line -match '^\s*([A-Za-z_][A-Za-z0
 $dashboardPort = if ($envValues["DASHBOARD_PORT"]) { $envValues["DASHBOARD_PORT"] } else { "8090" }
 $n8nPort = if ($envValues["N8N_PORT"]) { $envValues["N8N_PORT"] } else { "5680" }
 
+# Remote access (docker-compose.tunnel.yml, see docs\REMOTE_ACCESS_PLAN.md): if .env enables it,
+# check its files first, so a missing token does not leave a half-started system.
+if ($envValues["COMPOSE_FILE"] -match 'docker-compose\.tunnel\.yml') {
+  $tokenFile = if ($envValues["CLOUDFLARED_TOKEN_FILE"]) { $envValues["CLOUDFLARED_TOKEN_FILE"] } else { ".\secrets\cloudflared-token.txt" }
+  foreach ($needed in @($tokenFile, ".\remote-access\tunnel.conf")) {
+    if (-not (Test-Path $needed -PathType Leaf)) {
+      Write-Host "Remote access is switched on in .env (COMPOSE_FILE), but $needed is missing." -ForegroundColor Red
+      Write-Host "Restore the file, or switch remote access off as described in docs\REMOTE_ACCESS_PLAN.md (section 10)." -ForegroundColor Red
+      exit 1
+    }
+  }
+}
+
 $composeArgs = @("compose", "up", "-d")
 if (-not $NoBuild) { $composeArgs += "--build" }
 Write-Host "docker $($composeArgs -join ' ')"

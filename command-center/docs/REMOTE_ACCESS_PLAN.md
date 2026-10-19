@@ -25,14 +25,18 @@ Contabo.
 **Owner step 0 (read-only):** on the Windows PC, in PowerShell:
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/mytechmobilebiz/Jarvis/ccr-eb27a2af-8u7i39/command-center/scripts/dns-inventory.ps1 -OutFile dns-inventory.ps1
+Invoke-WebRequest https://raw.githubusercontent.com/mytechmobilebiz/Jarvis/bf1bcd059ef80883f6b964f675f70b35fe8544c2/command-center/scripts/dns-inventory.ps1 -OutFile dns-inventory.ps1
+(Get-FileHash .\dns-inventory.ps1 -Algorithm SHA256).Hash   # must be 4092D296A9549D00E166BAFF73472BC2DC844DAF2E66C072B5936B140E0844C4
 powershell -NoProfile -ExecutionPolicy Bypass -File .\dns-inventory.ps1
 ```
 
-It asks a public resolver and then the domain's own nameserver for the apex,
-`www`, `mail`, `webmail`, `ftp`, `autodiscover`, `autoconfig`, `ns1`, `ns2`,
-MX, SPF, DMARC, DKIM (`default` selector), DS (DNSSEC) and the four planned
-hostnames, and saves a text report (public DNS data only, no secrets). Also open
+(The link is pinned to one commit, so the file cannot change under you; the
+script is also in the 0.5.0 package as `scripts\dns-inventory.ps1`.) It asks a
+public resolver and then the domain's own nameserver for the apex, `www`,
+`mail`, `webmail`, `ftp`, `autodiscover`, `autoconfig`, `ns1`, `ns2`, MX, SPF,
+DMARC, DKIM (`default` selector), DS (DNSSEC), the reverse name (PTR) of the
+website's address and that name's own address, a wildcard check, and the four
+planned hostnames, and saves a text report (public DNS data only, no secrets). Also open
 the zone in CWP (DNS Functions > Edit DNS Zone) and note every record, **without
 saving anything**, because DNS cannot list a whole zone and a scan can miss
 records. Send both; they decide the path below.
@@ -43,6 +47,8 @@ records. Send both; they decide the path below.
 | NS at CWP, the registrar or Contabo | Option A, B, C or D below. |
 | A DS record | DNSSEC is on: it must be switched off at the registrar before any nameserver change, and back on afterwards with Cloudflare's DS record. |
 | `ns1`/`ns2.infinitemarketingai.com` answer with the VPS address | Other domains may use them as their nameservers: their A records must be copied exactly (and the registrar's glue records left alone). |
+| The PTR name is under this domain (e.g. a server hostname) | Its A record must be copied, or mail from the VPS may be rejected. |
+| The wildcard check answers | The zone has a `*` record: copy it too. |
 
 ## 2. Can Cloudflare Tunnel work without disrupting the website or email?
 
@@ -75,13 +81,13 @@ the rollback. The risk is in the nameserver move, not in the tunnel.
         ▼
  Windows PC · Docker Desktop
    cloudflared container ──(private "tunnel" network 172.29.37.0/28)──► dashboard nginx :8081 (tunnel.conf)
-     · checks the Access token (access.required + AUD)                      · Access token present, else 403
-     · can reach only the dashboard                                          · visitor IP only from cloudflared
+     · validates the Access token (access.required + AUD)                   · Access token present, else 403
+     · not on the API/PostgreSQL/worker/n8n networks                         · visitor IP only from cloudflared
                                                                              · Secure cookie, HSTS (this host only)
                                                                              · unknown hostnames: connection closed
                                                                                      │ /api → api:8000 (app sign-in,
                                                                                      ▼  roles, approvals as today)
-   unchanged:  http://localhost:8090 → dashboard nginx :8080 (local use)
+   unchanged:  http://localhost:8090 → dashboard nginx :8080 (local use; refuses the public hostname)
    never routed: PostgreSQL, the n8n editor (5680), the API port, the worker, XAMPP, the other n8n on 5678
 ```
 
@@ -98,7 +104,20 @@ Hostnames:
 The configuration is in the repository, inactive until enabled:
 `docker-compose.tunnel.yml` (the cloudflared container, the private network,
 the extra nginx listener) and `remote-access/tunnel.conf` (the listener).
-Enabling it is one line in `.env`; disabling it is removing that line.
+Enabling it is one line in `.env` plus the token file; disabling it is section
+10.
+
+**What cloudflared can reach.** It is not on the networks of the API,
+PostgreSQL, the worker or n8n, and Docker Desktop's names for the PC
+(`host.docker.internal`) are pointed at an unroutable address inside it. But like
+every container on a normal Docker network it has outbound internet access (it
+needs it to reach Cloudflare), so in principle it could reach other addresses on
+your home network or the PC by IP if a route told it to. The routes come from the
+tunnel's settings in your Cloudflare account. So: keep exactly **one** public
+hostname (`command.` → `dashboard:8081`) plus the catch-all, **no** private-network
+routes, WARP device enrolment off, and only you as a member of the Cloudflare
+account; check this monthly (step 7). The alternative is a locally managed tunnel
+whose routes live in a read-only file on the PC.
 
 ## 4. Security controls
 
@@ -110,12 +129,12 @@ sessions, roles, approvals) works exactly as today.
 |---|---|---|
 | Who may enter | Cloudflare Access application for `command.infinitemarketingai.com` | Allow policy: the owner's email address(es) only; login method one-time PIN or Google; optionally require an authenticator (independent MFA); session 12-24 h. Deny everyone else (Access is deny by default). |
 | Token checked before the PC | cloudflared public hostname settings | Protect with Access: required, team name, the application's AUD tag |
-| Token checked again | `tunnel.conf` | Requests without `Cf-Access-Jwt-Assertion` get 403 |
+| Token presence checked again | `tunnel.conf` | Requests without `Cf-Access-Jwt-Assertion` get 403. This only checks that the header exists; the signature is checked by cloudflared, so "Protect with Access" must stay on (step 7 checks it). |
 | HTTPS | Cloudflare edge (Universal SSL covers `command.`) | A Single Redirect rule http→https for `command.` only; minimum TLS 1.2 |
 | Secure session cookie | `tunnel.conf` | `proxy_cookie_flags cc_session secure` (local http://localhost:8090 keeps working) |
 | HSTS | `tunnel.conf` | `max-age=86400`, this hostname only. **Never** zone-wide HSTS, `includeSubDomains` or preload (they would bind the live website and make rollback dangerous) |
 | Trusted proxy headers | `tunnel.conf` | Visitor IP from `CF-Connecting-IP` only when the peer is cloudflared's fixed address; `X-Forwarded-For`, `X-Real-IP` overwritten; `X-Forwarded-Proto: https` |
-| Hostname allow-list | `tunnel.conf` | Only `command.`; anything else: connection closed |
+| Hostname allow-list | `tunnel.conf` | Only `command.` on the tunnel listener; anything else: connection closed. The ordinary listener (8090) refuses `command.` so it can never be reached without these checks |
 | Cross-site writes | app (unchanged) | Custom header on every change request, no CORS; never add CORS for `*.infinitemarketingai.com` |
 | Login attempts | app throttle (now per real visitor) + one Cloudflare rate-limiting rule on `/api/auth/login` (Free plan: path only, 10 s window) | |
 | Other Cloudflare settings | zone | Proxy **only** the tunnel hostnames; **Bot Fight Mode off** (it cannot be skipped later for webhooks); WAF custom rules are kept for `hooks.` (section 8), since Access already blocks everything on `command.` |
@@ -140,7 +159,10 @@ untrusted address on the same network:
 | Visitor IP stated by cloudflared, with forged `X-Forwarded-For` / `X-Real-IP` | audit log shows the real visitor IP; forgeries ignored |
 | Visitor IP claimed by any other peer | ignored; the peer's own address is logged |
 | Local sign-in on 127.0.0.1:8090 | unchanged |
-| Merged Compose configuration | valid; cloudflared only on the tunnel network, read-only, no capabilities |
+| The public hostname on the ordinary listener (8090) | connection closed; `localhost` and `127.0.0.1` still served |
+| Other containers on the tunnel network | get addresses only from .0-.7, never cloudflared's .10 |
+| Merged Compose configuration | valid; cloudflared only on the tunnel network, read-only, no capabilities, no route to the PC by name |
+| `start.ps1` with remote access switched on but the token file missing | stops with a clear message before touching Docker |
 
 Code review findings that shaped the design (no change to the running
 installation was needed for them):
@@ -160,35 +182,53 @@ installation was needed for them):
 Not testable here and checked at go-live (section 6, step 7): the Cloudflare
 side itself (certificate, Access login, the tunnel connection, real headers).
 
+An independent security review of the first draft of this plan and its files
+found 12 problems; all are fixed in this version. The most important: adding
+the switch line to `.env` by hand would have joined it to the file's last line
+and broken every script (now a scripted, tested edit); cloudflared can reach
+more than the dashboard by IP (now stated, with name-based routes to the PC
+blocked, the public hostname refused on the ordinary listener, and a monthly
+route check); the token would have been saved in PowerShell's history and lost
+on updates (now typed in hidden and stored outside the installation folder).
+
 ## 6. Setup steps (each gate needs the owner's explicit approval)
+
+All PowerShell commands run in the Command Center folder (for example
+`C:\InfiniteAI\InfiniteAI-CommandCenter`) unless stated otherwise.
 
 ### Step 0: inventory (read-only, now)
 Run `dns-inventory.ps1` (section 1); note the CWP zone; note DNSSEC; note the
 registrar. Install the Command Center **0.5.0** first (it carries the inactive
-tunnel files and the version check).
+tunnel files, the version check and the start-up guard for the tunnel files).
 
 ### Gate A: Cloudflare account and the zone in *pending* state (no live effect)
-1. Create a Cloudflare account with the owner's email; turn on two-factor
-   authentication for it.
+1. Create a Cloudflare account with an email address **outside** this domain
+   (for example the owner's Gmail), so a DNS mistake can never lock you out of
+   password resets or one-time PINs. Turn on two-factor authentication and keep
+   the recovery codes offline.
 2. Add site `infinitemarketingai.com`, Free plan. When asked, **untick "proxy
    imported records"**.
 3. Import the zone: export it from CWP as a BIND zone file if CWP offers it,
    otherwise add records by hand. Every record **DNS-only** (grey cloud).
 4. Compare every record with the inventory and the CWP zone: apex and `www`
    A/AAAA, `mail`, `webmail`, `ftp`, `autodiscover`/`autoconfig`, MX, SPF,
-   DKIM (every selector), DMARC, verification TXT records, SRV, CAA, and
-   `ns1`/`ns2` A records. Cloudflare shows the two nameservers it assigned.
-5. Check the copy at those nameservers before anything changes (read-only):
-   `.\dns-inventory.ps1 -Resolver <one of the assigned nameservers>` produces a
-   second report from Cloudflare's copy; it must match the first report line for
-   line (TTLs may differ). Check any record the script does not cover with
+   DKIM (every selector), DMARC, verification TXT records, SRV, CAA, a `*`
+   record if present, the PTR name's A record, and `ns1`/`ns2` A records.
+   Cloudflare shows the two nameservers it assigned.
+5. Check Cloudflare's copy before anything changes (read-only): a second report
+   from one of the assigned nameservers,
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\dns-inventory.ps1 -Resolver <assigned nameserver>
+   ```
+   must match the first report line for line, except SOA, NS and DS (which
+   legitimately differ) and TTLs. Check anything the script does not cover with
    `Resolve-DnsName <name> -Type <type> -Server <assigned nameserver>`.
 A pending zone changes nothing for visitors; a Free pending zone is deleted
 after 28 days if not activated.
 
 ### Gate B: the nameserver change (the only step that touches live DNS)
 1. Choose a quiet time. If DNSSEC is on: switch it off at the registrar, then
-   wait for the DS record's TTL (often 1-2 days) before continuing.
+   wait out the DS record's TTL (often 1-2 days) before continuing.
 2. At the registrar, replace the nameservers with Cloudflare's two. Keep a
    screenshot of the old values. **Do not delete or edit the zone in CWP**: it is
    the rollback.
@@ -197,9 +237,16 @@ after 28 days if not activated.
    working because the records point at the VPS unproxied).
 4. From now on, DNS changes are made at Cloudflare. CWP's own zone editor no
    longer affects the live domain (for example, when CWP creates a new DKIM key
-   or a subdomain, copy that record to Cloudflare).
+   or a subdomain, copy that record to Cloudflare, and keep a note of every
+   record added at Cloudflare so a rollback can copy it back to CWP).
 5. If DNSSEC was on: enable it in Cloudflare and add Cloudflare's DS record at
    the registrar.
+6. As soon as the zone is **Active** (before any hostname is published):
+   - Rules → Redirect rules → Single Redirect: hostname equals
+     `command.infinitemarketingai.com` and scheme `http` → `https`, 301. (Leave the
+     zone-wide "Always Use HTTPS" off: it would apply to every proxied name.)
+   - SSL/TLS → Edge certificates: minimum TLS 1.2. **HSTS off** at zone level.
+   - Security → Bots: **Bot Fight Mode off**.
 
 ### Gate C: Cloudflare Access (Zero Trust Free plan, under 50 users)
 1. Zero Trust dashboard → choose a team name (it becomes
@@ -208,55 +255,81 @@ after 28 days if not activated.
    Google. Optionally require an authenticator app (independent MFA).
 3. Access → Applications → Self-hosted → public hostname
    `command.infinitemarketingai.com` → policy **Allow**, Include **Emails** =
-   the owner's address(es) → session duration 12-24 h → save. Copy the
-   application's **AUD tag**.
+   the owner's address(es), **off-domain** as in gate A → session duration
+   12-24 h → save. Copy the application's **AUD tag**.
    Creating the Access application **before** the tunnel route means the
    hostname is never public without it.
 
 ### Gate D: the tunnel (the PC side)
-1. Zero Trust → Networks → Tunnels (menu names change from time to time) → Create → Cloudflared → name
-   `command-center-pc` → environment **Docker** → copy only the token (the long
-   value after `--token`).
-2. On the PC, in the Command Center folder (PowerShell):
+1. Zero Trust → Networks → Tunnels (menu names change from time to time) →
+   Create → Cloudflared → name `command-center-pc` → environment **Docker** →
+   copy only the token (the long value after `--token`).
+2. On the PC, in PowerShell, store the token **outside** the Command Center
+   folder (so updates, which use a new folder, keep it), readable only by you
+   and the system, without the token ever appearing on screen or in PowerShell's
+   history:
    ```powershell
-   New-Item -ItemType Directory -Force .\secrets | Out-Null
-   Set-Content -Path .\secrets\cloudflared-token.txt -Value '<paste the token>' -NoNewline -Encoding ASCII
-   icacls .\secrets /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" "SYSTEM:(OI)(CI)F" | Out-Null
-   Add-Content -Path .\.env -Value 'COMPOSE_FILE=docker-compose.yml;docker-compose.tunnel.yml'
+   $dir = 'C:\InfiniteAI\secrets'
+   $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+   New-Item -ItemType Directory -Force $dir | Out-Null
+   icacls $dir /inheritance:r /grant:r "*${sid}:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F"
+   if ($LASTEXITCODE) { throw 'icacls failed: stop here' }
+   $s = Read-Host 'Paste the tunnel token' -AsSecureString
+   $t = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)).Trim()
+   [IO.File]::WriteAllText("$dir\cloudflared-token.txt", $t, (New-Object Text.ASCIIEncoding))
+   Remove-Variable s, t
+   icacls "$dir\cloudflared-token.txt"   # expect only your account and NT AUTHORITY\SYSTEM
+   ```
+   Afterwards clear the clipboard history (Win+V → Clear all) if it is on.
+3. Switch remote access on in `.env` (this edits the file safely; do not add the
+   line by hand, because `.env` has no line break at its end), check, and start:
+   ```powershell
+   if (-not (Test-Path .\remote-access\tunnel.conf -PathType Leaf)) { throw 'remote-access\tunnel.conf missing: install 0.5.0 first' }
+   $p = Join-Path (Get-Location) '.env'; $text = [IO.File]::ReadAllText($p)
+   if ($text -notmatch '(?m)^\s*COMPOSE_FILE\s*=') {
+     if ($text.Length -and -not $text.EndsWith("`n")) { $text += "`r`n" }
+     $text += "COMPOSE_FILE=docker-compose.yml;docker-compose.tunnel.yml`r`nCLOUDFLARED_TOKEN_FILE=C:/InfiniteAI/secrets/cloudflared-token.txt`r`n"
+     [IO.File]::WriteAllText($p, $text, (New-Object Text.UTF8Encoding $false))
+   }
+   docker compose config --services     # must list cloudflared; stop here if it errors
    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1
    ```
-   `start.ps1` recreates the dashboard container (a few seconds) and starts
-   cloudflared. The tunnel shows **Healthy** in the Zero Trust dashboard.
-3. Tunnel → Public hostname → Add: subdomain `command`, domain
+   `start.ps1` checks the token and `tunnel.conf` first, recreates the dashboard
+   container (a few seconds) and starts cloudflared. The tunnel shows
+   **Healthy** in the Zero Trust dashboard, with exactly **one** connector.
+4. Tunnel → Public hostname → Add: subdomain `command`, domain
    `infinitemarketingai.com`, service **HTTP** `dashboard:8081`. Under
    Additional settings → Access: **Protect with Access** on, team name, AUD tag.
    Cloudflare creates one new proxied CNAME `command` → `<id>.cfargotunnel.com`;
    no existing record is touched.
-4. Do not add any other public hostname. The tunnel's catch-all stays
-   "http_status:404".
+5. Do not add any other public hostname or any private-network route. The
+   tunnel's catch-all stays "http_status:404".
 
-### Gate E: zone settings
-- Rules → Redirect rules → Single Redirect: hostname equals
-  `command.infinitemarketingai.com` and scheme http → https (301). (Leave the
-  zone-wide "Always Use HTTPS" off unless only tunnel hostnames are proxied.)
-- SSL/TLS → Edge certificates: minimum TLS 1.2. **HSTS off** at zone level.
-- Security → WAF → Rate limiting rule (Free: 1 rule): path equals
-  `/api/auth/login`, 10 requests per 10 s per IP → block.
-- Security → Bots: **Bot Fight Mode off**.
+### Gate E: login rate limit
+Security → WAF → Rate limiting rule (Free: 1 rule): path equals
+`/api/auth/login`, 10 requests per 10 s per IP → block. (On the Free plan the
+rule can match only the path, not the hostname; with only `command.` proxied,
+that is the same thing.)
 
-### Step 7: check from outside (phone on mobile data)
+### Step 7: check from outside (phone on mobile data), then monthly
 1. `https://command.infinitemarketingai.com` → Cloudflare Access page → sign in
    → the Command Center sign-in → dashboard.
 2. In a private window without the Access sign-in: only the Access page appears.
 3. Browser developer tools → Application → Cookies: `cc_session` is *Secure*,
    *HttpOnly*, *SameSite Strict*; the response has `Strict-Transport-Security:
    max-age=86400`.
-4. Automation Logs / Activity log shows your phone's public IP for the sign-in.
+4. Activity log shows your phone's public IP for the sign-in.
 5. `http://command.infinitemarketingai.com` redirects to https.
-6. `https://hooks.infinitemarketingai.com`, `api.`, `clients.`: no DNS record.
+6. `hooks.`, `api.`, `clients.`: no DNS record.
 7. On the PC, `http://localhost:8090` and the n8n editor at
    `http://localhost:5680` work as before; neither is reachable from outside.
 8. Website and email still work.
+9. **Monthly, in the Zero Trust dashboard:** the tunnel has exactly one public
+   hostname (`command.` → `dashboard:8081`) with *Protect with Access* on and the
+   right AUD tag, the catch-all, no private-network (CIDR) routes; exactly one
+   connector, from your own public IP; WARP device enrolment off; you are the
+   only member of the Cloudflare account; the Access policy lists only your
+   addresses.
 
 ### Step 8: keep the PC available
 - Power: `powercfg /change standby-timeout-ac 0` and
@@ -266,27 +339,28 @@ after 28 days if not activated.
   Desktop starts only after sign-in); otherwise remote access is down after a
   Windows Update restart until someone signs in.
 - Windows Update: set active hours; check remote access after updates.
-- cloudflared does not update itself: when a new release is announced, change
-  the pinned version in `docker-compose.tunnel.yml` (through a Command Center
-  update) and run `start.ps1`.
+- cloudflared does not update itself: its version is pinned in
+  `docker-compose.tunnel.yml` and moves with Command Center updates.
+- Updating the Command Center (new folder, copied `.env`) keeps remote access,
+  because the token lives in `C:\InfiniteAI\secrets`.
 
 ## 7. Risks
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| A record missed in the zone copy | Part of the website or email stops resolving | Inventory + CWP zone + record-by-record check at Cloudflare's nameservers before gate B; rollback = old nameservers |
+| A record missed in the zone copy | Part of the website or email stops resolving | Inventory + CWP zone + second report from Cloudflare's nameservers before gate B; rollback = old nameservers |
 | DNSSEC left on during the move | Whole domain unreachable for validating resolvers | Switch off and wait out the DS TTL first |
-| `ns1`/`ns2` serve other domains | Those domains break if the A records are missing | Copy them exactly; leave the registrar's glue records alone |
+| `ns1`/`ns2` serve other domains, or the PTR name is under this domain | Those domains break, or mail from the VPS is rejected | Copy those A records exactly; leave the registrar's glue records alone |
 | CWP keeps editing its own zone | Changes made in CWP stop taking effect | Make DNS changes at Cloudflare from gate B on |
 | Accidentally proxying the website or mail records | Website behaviour changes; mail breaks (mail cannot go through the proxy) | Everything existing stays DNS-only; only `command.` is proxied |
-| Zone-wide HSTS or "Always Use HTTPS" | Locks the website to HTTPS through Cloudflare; makes rollback unsafe | Not used; HSTS only on `command.`, max-age 1 day |
-| Access policy too broad (e.g. "Everyone" or any one-time-PIN user) | Anyone could reach the app sign-in | Allow only named emails; the app sign-in remains a second barrier |
+| Zone-wide HSTS or "Always Use HTTPS" | Binds the website to HTTPS through Cloudflare; makes rollback unsafe | Not used; HSTS only on `command.`, max-age 1 day |
+| Access policy too broad (e.g. "Everyone" or any one-time-PIN user) | Anyone could reach the app sign-in | Allow only named, off-domain emails; the app sign-in remains a second barrier |
+| A wrong or hostile route in the tunnel settings (someone with access to the Cloudflare account) | Could expose the PC's other services or the home network, which cloudflared can reach by IP | Only one route; no private-network routes; WARP enrolment off; single account member with 2FA; monthly check (step 7); option: locally managed tunnel |
+| Tunnel token leaked | Someone could run a **second connector**: Cloudflare would send part of your traffic, already past Access, to their machine, where a fake sign-in page could capture your Command Center password and session | Token only in `C:\InfiniteAI\secrets` (you and SYSTEM), never in `.env`, backups, chat or PowerShell history; monthly connector check. If it may have leaked: **delete the tunnel and create a new one** (new token), or refresh the token and delete the tunnel's active connections; then change the Command Center password |
 | The PC asleep, off or signed out | Remote access down (Cloudflare shows an error; nothing is exposed) | Step 8; an external uptime check |
 | Access session expires while the dashboard is open | Background requests fail until the page is reloaded | Reload the page; a small app change (section 9) makes this clean |
 | Cookie tossing from a compromised sibling site (`www`, a future portal) | Could sign the owner out or into another app session | Keep sibling sites trustworthy; Secure cookie on `command.`; app change in section 9; customer portal on its own domain |
-| Tunnel token leaked | Someone could run a connector for this tunnel (still behind Access) | Token only in `secrets\` (owner and SYSTEM), never in `.env`, backups or chat; rotate in Zero Trust and restart |
-| Free-plan limits | One rate-limit rule, path only, 10 s windows | The app's own throttle remains the main control |
-| Wrong ingress rule (e.g. to localhost:5678 or XAMPP) | Exposes an unrelated service | Only `dashboard:8081`; cloudflared is in a container that cannot see the PC's localhost or the other networks |
+| Free-plan limits | One rate-limit rule, path only, 10 s windows | The app's own throttle (now per real visitor) remains the main control |
 
 ## 8. Telegram and WhatsApp webhooks (future architecture, 0.6.0)
 
@@ -299,7 +373,8 @@ never reach the dashboard, the API's normal routes or the n8n editor.
                                                            GET only for the WhatsApp verification path)
         │ same tunnel, separate public hostname → http://gateway:8082
         ▼
- messaging gateway container (tunnel network + internal network only)
+ messaging gateway container (tunnel network + its own small network shared only with the API;
+                              never the "internal" network, which also holds PostgreSQL and n8n)
    · /telegram/<bot>: X-Telegram-Bot-Api-Secret-Token compared in constant time with a random secret_token (set via setWebhook)
    · /whatsapp: GET hub.verify_token handshake; POST X-Hub-Signature-256 = HMAC-SHA256(app secret, raw body), constant time
    · body size limit, duplicate drop by update_id / message id, per-sender rate limit, strict JSON schema
@@ -336,14 +411,29 @@ never reach the dashboard, the API's normal routes or the n8n editor.
 
 | What | How | Effect |
 |---|---|---|
-| Stop remote access immediately | Zero Trust → Tunnels → `command-center-pc` → delete the `command` public hostname, or on the PC: `docker compose -f docker-compose.yml -f docker-compose.tunnel.yml stop cloudflared` | Seconds; local use unaffected |
-| Remove the tunnel from the PC | Remove the `COMPOSE_FILE=` line from `.env`; `docker compose -f docker-compose.yml -f docker-compose.tunnel.yml rm -sf cloudflared`; run `start.ps1`; delete `secrets\cloudflared-token.txt` | Back to the exact current setup |
+| Stop remote access immediately | Zero Trust → Tunnels → `command-center-pc` → delete the `command` public hostname. (Stopping the container also works, but the next `start.ps1`, `install.ps1` or `restore.ps1` would start it again.) | Seconds; local use unaffected |
+| Switch it off on the PC (durable) | See the commands below | Back to the exact current setup |
 | Remove it at Cloudflare | Delete the tunnel, the `command` DNS record and the Access application | Nothing left of remote access |
-| Undo the nameserver move | At the registrar, put back the old nameservers (from the screenshot); the CWP zone was never changed. If DNSSEC was re-enabled, remove Cloudflare's DS first | DNS back at CWP after propagation (up to 24-48 h) |
+| Undo the nameserver move | At the registrar: if DNSSEC was re-enabled, remove Cloudflare's DS record first and wait out its TTL; then put back the old nameservers (from the screenshot). Copy into CWP any record that was added at Cloudflare after gate B. The CWP zone itself was never changed | DNS back at CWP after propagation (up to 24-48 h) |
 | HSTS | Only `command.`, 1 day; browsers forget it after a day | |
 
-Data, Docker volumes, `.env` and the encryption keys are never touched by any
-step: the tunnel adds one container and one nginx listener and removes nothing.
+Switching it off on the PC, in the Command Center folder:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.tunnel.yml rm -sf cloudflared
+$p = Join-Path (Get-Location) '.env'
+$keep = [IO.File]::ReadAllLines($p) | Where-Object { $_ -notmatch '^\s*(COMPOSE_FILE|CLOUDFLARED_TOKEN_FILE)\s*=' }
+[IO.File]::WriteAllText($p, (($keep -join "`r`n") + "`r`n"), (New-Object Text.UTF8Encoding $false))
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1    # recreates the dashboard without the tunnel listener
+docker network rm infinite-command-center_tunnel
+Remove-Item -Recurse -Force C:\InfiniteAI\secrets    # only if remote access will not be used again
+```
+
+`uninstall.ps1` does not know about remote access: before uninstalling, switch
+it off as above and delete the tunnel at Cloudflare.
+
+Data, Docker volumes and the encryption keys are never touched by any step. The
+only change to `.env` is the two lines added in gate D and removed here.
 
 ## 11. Decisions needed from the owner
 
