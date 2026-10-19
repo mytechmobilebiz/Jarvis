@@ -1,16 +1,16 @@
 # Project status: Infinite AI Command Center
 
-Last updated: 2026-10-19 (UTC) · version 0.5.0 · branch `ccr-eb27a2af-8u7i39`
+Last updated: 2026-10-19 (UTC) · version 0.5.1 · branch `ccr-eb27a2af-8u7i39`
 
 ## Where it is being built
 
 Development and testing happen in **Anthropic's cloud sandbox** (a Linux
 container with Docker 29), which has no connection to the owner's PC or
-servers. Version **0.4.0** has been installed by the owner on the Windows 11
-PC (all six smoke tests passed; the sidebar footer still showed v0.2.0, see
-"Completed in 0.5.0"). Version **0.5.0** has not been run on Windows yet, and
-**nothing has been run on a real CWP server**; see "Cloud sandbox vs Windows
-and servers" below.
+servers. Version **0.5.0** has been installed by the owner on the Windows 11
+PC: six of seven smoke checks passed, and the version check failed ("the API
+reports 0.2.0"). The cause was found and fixed in **0.5.1** (see "Completed in
+0.5.1"), which has not been run on Windows yet. **Nothing has been run on a
+real CWP server**; see "Cloud sandbox vs Windows and servers" below.
 
 ## Milestones
 
@@ -22,7 +22,8 @@ and servers" below.
 | M3: specialist agents and the isolated Credit Repair module | Done in the sandbox, with **mock** outward integrations |
 | M4 (0.3.0): the seven official agents, complete WordPress monitoring, restricted SSH to CWP servers, approval-based WP-CLI repairs | Done; 0.3.0 installed on the owner's PC (smoke tests passed); tested against disposable WordPress installs only; needs a first, careful run on a test server |
 | UI (0.4.0): official dashboard redesign: dark command-center interface, AI command input, new sidebar sections | Done; installed on the owner's PC (six smoke tests passed) |
-| 0.5.0: dashboard to the reference with real data only; approvals name the exact action and target; host-key scan fixed | **Done in the sandbox**; not yet run on the PC. Remaining differences and owner decisions: docs/REFERENCE_DESIGN_GAP.md |
+| 0.5.0: dashboard to the reference with real data only; approvals name the exact action and target; host-key scan fixed | Done; installed on the owner's PC (version check failed: stale build copies, fixed in 0.5.1). Remaining differences and owner decisions: docs/REFERENCE_DESIGN_GAP.md |
+| 0.5.1: images can no longer be built from stale files without the build stopping; plugin updates only to the approved, current, newer WordPress.org release | **Done in the sandbox**; not yet run on the PC |
 | M5: real integrations (email, publishing, ads, notifications) | Needs owner approval and credentials |
 
 Estimated MVP completion: **about 85%**. This is an estimate, weighted by the
@@ -49,6 +50,32 @@ Every approved mock action is listed on the **Outbox** page as
 through cc-gate, only after approval, and only if the server's own
 `allow_changes` switch is on.
 
+## Completed in 0.5.1 (no database migrations, no new keys)
+
+Full list and the exact upgrade steps: [docs/RELEASE_NOTES_0.5.1.md](docs/RELEASE_NOTES_0.5.1.md).
+
+- **The cause of "API reports 0.2.0"**: every packaged file had one fixed
+  timestamp, and Docker (BuildKit) reuses files from its saved copy of the
+  build context when size and timestamp match, in any folder of the project.
+  The version files never change size, so the API was built with 0.2.0's
+  `__init__.py` and the dashboard with 0.4.0's `package.json`; all other code
+  was current. `--no-cache` did not help. The earlier explanation (a container
+  not replaced) was wrong.
+- **Fix, three layers**: per-build timestamps in the package; both images stop
+  the build if the copied code is not the release version; `install.ps1` and
+  `start.ps1` refresh the build files first (new `prepare-build.ps1`), refuse
+  a folder that mixes releases, and pass the version to the build. The
+  installer never creates new keys over existing data.
+- **Messages**: a page left open during an update says "This page is out of
+  date"; the mismatch banner, the Knowledge Base and the guides give the real
+  cause; the smoke test stays strict and names both versions.
+- **Plugin updates (C3-07, security)**: cc-gate 1.2.0 installs only the version
+  the Command Center names (the approved one), only if it is newer and is
+  WordPress.org's current release (asked directly), and verifies it
+  afterwards; the Command Center offers no approval for an older "update".
+- Two independent review rounds (51 reviewer agents) checked the fix; every
+  confirmed finding is fixed.
+
 ## Completed in 0.5.0 (no database migrations; API additions only)
 
 Full list and upgrade notes: [docs/RELEASE_NOTES_0.5.0.md](docs/RELEASE_NOTES_0.5.0.md).
@@ -59,11 +86,11 @@ Full list and upgrade notes: [docs/RELEASE_NOTES_0.5.0.md](docs/RELEASE_NOTES_0.
   Resources and the Intern 2 card shown as **Not connected** (no source
   exists for either); a denser layout closer to the reference; task activity
   by category over 24 h / 7 d / 30 d. Every value comes from the API.
-- **v0.2.0 in the footer**: the footer showed the version reported by the
-  running API container, so on the PC that container was still running 0.2.0
-  code. The exact cause cannot be seen from here. 0.5.0 shows the dashboard's
-  and the API's versions, warns on every page when they differ, and the smoke
-  test (now **seven** checks) and `status.ps1` check and print them.
+- **v0.2.0 in the footer**: 0.5.0 shows the dashboard's and the API's
+  versions, warns on every page when they differ, and the smoke test (now
+  **seven** checks) and `status.ps1` check and print them. The cause was found
+  in 0.5.1 (stale build copies of the version files, see above); the
+  explanation given in 0.5.0 (a container still running 0.2.0 code) was wrong.
 - **Approvals name the exact action and target**: email (recipient, subject,
   the draft's text and a hash of it), publishing (platform, account, draft),
   repairs (site, server and pinned key, the version a recent diagnosis

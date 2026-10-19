@@ -1,6 +1,6 @@
 # Infinite AI Command Center 0.5.1: release notes
 
-Release date: 2026-10-19 · upgrade from 0.5.0 (or any earlier version) · package
+Release date: 2026-10-19 · upgrade from 0.5.0 (from older versions, see DEPLOY_WINDOWS.md) · package
 `InfiniteAI-CommandCenter-0.5.1-windows.zip` in `command-center/releases/` on
 the GitHub branch, with its SHA-256 in the `.sha256` file next to it
 
@@ -73,9 +73,12 @@ follow that advice; install 0.5.1 as below.
    - **Passes the version.** It passes this release's version to the build.
 
    It changes nothing else in the folder.
-4. **Safe failure.** `install.ps1` stops before building if that preparation
-   fails, and stops without touching the running system if the build fails.
-   `start.ps1` starts nothing if the preparation fails.
+4. **Safe failure.**
+   - `install.ps1` stops before building if that preparation fails.
+   - It stops without touching the running system if the build fails.
+   - It never creates a new `.env` (new passwords and keys) when this PC
+     already has Command Center data: it asks for the existing `.env` instead.
+   - `start.ps1` starts nothing if the preparation fails.
 
 ### Messages that stay accurate after an upgrade
 
@@ -97,16 +100,29 @@ follow that advice; install 0.5.1 as below.
   exact version, for example "update akismet 5.3 → 5.4". But the server still
   ran "update to the latest version". If WordPress.org published 5.5 between
   the check and the update, 5.5 was installed.
+- **What the Command Center does now.**
+  - It sends the server exactly the version named in the approval.
+  - It sends no plugin update to a gate older than 1.2.0. Test connection flags
+    such a gate as outdated.
+  - It never offers an approval for an "update" that is not a newer release.
+    A compromised site's code can influence what WP-CLI reports.
 - **What the server does now.** cc-gate 1.2.0 (in the package's `server`
-  folder):
-  - Refuses an update that does not name a version.
-  - Installs exactly the named version.
-  - Refuses plugins that declare another update source, or that WordPress.org
-    does not know at their installed version.
-  - Fails if the plugin is any other version afterwards.
-- **What the Command Center does now.** It sends the approved version and sends
-  no plugin update to an older gate. Test connection flags an older gate as
-  outdated.
+  folder) installs a plugin only when all of these hold:
+  - The request names the version.
+  - The version is newer than the installed one. An older release may be a
+    known-vulnerable one.
+  - The version is WordPress.org's current release, which the gate asks
+    WordPress.org directly instead of trusting the site.
+  - The plugin comes from WordPress.org: it declares no other update source,
+    and WordPress.org knows its installed version.
+
+  If the plugin is any other version afterwards, the update fails and the
+  dashboard says so. A refusal before anything changed is reported as a
+  refusal, not as a failed repair.
+- **What the gate cannot know.** The gate cannot see the approval itself. A
+  compromised Command Center could still ask it to update a plugin to
+  WordPress.org's current release, the same as before 1.2.0. It can no longer
+  ask for an older or any other release.
 - **On your servers.** None is connected yet, so there is nothing to do. When
   you set one up, follow docs/SERVER_SETUP.md, which installs 1.2.0. A server
   already running an older cc-gate needs `sh install-gate.sh` from the 0.5.1
@@ -114,77 +130,99 @@ follow that advice; install 0.5.1 as below.
 
 ## 3. Upgrade from your running 0.5.0 installation
 
-Nothing below touches your Docker volumes, your other Docker projects or XAMPP.
+These steps use your folders: 0.5.0 in `C:\InfiniteAI\v0.5.0\InfiniteAI-CommandCenter`,
+and 0.5.1 in a new folder next to it. Run them in one PowerShell window,
+in order. Nothing below touches your Docker volumes, your other Docker projects
+or XAMPP.
 
-1. **Back up**, in PowerShell in your current 0.5.0 folder (for example
-   `C:\InfiniteAI\InfiniteAI-CommandCenter`):
+1. **Name the two folders and back up.** The `Test-Path` line must print
+   `True`. If it prints `False`, set `$old` to the folder that holds your
+   current `.env` first.
 
    ```powershell
-   Set-Location C:\InfiniteAI\InfiniteAI-CommandCenter
+   $old = "C:\InfiniteAI\v0.5.0\InfiniteAI-CommandCenter"
+   $new = "C:\InfiniteAI\v0.5.1\InfiniteAI-CommandCenter"
+   Test-Path "$old\.env"
+   Set-Location $old
    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\backup.ps1
-   Copy-Item .\.env C:\InfiniteAI\env-backup-0.5.0.txt
+   Copy-Item "$old\.env" "C:\InfiniteAI\env-backup-0.5.0.txt"
    ```
 
-   Keep `C:\InfiniteAI\env-backup-0.5.0.txt` private: it holds your keys.
+   Keep `C:\InfiniteAI\env-backup-0.5.0.txt` private: it holds your passwords
+   and encryption keys.
 
-2. **Download and check** `InfiniteAI-CommandCenter-0.5.1-windows.zip` and its
-   `.sha256` file from `command-center/releases/` on the GitHub branch
-   `ccr-eb27a2af-8u7i39`:
+2. **Download and check the package.** Download it from GitHub, repository
+   `mytechmobilebiz/Jarvis`, branch `ccr-eb27a2af-8u7i39`, folder
+   `command-center/releases`. Get both files:
+   - https://github.com/mytechmobilebiz/Jarvis/raw/ccr-eb27a2af-8u7i39/command-center/releases/InfiniteAI-CommandCenter-0.5.1-windows.zip
+   - https://github.com/mytechmobilebiz/Jarvis/raw/ccr-eb27a2af-8u7i39/command-center/releases/InfiniteAI-CommandCenter-0.5.1-windows.zip.sha256
+
+   Then check the hash:
 
    ```powershell
-   Get-FileHash .\InfiniteAI-CommandCenter-0.5.1-windows.zip -Algorithm SHA256
+   Get-FileHash "$env:USERPROFILE\Downloads\InfiniteAI-CommandCenter-0.5.1-windows.zip" -Algorithm SHA256
+   Get-Content "$env:USERPROFILE\Downloads\InfiniteAI-CommandCenter-0.5.1-windows.zip.sha256"
    ```
 
-   The hash must equal the one in the `.sha256` file.
+   The two hashes must be identical (case does not matter).
 
-3. **Extract into a new folder.** Right-click the zip → Extract All →
-   `C:\InfiniteAI\v0.5.1`. That gives
-   `C:\InfiniteAI\v0.5.1\InfiniteAI-CommandCenter`. Extracting over the old
-   folder also works from 0.5.1 on, but a new folder keeps 0.5.0 untouched for
-   going back.
-
-4. **Copy your `.env`** (unchanged; it holds your passwords and encryption
-   keys) and install:
+3. **Extract into a new folder.** In Explorer: right-click the zip → Extract
+   All → `C:\InfiniteAI\v0.5.1`. That creates
+   `C:\InfiniteAI\v0.5.1\InfiniteAI-CommandCenter`. Then check it:
 
    ```powershell
-   Copy-Item C:\InfiniteAI\InfiniteAI-CommandCenter\.env C:\InfiniteAI\v0.5.1\InfiniteAI-CommandCenter\.env
-   Set-Location C:\InfiniteAI\v0.5.1\InfiniteAI-CommandCenter
+   Get-Content "$new\VERSION"
+   ```
+
+   It must print `0.5.1`.
+
+4. **Bring your `.env` (unchanged) and your proposal template, then install:**
+
+   ```powershell
+   Copy-Item "$old\.env" "$new\.env"
+   if (Test-Path "$old\templates\proposal-template.html") { Copy-Item "$old\templates\proposal-template.html" "$new\templates\" }
+   Set-Location $new
    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
    ```
 
    - It prints "Build folders refreshed (… files) for version 0.5.1", builds,
      restarts the containers and runs the smoke test.
-   - The same project name is used, so the same volumes are kept.
+   - The project name stays the same, so the same volumes are kept.
    - It must end with all **seven** checks `PASS`, including
      `versions match this folder  API 0.5.1, dashboard 0.5.1`, and
      `SMOKE TEST PASSED`.
+   - If the `.env` copy was missed, it stops with "this folder has no .env, but
+     this PC already has Command Center data" and changes nothing. Copy it and
+     run it again.
 
 5. **Reload** the dashboard tab if it was open (or open
    http://localhost:8090). The sidebar should show
-   `Dashboard v0.5.1 · API v0.5.1`. If the old page shows a banner, reload it;
-   do not follow the old banner's reinstall advice.
+   `Dashboard v0.5.1 · API v0.5.1`. A page left open shows "This page is out of
+   date": reload it. Do not follow the old 0.5.0 banner's reinstall advice.
 
 6. **Optional checks:**
 
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\status.ps1
-   Compare-Object (Get-Content .\.env) (Get-Content C:\InfiniteAI\env-backup-0.5.0.txt)
+   Compare-Object (Get-Content "$new\.env") (Get-Content "C:\InfiniteAI\env-backup-0.5.0.txt")
    ```
 
    - `status.ps1` should show version 0.5.1 for the folder, the API and the
      dashboard, and the new folder for the API container.
-   - `Compare-Object` prints nothing when the `.env` is unchanged.
+   - `Compare-Object` prints nothing when your `.env` is unchanged.
 
 7. **If something fails:**
    - Your data is untouched: install.ps1 never removes volumes.
-   - "this folder mixes releases": extract again into a new, empty folder.
+   - "this folder mixes releases": extract the zip again into a new, empty
+     folder.
    - A build that stops with "out-of-date copy": run `install.ps1` once more.
    - Anything else: send the output of `install.ps1` and `status.ps1`.
-   - **Going back:** run `install.ps1` from the 0.5.0 folder. 0.5.1 has no
-     database changes.
+   - **Going back:** run `install.ps1` from `$old`. 0.5.1 has no database
+     changes.
 
-Once 0.5.1 is verified, the old folder can be deleted. Keep its `backups\`
-folder.
+From now on, run the day-to-day scripts (`start.ps1`, `stop.ps1`,
+`backup.ps1`, `status.ps1`) from the new folder. Once 0.5.1 is verified, the
+0.5.0 folder can be deleted; keep its `backups\` folder.
 
 ## 4. Tests (cloud sandbox)
 
@@ -194,4 +232,44 @@ Nothing was run on your PC, your websites or your servers.
 
 ## 5. Known limitations
 
-To be filled in.
+### Security
+
+- **The gate cannot verify the approval itself.** The Command Center sends
+  the approved version, and cc-gate 1.2.0 installs only that version, only if
+  it is newer and only if it is WordPress.org's current release. Someone in
+  control of the Command Center, or of its SSH key, could therefore still ask
+  for an update to the current release of a WordPress.org plugin without an
+  approval. Before 1.2.0 that was "update to the latest" anyway. They can no
+  longer ask for an older or any other release. Binding the gate to the
+  approval itself would need approvals signed outside the Command Center. That
+  is not built.
+- **The successful plugin update is not yet proven against WordPress.org.**
+  The sandbox cannot reach WordPress.org. The gate's refusals, the version
+  checks and the failure reporting are tested, with WordPress.org's answer
+  simulated. The first real update should be done on a test site.
+
+### Builds and installation
+
+- **What the new build check covers.** It compares only the files that hold
+  the version numbers. Every other file is protected by the fresh timestamps
+  (from the package and from `prepare-build.ps1`), not by a content check.
+- **Indirect Python dependencies are not locked.** Only the direct ones are
+  pinned. A fresh build may install newer compatible versions of indirect
+  ones than those tested; this was already the case before 0.5.1.
+- **Windows PowerShell 5.1 itself was not available for testing.** The
+  scripts were run under PowerShell 7.4 and checked with PowerShell's parser.
+  The read-only-file handling in `prepare-build.ps1` exists for 5.1 and was
+  only exercised under 7.4.
+
+### Still open from earlier releases
+
+- **Not yet run on your side.** Nothing has run on your PC, a real CWP server
+  or real websites. That includes the 0.4.0 → 0.5.0 approval changes, the
+  host-key scan of a real server, and monitoring of real sites.
+- **From docs/REFERENCE_DESIGN_GAP.md:**
+  - Deferred: C3-09 and C3-10.
+  - Waiting for your decisions: C3-11 to C3-14 and C2-17 to C2-20.
+  - The dashboard is about 1,280 px tall at desktop width, and on short
+    screens the upper sidebar scrolls.
+- **Remote access** is not set up; it waits for the DNS inventory and your
+  approval.

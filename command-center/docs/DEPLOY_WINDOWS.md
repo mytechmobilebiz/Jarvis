@@ -208,13 +208,21 @@ Your data lives in Docker volumes and your settings in `.env`, so an update
 only replaces the program files:
 
 ```powershell
-Set-Location C:\InfiniteAI\InfiniteAI-CommandCenter
-.\scripts\backup.ps1
-# extract the new zip to C:\InfiniteAI\InfiniteAI-CommandCenter-new, then:
-Copy-Item .\.env ..\InfiniteAI-CommandCenter-new\.env
-Set-Location ..\InfiniteAI-CommandCenter-new
+# Your current installation folder (the one with .env), and a new folder for the new version:
+$old = "C:\InfiniteAI\InfiniteAI-CommandCenter"
+$new = "C:\InfiniteAI\new\InfiniteAI-CommandCenter"   # Extract All of the zip into C:\InfiniteAI\new creates this
+Set-Location $old
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\backup.ps1
+# now extract the new zip into C:\InfiniteAI\new, then:
+Copy-Item "$old\.env" "$new\.env"
+if (Test-Path "$old\templates\proposal-template.html") { Copy-Item "$old\templates\proposal-template.html" "$new\templates\" }
+Set-Location $new
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1   # rebuilds; migrations apply automatically
 ```
+
+If `.env` was not copied, `install.ps1` stops with "this folder has no .env, but
+this PC already has Command Center data" (from 0.5.1): it never creates new
+keys over existing data.
 
 If remote access is switched on, the copied `.env` keeps it on; its token stays
 in `C:\InfiniteAI\secrets`, outside the installation folder.
