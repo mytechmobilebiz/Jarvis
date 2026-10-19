@@ -29,6 +29,7 @@ function Format-Record($r) {
     "SOA" { return "{0} {1} serial {2} refresh {3} expire {4} min-ttl {5}" -f $r.PrimaryServer, $r.NameAdministrator, $r.SerialNumber, $r.TimeToZoneRefresh, $r.TimeToExpiration, $r.DefaultTTL }
     "SRV" { return "{0} {1} {2} {3}" -f $r.Priority, $r.Weight, $r.Port, $r.NameTarget }
     "DS" { return "keytag {0} algorithm {1} digest-type {2}" -f $r.KeyTag, $r.Algorithm, $r.DigestType }
+    "PTR" { return $r.NameHost }
     default { return ($r | Out-String).Trim() }
   }
 }
@@ -67,6 +68,24 @@ Out-Line ""
 Out-Line "=== As the public resolver $Resolver sees it"
 foreach ($entry in $names) { foreach ($type in $entry[1]) { Ask $entry[0] $type $Resolver } }
 
+# Reverse DNS of the website's address: mail servers check that this name resolves back to
+# the same address, so if it is a name under this domain it must be kept when DNS moves.
+Out-Line ""
+Out-Line "=== Reverse DNS (PTR) of the domain's address, and that name's own address"
+$apexIps = @(Resolve-DnsName -Name $Domain -Type A -Server $Resolver -DnsOnly -ErrorAction SilentlyContinue | Where-Object { $_.Section -eq "Answer" -and $_.Type -eq "A" } | ForEach-Object { $_.IPAddress })
+foreach ($ip in $apexIps) {
+  $parts = $ip.Split(".")
+  $reverse = "{0}.{1}.{2}.{3}.in-addr.arpa" -f $parts[3], $parts[2], $parts[1], $parts[0]
+  Ask $reverse "PTR" $Resolver
+  $ptr = @(Resolve-DnsName -Name $reverse -Type PTR -Server $Resolver -DnsOnly -ErrorAction SilentlyContinue | Where-Object { $_.Section -eq "Answer" } | ForEach-Object { $_.NameHost })
+  foreach ($name in $ptr) { Ask $name "A" $Resolver }
+}
+
+# A name that cannot exist: if it answers, the zone has a wildcard (*) record, which must be copied too.
+Out-Line ""
+Out-Line "=== Wildcard check"
+Ask ("wildcard-check-{0}.{1}" -f (Get-Random -Minimum 100000 -Maximum 999999), $Domain) "A" $Resolver
+
 $authoritative = @(Resolve-DnsName -Name $Domain -Type NS -Server $Resolver -DnsOnly -ErrorAction SilentlyContinue | Where-Object { $_.Section -eq "Answer" } | ForEach-Object { $_.NameHost })
 Out-Line ""
 if ($authoritative) {
@@ -82,6 +101,9 @@ Out-Line "Notes"
 Out-Line "- NS: if these end in ns.cloudflare.com the zone is already on Cloudflare; otherwise it is hosted elsewhere (e.g. CWP on the VPS, or the registrar)."
 Out-Line "- DS: a DS record means DNSSEC is switched on at the registrar; it must be handled before any nameserver change."
 Out-Line "- DKIM may use a selector other than 'default'; the CWP zone editor shows the real one."
+Out-Line "- PTR: if the reverse name is under this domain (e.g. a server hostname), its A record must be kept, or mail may be rejected."
+Out-Line "- Wildcard: an answer there means a '*' record exists."
+Out-Line "- Comparing a report made with -Resolver <a Cloudflare nameserver>: SOA, NS and DS lines legitimately differ; all others must match."
 Out-Line "- TXT records hold public data (SPF, DKIM public keys, verification tokens); this report contains no secrets."
 $lines | Set-Content -Path $report -Encoding ASCII
 Write-Host ""
