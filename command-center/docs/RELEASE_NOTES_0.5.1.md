@@ -226,7 +226,18 @@ From now on, run the day-to-day scripts (`start.ps1`, `stop.ps1`,
 
 ## 4. Tests (cloud sandbox)
 
-To be filled in from the final runs.
+All on the final 0.5.1 code, in the cloud sandbox: Linux, Docker 29, and the
+scripts run in PowerShell 7.4. Nothing was run on your PC, your websites or
+your servers.
+
+| Test | Result |
+|---|---|
+| Backend (pytest, real PostgreSQL 18) | **524 passed, 0 failed**. New in 0.5.1: the gate installs exactly the approved version, refuses an older, equal or intermediate release, and refuses one that is not WordPress.org's current release; a delivered version other than the approved one is reported as a failure; the Command Center offers no approval for a downgrade and refuses a gate older than 1.2.0 before any backup; the release checks (every version number agrees with `VERSION`, the package builder refuses a mismatch, per-build timestamps, the build arguments in docker-compose.yml, the Dockerfile check run for real, the script wiring) |
+| Dashboard (Vitest, TypeScript check) | **171 passed**, type check clean. New: a page left open during an update says "This page is out of date"; the mismatch banner's wording; the `VERSION` file equals the dashboard's built-in version |
+| End-to-end on the running stack (Playwright, Chromium) | **3 consecutive full runs passed**: 40 passed and 1 skipped, then 41 and 41. The skip is expected: on a fresh stack the first run reaches the server-page test before the test server exists. The disposable WordPress server runs real OpenSSH, sudo, WP-CLI and **cc-gate 1.2.0** installed by `install-gate.sh`; the gate refuses the old two-argument plugin update |
+| Server programs on Python 3.6 (EL8) | cc-gate, cc-wp and cc-site-helper compile; cc-gate 1.2.0's version comparison and its WordPress.org lookup run correctly |
+| PowerShell scripts | **all 12 parse** with PowerShell's own parser; ASCII-only |
+| `prepare-build.ps1` behaviour (`testing/prepare-build-check.sh`) | **5 of 5 passed**: a normal folder (files refreshed, version passed on); a folder inside one named `dist`; a read-only file (refreshed, still read-only); a folder mixing releases (refused before touching anything); no `VERSION` file (refused) |
 
 Nothing was run on your PC, your websites or your servers.
 
