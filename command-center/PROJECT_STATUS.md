@@ -1,15 +1,15 @@
 # Project status: Infinite AI Command Center
 
-Last updated: 2026-10-18 (UTC) · version 0.3.0 · branch `ccr-eb27a2af-8u7i39`
+Last updated: 2026-10-19 (UTC) · version 0.4.0 · branch `ccr-eb27a2af-8u7i39`
 
 ## Where it is being built
 
 Development and testing happen in **Anthropic's cloud sandbox** (a Linux
 container with Docker 29), which has no connection to the owner's PC or
-servers. Version **0.2.0** has been installed by the owner on the Windows 11
-PC (all six smoke tests passed). Version **0.3.0** has not been run on
-Windows yet, and **nothing has been run on a real CWP server**; see "Cloud
-sandbox vs Windows and servers" below.
+servers. Version **0.3.0** has been installed by the owner on the Windows 11
+PC (all six smoke tests passed). Version **0.4.0** (the dashboard redesign)
+has not been run on Windows yet, and **nothing has been run on a real CWP
+server**; see "Cloud sandbox vs Windows and servers" below.
 
 ## Milestones
 
@@ -19,7 +19,8 @@ sandbox vs Windows and servers" below.
 | M1b: Windows 11 deployment package (Docker Desktop + WSL 2) | Done; 0.2.0 verified on the owner's PC |
 | M2: commercial-ready architecture (workflow-engine interface, editions, settings split, SBOM) | Done in the sandbox; blockers in COMMERCIALIZATION.md |
 | M3: specialist agents and the isolated Credit Repair module | Done in the sandbox, with **mock** outward integrations |
-| M4 (0.3.0): the seven official agents, complete WordPress monitoring, restricted SSH to CWP servers, approval-based WP-CLI repairs | **Done in the sandbox**, tested against disposable WordPress installs only; needs one run on the PC and a first, careful run on a test server |
+| M4 (0.3.0): the seven official agents, complete WordPress monitoring, restricted SSH to CWP servers, approval-based WP-CLI repairs | Done; 0.3.0 installed on the owner's PC (smoke tests passed); tested against disposable WordPress installs only; needs a first, careful run on a test server |
+| UI (0.4.0): official dashboard redesign: dark command-center interface, AI command input, new sidebar sections | **Done in the sandbox**; needs one run on the PC. The reference screenshot was not received, so the design follows the written brief |
 | M5: real integrations (email, publishing, ads, notifications) | Needs owner approval and credentials |
 
 Estimated MVP completion: **about 80%**. This is an estimate, weighted by the
@@ -45,6 +46,37 @@ Every approved mock action is listed on the **Outbox** page as
 "recorded, not sent". Server repairs are real: they run on your server
 through cc-gate, only after approval, and only if the server's own
 `allow_changes` switch is on.
+
+## Completed in 0.4.0 (frontend only; no database or API changes)
+
+- **Shell**: top bar with the Infinite AI logo, the **AI command input** and
+  **Execute** (it creates an AI Supervisor request through the existing API,
+  with the same sign-in, roles and approval rules; viewers cannot send),
+  optional **voice dictation** (shown only where it can work, asks for consent
+  first, only fills the input), notifications, settings and the account menu.
+  Sidebar: Dashboard, AI Agents, Workflows, Websites, SEO & Marketing,
+  CWP / Servers, Email, Credit Repair, Social Media / Postonomous, Automation
+  Logs, Knowledge Base, Settings, then Approvals, Tasks, AI Supervisor, Leads,
+  Client support, Drafts & reports, Outbox, Integrations and Activity log.
+  Desktop, tablet (icon rail) and phone (menu) layouts.
+- **Dashboard**: active AI agents, websites monitored, tasks completed today,
+  website uptime, local date and time, worker and service health, a 24-hour
+  task chart with a table view, agents, websites, approvals, alerts and
+  recent requests. Every value comes from the API.
+- **New pages**: Workflows (schedules, n8n, on-demand requests), SEO &
+  Marketing, Email, Social Media / Postonomous, Automation Logs (filterable
+  event stream) and Knowledge Base (guides checked claim by claim against
+  the code: about 280 statements, 26 corrected).
+- **Existing pages** restyled without behaviour changes.
+- **Accessibility**: keyboard paths for menus, dialogs, the chart and
+  clickable rows; visible focus; WCAG AA contrast; a title for each page.
+- **Security**: the dashboard still loads nothing from other sites (the Inter
+  typeface, SIL Open Font License, is bundled); the microphone is allowed
+  for this site only (`Permissions-Policy: microphone=(self)`); Credit Repair
+  task details stay hidden from users without the sensitive-data permission.
+- Final review of the redesign: 48 findings from security, correctness,
+  accessibility and visual reviewers, each checked by a separate verifier;
+  33 confirmed and fixed, the fixes verified again.
 
 ## Completed in 0.3.0
 
