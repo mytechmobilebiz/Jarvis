@@ -11,7 +11,7 @@
 #    it to both builds, which fail if the code they copied is a different version. The callers remove it
 #    again after their docker compose command.
 #
-#   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare-build.ps1
+# Run on its own it only refreshes the timestamps: the version it sets lives in that PowerShell process only.
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 try {
@@ -46,10 +46,14 @@ foreach ($file in $files) {
     if ($readOnly) { $file.IsReadOnly = $true }
     $count++
   } catch {
-    $skipped += $file.FullName
+    $skipped += "$($file.FullName) ($($_.Exception.Message))"
   }
 }
-if ($count -eq 0) { Write-Host "Could not prepare the build folders: no file in backend\ or dashboard\ got a fresh timestamp." -ForegroundColor Red; exit 1 }
+if ($count -eq 0) {
+  $why = if ($skipped.Count) { " First: $($skipped[0])" } else { "" }
+  Write-Host "Could not prepare the build folders: no file in backend\ or dashboard\ got a fresh timestamp.$why" -ForegroundColor Red
+  exit 1
+}
 if ($skipped.Count) {
   # The build still checks the version, so a stale version file is caught; other files are very unlikely to matter.
   Write-Host "$($skipped.Count) file(s) could not get a fresh timestamp (in use by another program?), first: $($skipped[0])" -ForegroundColor Yellow

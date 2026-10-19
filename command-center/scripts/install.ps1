@@ -31,6 +31,13 @@ if (Test-Path (Join-Path $root ".env")) {
   & (Join-Path $scripts "init-env.ps1") -AddMissing
   if ($LASTEXITCODE -ne 0) { Fail "could not update .env" }
 } else {
+  # Data of an earlier installation is still on this PC: a new .env would bring new passwords and encryption keys that
+  # do not fit it (the services would not start, and stored secrets could not be read). Its own .env must come along.
+  $existing = (docker volume ls -q --filter "name=infinite-command-center_pgdata" 2>$null | Out-String).Trim()
+  if ($existing) {
+    Fail ("this folder has no .env, but this PC already has Command Center data (Docker volume $existing). Copy the .env " +
+          "of your current installation into $root first: it holds the passwords and encryption keys of that data. Nothing was changed")
+  }
   if (-not $AdminEmail) { $AdminEmail = Read-Host "Email address for the first admin account" }
   if ($AdminEmail -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { Fail "'$AdminEmail' is not an email address" }
   $global:LASTEXITCODE = 1

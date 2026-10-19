@@ -35,6 +35,8 @@ gate = importlib.util.module_from_spec(importlib.util.spec_from_loader("cc_gate"
 loader.exec_module(gate)
 gate.CONFIG_PATH = sys.argv[2]
 gate.REQUIRE_ROOT_OWNED_CONFIG = False  # the test config lives in a temp folder
+# WordPress.org's plugin information: wporg-<slug>.json files next to the config instead of the internet.
+gate.WPORG_PLUGIN_INFO = "file://" + os.path.join(os.path.dirname(sys.argv[2]), "wporg-%s.json")
 # The fake site (<temp folder>/wp) is not in daemon's home; the folder holding the temp folder stands in for it.
 gate.site_home = lambda site: os.path.dirname(os.path.dirname(sys.argv[2]))
 sys.exit(gate.main())
@@ -148,6 +150,7 @@ class FakeGateServer:
         shutil.copy(GATE, self.dir / "cc-gate")
         (self.dir / "wp").mkdir()
         (self.dir / "backups").mkdir()
+        (self.dir / "wporg-akismet.json").write_text('{"name": "Akismet", "version": "5.4"}')  # WordPress.org's current release
         for p in (self.dir / "wp", self.dir / "backups"):
             p.chmod(0o777)
         self.write_config()

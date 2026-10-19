@@ -131,13 +131,19 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$(command -v do
   -w "$G" "$PWSH_IMAGE" pwsh -NoProfile -Command \
   '& ./scripts/prepare-build.ps1; if ($LASTEXITCODE -ne 0 -or -not $env:CC_RELEASE_VERSION) { exit 1 }; docker compose build api dashboard; exit $LASTEXITCODE' \
   > "$WORK/build.log" 2>&1 || { tail -30 "$WORK/build.log"; fail "prepare-build.ps1 then docker compose build (one PowerShell process) failed"; }
-for image in backend dashboard; do
-  if docker history --no-trunc --format '{{.CreatedBy}}' "infinite-command-center/$image:local" | grep -q "APP_VERSION=$NEW"; then
-    pass "$image: prepare-build.ps1 passed APP_VERSION=$NEW to the build"
-  else
-    fail "$image: the build did not receive APP_VERSION=$NEW from prepare-build.ps1"
-  fi
-done
+# The backend image's history records the build argument; the dashboard checks it in its build stage, which the final
+# image's history does not show, so for both services also ask compose what it passes after prepare-build.ps1.
+if docker history --no-trunc --format '{{.CreatedBy}}' infinite-command-center/backend:local | grep -q "APP_VERSION=$NEW"; then
+  pass "backend: the build received APP_VERSION=$NEW from prepare-build.ps1"
+else
+  fail "backend: the build did not receive APP_VERSION=$NEW from prepare-build.ps1"
+fi
+args=$(docker run --rm -v "$(command -v docker)":/usr/bin/docker:ro -v /usr/libexec/docker/cli-plugins:/usr/libexec/docker/cli-plugins:ro \
+  -v "$WORK:$WORK" ${EXTRA_CA_BUNDLE:+-v "$EXTRA_CA_BUNDLE:$EXTRA_CA_BUNDLE:ro"} -w "$G" "$PWSH_IMAGE" pwsh -NoProfile -Command \
+  '& ./scripts/prepare-build.ps1; docker compose config --format json' 2>/dev/null \
+  | python3 -c "import json, sys; raw = sys.stdin.read(); s = json.loads(raw[raw.index('{'):])['services']; print(s['api']['build']['args']['APP_VERSION'], s['dashboard']['build']['args']['APP_VERSION'])") || true
+[ "$args" = "$NEW $NEW" ] && pass "after prepare-build.ps1 compose passes APP_VERSION=$NEW to both builds" \
+                         || fail "after prepare-build.ps1 compose passes APP_VERSION '$args' (expected $NEW to both)"
 # 3b. The refresh prepare-build.ps1 just made also cures the stale copy of this shell's Docker client (the one above).
 if build "$G" CC_RELEASE_VERSION="$NEW"; then
   got=$(image_versions)

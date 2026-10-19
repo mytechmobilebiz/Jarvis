@@ -18,6 +18,21 @@ SITE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,99}$")
 SERVICE_RE = re.compile(r"^[a-z0-9][a-z0-9@._-]{0,63}$")
 VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z.\-]{0,40}$")
+def release(version: str) -> list[int]:
+    """The numeric release of a version, for comparing: "5.10.1-beta" -> [5, 10, 1] (as cc-gate compares them)."""
+    match = re.match(r"^[0-9]+(?:\.[0-9]+)*", version)
+    return [int(part) for part in match.group(0).split(".")] if match else []
+
+
+def is_newer_release(candidate: str, installed: str) -> bool:
+    """True only if both are valid versions and candidate is a later release (cc-gate refuses anything else)."""
+    if not VERSION_RE.match(candidate) or not VERSION_RE.match(installed):
+        return False
+    a, b = release(candidate), release(installed)
+    size = max(len(a), len(b))
+    return a + [0] * (size - len(a)) > b + [0] * (size - len(b))
+
+
 ARG_PATTERNS = {"site": SITE_RE, "slug": SLUG_RE, "service": SERVICE_RE, "onoff": re.compile(r"^(on|off)$"), "version": VERSION_RE}
 
 

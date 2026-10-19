@@ -36,10 +36,12 @@ import re
 import selectors
 import shlex
 import socket
+import ssl
 import stat
 import subprocess
 import sys
 import time
+import urllib.request
 from urllib.parse import urlsplit
 
 GATE_VERSION = "1.2.0"
@@ -86,6 +88,8 @@ SLOW_OPS = {"wp_core_verify", "wp_plugin_update", "wp_plugin_reinstall", "wp_cor
 STOP_GRACE_SECONDS = 10
 # Either one lets a user take over the site; a custom or edited role can carry them without being "administrator".
 ADMIN_CAPABILITIES = "manage_options,promote_users"
+# A plugin's current release, straight from WordPress.org (not from the site, whose own code could report anything).
+WPORG_PLUGIN_INFO = "https://api.wordpress.org/plugins/info/1.0/%s.json"
 # Update URI values WordPress itself treats as WordPress.org.
 WPORG_UPDATE_URI = re.compile(r"^(https?://)?(www\.)?(w\.org|wordpress\.org)(/|$)", re.I)
 
@@ -528,34 +532,66 @@ def op_wp_plugin_activate(args):
 
 
 def wordpress_org_plugin(slug, done, doing):
-    """The installed version of a plugin that really comes from WordPress.org; refused or failed otherwise.
+    """The installed version of a plugin that really comes from WordPress.org; refused otherwise, before anything changes.
 
     A custom or premium plugin with the same folder name must never be replaced by WordPress.org's code.
     """
     header = helper(SITE, "plugin_update_uri", ARGS["site"], slug)
     if not header.get("found"):
-        raise Failed("plugin %s was not found in wp-content/plugins" % slug)
+        raise Refused("plugin %s was not found in wp-content/plugins" % slug)
     uri = (header.get("update_uri") or "").strip()
     if uri and not WPORG_UPDATE_URI.match(uri):
         raise Refused("plugin %s declares Update URI %r, so it is not a WordPress.org plugin; it is not %s from there" % (slug, uri, done))
     version = wp_ok(SITE, "plugin", "get", slug, "--field=version")
     if not VERSION_RE.match(version):
-        raise Failed("unexpected plugin version %r" % version)
+        raise Refused("unexpected plugin version %r" % version)
     code, out, err = run(wp(SITE, "plugin", "verify-checksums", slug, "--version=" + version), CONFIG)
     # WP-CLI skips (exit 0) a plugin it has no checksums for.
     if "could not retrieve the checksums" in (out + err).lower():
-        raise Failed("WordPress.org has no checksums for %s %s (not a WordPress.org plugin, or WordPress.org could not be "
-                     "reached); not %s" % (slug, version, doing))
+        raise Refused("WordPress.org has no checksums for %s %s (not a WordPress.org plugin, or WordPress.org could not be "
+                      "reached); not %s" % (slug, version, doing))
     return version
+
+
+def wordpress_org_current(slug):
+    """The version WordPress.org offers for this plugin now; refused if it cannot be read."""
+    left = DEADLINE[0] - time.monotonic()
+    try:
+        with urllib.request.urlopen(WPORG_PLUGIN_INFO % slug, timeout=max(min(left, 30), 1), context=ssl.create_default_context()) as answer:
+            info = json.loads(answer.read(2000000).decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - any failure means the current release is not known
+        raise Refused("could not ask WordPress.org for the current release of %s (%s); not updating" % (slug, exc.__class__.__name__))
+    version = info.get("version") if isinstance(info, dict) else None
+    if not isinstance(version, str) or not VERSION_RE.match(version):
+        raise Refused("WordPress.org reports no current release for %s; not updating" % slug)
+    return version
+
+
+def release(version):
+    """The numeric release of a version, for comparing: "5.10.1-beta" -> [5, 10, 1]."""
+    return [int(part) for part in re.match(r"^[0-9]+(?:\.[0-9]+)*", version).group(0).split(".")]
+
+
+def is_newer(candidate, installed):
+    """True only if candidate is a later release than installed ("5.4" and "5.4.0" are the same release)."""
+    a, b = release(candidate), release(installed)
+    size = max(len(a), len(b))
+    return a + [0] * (size - len(a)) > b + [0] * (size - len(b))
 
 
 def op_wp_plugin_update(args):
     # Exactly the version the administrator approved, never "the latest": WordPress.org may publish another one
     # between the approval and the update, and only the approved one may be installed.
+    # The gate cannot see the approval, so it also bounds what any request can do: only WordPress.org's current release,
+    # and only forward. An older or intermediate release may be a known-vulnerable one.
     slug, version = args["slug"], args["version"]
     before = wordpress_org_plugin(slug, "updated", "updating")
-    if before == version:
-        raise Refused("plugin %s is already version %s" % (slug, version))
+    if not is_newer(version, before):
+        raise Refused("plugin %s is version %s; %s is not a newer release, so it is not installed" % (slug, before, version))
+    current = wordpress_org_current(slug)
+    if version != current:
+        raise Refused("WordPress.org's current release of %s is %s, not the requested %s; nothing was changed (request the "
+                      "update again if a newer release came out)" % (slug, current, version))
     out = wp_ok(SITE, "plugin", "update", slug, "--version=" + version)
     after = wp_ok(SITE, "plugin", "get", slug, "--field=version")
     if after != version:

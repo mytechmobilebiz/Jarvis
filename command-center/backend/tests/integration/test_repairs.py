@@ -234,6 +234,33 @@ async def test_a_plugin_update_that_delivers_another_version_fails_loudly(admin,
         assert failed["severity"] == "critical"
 
 
+async def test_a_plugin_update_is_refused_unless_it_is_wordpress_orgs_current_release(admin, web, make_worker):
+    """The gate asks WordPress.org itself; a refusal before anything changed is not reported as a part-way failure."""
+    key = await ssh_key(admin)
+    async with FakeGateServer(key["openssh"]) as srv:
+        site, _ = await linked_site(admin, srv, web)
+        await make_worker().run_until_idle()
+        put(srv.dir / "wporg-akismet.json", '{"name": "Akismet", "version": "5.5"}')  # published since the check
+        done = await approve(admin, make_worker, await run_task(admin, make_worker, "wordpress_security", "repair_update_plugin",
+                                                                {"site_id": site["id"], "slug": "akismet"}))
+        assert done["status"] == "failed" and "current release of akismet is 5.5, not the requested 5.4" in done["error"]
+        assert not any(e["kind"] == "repair.failed" for e in (await admin.get("/api/events")).json()["events"])
+        assert not any("plugin update" in c for c in srv.calls("wp"))
+
+
+async def test_no_update_approval_is_offered_for_an_older_release(admin, web, make_worker):
+    """WP-CLI's plugin list can be influenced by the site's own code; an "update" to an older release is never offered."""
+    key = await ssh_key(admin)
+    async with FakeGateServer(key["openssh"]) as srv:
+        site, _ = await linked_site(admin, srv, web)
+        wp_prints(srv, "plugin list", '[{"name":"akismet","status":"active","version":"5.3","update":"available","update_version":"2.5.0"}]')
+        await make_worker().run_until_idle()  # the baseline check records the reported "update"
+        r = await admin.post("/api/agents/wordpress_security/tasks", json={"capability": "repair_update_plugin",
+                                                                           "params": {"site_id": site["id"], "slug": "akismet"}})
+        assert r.status_code == 400 and "'2.5.0' as the update for akismet 5.3, which is not a newer release" in r.json()["detail"]
+        assert (await admin.get("/api/approvals")).json()["approvals"] == []
+
+
 async def test_a_gate_that_cannot_pin_the_version_gets_no_plugin_update(admin, web, make_worker):
     key = await ssh_key(admin)
     async with FakeGateServer(key["openssh"]) as srv:

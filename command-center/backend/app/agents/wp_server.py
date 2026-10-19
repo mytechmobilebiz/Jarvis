@@ -46,6 +46,7 @@ from ..db import session_scope
 from ..models import Server, Site
 from ..ssh.client import OutcomeUnknown
 from ..ssh.gateway import GateFailed, GateRefused
+from ..ssh.ops import is_newer_release
 from .base import AgentContext, AgentResult, EventSpec, Finding, Params, Risk, capability
 from .monitoring.agent import make_checker
 
@@ -244,6 +245,11 @@ def repair_expectations(capability: str, params: dict[str, Any], site: Site) -> 
         if plugin.get("update") != "available" or not plugin.get("update_version"):
             raise ValueError(f"the latest server-side check ({when}) found no update for {slug} {plugin['version']}; "
                              "run it again if one was released since")
+        if not is_newer_release(str(plugin["update_version"]), plugin["version"]):
+            # The site's own code can influence what WP-CLI reports; an older release may be a vulnerable one.
+            raise ValueError(f"the latest server-side check ({when}) reports {plugin['update_version']!r} as the update for {slug} "
+                             f"{plugin['version']}, which is not a newer release; no update is offered (check the plugin on "
+                             "WordPress.org and the site by hand)")
         return {"plugin": slug, "version": plugin["version"], "update_version": str(plugin["update_version"]), "checked_at": diag.get("at"),
                 "summary": f"update {slug} {plugin['version']} → {plugin['update_version']}"}
     if capability == "repair_reinstall_core":
