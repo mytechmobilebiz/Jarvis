@@ -20,7 +20,7 @@ server**; see "Cloud sandbox vs Windows and servers" below.
 | M2: commercial-ready architecture (workflow-engine interface, editions, settings split, SBOM) | Done in the sandbox; blockers in COMMERCIALIZATION.md |
 | M3: specialist agents and the isolated Credit Repair module | Done in the sandbox, with **mock** outward integrations |
 | M4 (0.3.0): the seven official agents, complete WordPress monitoring, restricted SSH to CWP servers, approval-based WP-CLI repairs | Done; 0.3.0 installed on the owner's PC (smoke tests passed); tested against disposable WordPress installs only; needs a first, careful run on a test server |
-| UI (0.4.0): official dashboard redesign: dark command-center interface, AI command input, new sidebar sections | **Done in the sandbox**; needs one run on the PC. The reference screenshot was not received, so the design follows the written brief |
+| UI (0.4.0): official dashboard redesign: dark command-center interface, AI command input, new sidebar sections | **Done in the sandbox**; approved for local testing on the PC. The reference design arrived after the release: differences are in docs/REFERENCE_DESIGN_GAP.md |
 | M5: real integrations (email, publishing, ads, notifications) | Needs owner approval and credentials |
 
 Estimated MVP completion: **about 85%**. This is an estimate, weighted by the
@@ -158,23 +158,35 @@ Known limits that remain (by design or not yet done):
 | Monitoring real internet sites | blocked by the sandbox's network | not yet |
 | Claude API with a real key | mocked only | not yet |
 
+## Owner decisions (2026-10-19)
+
+- **0.4.0 is approved for local Windows testing**, subject to a backup and
+  checksum verification first. The owner installs and tests it; nothing here
+  touches the PC, the websites or the servers.
+- **Reference design received.** The dashboard should match it closely while
+  keeping the real functionality. The remaining differences are documented in
+  [docs/REFERENCE_DESIGN_GAP.md](docs/REFERENCE_DESIGN_GAP.md). No new release
+  is made for cosmetic changes until 0.4.0 has been verified on the PC.
+- **All values from real data** ("All value…" in the earlier message): no
+  hardcoded or fabricated statistics, connections, uptime, tasks or agent
+  activity; clear empty, disconnected or unavailable states when data is
+  missing.
+- **Approvals** (the earlier item 5): every production WordPress repair, CWP
+  server modification, SSH change, publication, email, advertising change
+  and other consequential external action needs explicit approval that names
+  the exact action and target. Read-only monitoring may run automatically
+  within the approved scope.
+
 ## Blockers and open questions
 
-1. **The reference screenshot for the redesign was not received**, and the
-   redesign request ended mid-sentence at "All value". The 0.4.0 design
-   follows the written brief (and treats every value as live data). Please
-   send the screenshot and the rest of that message; the layout, colours and
-   cards can then be matched to it closely.
-2. **An earlier message also ended mid-sentence** after item 5 ("... explicit
-   approvals for production"). Please send anything that followed.
-3. **First server run**: set up a test (non-production) server first,
+1. **First server run**: set up a test (non-production) server first,
    following docs/SERVER_SETUP.md, with `allow_changes` false until the
    read-only checks look right.
-4. **Credit Repair** must not hold real client data before legal review
+2. **Credit Repair** must not hold real client data before legal review
    (COMMERCIALIZATION.md B5).
-5. **n8n licensing for a commercial edition** (B1) and **remote-repair terms**
+3. **n8n licensing for a commercial edition** (B1) and **remote-repair terms**
    (B8) need decisions before selling.
-6. **Repository** (B3): the Command Center sits inside the Jarvis repository,
+4. **Repository** (B3): the Command Center sits inside the Jarvis repository,
    which is public; it should move to its own private repository.
 
 ## Next steps
@@ -183,11 +195,12 @@ Known limits that remain (by design or not yet done):
    extract the new zip, copy `.env`, run `install.ps1`), check the six smoke
    tests, then open http://localhost:8090 and try the command input (and, if
    you like, voice dictation in Chrome or Edge).
-2. Owner: send the reference screenshot and the rest of the redesign message,
-   so the dashboard can be matched to the approved design.
+2. Owner: send the Windows test results (the six smoke tests and anything
+   that looks wrong), and answer the questions in docs/REFERENCE_DESIGN_GAP.md.
 3. Owner: on a test server, follow SERVER_SETUP.md; on the CWP / Servers page
    scan and compare the host key, then run Test connection and a server-side
    check.
-4. Next development: design adjustments from the screenshot, an
+4. Next development, after 0.4.0 is verified on the PC: the design changes
+   in docs/REFERENCE_DESIGN_GAP.md, an
    owner-acknowledged administrator baseline, and the first real integration
    you choose (for example email through your SMTP account).
