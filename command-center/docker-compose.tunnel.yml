@@ -1,0 +1,52 @@
+# OPTIONAL remote access through Cloudflare Tunnel. Not used unless enabled; see
+# docs/REMOTE_ACCESS_PLAN.md before turning it on (it needs the owner's approval,
+# a Cloudflare zone, a tunnel and an Access application first).
+#
+# Enable:  add this line to .env (Windows separates the files with ';'):
+#            COMPOSE_FILE=docker-compose.yml;docker-compose.tunnel.yml
+#          put the tunnel token in secrets\cloudflared-token.txt, then run scripts\start.ps1
+# Disable: remove that line from .env, run:  docker compose -f docker-compose.yml -f docker-compose.tunnel.yml down cloudflared
+#          then scripts\start.ps1  (the local dashboard at http://localhost:8090 is unchanged either way)
+#
+# cloudflared joins only the private "tunnel" network. From there it can reach the
+# dashboard's tunnel listener (remote-access/tunnel.conf, port 8081, never published)
+# and the internet; it cannot reach the API, PostgreSQL, the worker or n8n.
+
+services:
+  dashboard:
+    networks:
+      tunnel:
+        ipv4_address: 172.29.37.12
+    volumes:
+      - ./remote-access/tunnel.conf:/etc/nginx/conf.d/tunnel.conf:ro
+
+  cloudflared:
+    image: ${REGISTRY:-docker.io}/cloudflare/cloudflared:2026.10.1
+    restart: unless-stopped
+    # The image's entrypoint is "cloudflared --no-autoupdate".
+    command: ["tunnel", "run"]
+    environment:
+      TUNNEL_TOKEN_FILE: /run/secrets/cloudflared_token
+    secrets: [cloudflared_token]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      dashboard:
+        condition: service_healthy
+    networks:
+      tunnel:
+        # tunnel.conf trusts the visitor address (CF-Connecting-IP) only from this address.
+        ipv4_address: 172.29.37.10
+
+networks:
+  tunnel:
+    ipam:
+      config:
+        # If Docker reports "Pool overlaps with other one on this address space", pick another
+        # private /28 and change the two addresses here and set_real_ip_from in tunnel.conf.
+        - subnet: 172.29.37.0/28
+
+secrets:
+  cloudflared_token:
+    file: ./secrets/cloudflared-token.txt

@@ -11,3 +11,6 @@ backups/
 e2e/test-results/
 templates/*
 !templates/README.md
+
+# Remote-access secrets (docker-compose.tunnel.yml): never commit or package.
+secrets/
