@@ -28,6 +28,7 @@ if (-not $Yes) {
 }
 
 Write-Host "`nBacking up the current state first..."
+$global:LASTEXITCODE = 1  # stays 1 if the script cannot run at all
 & (Join-Path $PSScriptRoot "backup.ps1")
 if ($LASTEXITCODE -ne 0) { Fail "the safety backup failed; nothing was changed" }
 
@@ -47,6 +48,7 @@ foreach ($db in $dumps) {
 }
 
 Write-Host "`nStarting the application again..."
+$global:LASTEXITCODE = 1  # stays 1 if the script cannot run at all
 & (Join-Path $PSScriptRoot "start.ps1") -NoBuild
 $started = $LASTEXITCODE -eq 0
 

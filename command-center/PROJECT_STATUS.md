@@ -1,15 +1,16 @@
 # Project status: Infinite AI Command Center
 
-Last updated: 2026-10-19 (UTC) · version 0.4.0 · branch `ccr-eb27a2af-8u7i39`
+Last updated: 2026-10-19 (UTC) · version 0.5.0 · branch `ccr-eb27a2af-8u7i39`
 
 ## Where it is being built
 
 Development and testing happen in **Anthropic's cloud sandbox** (a Linux
 container with Docker 29), which has no connection to the owner's PC or
-servers. Version **0.3.0** has been installed by the owner on the Windows 11
-PC (all six smoke tests passed). Version **0.4.0** (the dashboard redesign)
-has not been run on Windows yet, and **nothing has been run on a real CWP
-server**; see "Cloud sandbox vs Windows and servers" below.
+servers. Version **0.4.0** has been installed by the owner on the Windows 11
+PC (all six smoke tests passed; the sidebar footer still showed v0.2.0, see
+"Completed in 0.5.0"). Version **0.5.0** has not been run on Windows yet, and
+**nothing has been run on a real CWP server**; see "Cloud sandbox vs Windows
+and servers" below.
 
 ## Milestones
 
@@ -20,7 +21,8 @@ server**; see "Cloud sandbox vs Windows and servers" below.
 | M2: commercial-ready architecture (workflow-engine interface, editions, settings split, SBOM) | Done in the sandbox; blockers in COMMERCIALIZATION.md |
 | M3: specialist agents and the isolated Credit Repair module | Done in the sandbox, with **mock** outward integrations |
 | M4 (0.3.0): the seven official agents, complete WordPress monitoring, restricted SSH to CWP servers, approval-based WP-CLI repairs | Done; 0.3.0 installed on the owner's PC (smoke tests passed); tested against disposable WordPress installs only; needs a first, careful run on a test server |
-| UI (0.4.0): official dashboard redesign: dark command-center interface, AI command input, new sidebar sections | **Done in the sandbox**; approved for local testing on the PC. The reference design arrived after the release: differences are in docs/REFERENCE_DESIGN_GAP.md |
+| UI (0.4.0): official dashboard redesign: dark command-center interface, AI command input, new sidebar sections | Done; installed on the owner's PC (six smoke tests passed) |
+| 0.5.0: dashboard to the reference with real data only; approvals name the exact action and target; host-key scan fixed | **Done in the sandbox**; not yet run on the PC. Remaining differences and owner decisions: docs/REFERENCE_DESIGN_GAP.md |
 | M5: real integrations (email, publishing, ads, notifications) | Needs owner approval and credentials |
 
 Estimated MVP completion: **about 85%**. This is an estimate, weighted by the
@@ -46,6 +48,37 @@ Every approved mock action is listed on the **Outbox** page as
 "recorded, not sent". Server repairs are real: they run on your server
 through cc-gate, only after approval, and only if the server's own
 `allow_changes` switch is on.
+
+## Completed in 0.5.0 (no database migrations; API additions only)
+
+Full list and upgrade notes: [docs/RELEASE_NOTES_0.5.0.md](docs/RELEASE_NOTES_0.5.0.md).
+
+- **The owner's ten requests**: seven agent cards; Quick Actions (scan all
+  websites, SEO audit, check servers, generate a report, open n8n); a
+  Service Status panel where each row says what was checked and when; PC
+  Resources and the Intern 2 card shown as **Not connected** (no source
+  exists for either); a denser layout closer to the reference; task activity
+  by category over 24 h / 7 d / 30 d. Every value comes from the API.
+- **v0.2.0 in the footer**: the footer showed the version reported by the
+  running API container, so on the PC that container was still running 0.2.0
+  code. The exact cause cannot be seen from here. 0.5.0 shows the dashboard's
+  and the API's versions, warns on every page when they differ, and the smoke
+  test (now **seven** checks) and `status.ps1` check and print them.
+- **Approvals name the exact action and target**: email (recipient, subject,
+  the draft's text and a hash of it), publishing (platform, account, draft),
+  repairs (site, server and pinned key, the version a recent diagnosis
+  found), host-key replacement and leaving production (the name typed).
+  Mock delivery is labelled as such.
+- **Host-key scan fixed**: since 0.3.0 the scan ran in the API container,
+  which has no route out of Docker, so it could not reach a real server. It
+  now runs in the worker as a read-only task. The Servers page is unchanged.
+- **Offline is not downtime**: a site that gives no answer is recorded as
+  down only after a control check shows the PC is online; otherwise it is
+  "not checked" and a banner says the PC has no internet. The control hosts
+  can be replaced with `MONITOR_CONTROL_URLS`.
+- Pending 0.4.0 approvals for repairs, restarts, emails and publications
+  must be requested again after the upgrade (they do not name the exact
+  target).
 
 ## Completed in 0.4.0 (frontend only; no database or API changes)
 

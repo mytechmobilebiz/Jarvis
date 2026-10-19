@@ -28,6 +28,7 @@ if (-not $Yes) {
 
 if ($DeleteData -and -not $SkipBackup) {
   Write-Host "Taking a final backup first..."
+  $global:LASTEXITCODE = 1  # stays 1 if the script cannot run at all
   & (Join-Path $PSScriptRoot "backup.ps1")
   if ($LASTEXITCODE -ne 0) { Write-Host "Backup failed; not deleting data. Re-run with -SkipBackup to override." -ForegroundColor Red; exit 1 }
 }
