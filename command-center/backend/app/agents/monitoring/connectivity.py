@@ -55,7 +55,8 @@ CONTROL_REUSE_SECONDS = 30.0
 
 
 def control_urls(settings: Settings) -> list[str]:
-    return [settings.wp_version_api_url, *EXTRA_CONTROL_URLS]
+    extra = [u.strip() for u in settings.monitor_control_urls.split(",") if u.strip()]
+    return [settings.wp_version_api_url, *(extra or EXTRA_CONTROL_URLS)]
 
 
 def is_network_failure(report: SiteReport) -> bool:

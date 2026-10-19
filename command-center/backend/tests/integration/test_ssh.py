@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import asyncssh
 from sqlalchemy import select
 
 from app.db import session_scope
-from app.models import ServerCommand, User
+from app.models import AuditLog, ServerCommand, Task, User, WorkerHeartbeat
 from app.security import hash_password
 
 from ..sshfake import FakeGateServer
@@ -19,15 +21,34 @@ async def ssh_key(admin) -> dict:
     return r.json()["key"]
 
 
+async def scan(admin, server_id: int):
+    """POST .../host-key/scan. The worker reads the key (the API has no route out) and the API waits for it, so one runs meanwhile."""
+    from app.config import get_settings
+    from app.llm import NullProvider
+    from app.worker.runner import Worker
+    from app.workflow import N8nEngine
+
+    from ..fakes import FakeN8n
+
+    settings = get_settings()
+    worker = Worker(settings, llm=NullProvider(), engine=N8nEngine(settings, transport=FakeN8n().transport), worker_id="test-worker")
+    await worker.heartbeat()
+    request = asyncio.ensure_future(admin.post(f"/api/servers/{server_id}/host-key/scan"))
+    while not request.done():
+        await worker.run_until_idle()
+        await asyncio.wait([request], timeout=0.05)
+    return request.result()
+
+
 async def add_server(admin, srv: FakeGateServer, *, environment: str = "test", pin: bool = True) -> dict:
     r = await admin.post("/api/servers", json={"name": "srv1", "host": "127.0.0.1", "port": srv.port, "username": "ccagent",
                                                "environment": environment})
     assert r.status_code == 201, r.text
     server = r.json()["server"]
     if pin:
-        scan = (await admin.post(f"/api/servers/{server['id']}/host-key/scan")).json()
-        assert scan["fingerprint"] == srv.fingerprint  # what an admin compares on the server
-        r = await admin.post(f"/api/servers/{server['id']}/host-key/trust", json={"fingerprint": scan["fingerprint"]})
+        scanned = (await scan(admin, server["id"])).json()
+        assert scanned["fingerprint"] == srv.fingerprint  # what an admin compares on the server
+        r = await admin.post(f"/api/servers/{server['id']}/host-key/trust", json={"fingerprint": scanned["fingerprint"]})
         assert r.status_code == 200, r.text
         server = r.json()["server"]
     return server
@@ -88,7 +109,7 @@ async def test_trusting_a_key_needs_the_scanned_fingerprint(admin):
     async with FakeGateServer(key["openssh"]) as srv:
         server = await add_server(admin, srv, pin=False)
         assert (await admin.post(f"/api/servers/{server['id']}/host-key/trust", json={"fingerprint": srv.fingerprint})).status_code == 400
-        await admin.post(f"/api/servers/{server['id']}/host-key/scan")
+        assert (await scan(admin, server["id"])).status_code == 200
         assert (await admin.post(f"/api/servers/{server['id']}/host-key/trust", json={"fingerprint": "SHA256:wrong"})).status_code == 400
         r = await admin.post(f"/api/servers/{server['id']}/host-key/trust", json={"host_key": srv.host_key_line})
         assert r.json()["server"]["host_key_fingerprint"] == srv.fingerprint
@@ -100,9 +121,32 @@ async def test_servers_refuse_root_and_private_addresses(admin, make_worker):
     key = await ssh_key(admin)
     r = await admin.post("/api/servers", json={"name": "internal", "host": "10.1.2.3", "username": "ccagent"})
     assert r.status_code == 201
-    scan = await admin.post(f"/api/servers/{r.json()['server']['id']}/host-key/scan")
-    assert scan.status_code == 502 and "not a public address" in scan.text
+    scanned = await scan(admin, r.json()["server"]["id"])
+    assert scanned.status_code == 502 and "not a public address" in scanned.text
     assert key
+
+
+async def test_the_worker_reads_the_host_key_and_the_api_answers_with_it(admin, make_worker):
+    """The API has no route out of the Docker host: the scan is a read-only worker task the API waits for (0.5.0)."""
+    key = await ssh_key(admin)
+    async with FakeGateServer(key["openssh"]) as srv:
+        server = await add_server(admin, srv, pin=False)
+        async with session_scope() as s:
+            await s.execute(WorkerHeartbeat.__table__.delete())
+        r = await admin.post(f"/api/servers/{server['id']}/host-key/scan")
+        assert r.status_code == 503 and "worker is not running" in r.text  # said at once, and nothing left queued
+        r = await scan(admin, server["id"])
+        assert r.json() == {"fingerprint": srv.fingerprint, "host_key": srv.host_key_line, "matches_pinned": None, "pinned_fingerprint": None}
+        assert srv.requests == []  # read the key only: no login, nothing sent to cc-gate
+        r = await admin.patch("/api/agents/server_management", json={"enabled": False})
+        assert r.status_code == 200, r.text
+        r = await admin.post(f"/api/servers/{server['id']}/host-key/scan")
+        assert r.status_code == 409 and "switched off" in r.text
+    async with session_scope() as s:
+        tasks = (await s.scalars(select(Task).order_by(Task.id))).all()
+        scanned = (await s.scalars(select(AuditLog).where(AuditLog.action == "server.host_key_scanned"))).all()
+    assert [(t.capability, t.risk, t.status, t.created_by) for t in tasks] == [("scan_host_key", "read", "succeeded", "admin@test.local")]
+    assert [(a.actor, a.detail) for a in scanned] == [("admin@test.local", {"fingerprint": srv.fingerprint, "task_id": tasks[0].id})]
 
 
 async def test_changes_need_approval_and_the_gate_can_still_say_no(admin, make_worker):

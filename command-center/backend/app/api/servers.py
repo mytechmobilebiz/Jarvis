@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import re
-from datetime import UTC, datetime
+import time
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -15,10 +17,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit, events, secrets
+from .. import tasks as task_service
 from ..config import Settings, get_settings
-from ..models import AuditLog, Server, ServerCommand, Site
+from ..models import AuditLog, Server, ServerCommand, Site, Task, WorkerHeartbeat
 from ..ssh import keys
-from ..ssh.client import SSHError, scan_host_key
 from .deps import Principal, client_ip, get_db, require_admin, require_operator, require_user, to_dict
 
 router = APIRouter(tags=["servers"])
@@ -28,6 +30,8 @@ USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 # Stripped, and never empty: a production approval is confirmed by typing this name.
 ServerName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 HOST_KEY_RE = re.compile(r"^(ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-rsa) [A-Za-z0-9+/]+={0,3}$")
+# A worker that reported within this long is running (the same as the system status page).
+WORKER_ALIVE = timedelta(minutes=2)
 
 
 def _env(v: str) -> str:
@@ -172,18 +176,38 @@ async def patch_server(server_id: int, body: ServerPatch, request: Request, prin
 @router.post("/api/servers/{server_id}/host-key/scan")
 async def scan_key(server_id: int, request: Request, principal: Principal = Depends(require_admin),
                    session: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)) -> dict:
-    """Ask the server for its host key. Nothing is trusted until a person compares the fingerprint and pins it."""
-    server = await _server(session, server_id, lock=True)
+    """Ask the server for its host key. Nothing is trusted until a person compares the fingerprint and pins it.
+
+    The worker reads the key (server_management.scan_host_key): the API has no route out of the Docker host. This
+    queues that read-only task and waits for it, so the answer is the same as when the API read the key itself.
+    """
+    await _server(session, server_id)
+    beat = await session.scalar(select(func.max(WorkerHeartbeat.last_seen_at)))
+    if beat is None or datetime.now(UTC) - beat > WORKER_ALIVE:
+        raise HTTPException(503, "the worker is not running (it reads the host key); start the Command Center again and scan once it is up")
     try:
-        offered, fingerprint = await scan_host_key(server.host, server.port, settings)
-    except SSHError as exc:
-        raise HTTPException(502, str(exc)) from None
-    server.offered_host_key, server.offered_fingerprint = offered, fingerprint
-    server.updated_at = datetime.now(UTC)
-    await audit.record(session, principal.name, "server.host_key_scanned", "server", server.id, {"fingerprint": fingerprint}, ip=client_ip(request))
+        task = await task_service.create_task(session, settings, agent="server_management", capability="scan_host_key",
+                                              params={"server_id": server_id}, source="dashboard", created_by=principal.name,
+                                              priority=10)
+    except task_service.TaskError as exc:
+        raise HTTPException(409, f"cannot scan the host key: {exc}") from None
+    task_id = task.id
     await session.commit()
-    return {"fingerprint": fingerprint, "host_key": offered, "matches_pinned": offered == server.host_key if server.host_key else None,
-            "pinned_fingerprint": server.host_key_fingerprint or None}
+    deadline = time.monotonic() + settings.ssh_connect_timeout_seconds + 4 * settings.worker_poll_seconds + 10
+    while task.status not in task_service.TERMINAL:
+        if time.monotonic() >= deadline:
+            raise HTTPException(504, f"the host-key scan (task {task_id}) has not finished yet; the worker may be busy. Its result will "
+                                     "be under Tasks; scan again once it has finished")
+        await asyncio.sleep(0.25)
+        task = await session.get(Task, task_id, populate_existing=True)
+        await session.commit()  # each look is its own short transaction
+    if task.status != "succeeded":
+        raise HTTPException(502, re.sub(r"^[A-Z]\w*: ", "", task.error) or f"the host-key scan was {task.status}")
+    data = (task.result or {}).get("data") or {}
+    await audit.record(session, principal.name, "server.host_key_scanned", "server", server_id,
+                       {"fingerprint": data.get("fingerprint"), "task_id": task_id}, ip=client_ip(request))
+    await session.commit()
+    return {key: data.get(key) for key in ("fingerprint", "host_key", "matches_pinned", "pinned_fingerprint")}
 
 
 async def _previous_fingerprint(session: AsyncSession, server: Server) -> str:

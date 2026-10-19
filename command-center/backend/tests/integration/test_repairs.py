@@ -12,7 +12,7 @@ from app.security import hash_password
 from ..fakes import FakeWeb, wordpress_site
 from ..sshfake import FakeGateServer
 from .test_agents import run_task
-from .test_ssh import add_server, ssh_key
+from .test_ssh import add_server, scan, ssh_key
 
 
 async def gate_hello(admin, web: FakeWeb, server_id: int) -> None:
@@ -348,8 +348,8 @@ async def test_a_site_relinked_after_the_worker_check_sends_nothing_anywhere(adm
         r = await admin.post("/api/servers", json={"name": "prod-b", "host": "127.0.0.1", "port": srv_b.port, "username": "ccagent",
                                                    "environment": "production"})
         b = r.json()["server"]
-        scan = (await admin.post(f"/api/servers/{b['id']}/host-key/scan")).json()
-        assert (await admin.post(f"/api/servers/{b['id']}/host-key/trust", json={"fingerprint": scan["fingerprint"]})).status_code == 200
+        scanned = (await scan(admin, b["id"])).json()
+        assert (await admin.post(f"/api/servers/{b['id']}/host-key/trust", json={"fingerprint": scanned["fingerprint"]})).status_code == 200
         await make_worker().run_until_idle()
         task = await run_task(admin, make_worker, "wordpress_security", "repair_flush_caches", {"site_id": site["id"]})
         real = task_service.current_target

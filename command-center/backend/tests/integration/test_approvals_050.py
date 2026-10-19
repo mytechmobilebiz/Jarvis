@@ -19,7 +19,7 @@ from ..fakes import FakeLLM, wordpress_site
 from ..sshfake import FakeGateServer
 from .test_agents import run_task
 from .test_repairs import approve, gate_hello, linked_site, ops_for, put, wp_prints
-from .test_ssh import add_server, server_request, ssh_key
+from .test_ssh import add_server, scan, server_request, ssh_key
 
 
 async def approval_for(admin, task_id: int) -> dict:
@@ -373,10 +373,10 @@ async def test_replacing_a_pinned_host_key_needs_the_typed_name_and_voids_earlie
     key = await ssh_key(admin)
     async with FakeGateServer(key["openssh"]) as srv:
         server = await add_server(admin, srv, environment="staging")
-        scan = (await admin.post(f"/api/servers/{server['id']}/host-key/scan")).json()
-        assert scan["matches_pinned"] is True and scan["pinned_fingerprint"] == srv.fingerprint
+        scanned = (await scan(admin, server["id"])).json()
+        assert scanned["matches_pinned"] is True and scanned["pinned_fingerprint"] == srv.fingerprint
         # The same key again is not a replacement.
-        assert (await admin.post(f"/api/servers/{server['id']}/host-key/trust", json={"fingerprint": scan["fingerprint"]})).status_code == 200
+        assert (await admin.post(f"/api/servers/{server['id']}/host-key/trust", json={"fingerprint": scanned["fingerprint"]})).status_code == 200
         pending = (await request_task(admin, "server_management", "restart_service", {"server_id": server["id"], "service": "httpd"})).json()["task"]
         approved = (await request_task(admin, "server_management", "restart_service", {"server_id": server["id"], "service": "httpd"})).json()["task"]
         assert (await decide(admin, await approval_for(admin, approved["id"]))).status_code == 200

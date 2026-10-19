@@ -54,6 +54,7 @@ CATEGORY_OF: dict[tuple[str, str], str] = {
     ("communications", "send_proposal"): "email",
     ("communications", "lead_overview"): "email",
     ("server_management", "test_connection"): "server_checks",
+    ("server_management", "scan_host_key"): "server_checks",
     ("server_management", "server_overview"): "server_checks",
     ("server_management", "check_services"): "server_checks",
     ("monitoring", "check_server"): "server_checks",

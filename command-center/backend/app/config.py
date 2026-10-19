@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     # test WordPress). Everything else that resolves privately is refused, so a
     # monitored URL can never be used to reach internal services.
     monitor_allowed_private_hosts: str = ""
+    # Comma-separated URLs whose answer shows the Command Center is online (the control check before a site
+    # is recorded as down); they replace www.cloudflare.com and www.google.com. The WordPress.org API is always tried.
+    monitor_control_urls: str = ""
     # SSH to managed servers (through cc-gate only). Private addresses are refused
     # unless listed here (the disposable test server, for example).
     ssh_allowed_private_hosts: str = ""

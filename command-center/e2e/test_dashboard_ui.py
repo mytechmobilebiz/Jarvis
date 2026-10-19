@@ -20,12 +20,20 @@ def signed_in(page: Page, base_url, env, test_site):
     page.get_by_label("Email").fill(env["ADMIN_EMAIL"])
     page.get_by_label("Password").fill(env["ADMIN_PASSWORD"])
     page.get_by_role("button", name="Sign in").click()
-    expect(page.get_by_role("heading", level=1, name=re.compile(r"^Good (morning|afternoon|evening), "))).to_be_visible()
+    expect(page.get_by_role("heading", level=1, name="Welcome to Infinite AI Command Center")).to_be_visible()
     return page
+
+
+# Sidebar pages behind the "More" toggle (shell/nav.ts MORE_NAV).
+MORE = {"Leads", "Client support", "Drafts & reports", "Outbox", "Integrations"}
 
 
 def nav(page: Page, label: str) -> None:
     """Open a page from the sidebar menu (pages can contain links with the same name; a link may carry a count badge)."""
+    if label in MORE:
+        more = page.locator(".sidebar .nav-more")
+        if more.get_attribute("aria-expanded") != "true":
+            more.click()
     # Escape "/" too: Playwright passes the pattern to the browser as a /.../ literal.
     pattern = re.escape(label).replace("\\ ", " ").replace("/", "\\/")
     page.locator(".sidebar nav").get_by_role("link", name=re.compile(rf"^{pattern}(\s|$)")).click()
@@ -46,12 +54,19 @@ def test_wrong_password_is_refused(page: Page, base_url, env):
 
 def test_dashboard(signed_in: Page):
     page = signed_in
-    for tile in ("Active AI agents", "Websites monitored", "Tasks completed today", "Website uptime (24 h)", "Local date and time", "Worker and service health"):
-        expect(page.get_by_role("region", name=tile)).to_be_visible()
-    health = page.get_by_role("region", name="Worker and service health")
-    expect(health).to_contain_text("Database")
-    expect(health.get_by_text("connected").first).to_be_visible()
-    expect(page.get_by_role("region", name="Websites monitored").locator(".tile-value")).to_have_text(re.compile(r"^\d+$"))
+    cards = page.locator(".stat-card")
+    for label in ("AI Agents", "Websites", "Tasks Today", "Website Uptime"):
+        expect(cards.filter(has=page.locator(".stat-label", has_text=label))).to_have_count(1)
+    expect(cards.filter(has=page.locator(".stat-label", has_text="Websites")).locator(".stat-value")).to_have_text(re.compile(r"^\d+"))
+    expect(page.get_by_role("region", name="Date, time and system status")).to_be_visible()
+    # The seven agents, each its own card.
+    expect(page.get_by_role("region", name="AI Agents").locator(".agent-row > li")).to_have_count(7)
+    # Service status from real checks: the API answered, the worker reports.
+    services = page.get_by_role("region", name="Service Status")
+    expect(services.locator("li").filter(has_text="PostgreSQL / API")).to_contain_text("Running")
+    expect(services.locator("li").filter(has_text="Worker")).to_contain_text("Running")
+    # Nothing on this PC is measured, so nothing is shown as measured.
+    expect(page.get_by_role("region", name="PC Resources")).to_contain_text("Not connected")
     shot(page, "01-dashboard")
 
 
@@ -71,7 +86,7 @@ def test_every_sidebar_section_opens(signed_in: Page):
     for label, heading in (
         ("AI Agents", "AI Agents"), ("Workflows", "Workflows"), ("Websites", "Websites"), ("SEO & Marketing", "SEO & Marketing"),
         ("CWP / Servers", "CWP / Servers"), ("Email", "Email"), ("Credit Repair", "Credit Repair"),
-        ("Social Media / Postonomous", "Social Media / Postonomous"), ("Automation Logs", "Automation Logs"),
+        ("Postonomous", "Social Media / Postonomous"), ("Automation Logs", "Automation Logs"),
         ("Knowledge Base", "Knowledge Base"), ("Settings", "Settings"), ("Approvals", "Approvals"), ("Tasks", "Tasks"),
         ("AI Supervisor", "AI Supervisor"), ("Activity log", "Activity log"),
     ):
@@ -172,7 +187,7 @@ def test_leads_support_outbox_and_credit_repair_pages(signed_in: Page, api):
 
     nav(page, "Outbox")
     expect(page.get_by_role("heading", name="Outbox")).to_be_visible()
-    expect(page.get_by_text("Nothing here left the machine.")).to_be_visible()
+    expect(page.get_by_text("nothing it records leaves the machine")).to_be_visible()
     shot(page, "10-outbox")
 
     nav(page, "Credit Repair")

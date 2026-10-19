@@ -72,6 +72,9 @@ def server(api, cc_key) -> dict:
 @pytest.fixture(scope="module")
 def site(api, server) -> dict:
     tamper("reset")
+    # As an admin does before linking a site: the connection test records the site keys the server's cc-gate offers.
+    hello = run(api, "server_management", "test_connection", {"server_id": server["id"]})
+    assert hello["status"] == "succeeded", hello["error"]
     existing = next((s for s in api.get("/api/sites").json()["sites"] if s["url"] == SITE_URL), None)
     if existing is None:
         r = api.post("/api/sites", json={"name": "Repair test site", "url": SITE_URL, "environment": "test"})
@@ -160,6 +163,8 @@ def test_cloaking_malware_is_found_and_the_plugin_deactivated(api, site):
 
 def test_a_plugin_that_is_not_from_wordpress_org_is_never_reinstalled_from_there(api, site):
     tamper("cloak")  # a local plugin WordPress.org has never heard of
+    # The approval names the plugin's version as a recent diagnosis found it.
+    assert run(api, "wordpress_security", "wp_diagnose", {"site_id": site["id"]})["status"] == "succeeded"
     done = approve(api, run(api, "wordpress_security", "repair_reinstall_plugin", {"site_id": site["id"], "slug": "cc-test-cloak"}))
     assert done["status"] == "failed" and "no checksums" in done["error"], done["error"]
     assert "cc-test-cloak.php" in sh("ls", "/var/www/html/wp-content/plugins/cc-test-cloak/")  # untouched
@@ -231,7 +236,8 @@ def test_production_needs_the_typed_name(api, server, site):
         done = approve(api, task, confirm=site["name"])
         assert done["status"] == "succeeded", done["error"]
     finally:
-        api.patch(f"/api/servers/{server['id']}", json={"environment": "test"}).raise_for_status()
+        # Out of production needs the server's name typed, as in the dashboard.
+        api.patch(f"/api/servers/{server['id']}", json={"environment": "test", "confirm": server["name"]}).raise_for_status()
 
 
 def test_every_command_is_audited_on_both_sides(api, server):
@@ -249,7 +255,8 @@ def test_an_impostor_host_key_is_refused(api, cc_key):
     server = r.json()["server"] if r.status_code == 201 else next(s for s in api.get("/api/servers").json()["servers"] if s["name"] == "impostor-test")
     api.patch(f"/api/servers/{server['id']}", json={"enabled": True}).raise_for_status()  # left disabled by an earlier run
     fake = asyncssh.generate_private_key("ssh-ed25519").export_public_key("openssh").decode()
-    api.post(f"/api/servers/{server['id']}/host-key/trust", json={"host_key": fake}).raise_for_status()
+    # From the second run on this replaces the key an earlier run pinned, which needs the server's name typed.
+    api.post(f"/api/servers/{server['id']}/host-key/trust", json={"host_key": fake, "confirm": server["name"]}).raise_for_status()
     before = sh("wc", "-l", "/var/log/cc-gate/gate.log").split()[0]
     task = run(api, "server_management", "test_connection", {"server_id": server["id"]})
     assert task["status"] == "failed" and "different host key" in task["error"]

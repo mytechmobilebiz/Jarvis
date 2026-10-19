@@ -68,6 +68,12 @@ def test_default_control_hosts_are_unrelated_public_services(settings):
     assert all(u.startswith("https://") for u in urls)
 
 
+def test_the_control_hosts_can_be_replaced(settings):
+    """For a network that blocks the default hosts (and the test stack, which has no internet)."""
+    custom = settings.model_copy(update={"monitor_control_urls": " http://wp-test/ , https://status.example/ping"})
+    assert connectivity.control_urls(custom) == [settings.wp_version_api_url, "http://wp-test/", "https://status.example/ping"]
+
+
 def test_only_a_home_page_that_never_answered_needs_the_control_check():
     dns = SiteReport(url="https://a.example", status="down")
     answered_500 = SiteReport(url="https://a.example", status="down", http_status=502)

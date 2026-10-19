@@ -76,6 +76,8 @@ export function taskText(t: Task, ctx: TaskContext): string {
       return on("Change ad budget", str(p.campaign_id));
     case "server_management.test_connection":
       return on("Test connection", server);
+    case "server_management.scan_host_key":
+      return on("Read host key", server);
     case "server_management.server_overview":
       return on("Server overview", server);
     case "server_management.check_services":

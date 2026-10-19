@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import tasks as task_service
 from ..models import Server
+from ..ssh.client import scan_host_key as presented_host_key
 from .base import AgentContext, AgentResult, BaseAgent, Finding, Params, Risk, capability
 from .wp_server import server_binding, server_label
 
@@ -86,6 +87,24 @@ class ServerManagementAgent(BaseAgent):
     async def approval_context(self, session: AsyncSession, capability: str, params: dict[str, Any], *,
                                lock: bool = False) -> dict[str, Any]:
         return await server_approval_context(session, params.get("server_id"), lock=lock)
+
+    @capability(risk=Risk.READ, description="Read the SSH host key a server presents, for an admin to compare and trust on the Servers "
+                "page. Trusts nothing and does not log in.", params=ServerParams, examples=("Scan the host key of server 1",))
+    async def scan_host_key(self, ctx: AgentContext, params: ServerParams) -> AgentResult:
+        # Runs here rather than in the API: the API has no route out of the Docker host, the worker does.
+        server = await ctx.session.get(Server, params.server_id)
+        if server is None:
+            raise ValueError(f"no server with id {params.server_id}")
+        offered, fingerprint = await presented_host_key(server.host, server.port, ctx.settings)
+        server.offered_host_key, server.offered_fingerprint = offered, fingerprint
+        server.updated_at = datetime.now(UTC)
+        matches = offered == server.host_key if server.host_key else None
+        state = {True: "the pinned key", False: "NOT the pinned key", None: "no key is pinned yet"}[matches]
+        return AgentResult(
+            summary=f"{server.name} ({server.host}:{server.port}) presents host key {fingerprint} ({state}).",
+            data={"fingerprint": fingerprint, "host_key": offered, "matches_pinned": matches,
+                  "pinned_fingerprint": server.host_key_fingerprint or None},
+        )
 
     @capability(risk=Risk.READ, description="Connect through cc-gate and report the gate version, account, configured sites and services.",
                 params=ServerParams, examples=("Test the connection to server 1",))

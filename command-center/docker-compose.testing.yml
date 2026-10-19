@@ -11,11 +11,12 @@ services:
   api:
     environment:
       MONITOR_ALLOWED_PRIVATE_HOSTS: wp-test,wp-repair
-      SSH_ALLOWED_PRIVATE_HOSTS: wp-repair
   worker:
     environment:
       MONITOR_ALLOWED_PRIVATE_HOSTS: wp-test,wp-repair
       SSH_ALLOWED_PRIVATE_HOSTS: wp-repair
+      # This stack has no internet: wp-test's answer stands in for the public control hosts.
+      MONITOR_CONTROL_URLS: http://wp-test/
 
   wp-test-db:
     image: ${REGISTRY:-docker.io}/library/mariadb:11
