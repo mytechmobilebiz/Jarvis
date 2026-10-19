@@ -11,7 +11,7 @@ from app import tasks as task_service
 from app.agents.wp_server import same_host, site_host
 from app.approvals import excerpt
 from app.db import session_scope
-from app.models import AgentState, Approval, Artifact, AuditLog, Lead, OutboxEntry, Schedule, ServerCommand, Site, SupportTicket, Task, User
+from app.models import AgentState, Approval, Artifact, AuditLog, Lead, OutboxEntry, Schedule, ServerCommand, Site, SupportTicket, User
 from app.security import hash_password
 
 from ..fakes import FakeLLM, wordpress_site
@@ -52,7 +52,7 @@ def test_site_hosts_compare_without_www_case_port_or_final_dot():
     assert site_host("https://WWW.Acme.example:8443/shop/") == "acme.example"
     assert same_host("http://site.test", "https://www.site.test.") and same_host("http://site.test/", "http://SITE.test/wp")
     assert not same_host("http://acme.example", "http://acme.example.evil.test") and not same_host("http://a.test", "http://b.test")
-    assert not same_host("", "")  # no host is never a match
+    assert not same_host("", "") and not same_host("http://[bad", "http://[bad")  # no host is never a match
 
 
 def test_draft_excerpts_are_plain_text():
@@ -220,7 +220,7 @@ async def test_a_wordpress_publish_names_the_site_and_draft_and_production_needs
     task = (await request_task(admin, "seo_content", "publish_draft", params)).json()["task"]
     approval = await approval_for(admin, task["id"])
     details = approval["details"]
-    assert details["target"].startswith(f"site Client Blog (https://blog.example.test): a draft post \"") and f"blog draft #{draft}" in details["target"]
+    assert details["target"].startswith('site Client Blog (https://blog.example.test): a draft post "') and f"blog draft #{draft}" in details["target"]
     assert details["production"] is True and details["environment"] == "production" and details["confirm"] == "Client Blog"
     assert details["binding"]["url"] == "https://blog.example.test" and details["binding"]["artifact_id"] == draft
     assert "(PRODUCTION)" in approval["summary"]

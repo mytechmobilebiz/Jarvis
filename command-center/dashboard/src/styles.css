@@ -1,20 +1,30 @@
-/* Infinite AI Command Center: dark command-center design system.
-   Tokens first; every component below uses them. Contrast on --surface:
-   --text 15.6:1, --text-2 10.2:1, --muted 5.8:1, --faint 5.2:1; white on --primary 4.6:1.
-   Non-text: focus ring (--primary-text) 7.2:1, --field-border 4.1:1. */
+/* Infinite AI Command Center: dark command-center design system. 0.5.0 colours, type and shapes follow the owner's
+   reference design (docs/REFERENCE_DESIGN_GAP.md); tokens first, every component below uses them.
+   Text contrast (WCAG): on --surface #0f1a2b --text 16.3:1, --text-2 11.9:1, --muted 7.0:1, --faint 5.8:1, --status-text 9.1:1;
+   on --surface-2 --muted 6.3:1, --faint 5.3:1; on --bg --muted 7.5:1; sidebar --nav-text 9.2:1 and --faint 6.1:1 on --sidebar;
+   --role-text 8.7:1 and --brand-sub 12.3:1 on --chrome; --placeholder 9.9:1 on --command-bg. White on --primary 4.6:1, on --go
+   (Execute) 4.7:1 (the reference's #009b5b is only 3.7:1), on --go-hover 5.4:1, on --primary-fill (active menu item) 9.2:1,
+   on --avatar 6.4:1; --qa-text 13.5:1 and --qa-icon 7.6:1 on --qa-bg.
+   Non-text (3:1): focus ring --primary-text 6.9:1 on --surface, 6.1:1 on --command-bg, 7.2:1 on --sidebar (white on the active
+   item); --field-border 3.5:1 on --surface-2; --command-border 3.5:1 on --chrome; --header-icon 5.1:1 on --chrome; --muted-dot
+   4.9:1 on --sidebar. */
 :root {
   color-scheme: dark;
-  --bg: #060a14;
-  --chrome: #080d1a;
-  --surface: #0d1426;
-  --surface-2: #111a30;
-  --surface-3: #16213b;
-  --border: #1c2742;
-  --border-2: #283a61;
-  --text: #e8edf7;
-  --text-2: #b7c1d8;
-  --muted: #8591ad;
-  --faint: #7d89a6;
+  --bg: #081320;
+  --chrome: #091423;
+  --chrome-border: #162130;
+  --sidebar: #0a1624;
+  --sidebar-border: #1c2737;
+  --surface: #0f1a2b;
+  --surface-2: #16233a;
+  --surface-3: #1b2a44;
+  --border: #1f2a3c;
+  --border-2: #2a3950;
+  --heading: #ffffff;
+  --text: #f3f7ff;
+  --text-2: #ccd6e8;
+  --muted: #9aa4bd;
+  --faint: #8a95b0;
   --field-border: #6b7795;
 
   --primary: #1f6bff;
@@ -24,10 +34,20 @@
   --primary-soft: rgba(47, 123, 255, 0.14);
   --primary-ring: rgba(47, 123, 255, 0.55);
   --primary-ink: #ffffff;
+  /* the solid blue of the active menu item (left to right) and its light edge */
+  --primary-fill: #0a3fa8;
+  --primary-fill-2: #0f3681;
+  --primary-edge: #4295e2;
+  /* Execute: an accessible green (the reference's #009b5b fails AA with white text) */
+  --go: #00854f;
+  --go-hover: #007a48;
+  --go-ink: #ffffff;
 
   --good: #22c55e;
   --good-text: #4ade80;
   --good-soft: rgba(34, 197, 94, 0.13);
+  --good-dot: #1ed760;
+  --status-text: #5ccf9f;
   --warn: #f59e0b;
   --warn-text: #fbbf24;
   --warn-soft: rgba(245, 158, 11, 0.14);
@@ -45,18 +65,50 @@
   --orange-soft: rgba(251, 146, 60, 0.14);
   --muted-soft: rgba(100, 116, 139, 0.18);
   --muted-text: #a3adc6;
+  --muted-dot: #7a849c;
 
-  --radius: 14px;
-  --radius-sm: 10px;
-  --radius-xs: 8px;
-  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 12px 32px -16px rgba(0, 0, 0, 0.7);
+  /* shell */
+  --nav-text: #aeb8d2;
+  --nav-icon: #a0adc1;
+  --nav-hover: #13213a;
+  --header-icon: #7e8796;
+  --header-icon-hover: #d6dfef;
+  --brand-sub: #c8d3e6;
+  --role-text: #a6b2cb;
+  --avatar: #4a5c9c;
+  --command-bg: #182539;
+  --command-border: #5d6b88;
+  --placeholder: #c6d0e4;
+  --qa-bg: #16253b;
+  --qa-border: #223047;
+  --qa-hover: #13284e;
+  --qa-icon: #86bbee;
+  --qa-text: #e4f2ff;
+  /* outlined panel buttons ("Manage agents", "View all") */
+  --outline-bg: #111b2d;
+  --outline-border: #2a3950;
+
+  --radius: 8px;
+  --radius-sm: 6px;
+  --radius-xs: 5px;
+  --shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
   --shadow-pop: 0 20px 50px -12px rgba(0, 0, 0, 0.75), 0 0 0 1px var(--border-2);
   --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--primary-text);
-  --font: "Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Segoe UI is Windows' own font (an exact match on the owner's PC); bundled Inter elsewhere. */
+  --font: "Segoe UI Variable Text", "Segoe UI", "Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, Roboto, sans-serif;
   --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
-  --header-h: 64px;
-  --sidebar-w: 252px;
-  --rail-w: 76px;
+  /* type scale (px / weight): title 30/700, subtitle 18/400, section 22/700, panel 20/700, value 26/600, label 15, body 13.5 */
+  --fs-title: 30px;
+  --fs-subtitle: 18px;
+  --fs-section: 22px;
+  --fs-panel: 20px;
+  --fs-value: 26px;
+  --fs-label: 15px;
+  --fs-body: 13.5px;
+  --fs-small: 12.5px;
+  --header-h: 70px;
+  --sidebar-w: 208px;
+  --rail-w: 72px;
 
   /* kept for older class names */
   --panel: var(--surface);
@@ -76,12 +128,8 @@ html {
 body {
   margin: 0;
   background: var(--bg);
-  background-image: radial-gradient(1100px 520px at 0% -10%, rgba(47, 123, 255, 0.09), transparent 60%),
-    radial-gradient(900px 480px at 100% -5%, rgba(139, 92, 246, 0.07), transparent 60%);
-  background-attachment: fixed;
   color: var(--text);
-  font: 14px/1.55 var(--font);
-  font-feature-settings: "cv11", "ss01";
+  font: var(--fs-body) / 1.55 var(--font);
   -webkit-font-smoothing: antialiased;
 }
 a {
@@ -135,16 +183,16 @@ code {
   padding: 0 5px;
 }
 h1 {
-  font-size: 24px;
-  line-height: 1.25;
-  letter-spacing: -0.02em;
+  font-size: var(--fs-title);
+  line-height: 1.2;
+  letter-spacing: -0.01em;
   font-weight: 700;
+  color: var(--heading);
   margin: 0 0 4px;
 }
 h2 {
-  font-size: 15px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
+  font-size: 16px;
+  font-weight: 700;
   margin: 0;
 }
 h3 {
@@ -196,8 +244,8 @@ h3 {
 
 /* page frame */
 .page {
-  padding: 28px 32px 56px;
-  max-width: 1480px;
+  padding: 22px 28px 48px;
+  max-width: 1600px;
   margin: 0 auto;
 }
 .page-head {
@@ -211,6 +259,7 @@ h3 {
 .page-head p {
   margin: 0;
   max-width: 760px;
+  font-size: 14.5px;
 }
 .page-head > div:first-child {
   min-width: 0;
@@ -226,7 +275,7 @@ h3 {
 
 /* cards and stats */
 .card {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 40%), var(--surface);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
@@ -304,9 +353,9 @@ h3 {
   font-weight: 550;
 }
 .stat-value {
-  font-size: 26px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: var(--fs-value);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 .stat-hint {
   color: var(--muted);
@@ -443,19 +492,21 @@ h3 {
   flex: none;
 }
 .dot-good {
-  background: var(--good);
-  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18);
+  background: var(--good-dot);
 }
 .dot-warn {
   background: var(--warn);
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18);
 }
 .dot-bad {
   background: var(--bad);
-  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2);
 }
 .dot-muted {
-  background: #4b5675;
+  background: var(--muted-dot);
+}
+/* no current status to judge by: a hollow ring, so it differs from every state in shape too */
+.dot-unknown {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--muted-dot);
 }
 
 /* lists */
@@ -561,10 +612,8 @@ h3 {
 }
 .table th {
   text-align: left;
-  font-size: 11.5px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted);
+  font-size: var(--fs-small);
+  color: var(--text-2);
   font-weight: 600;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
@@ -680,11 +729,31 @@ label {
   background: var(--primary);
   border-color: var(--primary);
   color: var(--primary-ink);
-  box-shadow: 0 8px 22px -10px rgba(47, 123, 255, 0.8);
 }
 .btn.primary:hover:not(:disabled) {
   background: var(--primary-hover);
-  box-shadow: 0 8px 26px -8px rgba(47, 123, 255, 0.95);
+}
+/* outlined panel action ("Manage agents", "View all", a range menu) */
+.btn.outline {
+  background: var(--outline-bg);
+  border-color: var(--outline-border);
+  color: var(--text);
+  font-weight: 500;
+  padding: 5px 12px;
+  font-size: 13px;
+}
+.btn.outline:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--field-border);
+}
+/* the green "go" action (Execute) */
+.btn.go {
+  background: var(--go);
+  border-color: var(--go);
+  color: var(--go-ink);
+}
+.btn.go:hover:not(:disabled) {
+  background: var(--go-hover);
 }
 .btn.danger {
   color: var(--bad-text);
@@ -743,14 +812,14 @@ label {
   background: var(--surface-2);
   border: 1px solid var(--border);
   padding: 4px;
-  border-radius: 11px;
+  border-radius: var(--radius);
   flex-wrap: wrap;
 }
 .tabs button {
   border: 0;
   background: none;
   padding: 6px 13px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   color: var(--muted);
   font: inherit;
   font-weight: 600;
@@ -795,9 +864,9 @@ label {
   border-color: rgba(245, 158, 11, 0.35);
 }
 .version-banner {
-  max-width: 1480px;
+  max-width: 1600px;
   margin: 16px auto 0;
-  padding: 0 32px;
+  padding: 0 28px;
 }
 .version-banner .alert {
   margin: 0;
@@ -846,7 +915,7 @@ label {
   gap: 12px;
 }
 .bubble {
-  border-radius: 14px;
+  border-radius: 10px;
   padding: 11px 15px;
   max-width: 92%;
   overflow-wrap: anywhere;
@@ -929,7 +998,7 @@ pre.json {
 }
 .modal {
   background: var(--surface);
-  border-radius: 16px;
+  border-radius: 10px;
   width: min(640px, 100%);
   max-height: 90vh;
   overflow: auto;
@@ -963,12 +1032,11 @@ pre.json {
   display: grid;
   place-items: center;
   padding: 20px;
-  background: radial-gradient(900px 500px at 20% 10%, rgba(47, 123, 255, 0.22), transparent 60%),
-    radial-gradient(700px 420px at 90% 90%, rgba(139, 92, 246, 0.18), transparent 60%), var(--bg);
+  background: radial-gradient(900px 500px at 20% 10%, rgba(47, 123, 255, 0.12), transparent 60%), var(--bg);
 }
 .login-card {
   background: var(--surface);
-  border-radius: 18px;
+  border-radius: 10px;
   padding: 30px;
   width: min(400px, 100%);
   border: 1px solid var(--border-2);
@@ -1001,8 +1069,8 @@ pre.json {
 .logo {
   width: 36px;
   height: 36px;
-  border-radius: 11px;
-  background: linear-gradient(135deg, #2f7bff 0%, #6d5dfc 55%, #22d3ee 120%);
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, #2f7bff 0%, #2563eb 55%, #35a0f2 120%);
   color: white;
   display: grid;
   place-items: center;
@@ -1166,9 +1234,14 @@ pre.boxed {
     max-width: 220px;
   }
 }
+@media (max-width: 760px) {
+  h1 {
+    font-size: 24px;
+  }
+}
 @media (max-width: 560px) {
   h1 {
-    font-size: 21px;
+    font-size: 22px;
   }
   .stats {
     grid-template-columns: minmax(0, 1fr);

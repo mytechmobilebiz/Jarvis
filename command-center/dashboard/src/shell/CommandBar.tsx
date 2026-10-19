@@ -121,7 +121,13 @@ export default function CommandBar() {
   async function execute(e?: FormEvent) {
     e?.preventDefault();
     const text = message.trim();
-    if (!text || busy) return;
+    if (busy) return;
+    if (!text) {
+      // Execute stays coloured (as in the reference) rather than dim; an empty send just says what is missing.
+      setError("Type a command first.");
+      input.current?.focus();
+      return;
+    }
     // abort, not stop: a late final result would put the sent command back in the box.
     voice.abort();
     setBusy(true);
@@ -169,46 +175,47 @@ export default function CommandBar() {
         }
       }}
     >
-      <form className={`command-bar ${voice.listening ? "listening" : ""}`} onSubmit={execute} role="search">
-        <Icon name="sparkles" size={18} className="command-icon" />
-        <input
-          ref={input}
-          aria-label="Command for the AI Supervisor"
-          placeholder={canOperate ? "Ask the AI Supervisor… e.g. Check all websites" : "Viewers can read, but not send commands"}
-          value={message}
-          disabled={!canOperate}
-          maxLength={4000}
-          onChange={(e) => {
-            setMessage(e.target.value);
-            clearErrors();
-          }}
-          onFocus={() => setFocused(true)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") {
-              setFocused(false);
+      <form className="command-bar" onSubmit={execute} role="search">
+        <div className={`command-field ${voice.listening ? "listening" : ""}`}>
+          <Icon name="search" size={19} className="command-icon" />
+          <input
+            ref={input}
+            aria-label="Command for the AI Supervisor"
+            aria-keyshortcuts="Control+K Meta+K"
+            title="Ctrl+K (⌘K on a Mac) jumps here"
+            placeholder={canOperate ? "Ask or give a command…" : "Viewers can read, but not send commands"}
+            value={message}
+            disabled={!canOperate}
+            maxLength={4000}
+            onChange={(e) => {
+              setMessage(e.target.value);
               clearErrors();
-            }
-          }}
-        />
-        <kbd className="command-kbd" aria-hidden>
-          Ctrl K
-        </kbd>
-        {voiceAvailable ? (
-          <button
-            ref={mic}
-            type="button"
-            className={`btn ghost icon command-mic ${voice.listening ? "active" : ""}`}
-            onClick={toggleVoice}
-            aria-label="Voice input"
-            aria-pressed={voice.listening}
-            title={voice.listening ? "Listening… click to stop" : "Voice input (fills the box; nothing runs until you press Execute)"}
-          >
-            <Icon name="mic" size={18} />
-          </button>
-        ) : null}
-        <button className="btn primary command-go" type="submit" disabled={!canOperate || busy || !message.trim()}>
-          <Icon name="play" size={14} />
-          <span>{busy ? "Sending…" : "Execute"}</span>
+            }}
+            onFocus={() => setFocused(true)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setFocused(false);
+                clearErrors();
+              }
+            }}
+          />
+          {voiceAvailable ? (
+            <button
+              ref={mic}
+              type="button"
+              className={`command-mic ${voice.listening ? "active" : ""}`}
+              onClick={toggleVoice}
+              aria-label="Voice input"
+              aria-pressed={voice.listening}
+              title={voice.listening ? "Listening… click to stop" : "Voice input (fills the box; nothing runs until you press Execute)"}
+            >
+              <Icon name="mic" size={19} />
+            </button>
+          ) : null}
+        </div>
+        <button className="command-go" type="submit" disabled={!canOperate || busy}>
+          <Icon name="play" size={16} className="command-go-icon" />
+          <span className="command-go-text">{busy ? "Sending…" : "Execute"}</span>
         </button>
       </form>
       {askConsent ? (

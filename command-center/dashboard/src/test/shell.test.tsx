@@ -46,7 +46,7 @@ describe("Shell", () => {
       "CWP / Servers",
       "Email",
       "Credit Repair",
-      "Social Media / Postonomous",
+      "Postonomous",
       "Automation Logs",
       "Knowledge Base",
       "Settings",

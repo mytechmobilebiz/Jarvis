@@ -5,6 +5,8 @@ export interface NavItem {
   to: string;
   label: string;
   icon: IconName;
+  /** The name in the document title when the sidebar label alone is too short to say what the page is. */
+  title?: string;
   badge?: (s: SystemStatus) => number;
   adminOnly?: boolean;
   sensitiveOnly?: boolean;
@@ -15,38 +17,43 @@ export interface NavGroup {
   items: NavItem[];
 }
 
+/** The reference's twelve sections, always visible. */
+export const MAIN_NAV: NavItem[] = [
+  { to: "/", label: "Dashboard", icon: "home" },
+  { to: "/agents", label: "AI Agents", icon: "agents" },
+  { to: "/workflows", label: "Workflows", icon: "tree" },
+  { to: "/websites", label: "Websites", icon: "grid", badge: (s) => (s.counts.sites.down ?? 0) + (s.counts.sites.degraded ?? 0) },
+  { to: "/seo", label: "SEO & Marketing", icon: "trending" },
+  { to: "/servers", label: "CWP / Servers", icon: "server" },
+  { to: "/email", label: "Email", icon: "mail" },
+  { to: "/credit-repair", label: "Credit Repair", icon: "docs", sensitiveOnly: true },
+  { to: "/social", label: "Postonomous", title: "Postonomous (social media)", icon: "chat" },
+  { to: "/logs", label: "Automation Logs", icon: "docText" },
+  { to: "/kb", label: "Knowledge Base", icon: "docLines" },
+  { to: "/settings", label: "Settings", icon: "settings", adminOnly: true },
+];
+
+/** Operations pages that stay one click away: approvals must never be hidden (owner rule 3). */
+export const OPS_NAV: NavItem[] = [
+  { to: "/approvals", label: "Approvals", icon: "approvals", badge: (s) => s.counts.approvals_pending },
+  { to: "/tasks", label: "Tasks", icon: "tasks" },
+  { to: "/supervisor", label: "AI Supervisor", icon: "sparkles" },
+  { to: "/activity", label: "Activity log", icon: "history", adminOnly: true },
+];
+
+/** Behind the "More" toggle; any badge among them shows on the toggle while it is closed. */
+export const MORE_NAV: NavItem[] = [
+  { to: "/leads", label: "Leads", icon: "users" },
+  { to: "/support", label: "Client support", icon: "inbox" },
+  { to: "/drafts", label: "Drafts & reports", icon: "file" },
+  { to: "/outbox", label: "Outbox", icon: "send" },
+  { to: "/integrations", label: "Integrations", icon: "plug" },
+];
+
 export const NAV: NavGroup[] = [
-  {
-    title: "Command",
-    items: [
-      { to: "/", label: "Dashboard", icon: "dashboard" },
-      { to: "/agents", label: "AI Agents", icon: "agents" },
-      { to: "/workflows", label: "Workflows", icon: "workflows" },
-      { to: "/websites", label: "Websites", icon: "globe", badge: (s) => (s.counts.sites.down ?? 0) + (s.counts.sites.degraded ?? 0) },
-      { to: "/seo", label: "SEO & Marketing", icon: "trending" },
-      { to: "/servers", label: "CWP / Servers", icon: "server" },
-      { to: "/email", label: "Email", icon: "mail" },
-      { to: "/credit-repair", label: "Credit Repair", icon: "shield", sensitiveOnly: true },
-      { to: "/social", label: "Social Media / Postonomous", icon: "megaphone" },
-      { to: "/logs", label: "Automation Logs", icon: "logs" },
-      { to: "/kb", label: "Knowledge Base", icon: "book" },
-      { to: "/settings", label: "Settings", icon: "settings", adminOnly: true },
-    ],
-  },
-  {
-    title: "Operations",
-    items: [
-      { to: "/approvals", label: "Approvals", icon: "approvals", badge: (s) => s.counts.approvals_pending },
-      { to: "/tasks", label: "Tasks", icon: "tasks" },
-      { to: "/supervisor", label: "AI Supervisor", icon: "sparkles" },
-      { to: "/leads", label: "Leads", icon: "users" },
-      { to: "/support", label: "Client support", icon: "inbox" },
-      { to: "/drafts", label: "Drafts & reports", icon: "file" },
-      { to: "/outbox", label: "Outbox", icon: "send" },
-      { to: "/integrations", label: "Integrations", icon: "plug" },
-      { to: "/activity", label: "Activity log", icon: "history", adminOnly: true },
-    ],
-  },
+  { title: "Command", items: MAIN_NAV },
+  { title: "Operations", items: OPS_NAV },
+  { title: "More", items: MORE_NAV },
 ];
 
 export function visible(item: NavItem, user: User): boolean {
@@ -55,13 +62,20 @@ export function visible(item: NavItem, user: User): boolean {
   return true;
 }
 
+/** The total of the badges of `items` (for the closed "More" toggle). */
+export function badgeTotal(items: NavItem[], status: SystemStatus | null): number {
+  if (!status) return 0;
+  return items.reduce((n, item) => n + (item.badge ? item.badge(status) || 0 : 0), 0);
+}
+
 export const APP_TITLE = "Infinite AI Command Center";
 /** Routes that are not in the sidebar. */
 const OTHER_PAGES: Record<string, string> = { "/schedules": "Schedules" };
 
-/** The document title for a route: "<sidebar label> · Infinite AI Command Center". */
+/** The document title for a route: "<page name> · Infinite AI Command Center". */
 export function pageTitle(pathname: string): string {
   const path = pathname.replace(/\/+$/, "") || "/";
-  const label = NAV.flatMap((g) => g.items).find((item) => item.to === path)?.label ?? OTHER_PAGES[path];
+  const item = NAV.flatMap((g) => g.items).find((i) => i.to === path);
+  const label = item ? (item.title ?? item.label) : OTHER_PAGES[path];
   return label ? `${label} · ${APP_TITLE}` : APP_TITLE;
 }

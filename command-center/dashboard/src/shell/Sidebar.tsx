@@ -1,55 +1,156 @@
-import { forwardRef, useEffect } from "react";
-import { NavLink } from "react-router-dom";
+import { forwardRef, useEffect, useId, useState } from "react";
+import { NavLink, useLocation } from "react-router-dom";
 import type { SystemStatus, User } from "../api";
+import { useNow } from "../hooks";
 import { Icon } from "../icons";
-import { NAV, visible } from "./nav";
+import { aiState, clockTime, engineState, isStale, serviceHealth, type StatusMeta } from "../status";
+import DeviceCard from "./DeviceCard";
+import { MAIN_NAV, MORE_NAV, OPS_NAV, badgeTotal, visible, type NavItem } from "./nav";
+import QuickActions from "./QuickActions";
 
-export function serviceHealth(s: SystemStatus | null) {
-  const worker = s ? (s.workers.some((w) => w.alive) ? "good" : "bad") : "muted";
-  // No workflow engine set up, or not contacted yet: nothing to report, not a problem.
-  const n8n = !s
-    ? "muted"
-    : s.workflow_engine === "none" || !s.n8n
-      ? "muted"
-      : s.n8n.last_ok_at && !(s.n8n.last_error_at && s.n8n.last_error_at > s.n8n.last_ok_at)
-        ? "good"
-        : "warn";
-  const database = s ? (s.database.ok ? "good" : "bad") : "muted";
-  const ai = s ? (s.llm.configured ? "good" : "muted") : "muted";
-  return { worker, n8n, database, ai };
+// Kept here as well: pages imported it from the sidebar before it moved to status.ts.
+export { serviceHealth };
+
+const MORE_KEY = "cc.nav.more";
+
+function readMore(): boolean {
+  try {
+    return localStorage.getItem(MORE_KEY) === "open";
+  } catch {
+    return false;
+  }
+}
+
+function saveMore(open: boolean) {
+  try {
+    localStorage.setItem(MORE_KEY, open ? "open" : "closed");
+  } catch {
+    /* private window: not remembered */
+  }
+}
+
+function NavEntry({ item, status, onNavigate }: { item: NavItem; status: SystemStatus | null; onNavigate: () => void }) {
+  const count = status && item.badge ? item.badge(status) : 0;
+  return (
+    <li>
+      <NavLink to={item.to} end={item.to === "/"} className={({ isActive }) => (isActive ? "active" : "")} onClick={onNavigate} title={item.label}>
+        <Icon name={item.icon} size={20} strokeWidth={1.6} className="nav-icon" />
+        <span className="nav-label">{item.label}</span>
+        {count ? (
+          <span className="nav-badge" aria-label={`${count} need attention`}>
+            {count}
+          </span>
+        ) : null}
+      </NavLink>
+    </li>
+  );
+}
+
+/** Worker, workflow engine and AI lines, and the versions. While the status is stale every dot is "unknown" (hollow). */
+function SystemFooter({ status, statusMeta }: { status: SystemStatus | null; statusMeta: StatusMeta }) {
+  const now = useNow(10_000);
+  const stale = isStale(statusMeta, now);
+  const health = serviceHealth(status, statusMeta, now);
+  // Short on screen; the line's title says why.
+  const unknown = "unknown";
+  const workerText = !status ? "" : stale ? unknown : health.worker === "good" ? "running" : "not reporting";
+  const engineName = status?.workflow_engine === "webhook" ? "Webhook" : "n8n";
+  const engine = status ? engineState(status, now) : null;
+  const engineText = !status
+    ? ""
+    : stale
+      ? unknown
+      : engine === "none"
+        ? "not configured"
+        : engine === "not-contacted"
+          ? "not contacted yet"
+          : engine === "connected"
+            ? "connected"
+            : engine === "failing"
+              ? "check Integrations"
+              : status.n8n?.last_ok_at
+                ? `not checked since ${clockTime(status.n8n.last_ok_at)}`
+                : "not checked yet";
+  const ai = status ? aiState(status) : null;
+  const aiText = !status
+    ? "…"
+    : stale
+      ? unknown
+      : ai === "rule-based"
+        ? "rule-based"
+        : ai === "failing"
+          ? "last call failed"
+          : (status.llm.model ?? "Claude");
+  const why = stale && status ? " (no current status: the Command Center is not answering)" : "";
+  const versions = `Dashboard v${__APP_VERSION__}${status ? ` · API v${status.version}` : ""}`;
+  return (
+    // On the icon rail the texts are visually hidden; the dots differ in shape (see shell.css) and the titles carry the state.
+    <div className="sidebar-foot">
+      <div className="health-title nav-label">System</div>
+      <div className="health-line" title={`Worker (runs the agents' tasks)${workerText ? `: ${workerText}` : ""}${why}`}>
+        <span className={`dot dot-${health.worker}`} /> <span className="nav-label">Worker {workerText}</span>
+      </div>
+      <div className="health-line" title={`${engineName} (workflow engine)${engineText ? `: ${engineText}` : ""}${why}`}>
+        <span className={`dot dot-${health.n8n}`} />{" "}
+        <span className="nav-label">
+          {engineName} {engineText}
+        </span>
+      </div>
+      <div className="health-line" title={`AI planner: ${aiText}${why}`}>
+        <span className={`dot dot-${health.ai}`} /> <span className="nav-label">AI: {aiText}</span>
+      </div>
+      <div className="health-line muted version-line nav-label" title={`${versions}${status?.edition ? ` · ${status.edition.title}` : ""}`}>
+        {versions}
+      </div>
+      {status && status.version !== __APP_VERSION__ ? (
+        <div className="health-line" title={`The API reports version ${status.version}; this dashboard is ${__APP_VERSION__}`}>
+          <span className="dot dot-warn" /> <span className="nav-label text-warn">API v{status.version}: not updated</span>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export default function Sidebar({
   user,
   status,
+  statusMeta,
   open,
   onNavigate,
   onClose,
 }: {
   user: User;
   status: SystemStatus | null;
+  statusMeta: StatusMeta;
   open: boolean;
   onNavigate: () => void;
   onClose: () => void;
 }) {
-  const health = serviceHealth(status);
-  const workerText = health.worker === "good" ? "running" : status ? "not reporting" : "";
-  const engineName = status?.workflow_engine === "webhook" ? "Webhook" : "n8n";
-  const engineText = !status
-    ? ""
-    : status.workflow_engine === "none"
-      ? "not configured"
-      : !status.n8n
-        ? "not contacted yet"
-        : health.n8n === "good"
-          ? "connected"
-          : "check Integrations";
-  const aiText = status ? (status.llm.configured ? status.llm.model : "rule-based") : "…";
+  const { pathname } = useLocation();
+  const [moreOpen, setMoreOpen] = useState(readMore);
+  const moreId = useId();
+  const canOperate = user.role === "admin" || user.role === "operator";
+  const main = MAIN_NAV.filter((i) => visible(i, user));
+  const ops = OPS_NAV.filter((i) => visible(i, user));
+  const more = MORE_NAV.filter((i) => visible(i, user));
+  const moreCount = badgeTotal(more, status);
+  const onMorePage = more.some((i) => pathname === i.to || pathname.startsWith(`${i.to}/`));
+
+  // A page under "More" that is open (e.g. from a link) shows its entry, so the active page is never hidden.
+  useEffect(() => {
+    if (onMorePage) setMoreOpen(true);
+  }, [onMorePage]);
 
   // Phone drawer: the first link takes the focus when it opens.
   useEffect(() => {
     if (open) document.querySelector<HTMLElement>(".sidebar nav a")?.focus();
   }, [open]);
+
+  function toggleMore() {
+    const next = !moreOpen;
+    setMoreOpen(next);
+    saveMore(next);
+  }
 
   return (
     <aside className={`sidebar ${open ? "open" : ""}`} aria-label="Main navigation">
@@ -57,62 +158,39 @@ export default function Sidebar({
         <Icon name="close" />
       </button>
       <nav>
-        {NAV.map((group) => {
-          const items = group.items.filter((item) => visible(item, user));
-          if (!items.length) return null;
-          return (
-            <div className="nav-group" key={group.title}>
-              <div className="nav-group-title">{group.title}</div>
-              {items.map((item) => {
-                const count = status && item.badge ? item.badge(status) : 0;
-                return (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    end={item.to === "/"}
-                    className={({ isActive }) => (isActive ? "active" : "")}
-                    onClick={onNavigate}
-                    title={item.label}
-                  >
-                    <Icon name={item.icon} size={19} className="nav-icon" />
-                    <span className="nav-label">{item.label}</span>
-                    {count ? (
-                      <span className="nav-badge" aria-label={`${count} need attention`}>
-                        {count}
-                      </span>
-                    ) : null}
-                  </NavLink>
-                );
-              })}
-            </div>
-          );
-        })}
-      </nav>
-      {/* On the icon rail the texts are visually hidden; the dots differ in shape (see shell.css) and the titles carry the state. */}
-      <div className="sidebar-foot">
-        <div className="health-title">System</div>
-        <div className="health-line" title={`Worker (runs the agents' tasks)${workerText ? `: ${workerText}` : ""}`}>
-          <span className={`dot dot-${health.worker}`} /> <span className="nav-label">Worker {workerText}</span>
-        </div>
-        <div className="health-line" title={`${engineName} (workflow engine)${engineText ? `: ${engineText}` : ""}`}>
-          <span className={`dot dot-${health.n8n}`} />{" "}
-          <span className="nav-label">
-            {engineName} {engineText}
-          </span>
-        </div>
-        <div className="health-line" title={`AI planner: ${aiText}`}>
-          <span className={`dot dot-${health.ai}`} /> <span className="nav-label">AI: {aiText}</span>
-        </div>
-        <div className="health-line muted nav-label" title={`Dashboard ${__APP_VERSION__}${status ? `, API ${status.version}` : ""}`}>
-          v{__APP_VERSION__}
-          {status?.edition ? ` · ${status.edition.title}` : ""}
-        </div>
-        {status && status.version !== __APP_VERSION__ ? (
-          <div className="health-line" title={`The API reports version ${status.version}; this dashboard is ${__APP_VERSION__}`}>
-            <span className="dot dot-warn" /> <span className="nav-label text-warn">API v{status.version}: not updated</span>
-          </div>
+        <ul className="nav-list">
+          {main.map((item) => (
+            <NavEntry key={item.to} item={item} status={status} onNavigate={onNavigate} />
+          ))}
+        </ul>
+        <ul className="nav-list nav-ops">
+          {ops.map((item) => (
+            <NavEntry key={item.to} item={item} status={status} onNavigate={onNavigate} />
+          ))}
+        </ul>
+        {more.length ? (
+          <>
+            <button type="button" className="nav-more" aria-expanded={moreOpen} aria-controls={moreId} onClick={toggleMore} title="More pages">
+              <Icon name="dots" size={20} className="nav-icon" />
+              <span className="nav-label">More</span>
+              {moreCount && !moreOpen ? (
+                <span className="nav-badge" aria-label={`${moreCount} need attention`}>
+                  {moreCount}
+                </span>
+              ) : null}
+              <Icon name="chevronDown" size={16} className="nav-more-chevron" />
+            </button>
+            <ul className="nav-list nav-more-list" id={moreId} hidden={!moreOpen}>
+              {more.map((item) => (
+                <NavEntry key={item.to} item={item} status={status} onNavigate={onNavigate} />
+              ))}
+            </ul>
+          </>
         ) : null}
-      </div>
+      </nav>
+      {canOperate ? <QuickActions user={user} status={status} /> : null}
+      <DeviceCard />
+      <SystemFooter status={status} statusMeta={statusMeta} />
     </aside>
   );
 }

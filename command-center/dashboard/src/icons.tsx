@@ -1,5 +1,5 @@
 /** A small set of line icons (24x24, drawn for this app; no icon library). */
-import type { ReactNode, SVGProps } from "react";
+import { useId, type ReactNode, type SVGProps } from "react";
 
 type IconProps = SVGProps<SVGSVGElement> & { size?: number };
 
@@ -97,12 +97,91 @@ const paths = {
   ),
   settings: (
     <>
+      <path d="M19.24 10.49l2.29.33v2.36l-2.29.33-1.05 2.54 1.38 1.85-1.67 1.67-1.85-1.38-2.54 1.05-.33 2.29h-2.36l-.33-2.29-2.54-1.05-1.85 1.38-1.67-1.67 1.38-1.85-1.05-2.54-2.29-.33v-2.36l2.29-.33 1.05-2.54-1.38-1.85 1.67-1.67 1.85 1.38 2.54-1.05.33-2.29h2.36l.33 2.29 2.54 1.05 1.85-1.38 1.67 1.67-1.38 1.85Z" />
+      <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  sliders: (
+    <>
       <path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1" />
       <circle cx="15" cy="6" r="2" />
       <circle cx="9" cy="12" r="2" />
       <circle cx="17" cy="18" r="2" />
     </>
   ),
+  home: (
+    <>
+      <path d="M3.5 10.5 12 4l8.5 6.5" />
+      <path d="M5.5 9v11h13V9" />
+      <path d="M10 20v-5.5h4V20" />
+    </>
+  ),
+  tree: (
+    <>
+      <circle cx="12" cy="5" r="2.2" />
+      <circle cx="5.5" cy="18.5" r="2.2" />
+      <circle cx="18.5" cy="18.5" r="2.2" />
+      <path d="M12 7.2v4.3M5.5 16.3v-2.8a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v2.8" />
+    </>
+  ),
+  grid: (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M3 9h18M3 14.5h18M9 9v11M15 9v11" />
+    </>
+  ),
+  docs: (
+    <>
+      <rect x="7.5" y="3" width="13" height="15" rx="2" />
+      <path d="M4.5 7v12a2 2 0 0 0 2 2h10M11 8h6M11 11.5h6M11 15h3.5" />
+    </>
+  ),
+  chat: (
+    <>
+      <path d="M5 4h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-7l-5 4v-4H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" />
+      <path d="M7.5 9h9M7.5 12.5h6" />
+    </>
+  ),
+  docText: (
+    <>
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" />
+      <path d="M14 3v5h5M8.5 12.5h7M8.5 16h7" />
+    </>
+  ),
+  docLines: (
+    <>
+      <rect x="4.5" y="3" width="15" height="18" rx="2" />
+      <path d="M8 7.5h8M8 11h8M8 14.5h8M8 18h5" />
+    </>
+  ),
+  radar: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <circle cx="12" cy="12" r="4.5" />
+      <path d="M12 12l6-6" />
+    </>
+  ),
+  serverCheck: (
+    <>
+      <rect x="3" y="4" width="18" height="7" rx="2" />
+      <path d="M7 7.5h.01M11 7.5h6M10 20H5a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v.5" />
+      <path d="m14 18.5 2.2 2.2 4.3-4.4" />
+    </>
+  ),
+  report: (
+    <>
+      <rect x="4.5" y="3" width="15" height="18" rx="2" />
+      <path d="M8.5 17v-3M12 17V9M15.5 17v-5.5" />
+    </>
+  ),
+  device: (
+    <>
+      <rect x="7" y="2.5" width="10" height="19" rx="3" />
+      <path d="M10 6h4" />
+      <circle cx="12" cy="16.5" r="1.8" />
+    </>
+  ),
+  dots: <path d="M5 12h.01M12 12h.01M19 12h.01" strokeWidth={3} />,
   approvals: (
     <>
       <circle cx="12" cy="12" r="9" />
@@ -242,4 +321,27 @@ export type IconName = keyof typeof paths;
 
 export function Icon({ name, ...rest }: IconProps & { name: IconName }) {
   return <Svg {...rest}>{paths[name]}</Svg>;
+}
+
+/** The brand mark: a line-drawn infinity sign, grey-blue on the left loop to bright blue on the right (decorative). */
+export function InfinityMark({ width = 56, className = "" }: { width?: number; className?: string }) {
+  const id = `inf-${useId().replace(/:/g, "")}`;
+  return (
+    <svg className={className} width={width} height={(width * 36) / 64} viewBox="0 0 64 36" fill="none" aria-hidden="true" focusable="false">
+      <defs>
+        <linearGradient id={id} x1="4" y1="18" x2="60" y2="18" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#7d8fb8" />
+          <stop offset="0.5" stopColor="#4b8fe6" />
+          <stop offset="1" stopColor="#35a0f2" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M32 18C27 11 22 8 16 8 10 8 6 12.5 6 18s4 10 10 10c6 0 11-3 16-10 5-7 10-10 16-10 6 0 10 4.5 10 10s-4 10-10 10c-6 0-11-3-16-10Z"
+        stroke={`url(#${id})`}
+        strokeWidth={4.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 }

@@ -99,7 +99,7 @@ export function NotificationsMenu({ status }: { status: SystemStatus | null }) {
       className="notifications"
       button={
         <>
-          <Icon name="bell" />
+          <Icon name="bell" size={21} strokeWidth={1.6} />
           {count ? <span className="top-badge">{count > 99 ? "99+" : count}</span> : null}
         </>
       }
@@ -170,9 +170,8 @@ export function AccountMenu() {
           </span>
           <span className="account-name">
             <span>{shortName}</span>
-            <span className="muted">{shortName.toLowerCase() === roleLabel.toLowerCase() ? user.email : roleLabel}</span>
+            <span className="account-role">{roleLabel}</span>
           </span>
-          <Icon name="chevronDown" size={16} className="account-chevron" />
         </>
       }
     >

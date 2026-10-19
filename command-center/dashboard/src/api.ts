@@ -92,6 +92,14 @@ export interface Agent {
   capabilities: Capability[];
   stats_24h: Record<string, number>;
   last_run_at: string | null;
+  /** Work in progress now, however old the task (0.5.0 API; absent from older APIs). */
+  active?: AgentActive;
+}
+
+export interface AgentActive {
+  queued: number;
+  running: number;
+  awaiting_approval: number;
 }
 
 export interface Task {
@@ -113,6 +121,8 @@ export interface Task {
   summary: string;
   result: { summary?: string; data?: Json; findings?: Finding[] } | null;
   error: string;
+  /** Last sign of life from the worker running it. */
+  heartbeat_at?: string | null;
 }
 
 export interface TaskLog {
@@ -184,6 +194,16 @@ export interface Uptime {
   "30d": number | null;
   checks_30d: number;
   avg_response_ms_24h: number | null;
+  /** Oldest check in the 30-day window: on a younger site the 30-day figure covers only the time since then (0.5.0 API). */
+  first_check_at?: string | null;
+  /** Checks behind each percentage (0.5.0 API; n_30d equals checks_30d). */
+  n_24h?: number;
+  n_7d?: number;
+  n_30d?: number;
+  /** Clock hours of each window with at least one check (0.5.0 API). */
+  hours_checked_24h?: number;
+  hours_checked_7d?: number;
+  hours_checked_30d?: number;
 }
 
 export interface Incident {
@@ -366,8 +386,21 @@ export interface SystemStatus {
   time: string;
   database: { ok: boolean };
   workers: { worker_id: string; last_seen_at: string; alive: boolean; info: Json }[];
-  llm: { configured: boolean; provider: string; model: string | null; requests_today: number; daily_cap: number; reason?: string };
+  llm: {
+    configured: boolean;
+    provider: string;
+    model: string | null;
+    requests_today: number;
+    daily_cap: number;
+    reason?: string;
+    /** When the AI model last answered, or last failed, and that error (0.5.0 API). */
+    last_ok_at?: string | null;
+    last_error_at?: string | null;
+    last_error?: string;
+  };
   workflow_engine?: string;
+  /** The n8n editor's address on this PC, only with the n8n engine and only http(s) (0.5.0 API). */
+  n8n_editor_url?: string | null;
   edition?: { code: string; title: string; source: string };
   n8n: IntegrationState | null;
   counts: {
@@ -378,7 +411,30 @@ export interface SystemStatus {
     approvals_pending: number;
     events_24h: Record<string, number>;
     drafts: number;
+    /** The same as `sites`, for monitored (enabled) sites only, and the number of paused sites (0.5.0 API). */
+    sites_enabled?: Record<string, number>;
+    sites_paused?: number;
   };
+}
+
+/** GET /api/stats/task-activity: finished tasks (succeeded or failed) per category and local time bucket. The AI
+ * Supervisor's own planning and summary steps are not counted. */
+export type ActivityRange = "24h" | "7d" | "30d";
+
+export interface TaskActivity {
+  range: ActivityRange;
+  bucket: "hour" | "6 hours" | "day";
+  tz: string;
+  since: string;
+  /** Display categories in the API's order. */
+  categories: { key: string; label: string }[];
+  /** Every bucket from the start of the range to now; `start` is local time with its UTC offset. */
+  buckets: { start: string; counts: Record<string, number>; failed: number }[];
+  totals: Record<string, number>;
+  failed: number;
+  /** Since local midnight, and yesterday from midnight to the same clock time. */
+  today: { succeeded: number; failed: number };
+  yesterday_same_time: { succeeded: number; failed: number };
 }
 
 export interface AuditEntry {

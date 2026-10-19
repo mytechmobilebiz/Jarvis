@@ -1,8 +1,8 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { api, ApiError, type SystemStatus, type User } from "./api";
-import { usePoll } from "./hooks";
-import { Icon } from "./icons";
+import { useNow, usePoll } from "./hooks";
+import { Icon, InfinityMark } from "./icons";
 import Activity from "./pages/Activity";
 import Agents from "./pages/Agents";
 import AutomationLogs from "./pages/AutomationLogs";
@@ -30,6 +30,9 @@ import CommandBar from "./shell/CommandBar";
 import { AccountMenu, NotificationsMenu } from "./shell/Menus";
 import { APP_TITLE, pageTitle } from "./shell/nav";
 import Sidebar, { MenuButton } from "./shell/Sidebar";
+import { clockTime, isStale, type StatusMeta } from "./status";
+
+export type { StatusMeta } from "./status";
 
 interface AuthState {
   user: User;
@@ -47,6 +50,8 @@ export function useAuth(): AuthState {
 
 function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void> }) {
   const status = usePoll(() => api.get<SystemStatus>("/api/system/status"), 10_000);
+  // How current `status` is: pages must not show an old answer as live (C2-03).
+  const statusMeta = useMemo<StatusMeta>(() => ({ error: status.error, lastSuccessAt: status.lastSuccessAt }), [status.error, status.lastSuccessAt]);
   const canOperate = user.role === "admin" || user.role === "operator";
   const [menuOpen, setMenuOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
@@ -73,7 +78,8 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
       restoreFocus.current = false;
       return;
     }
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeMenu();
+    // A dialog opened from the drawer (a Quick Action) takes Escape for itself.
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !document.querySelector('[aria-modal="true"]') && closeMenu();
     // The drawer only exists on a phone-width screen; widening the window closes it.
     const wide = window.matchMedia?.("(min-width: 761px)");
     const onWide = () => wide?.matches && setMenuOpen(false);
@@ -94,9 +100,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
         <header className="topbar" ref={header}>
           <MenuButton ref={menuButton} open={menuOpen} onClick={() => setMenuOpen((o) => !o)} />
           <Link to="/" className="brand" aria-label="Infinite AI Command Center, dashboard">
-            <span className="logo" aria-hidden>
-              ∞
-            </span>
+            <InfinityMark className="brand-mark" />
             <span className="brand-text">
               <span className="brand-name">Infinite AI</span>
               <span className="brand-sub">Command Center</span>
@@ -104,21 +108,22 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
           </Link>
           <CommandBar />
           <div className="top-actions">
-            <NotificationsMenu status={s} />
             {user.role === "admin" ? (
-              <Link className="top-btn" to="/settings" aria-label="Settings" title="Settings">
-                <Icon name="settings" />
+              <Link className="top-btn top-settings" to="/settings" aria-label="Settings" title="Settings">
+                <Icon name="settings" size={21} strokeWidth={1.6} />
               </Link>
             ) : null}
+            <NotificationsMenu status={s} />
             <AccountMenu />
           </div>
         </header>
-        <Sidebar user={user} status={s} open={menuOpen} onNavigate={() => setMenuOpen(false)} onClose={closeMenu} />
+        <Sidebar user={user} status={s} statusMeta={statusMeta} open={menuOpen} onNavigate={() => setMenuOpen(false)} onClose={closeMenu} />
         {menuOpen ? <div className="scrim" onClick={closeMenu} aria-hidden /> : null}
         <main className="content" id="main" tabIndex={-1} ref={main}>
+          <ConnectionLost meta={statusMeta} />
           <VersionMismatch status={s} />
           <Routes>
-            <Route path="/" element={<Dashboard status={s} />} />
+            <Route path="/" element={<Dashboard status={s} statusMeta={statusMeta} />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/workflows" element={<Workflows />} />
             <Route path="/websites" element={<Websites />} />
@@ -145,6 +150,20 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
         </main>
       </div>
     </AuthContext.Provider>
+  );
+}
+
+/** Shown while the status poll fails or its last success is over 30 s old, so nothing on screen passes for live (C2-03). */
+function ConnectionLost({ meta }: { meta: StatusMeta }) {
+  const now = useNow(5_000);
+  if (!isStale(meta, now)) return null;
+  const when = meta.lastSuccessAt ? `last update ${clockTime(meta.lastSuccessAt)}` : "no update received yet";
+  return (
+    <div className="version-banner">
+      <div className="alert alert-bad connection-banner" role="alert">
+        <strong>Cannot reach the Command Center</strong> · {when}. What this page shows may be out of date; retrying every 10 seconds.
+      </div>
+    </div>
   );
 }
 

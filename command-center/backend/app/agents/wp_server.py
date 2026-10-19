@@ -120,7 +120,10 @@ async def linked_as_approved(ctx: AgentContext, site_id: int) -> tuple[Site, Ser
 
 def site_host(url: str) -> str:
     """The host a site is reached at, for comparing two addresses of one site: lower case, without "www." or a final dot."""
-    host = (urlsplit(url.strip()).hostname or "").rstrip(".")
+    try:
+        host = (urlsplit(url.strip()).hostname or "").rstrip(".")
+    except ValueError:  # e.g. a malformed address in a server's cc-gate configuration: matches nothing
+        return ""
     return host[4:] if host.startswith("www.") else host
 
 

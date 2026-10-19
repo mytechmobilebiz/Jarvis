@@ -1,0 +1,39 @@
+/* One colour per real agent, used on the agent cards, the Workflow Activity chart, the Recent Tasks table and the
+   Active Workflows icons (src/agentStyle.tsx).
+
+   The chart draws these as eight line series, so they were chosen with the dataviz validator
+   (validate_palette.js, dark mode, on the card surface #0f1a2b and the panel surface #0e1927), in the chart's legend
+   order (Website scans, SEO, Email & clients, Content & marketing, Reports, Server checks, Credit repair, Repairs):
+   all inside the dark lightness band (OKLCH L 0.48-0.67), chroma >= 0.10, every colour >= 3:1 against the surface,
+   worst adjacent colour-vision-deficiency separation dE 10.9 (target 8), worst adjacent normal-vision dE 17.1 (floor 15).
+   Change one and re-run the validator in that order. Text never takes these colours. */
+:root {
+  --agent-monitoring: #199e70; /* Website scans */
+  --agent-seo_content: #2b9fe0; /* SEO */
+  --agent-communications: #d95926; /* Email & clients */
+  --agent-social_marketing: #9d7bf2; /* Content & marketing */
+  --series-reports: #c98500; /* Reports (mostly the AI Supervisor's) */
+  --agent-server_management: #5b7cf5; /* Server checks */
+  --agent-credit_repair: #e2589c; /* Credit repair */
+  --agent-wordpress_security: #3a9d3a; /* Repairs */
+  --agent-supervisor: var(--series-reports);
+  /* an agent or chart category this dashboard does not know yet */
+  --agent-other: #8a95b0;
+}
+
+/* Filled, two-tone agent glyphs: the base takes the agent colour (currentColor), lighter parts are white at low opacity. */
+.agent-icon {
+  display: inline-block;
+  flex: none;
+  vertical-align: middle;
+}
+/* a small tinted square behind an agent glyph (Recent Tasks, Active Workflows) */
+.agent-chip {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  flex: none;
+  background: color-mix(in srgb, var(--chip-color, var(--agent-other)) 18%, transparent);
+}
