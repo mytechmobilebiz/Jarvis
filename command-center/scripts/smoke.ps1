@@ -1,5 +1,6 @@
 # Verifies a running Command Center end to end on this PC and prints PASS/FAIL.
-# It signs in, checks the worker, sends a test event through n8n and waits for
+# It signs in, checks that the running API and dashboard are the version of
+# this folder, checks the worker, sends a test event through n8n and waits for
 # n8n's acknowledgement, and runs one supervisor request. It prints no secrets.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke.ps1
@@ -41,6 +42,14 @@ Check "sign in" {
   $body = @{ email = $envValues["ADMIN_EMAIL"]; password = $envValues["ADMIN_PASSWORD"] } | ConvertTo-Json
   $r = Invoke-RestMethod "$base/api/auth/login" -Method Post -ContentType "application/json" -Body $body -WebSession $web
   "as $($r.user.email) ($($r.user.role))"
+}
+Check "versions match this folder" {
+  $expected = (Get-Content (Join-Path $root "VERSION") -TotalCount 1).Trim()
+  $apiVersion = (Invoke-RestMethod "$base/api/system/status" -WebSession $web).version
+  $dashboardVersion = (Invoke-RestMethod "$base/version.json").version
+  if ($apiVersion -ne $expected) { throw "the API reports $apiVersion but this folder is $expected: the API container was not replaced. Run install.ps1 from this folder again" }
+  if ($dashboardVersion -ne $expected) { throw "the dashboard reports $dashboardVersion but this folder is $expected: run install.ps1 from this folder again" }
+  "API $apiVersion, dashboard $dashboardVersion"
 }
 Check "worker running" {
   $s = Invoke-RestMethod "$base/api/system/status" -WebSession $web

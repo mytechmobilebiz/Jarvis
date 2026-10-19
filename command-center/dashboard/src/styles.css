@@ -789,6 +789,24 @@ label {
   color: var(--info-text);
   border-color: rgba(34, 211, 238, 0.25);
 }
+.alert-warn {
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--warn-text);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+.version-banner {
+  max-width: 1480px;
+  margin: 16px auto 0;
+  padding: 0 32px;
+}
+.version-banner .alert {
+  margin: 0;
+}
+@media (max-width: 760px) {
+  .version-banner {
+    padding: 0 16px;
+  }
+}
 
 /* supervisor console */
 .ask textarea {

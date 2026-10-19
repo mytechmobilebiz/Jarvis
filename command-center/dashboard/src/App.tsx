@@ -116,6 +116,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
         <Sidebar user={user} status={s} open={menuOpen} onNavigate={() => setMenuOpen(false)} onClose={closeMenu} />
         {menuOpen ? <div className="scrim" onClick={closeMenu} aria-hidden /> : null}
         <main className="content" id="main" tabIndex={-1} ref={main}>
+          <VersionMismatch status={s} />
           <Routes>
             <Route path="/" element={<Dashboard status={s} />} />
             <Route path="/agents" element={<Agents />} />
@@ -144,6 +145,20 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
         </main>
       </div>
     </AuthContext.Provider>
+  );
+}
+
+/** Shown when the API answering this dashboard is a different version, e.g. an API container the last install did not replace. */
+function VersionMismatch({ status }: { status: SystemStatus | null }) {
+  if (!status || status.version === __APP_VERSION__) return null;
+  return (
+    <div className="version-banner">
+      <div className="alert alert-warn" role="status">
+        <strong>Version mismatch.</strong> This dashboard is version {__APP_VERSION__}, but the API it talks to reports version {status.version}. The last
+        installation did not replace the API container. Run <code>scripts\install.ps1</code> again from the {__APP_VERSION__} folder, then{" "}
+        <code>scripts\smoke.ps1</code>; see <Link to="/kb#troubleshooting">Knowledge Base › Troubleshooting</Link>.
+      </div>
+    </div>
   );
 }
 

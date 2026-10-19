@@ -103,10 +103,13 @@ export default function Sidebar({
         <div className="health-line" title={`AI planner: ${aiText}`}>
           <span className={`dot dot-${health.ai}`} /> <span className="nav-label">AI: {aiText}</span>
         </div>
-        {status ? (
-          <div className="health-line muted nav-label">
-            v{status.version}
-            {status.edition ? ` · ${status.edition.title}` : ""}
+        <div className="health-line muted nav-label" title={`Dashboard ${__APP_VERSION__}${status ? `, API ${status.version}` : ""}`}>
+          v{__APP_VERSION__}
+          {status?.edition ? ` · ${status.edition.title}` : ""}
+        </div>
+        {status && status.version !== __APP_VERSION__ ? (
+          <div className="health-line" title={`The API reports version ${status.version}; this dashboard is ${__APP_VERSION__}`}>
+            <span className="dot dot-warn" /> <span className="nav-label text-warn">API v{status.version}: not updated</span>
           </div>
         ) : null}
       </div>
