@@ -41,7 +41,8 @@ async def publish_context(session: AsyncSession, params: dict[str, Any], *, lock
         "confirm": site.name,
         "delivery": approvals.delivery("wordpress_publish"),
         "draft": facts,
-        "binding": {"site_id": site.id, "name": site.name, "url": site.url, "artifact_id": draft.id, "draft_sha256": facts["sha256"]},
+        "binding": {"site_id": site.id, "name": site.name, "url": site.url, "artifact_id": draft.id, "draft_sha256": facts["sha256"],
+                    "delivery": approvals.delivery("wordpress_publish")},  # approved as a mock: never published for real
     }
 
 

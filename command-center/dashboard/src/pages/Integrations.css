@@ -131,3 +131,12 @@
 .in-test .btn {
   margin-bottom: 4px;
 }
+
+/* connection state with its age (C2-04) */
+.in-conn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-weight: 600;
+}

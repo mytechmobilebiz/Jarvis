@@ -75,7 +75,7 @@ export default function Tasks() {
         className="tk-card"
         title={
           <>
-            <Icon name="tasks" size={18} className="card-icon" /> {list.data?.total ?? 0} task(s)
+            <Icon name="tasks" size={18} className="card-icon" /> {list.data ? `${list.data.total} task(s)` : "Tasks"}
           </>
         }
         actions={

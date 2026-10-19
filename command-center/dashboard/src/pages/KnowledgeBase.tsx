@@ -21,7 +21,7 @@ type Block =
   | { live: "agents" | "channels" | "role" };
 
 interface Area {
-  group: "Command" | "Operations";
+  group: "Command" | "Operations" | "More";
   to: string;
   label: string;
   icon: IconName;
@@ -32,27 +32,27 @@ interface Area {
 
 // The sidebar (shell/nav.ts), explained.
 const AREAS: Area[] = [
-  { group: "Command", to: "/", label: "Dashboard", icon: "dashboard", text: "Live overview: agents, websites, tasks completed today, uptime, service health, approvals and alerts." },
+  { group: "Command", to: "/", label: "Dashboard", icon: "dashboard", text: "Live overview: stat cards, the seven agent cards, workflow activity, service status, recent tasks and active workflows. See [The dashboard](#dashboard)." },
   { group: "Command", to: "/agents", label: "AI Agents", icon: "agents", text: "The AI Supervisor and the seven agents. Switch one on or off, or run a capability by hand." },
   { group: "Command", to: "/workflows", label: "Workflows", icon: "workflows", text: "Scheduled automations, the n8n workflow engine and recent AI Supervisor requests." },
-  { group: "Command", to: "/websites", label: "Websites", icon: "globe", text: "Monitored sites: uptime, checks and findings; WP-CLI checks and repairs for sites linked to a server." },
-  { group: "Command", to: "/seo", label: "SEO & Marketing", icon: "trending", text: "SEO audits, keyword briefs, blog drafts and ad reports. Publishing and budget changes wait for approval." },
+  { group: "Command", to: "/websites", label: "Websites", icon: "globe", text: "Monitored sites: uptime with the checks behind it, open issues and findings; WP-CLI checks and repairs for sites linked to a server. The badge counts monitored sites that are down or degraded." },
+  { group: "Command", to: "/seo", label: "SEO & Marketing", icon: "trending", text: "SEO audits, keyword briefs, blog drafts and ad reports (sample data until an ad account is connected). Publishing and budget changes wait for approval." },
   { group: "Command", to: "/servers", label: "CWP / Servers", icon: "server", text: "Servers reached over SSH through cc-gate, as a restricted non-root account (ccagent by default): host keys, connection tests and, for operators and admins, every command sent." },
   { group: "Command", to: "/email", label: "Email", icon: "mail", text: "Client messages, leads and outgoing email. Replies and proposals are sent only after approval." },
   { group: "Command", to: "/credit-repair", label: "Credit Repair", icon: "shield", text: "The isolated Credit Repair module. Admins see the page so they can switch it on; client data needs the sensitive-data permission, admins included.", sensitive: true },
-  { group: "Command", to: "/social", label: "Social Media / Postonomous", icon: "megaphone", text: "Social post drafts for review. Publishing through Postonomous needs approval." },
+  { group: "Command", to: "/social", label: "Postonomous", icon: "megaphone", text: "Social Media / Postonomous: social post drafts for review. Publishing through Postonomous needs approval." },
   { group: "Command", to: "/logs", label: "Automation Logs", icon: "logs", text: "Every alert, task result, approval request and monitoring finding, and whether it reached the workflow engine." },
   { group: "Command", to: "/kb", label: "Knowledge Base", icon: "book", text: "These guides." },
   { group: "Command", to: "/settings", label: "Settings", icon: "settings", text: "Business details, AI provider key, edition and licence, users and roles.", admin: true },
   { group: "Operations", to: "/approvals", label: "Approvals", icon: "approvals", text: "Actions waiting for a person to approve or reject. The badge shows how many." },
   { group: "Operations", to: "/tasks", label: "Tasks", icon: "tasks", text: "Every unit of agent work: status, parameters, log and result." },
   { group: "Operations", to: "/supervisor", label: "AI Supervisor", icon: "sparkles", text: "The full console for requests: the plan, each task and the summary." },
-  { group: "Operations", to: "/leads", label: "Leads", icon: "users", text: "Enquiries from the dashboard or the n8n lead-intake webhook, scored by the agent." },
-  { group: "Operations", to: "/support", label: "Client support", icon: "inbox", text: "Client messages, triaged with a reply drafted for review." },
-  { group: "Operations", to: "/drafts", label: "Drafts & reports", icon: "file", text: "Briefings, audits, proposals and content the agents wrote. Reviewing never publishes." },
-  { group: "Operations", to: "/outbox", label: "Outbox", icon: "send", text: "Every approved outward action, and whether it was really sent or only recorded." },
-  { group: "Operations", to: "/integrations", label: "Integrations", icon: "plug", text: "The workflow engine, Claude and the outward channels, each marked live, mock or disabled." },
   { group: "Operations", to: "/activity", label: "Activity log", icon: "history", text: "The audit log of everything a person did.", admin: true },
+  { group: "More", to: "/leads", label: "Leads", icon: "users", text: "Enquiries from the dashboard or the n8n lead-intake webhook, scored by the agent." },
+  { group: "More", to: "/support", label: "Client support", icon: "inbox", text: "Client messages, triaged with a reply drafted for review." },
+  { group: "More", to: "/drafts", label: "Drafts & reports", icon: "file", text: "Briefings, audits, proposals and content the agents wrote. Reviewing never publishes." },
+  { group: "More", to: "/outbox", label: "Outbox", icon: "send", text: "Every approved outward action, and whether it was really sent or only recorded (mock)." },
+  { group: "More", to: "/integrations", label: "Integrations", icon: "plug", text: "The workflow engine, Claude and the outward channels, each marked live, mock or disabled." },
 ];
 
 interface Article {
@@ -83,6 +83,11 @@ const ARTICLES: Article[] = [
       { h: "The sidebar" },
       { areas: "Command" },
       { areas: "Operations" },
+      { p: "The pages below sit behind the **More** toggle under Operations; while it is closed, any badge among them shows on the toggle." },
+      { areas: "More" },
+      {
+        p: "Below the menu, operators and admins find the **Quick Actions** (see [The dashboard](#dashboard)), then the **Intern 2** card, then the worker, workflow engine and AI lines and the versions of the dashboard and the API.",
+      },
       { p: "On a tablet the sidebar shrinks to an icon rail; on a phone it opens from the menu button at the top left." },
       { h: "Roles" },
       {
@@ -102,6 +107,71 @@ const ARTICLES: Article[] = [
         p: "Credit Repair client data needs a separate **sensitive-data** permission. It is off for everyone, admins included, until an admin ticks it for a user on the Settings page.",
       },
       { live: "role" },
+    ],
+  },
+  {
+    id: "dashboard",
+    title: "The dashboard",
+    icon: "pulse",
+    tone: "cyan",
+    summary: "What each card and panel shows, where its figures come from, and what it says when it cannot know.",
+    link: { to: "/", label: "Dashboard" },
+    blocks: [
+      {
+        p: "Every figure on the dashboard comes from this Command Center's own data. Nothing is a sample or a placeholder: when something has not loaded, cannot be checked or is not connected, the dashboard says so instead of showing a number.",
+      },
+      { h: "Stat cards" },
+      {
+        dl: [
+          ["AI Agents", "How many of the seven agents are switched on and in your edition."],
+          ["Websites", "The monitored (not paused) websites, and how many are down or degraded."],
+          [
+            "Tasks Today",
+            "Tasks completed since midnight in your time zone, compared with yesterday up to the same time. The AI Supervisor's own planning and summary steps are not counted. With fewer than 5 by that time yesterday it says **No comparison yet** rather than a percentage.",
+          ],
+          [
+            "Website Uptime",
+            "The share of checks of the monitored websites that found them up over the last 30 days, weighted by checks; on a younger installation it says **since** the first check. With fewer than 4 checks it says **Not enough data yet**. It is the websites' uptime, not the Command Center's own.",
+          ],
+          ["Date and status", "The date and time on this PC, and **System Online** only when the latest status answer is under 30 seconds old, the database answered and a worker is reporting."],
+        ],
+      },
+      { h: "AI agent cards" },
+      {
+        p: "One card for each of the seven agents: its status (Active, Switched off, Not in this edition, or Needs attention after a failed task in the last 24 hours), its current work (for example `2 running · 1 queued`, or idle and when it last ran), and a bar with its **24-hour success rate**, empty with **No runs in 24 h** when nothing ran. Tasks have no progress figure, so none is shown. **Open** goes to the agent's page.",
+      },
+      { h: "Panels" },
+      {
+        dl: [
+          ["Workflow Activity", "Finished tasks by kind over the last 24 hours, 7 days or 30 days, in your time zone."],
+          [
+            "PC Resources",
+            "**Not connected.** The Command Center runs inside Docker and cannot measure this PC's processor, memory or disk, so it shows no gauges.",
+          ],
+          [
+            "Service Status",
+            "Each row says what was checked and when: n8n, PostgreSQL and the API, the worker, the AI planner (the last Claude call OK or failed, or rule-based), the CWP servers (verified by SSH contact in the last day, or not), and Email and Postonomous (a mock channel says **Mock**: recorded, not sent). Rows judged from a status answer that is no longer current turn **Unknown**.",
+          ],
+          ["Recent Tasks", "The latest tasks with their status and duration. Checks that schedules start every few minutes are hidden until you press **Scheduled checks**."],
+          [
+            "Active Workflows",
+            "The real schedules, which operators and admins can pause or resume, then the n8n workflows, read-only, once `N8N_API_KEY` is set.",
+          ],
+        ],
+      },
+      { p: "Whenever approvals are waiting, an amber strip under the title says how many and links to [Approvals](/approvals)." },
+      { h: "Quick Actions (sidebar)" },
+      {
+        p: "For operators and admins: **Scan all websites**, **Run SEO audit** (it asks for the page), **Check servers** (a service check on each switched-on server with a pinned host key), **Generate report** (a security or uptime report, saved to [Drafts & reports](/drafts)) and, for admins, **Open n8n**. They only read or write drafts, so they run without approval. Each says which task it started, and is disabled with the reason when it cannot run: the agent is off, there are no websites or servers, or the same task is already queued or running.",
+      },
+      { h: "Intern 2" },
+      {
+        p: "The **Intern 2** card says **Not connected**. The Command Center has no Intern 2 integration yet, and the card can only show Connected after a verified heartbeat from a paired device, which does not exist yet.",
+      },
+      { h: "Versions" },
+      {
+        p: "The bottom of the sidebar shows the dashboard's and the API's versions. If the API reports a different version from the dashboard, a warning banner says so: the last installation did not replace the API container. `scripts\\smoke.ps1` also checks both against the `VERSION` file of the folder it runs from, and `scripts\\status.ps1` prints that version, the running API container's version and the folder the container was created from.",
+      },
     ],
   },
   {
@@ -172,9 +242,27 @@ const ARTICLES: Article[] = [
       {
         p: "A change to a site or server marked **production**, or to any site linked to a production server, can only be approved by an admin, who types the site's name (for a site change) or the server's name (for a server change) to confirm. New sites are production unless an admin registers them as staging or test.",
       },
+      { h: "What an approval card shows" },
+      {
+        ul: [
+          "**Requested by**: you or another person, the AI Supervisor for request #N (and whether that request came from the dashboard or from n8n with the service token), a schedule, or a retry of an earlier task.",
+          "**Target**: the exact site (name and address), server (account, host and port) and cc-gate site key a change applies to; for a repair that updates or reinstalls something or restores the site's address, the exact version or address it will apply, from the latest server-side check.",
+          "**Emails**: the recipient, the subject and the draft, with a link to read it. Sending is refused when no draft exists yet.",
+          "**Publishing**: the WordPress site (name and address) or the social platform and account, and the draft, which must first be marked reviewed in [Drafts & reports](/drafts). Publishing to a production site needs an admin who types the site's name.",
+          "**Delivery**: whether the channel is a mock (recorded in the Outbox, nothing leaves the machine) or live.",
+        ],
+      },
       { h: "Checked again before it runs" },
       {
-        p: "An approval covers the exact target it was given for. It is checked when you decide and again just before the change runs: if the site or server was re-linked, renamed or moved to production in the meantime, the change is refused and must be requested again. Outward channels also refuse to run without an approval on the task.",
+        p: "An approval covers the exact target it was given for. It is checked when you decide and again just before the change runs: if the site or server was re-linked, renamed or moved to production, the server's host key was replaced, or the draft or recipient of an email or post changed in the meantime, the action is refused and must be requested again. Outward channels also refuse to run without an approval on the task.",
+      },
+      { h: "Typed confirmations" },
+      {
+        ul: [
+          "**Taking a site or server out of production** (to staging or test, or unlinking a site from a production server): an admin types its name, because its changes would then no longer need an admin's typed confirmation. A warning event records the change.",
+          "**Replacing a server's pinned host key** with a different one: the Servers page says **Host key CHANGED** and an admin types the server's name. Approvals given before for that server and its sites stop applying, and a critical event records it.",
+          "**Switching an agent off** asks first, and cancels its changes, sends and publishes that have not started yet, approved or not. Tasks already running finish.",
+        ],
       },
       { h: "Where to decide" },
       {
@@ -226,7 +314,17 @@ const ARTICLES: Article[] = [
       },
       { h: "Uptime figures" },
       {
-        p: "Uptime is the share of checks in the last 24 hours, 7 days and 30 days in which the site was not down; a degraded site still answers, so it counts as up. Checks run about every 15 minutes, so the figures are estimates at that resolution. Down periods are listed as incidents on the site's page.",
+        p: "Uptime is the share of checks in the last 24 hours, 7 days and 30 days in which the site was not down; a degraded site still answers, so it counts as up. Checks run about every 15 minutes by default, so the figures are estimates at that resolution. Each figure says how many checks it rests on, and **since** when on a young site; with fewer than 4 checks it says **Not enough data yet** instead of a percentage. Time nobody checked, such as the PC switched off, counts neither as up nor as down. Down periods are listed as incidents on the site's page.",
+      },
+      {
+        p: "A **paused** site is marked Paused, is not checked, and is left out of the counts and averages at the top of the page.",
+      },
+      {
+        p: "**When this PC has no internet**: if a site gives no answer at all, the monitor first asks whether this PC can reach the internet, with a GET request to api.wordpress.org, www.cloudflare.com and www.google.com (no site data is sent). If none of them answers, the site is not checked: nothing is recorded as down, its last result stays, a banner says the PC has no internet, and one warning event marks the start of the outage and one info event its end. A site that answers with an error page is always recorded as it is.",
+      },
+      { h: "Open issues" },
+      {
+        p: "A site's open issues come from its latest uptime check and its latest security scan together (a scan from the last 30 days), and each says which check found it and when. So the nightly scan's findings stay listed after the next 15-minute check, which cannot see them.",
       },
       { h: "Alerts" },
       {
@@ -309,7 +407,7 @@ const ARTICLES: Article[] = [
       },
       { h: "Events forwarded to n8n" },
       {
-        p: "Events of warning severity and above, plus every site recovery, are queued for n8n. The worker delivers them and retries a failed delivery with growing delays, up to 8 attempts. The connection state is on [Integrations](/integrations) and [Workflows](/workflows).",
+        p: "Events of warning severity and above, plus every site recovery, are queued for n8n. The worker delivers them and retries a failed delivery with growing delays, up to 8 attempts. The connection state is on [Integrations](/integrations) and [Workflows](/workflows), with its age: the worker checks n8n every minute, so it says **Connected** only when n8n answered in the last 3 minutes, and otherwise **Not checked since** the last answer.",
       },
     ],
   },
@@ -326,7 +424,7 @@ const ARTICLES: Article[] = [
           "**Hosted locally**: everything runs in Docker on your machine, bound to `127.0.0.1`. The dashboard loads nothing from other sites; even its typeface is bundled.",
           "**Secrets stay on the server**: passwords and keys live in `.env` on the machine. API keys entered on the Settings page are stored encrypted, and only a short hint is shown afterwards. Keep a copy of `.env` with your backups: its keys are needed to read stored credentials.",
           "**Audit log**: sign-ins, tasks, approvals, sites, schedules, agents, servers, settings and users are recorded with who, when and from which address. Admins read it in the [Activity log](/activity).",
-          "**Monitoring is read-only**: GET and HEAD requests to public addresses only, with no logins. Redirects to other domains are recorded, never followed.",
+          "**Monitoring is read-only**: GET and HEAD requests to public addresses only, with no logins. Redirects to other domains are recorded, never followed. Only when a site gives no answer does it also contact api.wordpress.org, www.cloudflare.com and www.google.com, to tell an offline PC from a site that is down.",
           "**Model text is data**: fetched pages and agent output reach the AI only as data, and the planner can only choose real capabilities.",
           "**Credit Repair is isolated**: its own database and login role, field encryption with its own key and its own access log. The AI never sees it.",
         ],
@@ -358,7 +456,7 @@ const ARTICLES: Article[] = [
           ["Automation Logs", "Alerts and events by severity: sites down, failed tasks, failed repairs, host-key mismatches."],
           ["Tasks", "Each task's status, parameters, log and result. Operators can retry a failed task."],
           ["Integrations", "The workflow engine, Claude and the outward channels, with their mode and last error."],
-          ["Dashboard and sidebar", "Worker and service health: database, worker, n8n and the AI planner."],
+          ["Dashboard and sidebar", "Service Status on the dashboard, and the worker, workflow engine and AI lines at the bottom of the sidebar."],
         ],
       },
       { h: "Common problems" },
@@ -375,6 +473,10 @@ const ARTICLES: Article[] = [
             "If Approve is refused, or the approved task fails as refused, the site or server changed since the request (re-linked, renamed or moved to production): request the change again. If the server's `allow_changes` is false, every change is refused: set `\"allow_changes\": true` in `/etc/cc-gate/config.json` on the server first, then request it again.",
           ],
           ["No microphone button", "See [The AI command bar](#command-bar)."],
+          [
+            "Version mismatch banner",
+            "The API answering the dashboard is a different version: the last installation did not replace the API container. Run `install.ps1` again from the new version's folder. `status.ps1` shows the folder's version, the running API's version and the folder its container was created from; `smoke.ps1` fails until the API and the dashboard both match the folder.",
+          ],
           ["Port already in use", "Set `DASHBOARD_PORT` or `N8N_PORT` in `.env`, then run `start.ps1`."],
           ["Images fail to download", "Check that Docker Desktop is signed in or that Docker Hub is reachable."],
           ["n8n sign-in fails from another machine", "By design: n8n is local-only until a TLS reverse proxy is added."],

@@ -2,7 +2,6 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
-import TaskActivityChart from "../charts/TaskActivityChart";
 import { Modal } from "../components";
 import { pageTitle } from "../shell/nav";
 import { serviceHealth } from "../shell/Sidebar";
@@ -292,12 +291,12 @@ describe("sidebar health", () => {
     expect(await within(nav).findByText("n8n not configured")).toBeInTheDocument();
   });
 
-  it("names a webhook engine and says when it was not contacted yet (cr-3)", async () => {
+  it("names a webhook engine and says when nothing was delivered yet (cr-3, C2-04)", async () => {
     mockFetch({ ...common, "GET /api/system/status": { ...status, workflow_engine: "webhook", n8n: null } });
     render(<App />);
     const nav = await screen.findByRole("complementary", { name: "Main navigation" });
-    const line = await within(nav).findByText("Webhook not contacted yet");
-    expect(line.closest(".health-line")).toHaveAttribute("title", "Webhook (workflow engine): not contacted yet");
+    const line = await within(nav).findByText("Webhook: no delivery yet");
+    expect(line.closest(".health-line")).toHaveAttribute("title", "Webhook (workflow engine): no delivery yet");
   });
 });
 
@@ -359,30 +358,5 @@ describe("Modal (a11y-11)", () => {
     fireEvent.keyDown(save, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(opener).toHaveFocus();
-  });
-});
-
-describe("task activity chart (a11y-7)", () => {
-  const buckets = [0, 1, 2].map((h) => ({ start: new Date(Date.UTC(2026, 9, 18, h)), completed: h, failed: 0 }));
-
-  it("is one tab stop; arrow keys, Home and End move between the hours", () => {
-    render(<TaskActivityChart buckets={buckets} />);
-    expect(screen.getByRole("group", { name: /^Tasks per hour over the last 24 hours/ })).toBeInTheDocument();
-    const bars = screen.getAllByRole("img");
-    expect(bars).toHaveLength(3);
-    expect(bars.map((b) => b.getAttribute("tabindex"))).toEqual(["0", "-1", "-1"]);
-
-    act(() => (bars[0] as unknown as SVGGElement).focus());
-    fireEvent.keyDown(bars[0], { key: "ArrowRight" });
-    expect(bars[1]).toHaveFocus();
-    expect(bars.map((b) => b.getAttribute("tabindex"))).toEqual(["-1", "0", "-1"]);
-    fireEvent.keyDown(bars[1], { key: "End" });
-    expect(bars[2]).toHaveFocus();
-    fireEvent.keyDown(bars[2], { key: "ArrowRight" });
-    expect(bars[2]).toHaveFocus();
-    fireEvent.keyDown(bars[2], { key: "Home" });
-    expect(bars[0]).toHaveFocus();
-    fireEvent.keyDown(bars[0], { key: "ArrowLeft" });
-    expect(bars[0]).toHaveFocus();
   });
 });

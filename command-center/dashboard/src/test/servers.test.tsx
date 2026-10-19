@@ -42,9 +42,9 @@ describe("production approvals", () => {
     expect(await screen.findByText("PRODUCTION")).toBeInTheDocument();
     const approve = screen.getByRole("button", { name: "Approve" });
     expect(approve).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Type the name to confirm"), { target: { value: "acme" } });
+    fireEvent.change(screen.getByLabelText("Type Acme to confirm this production change"), { target: { value: "acme" } });
     expect(approve).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Type the name to confirm"), { target: { value: "Acme" } });
+    fireEvent.change(screen.getByLabelText("Type Acme to confirm this production change"), { target: { value: "Acme" } });
     fireEvent.click(approve);
     await waitFor(() => expect(calls.some((c) => c.path === "/api/approvals/4/decision")).toBe(true));
     expect(calls.find((c) => c.path === "/api/approvals/4/decision")!.body).toMatchObject({ approve: true, confirm: "Acme" });

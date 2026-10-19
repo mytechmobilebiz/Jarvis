@@ -14,12 +14,6 @@ export const STATUS_STALE_MS = 30_000;
 /** n8n counts as connected only if it answered within this time (and has not failed since). */
 export const N8N_FRESH_MS = 3 * 60_000;
 
-/** Fields the 0.5.0 API adds to /api/system/status. Optional, so an older API's answer still fits. */
-export type StatusWithHealth = SystemStatus & {
-  n8n_editor_url?: string | null;
-  llm: SystemStatus["llm"] & { last_ok_at?: string | null; last_error_at?: string | null; last_error?: string };
-};
-
 /** True when the status on screen cannot be trusted as current: the last poll failed, or the last success is too old. */
 export function isStale(meta: StatusMeta, now: number = Date.now()): boolean {
   return meta.error !== null || (meta.lastSuccessAt !== null && now - meta.lastSuccessAt > STATUS_STALE_MS);
@@ -31,16 +25,19 @@ function ms(iso: string | null | undefined): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
-export type EngineState = "none" | "not-contacted" | "connected" | "failing" | "not-checked";
+/** "delivered" is the webhook engine's only good state: it is never probed, so a past delivery is all that can be said. */
+export type EngineState = "none" | "not-contacted" | "connected" | "failing" | "not-checked" | "delivered";
 
 /** The workflow engine's state. Ages are measured on the server's clock (`status.time`), so a wrong PC clock cannot make
- * an old check look fresh; `now` is only the fallback when the status carries no time. */
+ * an old check look fresh; `now` is only the fallback when the status carries no time. The webhook engine is never probed
+ * (`status.n8n` holds its deliveries), so it is never "connected" and time without a delivery is not a problem (C2-04). */
 export function engineState(s: SystemStatus, now: number = Date.now()): EngineState {
   if (s.workflow_engine === "none") return "none";
   if (!s.n8n) return "not-contacted";
   const ok = ms(s.n8n.last_ok_at);
   const failed = ms(s.n8n.last_error_at);
   if (failed !== null && (ok === null || failed > ok)) return "failing";
+  if (s.workflow_engine === "webhook") return ok === null ? "not-contacted" : "delivered";
   if (ok === null) return "not-checked";
   const ref = ms(s.time) ?? now;
   return ref - ok <= N8N_FRESH_MS ? "connected" : "not-checked";
@@ -50,7 +47,7 @@ export type AiState = "rule-based" | "configured" | "ok" | "failing";
 
 /** The AI planner: rule-based, configured (no call yet), last call OK, or last call failed. */
 export function aiState(s: SystemStatus): AiState {
-  const llm = (s as StatusWithHealth).llm;
+  const llm = s.llm;
   if (!llm.configured) return "rule-based";
   const ok = ms(llm.last_ok_at);
   const failed = ms(llm.last_error_at);
@@ -76,11 +73,18 @@ export function serviceHealth(s: SystemStatus | null, meta?: StatusMeta, now: nu
   const ai = aiState(s);
   return {
     worker: s.workers.some((w) => w.alive) ? "good" : "bad",
-    // No workflow engine set up, or not contacted yet: nothing to report, not a problem.
-    n8n: engine === "none" || engine === "not-contacted" ? "muted" : engine === "connected" ? "good" : "warn",
+    // No workflow engine set up, not contacted yet, or a webhook that only reports deliveries: nothing to claim, not a problem.
+    n8n: engine === "none" || engine === "not-contacted" || engine === "delivered" ? "muted" : engine === "connected" ? "good" : "warn",
     database: s.database.ok ? "good" : "bad",
     ai: ai === "rule-based" ? "muted" : ai === "failing" ? "warn" : "good",
   };
+}
+
+/** Milliseconds since `iso`, on the server's clock (`status.time`) when the status has one; null without a time. */
+export function statusAge(s: SystemStatus, iso: string | null | undefined, now: number = Date.now()): number | null {
+  const at = ms(iso);
+  if (at === null) return null;
+  return (ms(s.time) ?? now) - at;
 }
 
 /** "10:21:05" in the viewer's locale. */
@@ -90,6 +94,6 @@ export function clockTime(at: number | string): string {
 
 /** The n8n editor address to link to, or null: only an http(s) URL the API reports. */
 export function n8nEditorUrl(s: SystemStatus | null): string | null {
-  const url = (s as StatusWithHealth | null)?.n8n_editor_url;
+  const url = s?.n8n_editor_url;
   return url && /^https?:\/\//i.test(url) ? url : null;
 }

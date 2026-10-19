@@ -125,8 +125,10 @@ def test_connectivity_view_without_and_with_a_record():
 # ------------------------------------------------------------------ open issues
 
 
-def check(minutes_ago: int, *, deep: bool, findings: list[dict], status: str = "up", partial: bool = False) -> SiteCheck:
-    details = {"deep": deep, **({"partial": True} if partial else {})}
+def check(minutes_ago: int, *, deep: bool, findings: list[dict], status: str = "up", partial: bool = False,
+          compared: bool = False) -> SiteCheck:
+    details = {"deep": deep, **({"partial": True} if partial else {}),
+               **({"redirect_check": {"chain": [], "variants": {}}} if compared else {})}
     return SiteCheck(site_id=1, checked_at=datetime.now(UTC) - timedelta(minutes=minutes_ago), status=status,
                      findings=findings, details=details)
 
@@ -167,6 +169,29 @@ def test_a_cut_short_deep_scan_says_so_even_after_a_newer_quick_check():
     merged = open_issues.merge(quick, deep)
     assert [(x["title"], x["source"]) for x in merged["open_findings"]] == [("quick timeout", "quick"),
                                                                            ("results are partial", "deep")]
+
+
+def test_a_deep_scan_cut_short_before_the_comparison_clears_nothing_only_a_deep_check_finds():
+    full = check(1440, deep=True, compared=True, status="degraded",
+                 findings=[f("cloaked_spam", "critical", "spam"), f("xmlrpc_enabled", "warning", "old xmlrpc"), f("slow_response")])
+    cut = check(20, deep=True, partial=True, findings=[f("xmlrpc_enabled", "warning", "new xmlrpc"), f("check_timeout")])
+    quick = check(1, deep=False, findings=[f("no_https")])
+    assert open_issues.made_comparison(full) and not open_issues.made_comparison(cut) and not open_issues.made_comparison(None)
+    merged = open_issues.merge(quick, cut, full)
+    assert [(x["code"], x["title"], x["checked_at"]) for x in merged["open_findings"]] == [
+        ("cloaked_spam", "spam", full.checked_at.isoformat()),  # from the last scan that compared
+        ("no_https", "no_https", quick.checked_at.isoformat()),
+        ("xmlrpc_enabled", "new xmlrpc", cut.checked_at.isoformat()),  # the newer scan's answer for a code it reported
+        ("check_timeout", "check_timeout", cut.checked_at.isoformat()),
+    ]
+    assert merged["open_findings_sources"] == {"quick": quick.checked_at.isoformat(), "deep": cut.checked_at.isoformat()}
+    # The cut-short scan newer than the quick check: still everything it saw, plus what only the full scan could find.
+    assert [x["code"] for x in open_issues.merge(check(30, deep=False, findings=[]), cut, full)["open_findings"]] == [
+        "cloaked_spam", "xmlrpc_enabled", "check_timeout"]
+    # A deep check that compared is its own source: an older one adds nothing.
+    clean = check(10, deep=True, compared=True, findings=[])
+    assert open_issues.merge(quick, clean, full)["open_findings"][0]["code"] == "no_https"
+    assert len(open_issues.merge(quick, clean, full)["open_findings"]) == 1
 
 
 def test_a_quick_check_cannot_clear_cloaking_found_by_the_deep_check():

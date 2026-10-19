@@ -1,11 +1,12 @@
 import { KeyboardEvent, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, type Agent, type Artifact, type Capability, type Integration, type LeadRecord, type OutboxRecord, type Task, type Ticket } from "../api";
+import { api, type Agent, type Artifact, type Capability, type Integration, type OutboxRecord, type Task } from "../api";
 import { useAuth } from "../App";
 import { Card, Empty, ErrorNote, Pill, RiskBadge, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
 import { Icon, type IconName } from "../icons";
 import { ArtifactView, RunModal } from "../work";
+import { deliveryCounts, deliverySummary, leadStatus, mockLabel, ticketStatus, type LeadWithDelivery, type TicketWithDelivery } from "./shared";
 import "./Email.css";
 
 const AGENT = "communications";
@@ -26,25 +27,9 @@ const TABS: { key: TabKey; label: string; icon: IconName }[] = [
   { key: "drafts", label: "Drafts", icon: "file" },
 ];
 
-// Ticket statuses (backend agents/support.py): open -> triaged -> drafted -> replied, or closed. Values map to Pill tones.
+// Ticket statuses (backend agents/support.py): open -> triaged -> drafted -> replied, or closed. Labels: pages/shared.tsx.
 const ANSWERED = new Set(["replied", "closed"]);
-const TICKET_STATUS: Record<string, [string, string]> = {
-  open: ["pending", "Open"],
-  triaged: ["queued", "Triaged"],
-  drafted: ["draft", "Reply drafted"],
-  replied: ["sent", "Replied"],
-  closed: ["archived", "Closed"],
-};
 const PRIORITY_TONE: Record<string, string> = { urgent: "failed", high: "pending", normal: "queued", low: "unknown" };
-
-// Lead statuses (backend agents/sales.py).
-const LEAD_STATUS: Record<string, [string, string]> = {
-  new: ["queued", "New"],
-  qualified: ["up", "Qualified"],
-  proposal_drafted: ["draft", "Proposal drafted"],
-  proposal_sent: ["sent", "Proposal sent"],
-  spam: ["failed", "Spam"],
-};
 
 const DRAFT_KIND: Record<string, string> = { support_reply: "Reply draft", proposal: "Proposal" };
 
@@ -97,6 +82,14 @@ function attachmentsOf(e: OutboxRecord): Attachment[] {
 
 function modeLabel(mode: Integration["mode"] | OutboxRecord["mode"]): string {
   return mode === "live" ? "Live" : mode === "mock" ? "Mock" : "Disabled";
+}
+
+/** The outbox tile's label: "sent" only for what a live integration delivered (C2-11). */
+export function emailTileLabel(live: number, mock: number, mode: Integration["mode"] | undefined): string {
+  if (live && mock) return "Emails sent or recorded";
+  if (live) return "Emails sent";
+  if (mock) return "Emails recorded (mock)";
+  return mode === "live" ? "Emails sent" : mode === "mock" ? "Emails recorded (mock)" : "Emails";
 }
 
 /** Why the agent cannot run right now, or null when it can. */
@@ -198,8 +191,8 @@ export default function Email() {
 
   const agents = usePoll(() => api.get<{ agents: Agent[] }>("/api/agents"), 30_000);
   const integrations = usePoll(() => api.get<{ integrations: Integration[] }>("/api/integrations"), 120_000);
-  const tickets = usePoll(() => api.get<{ tickets: Ticket[] }>(`/api/support/tickets?limit=${LIMIT}`), 15_000);
-  const leads = usePoll(() => api.get<{ leads: LeadRecord[] }>(`/api/leads?limit=${LIMIT}`), 15_000);
+  const tickets = usePoll(() => api.get<{ tickets: TicketWithDelivery[] }>(`/api/support/tickets?limit=${LIMIT}`), 15_000);
+  const leads = usePoll(() => api.get<{ leads: LeadWithDelivery[] }>(`/api/leads?limit=${LIMIT}`), 15_000);
   const outbox = usePoll(() => api.get<{ entries: OutboxRecord[] }>(`/api/outbox?limit=${LIMIT}`), 15_000);
   const waiting = usePoll(() => api.get<TaskPage>(`/api/tasks?agent=${AGENT}&status=awaiting_approval&limit=50`), 10_000);
   const drafts = usePoll(() => api.get<{ artifacts: Artifact[] }>(`/api/artifacts?agent=${AGENT}&limit=20`), 15_000);
@@ -225,7 +218,8 @@ export default function Email() {
   const newLeads = leadList.filter((l) => l.status === "new").length;
   const qualified = leadList.filter((l) => l.status === "qualified").length;
   const hot = leadList.filter((l) => (l.score ?? 0) >= 75 && ["new", "qualified", "proposal_drafted"].includes(l.status)).length;
-  const proposalsSent = leadList.filter((l) => l.status === "proposal_sent").length;
+  const proposals = deliveryCounts(leadList, "proposal_sent");
+  const replies = deliveryCounts(ticketList, "replied");
   const leadsCapped = (leads.data?.leads.length ?? 0) >= LIMIT;
 
   const mockSent = emails.filter((e) => e.mode === "mock").length;
@@ -340,7 +334,11 @@ export default function Email() {
                   {plural(draftedOpen, "reply", "replies")} drafted
                 </>
               ) : ticketList.length ? (
-                "Every client message has been answered"
+                replies.mock || replies.unknown ? (
+                  `No open messages · ${deliverySummary(replies, "replied", "")}`
+                ) : (
+                  "No open messages: each one was replied to or closed"
+                )
               ) : (
                 "No client messages yet"
               )
@@ -364,7 +362,7 @@ export default function Email() {
             leads.data ? (
               leadList.length ? (
                 <>
-                  {qualified} qualified · {hot} hot (score 75+) · {plural(proposalsSent, "proposal")} sent
+                  {qualified} qualified · {hot} hot (score 75+) · {deliverySummary(proposals, proposals.live === 1 ? "proposal sent" : "proposals sent", "no proposal sent")}
                 </>
               ) : (
                 "No leads yet"
@@ -383,7 +381,7 @@ export default function Email() {
         <Tile
           icon="send"
           tone={email?.mode === "live" ? "green" : email?.mode === "mock" ? "cyan" : "muted"}
-          label="Emails sent"
+          label={emailTileLabel(liveSent, mockSent, email?.mode)}
           to="/outbox"
           hint={
             outbox.data ? (
@@ -480,7 +478,7 @@ export default function Email() {
               {ticketList.length ? (
                 <ul className="em-rows">
                   {ticketList.slice(0, SHOWN).map((t) => {
-                    const [statusTone, statusLabel] = TICKET_STATUS[t.status] ?? ["unknown", capitalize(t.status.replace(/_/g, " "))];
+                    const [statusTone, statusLabel] = ticketStatus(t);
                     return (
                       <li key={t.id}>
                         <Link className="em-row" to="/support">
@@ -532,7 +530,7 @@ export default function Email() {
               {leadList.length ? (
                 <ul className="em-rows">
                   {leadList.slice(0, SHOWN).map((l) => {
-                    const [statusTone, statusLabel] = LEAD_STATUS[l.status] ?? ["unknown", capitalize(l.status.replace(/_/g, " "))];
+                    const [statusTone, statusLabel] = leadStatus(l);
                     const scoreTone = l.score === null ? "none" : l.score >= 75 ? "good" : l.score >= 50 ? "warn" : "low";
                     return (
                       <li key={l.id}>
@@ -600,7 +598,7 @@ export default function Email() {
                                 <span className="em-row-subject">{e.subject || "(no subject)"}</span>
                               </span>
                               <span className="em-row-tags">
-                                <Pill value={e.mode} label={modeLabel(e.mode)} />
+                                <Pill value={e.mode} label={e.mode === "mock" ? mockLabel("email") : "Live: sent"} />
                                 {e.result ? <span className="em-tag">{e.result}</span> : null}
                                 {e.approved_by ? <span className="em-tag em-tag-wrap">approved by {e.approved_by}</span> : null}
                                 {files.length ? <span className="em-tag">{plural(files.length, "attachment")}</span> : null}
@@ -621,7 +619,7 @@ export default function Email() {
                               <dd>{e.approved_by || "—"}</dd>
                               <dt>Result</dt>
                               <dd>
-                                {modeLabel(e.mode)}: {e.result || "—"}
+                                {e.mode === "mock" ? mockLabel("email") : "Sent (live)"}: {e.result || "—"}
                               </dd>
                               {e.task_id ? (
                                 <>

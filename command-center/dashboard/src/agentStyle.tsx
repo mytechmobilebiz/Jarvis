@@ -23,7 +23,7 @@ export const AGENT_STYLE: Record<string, AgentStyle> = {
     keywords: [
       { label: "Security scans", caps: ["security_scan", "security_scan_all"] },
       { label: "Diagnosis", caps: ["wp_diagnose"] },
-      { label: "Repairs (approval)", caps: ["repair_*"] },
+      { label: "Repairs", caps: ["repair_*"] },
       { label: "Reports", caps: ["security_report"] },
     ],
   },
@@ -32,10 +32,10 @@ export const AGENT_STYLE: Record<string, AgentStyle> = {
     short: "SEO Agent",
     route: "/seo",
     keywords: [
-      { label: "On-page audits", caps: ["audit_page"] },
+      { label: "Page audits", caps: ["audit_page"] },
       { label: "Keyword briefs", caps: ["keyword_brief"] },
       { label: "Blog drafts", caps: ["draft_blog_post"] },
-      { label: "Publishing (approval)", caps: ["publish_draft"] },
+      { label: "Publishing", caps: ["publish_draft"] },
     ],
   },
   social_marketing: {
@@ -44,9 +44,9 @@ export const AGENT_STYLE: Record<string, AgentStyle> = {
     route: "/social",
     keywords: [
       { label: "Social drafts", caps: ["draft_social_posts"] },
+      { label: "Postonomous", caps: ["publish_draft"] },
       { label: "Ad reports", caps: ["ads_report"] },
-      { label: "Postonomous (approval)", caps: ["publish_draft"] },
-      { label: "Budgets (approval)", caps: ["change_budget"] },
+      { label: "Budgets", caps: ["change_budget"] },
     ],
   },
   server_management: {
@@ -54,10 +54,10 @@ export const AGENT_STYLE: Record<string, AgentStyle> = {
     short: "Server Agent",
     route: "/servers",
     keywords: [
-      { label: "CWP / VPS over SSH", caps: ["test_connection", "server_overview", "check_services"] },
+      { label: "CWP / VPS", caps: ["test_connection", "server_overview", "check_services"] },
       { label: "Server overview", caps: ["server_overview"] },
       { label: "Service checks", caps: ["check_services"] },
-      { label: "Restarts (approval)", caps: ["restart_service"] },
+      { label: "Restarts", caps: ["restart_service"] },
     ],
   },
   communications: {
@@ -69,7 +69,6 @@ export const AGENT_STYLE: Record<string, AgentStyle> = {
       { label: "Proposals", caps: ["draft_proposal"] },
       { label: "Ticket triage", caps: ["triage_ticket"] },
       { label: "Replies", caps: ["draft_reply"] },
-      { label: "Sending (approval)", caps: ["send_proposal", "send_reply"] },
     ],
   },
   monitoring: {
@@ -81,7 +80,6 @@ export const AGENT_STYLE: Record<string, AgentStyle> = {
       { label: "TLS", caps: ["check_site", "check_url", "check_all_sites"] },
       { label: "Redirects", caps: ["check_site", "check_url", "check_all_sites"] },
       { label: "Server reachability", caps: ["check_server"] },
-      { label: "Uptime reports", caps: ["uptime_report"] },
     ],
   },
   credit_repair: {
@@ -91,13 +89,13 @@ export const AGENT_STYLE: Record<string, AgentStyle> = {
     keywords: [
       { label: "Dispute letters", caps: ["draft_dispute_letters"] },
       { label: "Compliance review", caps: ["compliance_review"] },
-      { label: "Mailing (approval)", caps: ["mail_dispute_letter"] },
+      { label: "Mailing", caps: ["mail_dispute_letter"] },
     ],
   },
   supervisor: { color: "var(--agent-supervisor)", short: "AI Supervisor", route: "/supervisor", keywords: [] },
 };
 
-const WORDS: Record<string, string> = { wp: "WordPress", seo: "SEO", ai: "AI", url: "URL", tls: "TLS", ssh: "SSH" };
+const WORDS: Record<string, string> = { wp: "WordPress", wordpress: "WordPress", seo: "SEO", ai: "AI", url: "URL", tls: "TLS", ssh: "SSH", n8n: "n8n", cwp: "CWP" };
 
 /** "check_all_sites" -> "Check all sites". */
 export function humanize(slug: string): string {

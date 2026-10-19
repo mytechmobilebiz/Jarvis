@@ -121,6 +121,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
         {menuOpen ? <div className="scrim" onClick={closeMenu} aria-hidden /> : null}
         <main className="content" id="main" tabIndex={-1} ref={main}>
           <ConnectionLost meta={statusMeta} />
+          <InternetLost status={s} meta={statusMeta} />
           <VersionMismatch status={s} />
           <Routes>
             <Route path="/" element={<Dashboard status={s} statusMeta={statusMeta} />} />
@@ -162,6 +163,23 @@ function ConnectionLost({ meta }: { meta: StatusMeta }) {
     <div className="version-banner">
       <div className="alert alert-bad connection-banner" role="alert">
         <strong>Cannot reach the Command Center</strong> · {when}. What this page shows may be out of date; retrying every 10 seconds.
+      </div>
+    </div>
+  );
+}
+
+/** Shown while the monitor finds this PC offline (C2-22): sites are not checked then, so their status is their last real
+ * result, not a current one. Left to ConnectionLost while the status itself is out of date. */
+export function InternetLost({ status, meta }: { status: SystemStatus | null; meta: StatusMeta }) {
+  const now = useNow(5_000);
+  const net = status?.connectivity;
+  if (!net || net.state !== "offline" || isStale(meta, now)) return null;
+  return (
+    <div className="version-banner">
+      <div className="alert alert-warn" role="status">
+        <strong>No internet on this PC</strong>
+        {net.since ? ` since ${clockTime(net.since)}` : ""}. Websites are not being checked: their status is the last result from before,
+        and the time without checks does not count toward uptime.
       </div>
     </div>
   );

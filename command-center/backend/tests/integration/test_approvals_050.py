@@ -8,10 +8,11 @@ import pytest
 from sqlalchemy import select
 
 from app import tasks as task_service
-from app.agents.wp_server import same_host, site_host
+from app.agents.wp_server import check_gate_site, diagnosis_findings, same_address, site_address, site_host
 from app.approvals import excerpt
 from app.db import session_scope
-from app.models import AgentState, Approval, Artifact, AuditLog, Lead, OutboxEntry, Schedule, ServerCommand, Site, SupportTicket, User
+from app.models import (AgentState, Approval, Artifact, AuditLog, Lead, OutboxEntry, Schedule, Server, ServerCommand, Site,
+                        SupportTicket, User)
 from app.security import hash_password
 
 from ..fakes import FakeLLM, wordpress_site
@@ -48,11 +49,39 @@ async def as_operator(app_client) -> None:
 # ----------------------------------------------------------------------------------------------- pure helpers
 
 
-def test_site_hosts_compare_without_www_case_port_or_final_dot():
+def test_site_addresses_compare_host_and_path_without_www_case_port_or_final_dot():
     assert site_host("https://WWW.Acme.example:8443/shop/") == "acme.example"
-    assert same_host("http://site.test", "https://www.site.test.") and same_host("http://site.test/", "http://SITE.test/wp")
-    assert not same_host("http://acme.example", "http://acme.example.evil.test") and not same_host("http://a.test", "http://b.test")
-    assert not same_host("", "") and not same_host("http://[bad", "http://[bad")  # no host is never a match
+    assert site_address("https://WWW.Acme.example:8443/shop/?x=1") == "acme.example/shop"
+    assert same_address("http://site.test", "https://www.site.test.") and same_address("http://site.test/", "http://SITE.test:8080")
+    assert same_address("http://site.test/blog/", "https://www.site.test/blog")
+    # A WordPress install in a subfolder is another install than the one at the root (or in another folder).
+    assert not same_address("http://site.test/", "http://SITE.test/wp") and not same_address("http://site.test/blog", "http://site.test")
+    assert not same_address("http://site.test/blog", "http://site.test/blog2") and not same_address("http://site.test/Blog", "http://site.test/blog")
+    assert not same_address("http://acme.example", "http://acme.example.evil.test") and not same_address("http://a.test", "http://b.test")
+    assert not same_address("", "") and not same_address("http://[bad", "http://[bad")  # no host is never a match
+
+
+def test_a_diagnosis_flags_a_gate_address_in_another_folder():
+    def codes(expected: str, registered: str) -> list[str]:
+        diag = {"site_urls": {"home": expected, "siteurl": expected, "expected": expected, "expected_siteurl": expected,
+                              "matches": True}, "registered_url": registered}
+        return [f.code for f in diagnosis_findings(diag, None)]
+
+    assert codes("http://site.test", "http://site.test/blog") == ["gate_url_mismatch"]
+    assert codes("http://www.site.test/blog/", "http://site.test/blog") == []
+
+
+async def test_the_check_before_a_repair_refuses_a_gate_address_in_another_folder():
+    class Gate:
+        server = Server(name="srv1")
+
+        async def run(self, op: str) -> dict:
+            return {"sites": {"site-one": {"url": "http://site.test"}}}
+
+    approved = {"binding": {"gate": {"key": "site-one", "url": "http://site.test"}}}
+    with pytest.raises(ValueError, match="the address http://site.test, not Blog's"):
+        await check_gate_site(Gate(), Site(name="Blog", url="http://site.test/blog", server_site_key="site-one"), approved)
+    await check_gate_site(Gate(), Site(name="Root", url="https://www.site.test", server_site_key="site-one"), approved)
 
 
 def test_draft_excerpts_are_plain_text():
@@ -175,6 +204,34 @@ async def test_a_swapped_draft_or_a_changed_recipient_is_refused(admin, make_wor
         assert (await s.scalars(select(OutboxEntry))).all() == []  # nothing was recorded as sent
 
 
+
+async def test_an_approval_given_for_a_mock_send_or_publish_never_carries_out_a_real_one(admin, make_worker, monkeypatch):
+    """The card said "recorded, not sent": if the integration is switched to live before it runs, the approval no longer applies."""
+    from app import approvals
+
+    ticket = await ticket_with_draft(admin, make_worker)
+    task = (await request_task(admin, "communications", "send_reply", {"ticket_id": ticket["id"]})).json()["task"]
+    approval = await approval_for(admin, task["id"])
+    assert approval["details"]["binding"]["delivery"] == "mock"
+    monkeypatch.setattr(approvals, "delivery", lambda integration: "live")
+    r = await decide(admin, approval)
+    assert r.status_code == 400 and "target changed" in r.text
+    monkeypatch.undo()
+
+    # Approved as a mock, switched to live before the worker runs it: refused, and nothing reaches the Outbox.
+    await run_task(admin, make_worker, "social_marketing", "draft_social_posts", {"topic": "launch", "platforms": ["facebook"]})
+    async with session_scope() as s:
+        draft = await s.scalar(select(Artifact).where(Artifact.kind == "social_drafts"))
+    await admin.patch(f"/api/artifacts/{draft.id}", json={"status": "approved"})
+    task = (await request_task(admin, "social_marketing", "publish_draft", {"artifact_id": draft.id, "destination": "facebook"})).json()["task"]
+    assert (await decide(admin, await approval_for(admin, task["id"]))).status_code == 200
+    monkeypatch.setattr(approvals, "delivery", lambda integration: "live")
+    await make_worker().run_until_idle()
+    done = (await admin.get(f"/api/tasks/{task['id']}")).json()["task"]
+    assert done["status"] == "failed" and "target changed" in done["error"]
+    async with session_scope() as s:
+        assert (await s.scalars(select(OutboxEntry))).all() == []
+
 async def test_a_proposal_approval_names_what_the_email_will_say(admin, make_worker):
     r = await admin.post("/api/leads", json={"name": "Crystal", "company": "Joyful Care", "email": "crystal@joyful.example",
                                               "service_interest": "website redesign", "message": "New site please, budget $1000"})
@@ -285,10 +342,11 @@ async def test_switching_an_agent_off_cancels_its_waiting_and_approved_changes(a
         entries = (await s.scalars(select(AuditLog).where(AuditLog.action.in_(("task.cancelled", "agent.disabled"))))).all()
     assert {(e.action, e.target_id) for e in entries} >= {("task.cancelled", str(pending["task_id"])), ("task.cancelled", str(approved["id"]))}
     assert next(e for e in entries if e.action == "agent.disabled").detail["cancelled_tasks"]
-    # Read-only work already queued does not run either.
+    # Read-only work already queued does not run either: withdrawn too, not failed (nothing ran, nothing to alert about).
     await make_worker().run_until_idle()
     done = (await admin.get(f"/api/tasks/{read['id']}")).json()["task"]
-    assert done["status"] == "failed" and done["error"] == "refused: the server_management agent is switched off"
+    assert done["status"] == "cancelled" and done["error"] == "cancelled: the server_management agent is switched off"
+    assert await events_of(admin, "task.failed") == []
     async with session_scope() as s:
         assert (await s.scalars(select(ServerCommand))).all() == []
 
@@ -304,7 +362,8 @@ async def test_an_agent_switched_off_meanwhile_is_not_approved_and_does_not_run(
     assert (await decide(admin, approval, approve=False)).status_code == 200  # rejecting still works
     await make_worker().run_until_idle()
     done = (await admin.get(f"/api/tasks/{approved['id']}")).json()["task"]
-    assert done["status"] == "failed" and "switched off" in done["error"]
+    assert done["status"] == "cancelled" and "switched off" in done["error"]
+    assert await events_of(admin, "task.failed") == []
 
 
 # --------------------------------------------------------------- C3-05: replacing a pinned host key
@@ -345,6 +404,30 @@ async def test_replacing_a_pinned_host_key_needs_the_typed_name_and_voids_earlie
         assert r.status_code == 400 and r.json()["detail"].startswith("confirm:")
         r = await admin.post(f"/api/servers/{server['id']}/host-key/trust", json={"host_key": srv.host_key_line, "confirm": "srv1"})
         assert r.status_code == 200 and len(await events_of(admin, "server.host_key_replaced")) == 2
+
+
+async def test_unpinning_twice_does_not_turn_a_replacement_into_a_first_pin(admin):
+    key = await ssh_key(admin)
+    async with FakeGateServer(key["openssh"]) as srv:
+        server = await add_server(admin, srv, environment="staging")
+        # A double click, or a stale page: the second unpin finds nothing pinned and records nothing.
+        for _ in range(2):
+            r = await admin.delete(f"/api/servers/{server['id']}/host-key")
+            assert r.status_code == 200 and not r.json()["server"]["host_key_pinned"]
+        async with session_scope() as s:
+            unpins = (await s.scalars(select(AuditLog).where(AuditLog.action == "server.host_key_unpinned"))).all()
+        assert [e.detail for e in unpins] == [{"previous": srv.fingerprint}]
+        other = asyncssh.generate_private_key("ssh-ed25519").export_public_key("openssh").decode()
+        r = await admin.post(f"/api/servers/{server['id']}/host-key/trust", json={"host_key": other})
+        assert r.status_code == 400 and r.json()["detail"].startswith("confirm:") and srv.fingerprint in r.json()["detail"]
+        assert await events_of(admin, "server.host_key_replaced") == []
+        # The key it had is no replacement; once pinned again, unpinning and pinning another one still needs the name.
+        assert (await admin.post(f"/api/servers/{server['id']}/host-key/trust", json={"host_key": srv.host_key_line})).status_code == 200
+        assert (await admin.delete(f"/api/servers/{server['id']}/host-key")).status_code == 200
+        r = await admin.post(f"/api/servers/{server['id']}/host-key/trust", json={"host_key": other, "confirm": "srv1"})
+        assert r.status_code == 200
+        replaced = await events_of(admin, "server.host_key_replaced")
+        assert len(replaced) == 1 and replaced[0]["detail"]["previous"] == srv.fingerprint
 
 
 async def test_a_first_pin_needs_no_confirmation(admin):
@@ -421,6 +504,10 @@ async def test_a_site_is_linked_only_to_the_key_the_gate_gives_its_own_address(a
         assert (await admin.patch(f"/api/sites/{site['id']}", json=link)).status_code == 200
         www = (await admin.post("/api/sites", json={"name": "www", "url": "http://www.site.test", "environment": "test"})).json()["site"]
         assert (await admin.patch(f"/api/sites/{www['id']}", json=link)).status_code == 200  # www and non-www are one site
+        # A site in a subfolder is another WordPress install than the one the key gives the root address.
+        blog = (await admin.post("/api/sites", json={"name": "Blog", "url": "http://site.test/blog", "environment": "test"})).json()["site"]
+        r = await admin.patch(f"/api/sites/{blog['id']}", json=link)
+        assert r.status_code == 400 and "gives site key 'site-one' the address http://site.test, which is not this site" in r.json()["detail"]
 
 
 async def test_a_repair_names_the_gate_key_and_refuses_when_the_gate_gives_it_another_address(admin, web, make_worker):

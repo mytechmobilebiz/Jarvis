@@ -187,18 +187,19 @@ async def scan_key(server_id: int, request: Request, principal: Principal = Depe
 
 
 async def _previous_fingerprint(session: AsyncSession, server: Server) -> str:
-    """The key this server was last trusted with: the pinned one, or the one an admin unpinned last ("" if never pinned).
+    """The key this server was last trusted with: the pinned one, or the last one ever pinned ("" if never pinned).
 
-    Unpinning first must not turn a replacement into a first-time pin.
+    Unpinning first (once or several times) must not turn a replacement into a first-time pin. Every pin is a
+    server.host_key_pinned audit entry naming its fingerprint (trust_key), so the newest of those is the key last trusted.
     """
     if server.host_key_fingerprint:
         return server.host_key_fingerprint
     last = await session.scalar(
         select(AuditLog).where(AuditLog.target_type == "server", AuditLog.target_id == str(server.id),
-                               AuditLog.action.in_(("server.host_key_pinned", "server.host_key_unpinned")))
+                               AuditLog.action == "server.host_key_pinned")
         .order_by(AuditLog.id.desc()).limit(1)
     )
-    return str((last.detail or {}).get("previous") or "") if last is not None and last.action == "server.host_key_unpinned" else ""
+    return str((last.detail or {}).get("fingerprint") or "") if last is not None else ""
 
 
 @router.post("/api/servers/{server_id}/host-key/trust")
@@ -246,6 +247,8 @@ async def trust_key(server_id: int, body: TrustBody, request: Request, principal
 async def unpin_key(server_id: int, request: Request, principal: Principal = Depends(require_admin),
                     session: AsyncSession = Depends(get_db)) -> dict:
     server = await _server(session, server_id, lock=True)
+    if not server.host_key:
+        return {"server": await server_view(session, server)}  # nothing pinned (a second click, or a stale page): nothing to record
     previous = server.host_key_fingerprint
     server.host_key = server.host_key_fingerprint = server.host_key_trusted_by = ""
     server.host_key_trusted_at = None

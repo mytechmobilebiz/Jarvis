@@ -106,3 +106,14 @@ def test_dispute_letter_content():
     assert "Experian\nP.O. Box 4500" in text and "1681i" in text
     assert "Example Bank, account ending 9876: This account does not belong to me." in text
     assert "SSN (last 4): 1234" in text
+
+
+def test_server_overview_says_not_reported_instead_of_zero():
+    from app.agents.server_management import overview_summary
+
+    full = {"uptime_seconds": 3 * 86400 + 5, "load": [0.42, 0.3, 0.2], "memory_mb": {"available": 900, "total": 4000},
+            "disks": [{"mount": "/", "used_pct": 41}]}
+    assert overview_summary("cwp1", full) == "cwp1: up 3 day(s), load 0.42, memory 900/4000 MB free, disks / 41%"
+    # An older or incompatible gate that leaves values out: never "up 0 day(s), load 0" (C2-13).
+    assert overview_summary("cwp1", {}) == ("cwp1: uptime not reported, load not reported, memory not reported, "
+                                            "disks not reported")

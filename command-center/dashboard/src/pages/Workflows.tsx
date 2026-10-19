@@ -6,6 +6,7 @@ import { Card, Empty, ErrorNote, Pill, RiskBadge, Tile, Time, timeAgo } from "..
 import { usePoll } from "../hooks";
 import { Icon } from "../icons";
 import { TaskDetail } from "../work";
+import { cronHint, deliveredConnection, probedConnection, type Connection } from "./shared";
 import "./Workflows.css";
 
 const DAY = 86_400_000;
@@ -16,8 +17,6 @@ const ENGINE_NAMES = new Set(["n8n", "webhook", "none"]);
 const NOT_CHANNELS = new Set([...ENGINE_NAMES, "anthropic"]);
 
 const WORDS: Record<string, string> = { wordpress: "WordPress", seo: "SEO", ai: "AI", n8n: "n8n", cwp: "CWP" };
-const DAYS = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"];
-
 /** "wordpress-uptime-sweep" -> "WordPress uptime sweep". */
 function humanize(slug: string): string {
   const s = slug
@@ -28,44 +27,8 @@ function humanize(slug: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-/**
- * Plain-English reading of the common cron forms, or null when it can't be read reliably.
- * The worker evaluates cron in UTC (croniter on a UTC time), hence the UTC suffix.
- */
-function cronHint(cron: string): string | null {
-  const f = cron.trim().split(/\s+/);
-  if (f.length !== 5) return null;
-  const [mi, h, dom, mon, dow] = f;
-  const num = (v: string, min: number, max: number) => (/^\d{1,2}$/.test(v) && +v >= min && +v <= max ? +v : null);
-  const step = (v: string) => /^\*\/(\d{1,2})$/.exec(v)?.[1];
-  const pad = (n: number) => String(n).padStart(2, "0");
-  if (mon !== "*") return null;
-  if (h === "*" && dom === "*" && dow === "*") {
-    if (mi === "*") return "Every minute";
-    const n = Number(step(mi));
-    // Only steps that divide the hour fire at an even interval.
-    if (n >= 1 && 60 % n === 0) return n === 1 ? "Every minute" : `Every ${n} minutes`;
-    const m = num(mi, 0, 59);
-    if (m !== null) return m === 0 ? "Hourly, on the hour" : `Hourly at :${pad(m)}`;
-    return null;
-  }
-  const m = num(mi, 0, 59);
-  if (m === null) return null;
-  const hs = Number(step(h));
-  if (hs >= 1 && 24 % hs === 0 && dom === "*" && dow === "*") return hs === 1 ? `Hourly at :${pad(m)}` : `Every ${hs} hours at :${pad(m)} UTC`;
-  const hr = num(h, 0, 23);
-  if (hr === null) return null;
-  const at = `${pad(hr)}:${pad(m)} UTC`;
-  if (dom === "*" && dow === "*") return `Daily at ${at}`;
-  if (dom === "*") {
-    if (dow === "1-5") return `Weekdays at ${at}`;
-    if (dow === "0,6" || dow === "6,0") return `Weekends at ${at}`;
-    const d = num(dow, 0, 7);
-    return d === null ? null : `${DAYS[d % 7]} at ${at}`;
-  }
-  const day = num(dom, 1, 31);
-  if (dow === "*" && day !== null) return `Monthly on day ${day} at ${at}`;
-  return null;
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 /** Absolute local time, e.g. "Mon, Oct 19, 06:43 AM". */
@@ -73,7 +36,7 @@ function when(iso: string): string {
   return new Date(iso).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function useNow(intervalMs = 30_000): number {
+function useNow(intervalMs = 10_000): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), intervalMs);
@@ -82,17 +45,14 @@ function useNow(intervalMs = 30_000): number {
   return now;
 }
 
-type Tone = "good" | "warn" | "bad" | "muted";
+type Tone = Connection["tone"];
 
-/** Engine connection state from its integration record, judged the same way as the sidebar's n8n dot. */
-function engineState(e: Integration | undefined): { label: string; tone: Tone } {
-  if (!e) return { label: "Unknown", tone: "muted" };
-  if (e.mode === "disabled") return { label: "Not connected", tone: "muted" };
-  const st = e.status;
-  if (!st) return { label: "Not checked yet", tone: "muted" };
-  if (st.detail?.reachable === false) return { label: "Unreachable", tone: "bad" };
-  if (!st.last_ok_at || (st.last_error_at && st.last_error_at > st.last_ok_at)) return { label: "Needs attention", tone: "warn" };
-  return { label: "Connected", tone: "good" };
+/** The engine's state with its age: n8n is probed every 60 s, so only a recent success is "Connected"; the webhook engine is never
+ * probed, so only its deliveries can be reported (C2-04). */
+function engineState(e: Integration | undefined, now: number): Connection {
+  if (!e) return { label: "Unknown", tone: "muted", state: "Unknown", age: "" };
+  if (e.name === "n8n") return probedConnection(e.mode, e.status, now);
+  return deliveredConnection(e.mode, e.status, now);
 }
 
 const TILE_TONE: Record<Tone, string> = { good: "green", warn: "warn", bad: "bad", muted: "muted" };
@@ -174,7 +134,7 @@ export default function Workflows() {
   const engine = all.find((i) => ENGINE_NAMES.has(i.name));
   const claude = all.find((i) => i.name === "anthropic");
   const channels = all.filter((i) => !NOT_CHANNELS.has(i.name));
-  const state = engineState(engine);
+  const state = engineState(engine, now);
   const flows = engine?.workflows ?? null;
   const activeFlows = flows?.filter((w) => w.active).length ?? 0;
   const st = engine?.status;
@@ -276,18 +236,23 @@ export default function Workflows() {
               integrations.error ?? "…"
             ) : !engine ? (
               "Not reported by the server"
-            ) : flows ? (
-              `${activeFlows} of ${flows.length} n8n workflow${flows.length === 1 ? "" : "s"} active`
-            ) : engine.mode === "disabled" ? (
-              "Events are recorded but not handed on"
-            ) : st?.last_ok_at ? (
-              <>Last success {timeAgo(st.last_ok_at, now)}</>
             ) : (
-              "No successful contact yet"
+              [
+                state.age
+                  ? capitalize(state.age)
+                  : engine.mode === "disabled"
+                    ? "Events are recorded but not handed on"
+                    : st?.last_ok_at
+                      ? `Last success ${timeAgo(st.last_ok_at, now)}`
+                      : "No successful contact yet",
+                flows ? `${activeFlows} of ${flows.length} n8n workflow${flows.length === 1 ? "" : "s"} active` : "",
+              ]
+                .filter(Boolean)
+                .join(" · ")
             )
           }
         >
-          <span className={`tile-status ${state.tone === "muted" ? "muted" : `text-${state.tone}`}`}>{integrations.data ? state.label : "Checking…"}</span>
+          <span className={`tile-status ${state.tone === "muted" ? "muted" : `text-${state.tone}`}`}>{integrations.data ? state.state : "Checking…"}</span>
           {engine ? (
             <span className="wf-tile-sub">
               {engine.name === "none" ? "No engine configured" : engine.title} <Pill value={engine.mode} label={engine.mode.toUpperCase()} />

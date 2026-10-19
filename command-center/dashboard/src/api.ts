@@ -403,6 +403,15 @@ export interface SystemStatus {
   n8n_editor_url?: string | null;
   edition?: { code: string; title: string; source: string };
   n8n: IntegrationState | null;
+  /** Whether this PC reaches the internet, from the monitor's control check when a site gives no answer (0.5.0 API). While
+   * "offline", sites are not checked and keep their last real result. */
+  connectivity?: {
+    state: "online" | "offline" | "unknown";
+    since: string | null;
+    last_ok_at: string | null;
+    last_error_at: string | null;
+    last_error: string;
+  };
   counts: {
     sites: Record<string, number>;
     tasks_24h: Record<string, number>;

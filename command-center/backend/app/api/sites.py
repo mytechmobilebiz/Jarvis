@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import audit, events, licensing, uptime
 from .. import tasks as task_service
 from ..agents.monitoring.agent import normalize_url
+from ..agents.monitoring.findings import open_findings
 from ..agents.wp_server import gate_link_problem
 from ..config import Settings, get_settings
 from ..models import Server, Site, SiteCheck
@@ -60,13 +61,18 @@ class CheckBody(BaseModel):
     deep: bool = True
 
 
-async def _site_view(session: AsyncSession, site: Site, stats: dict[int, dict] | None = None) -> dict:
+async def _site_view(session: AsyncSession, site: Site, stats: dict[int, dict] | None = None,
+                     found: dict[int, dict] | None = None) -> dict:
     d = to_dict(site)
     check = await session.get(SiteCheck, site.last_check_id) if site.last_check_id else None
     d["last_check"] = to_dict(check) if check else None
     if stats is None:
         stats = await uptime.uptime_stats(session)
     d["uptime"] = stats.get(site.id)
+    # Open issues from the latest quick and the latest deep check together, not the latest check alone (findings.py).
+    if found is None:
+        found = await open_findings(session, [site.id])
+    d.update(found[site.id])  # open_findings, open_findings_sources
     return d
 
 
@@ -74,7 +80,8 @@ async def _site_view(session: AsyncSession, site: Site, stats: dict[int, dict] |
 async def list_sites(_: Principal = Depends(require_user), session: AsyncSession = Depends(get_db)) -> dict:
     sites = (await session.scalars(select(Site).order_by(Site.name))).all()
     stats = await uptime.uptime_stats(session)
-    return {"sites": [await _site_view(session, s, stats) for s in sites]}
+    found = await open_findings(session, [s.id for s in sites])
+    return {"sites": [await _site_view(session, s, stats, found) for s in sites]}
 
 
 @router.post("", status_code=201)

@@ -1,11 +1,49 @@
 import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type Server, type Site, type SiteCheck, type Task } from "../api";
+import { api, type Finding, type Schedule, type Server, type Site, type SiteCheck, type Task } from "../api";
 import { useAuth } from "../App";
-import { Card, Empty, ErrorNote, Findings, Modal, Pill, Tile, Time } from "../components";
+import { Card, Empty, ErrorNote, Findings, Modal, Pill, SeverityIcon, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
 import { Icon } from "../icons";
+import { cadence, confirmReason, coverage, pctText, shortWhen, TypedConfirm, type UptimeWindow } from "./shared";
 import "./Websites.css";
+
+/** A site's open issue (0.5.0 API): the stored finding plus the check it came from. */
+export type OpenFinding = Finding & { source?: "quick" | "deep"; checked_at?: string };
+
+/** /api/sites rows with the 0.5.0 open issues: the latest uptime check and the latest security scan together (C2-10). */
+export type SiteView = Site & {
+  open_findings?: OpenFinding[];
+  open_findings_sources?: { quick: string | null; deep: string | null };
+};
+
+/** The site's open issues (warning and critical): from both checks when the API gives them, else from the latest check only. */
+export function openIssues(site: SiteView): OpenFinding[] {
+  const list = site.open_findings ?? site.last_check?.findings ?? [];
+  return list.filter((f) => f.severity !== "info");
+}
+
+const SOURCE: Record<string, string> = { deep: "security scan", quick: "uptime check" };
+
+/** "the security scan at 03:17 and the uptime check at 04:30", or null before the 0.5.0 API. */
+export function issueSources(site: SiteView, now: number = Date.now()): string | null {
+  const src = site.open_findings_sources;
+  if (!src) return null;
+  const parts = (["deep", "quick"] as const).filter((k) => src[k]).map((k) => `the ${SOURCE[k]} of ${shortWhen(src[k]!, now)}`);
+  return parts.length ? parts.join(" and ") : null;
+}
+
+/** Whether repairs on a site count as production: its own environment, or its server's (as the API decides). */
+function effectiveProduction(environment: string, server: Pick<Server, "environment"> | null | undefined): boolean {
+  return environment === "production" || server?.environment === "production";
+}
+
+/** "run every 15 minutes", "are paused", "run only when asked": for the page's opening sentence (C2-15). */
+function runs(c: string, plural: boolean): string {
+  if (c === "paused") return plural ? "are paused" : "is paused";
+  if (c === "not scheduled") return plural ? "run only when asked" : "runs only when asked";
+  return `${plural ? "run" : "runs"} ${c}`;
+}
 
 function AddSite({ onAdded }: { onAdded: () => void }) {
   const [name, setName] = useState("");
@@ -58,12 +96,19 @@ const REPAIRS: { capability: string; label: string; plugin?: boolean; params?: R
   { capability: "repair_flush_caches", label: "Flush caches" },
 ];
 
-function pct(v: number | null | undefined) {
-  return v == null ? "—" : `${v}%`;
-}
-
 function uptimeTone(v: number | null | undefined): "good" | "warn" | "bad" | "muted" {
   return v == null ? "muted" : v >= 99.5 ? "good" : v >= 98 ? "warn" : "bad";
+}
+
+/** One window's uptime with what it rests on: "99.5% · 96 checks", or "Not enough data yet (2 checks since 05:27)". */
+function UptimeFigure({ site, window }: { site: Site; window: UptimeWindow }) {
+  const c = coverage(site.uptime, window);
+  return (
+    <span className="ws-figure">
+      {c.pct != null ? <strong className="tabular">{pctText(c.pct)}</strong> : null}
+      <span className={`small ${c.pct != null ? "muted" : "ws-nodata"}`}>{c.pct != null ? ` · ${c.text}` : c.text}</span>
+    </span>
+  );
 }
 
 function ServerLink({ site, onChanged }: { site: Site; onChanged: () => void }) {
@@ -71,55 +116,117 @@ function ServerLink({ site, onChanged }: { site: Site; onChanged: () => void }) 
   const [serverId, setServerId] = useState(site.server_id ? String(site.server_id) : "");
   const [key, setKey] = useState(site.server_site_key);
   const [error, setError] = useState<string | null>(null);
-  const chosen = servers.data?.servers.find((s) => String(s.id) === serverId);
-  const keys = Object.keys(chosen?.last_hello.sites ?? {});
+  // A change that takes the site out of production waits here until the admin types its name (C3-06).
+  const [pending, setPending] = useState<{ body: Record<string, unknown>; reason: string } | null>(null);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const list = servers.data?.servers ?? [];
+  const chosen = list.find((s) => String(s.id) === serverId);
+  const reported = chosen?.last_hello.sites ?? {};
+  const keys = Object.keys(reported);
+  const keyHintId = `site-key-hint-${site.id}`;
+  const serverOf = (id: number | null) => (id ? list.find((s) => s.id === id) : null);
 
-  async function save(body: Record<string, unknown>) {
+  async function save(body: Record<string, unknown>, confirm?: string) {
     setError(null);
+    setConfirmError(null);
     try {
-      await api.patch(`/api/sites/${site.id}`, body);
+      await api.patch(`/api/sites/${site.id}`, confirm ? { ...body, confirm } : body);
+      setPending(null);
       onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const reason = confirmReason(err);
+      if (reason && !confirm) setPending({ body, reason });
+      else if (confirm) setConfirmError(err instanceof Error ? err.message : String(err));
+      else setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  /** Asks for the typed name first when the change visibly takes the site out of production; the API checks again either way. */
+  function change(body: Record<string, unknown>, environment: string, newServerId: number | null) {
+    const was = effectiveProduction(site.environment, serverOf(site.server_id));
+    const will = effectiveProduction(environment, serverOf(newServerId));
+    if (was && !will)
+      setPending({
+        body,
+        reason: `this takes ${site.name} out of production (now ${environment}${newServerId ? ` on server ${serverOf(newServerId)?.name ?? newServerId}` : ", not linked to a server"}): its repairs would no longer need an admin's typed confirmation.`,
+      });
+    else void save(body);
   }
 
   return (
     <div className="boxed-section">
       <h3>Server link and environment (admin)</h3>
       <div className="grid-form">
-        <select aria-label="Site environment setting" value={site.environment} onChange={(e) => void save({ environment: e.target.value })}>
+        <select
+          aria-label="Site environment setting"
+          value={site.environment}
+          onChange={(e) => e.target.value !== site.environment && change({ environment: e.target.value }, e.target.value, site.server_id)}
+        >
           <option value="production">production</option>
           <option value="staging">staging</option>
           <option value="test">test</option>
         </select>
         <select aria-label="Server" value={serverId} onChange={(e) => setServerId(e.target.value)}>
           <option value="">no server</option>
-          {(servers.data?.servers ?? []).map((s) => (
+          {list.map((s) => (
             <option key={s.id} value={s.id}>
               {s.name}
             </option>
           ))}
         </select>
-        <input aria-label="Site key on the server" placeholder="site key in cc-gate config" value={key} onChange={(e) => setKey(e.target.value)} list="site-keys" />
+        <input
+          aria-label="Site key on the server"
+          placeholder="site key in cc-gate config"
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          list="site-keys"
+          aria-describedby={chosen ? keyHintId : undefined}
+        />
+        {/* Each key with the address the server's cc-gate gives it: the API accepts only the key whose address is this site's. */}
         <datalist id="site-keys">
           {keys.map((k) => (
-            <option key={k} value={k} />
+            <option key={k} value={k} label={`${k} (${reported[k]?.url || "no URL reported"})`} />
           ))}
         </datalist>
         <button
           className="btn small"
-          onClick={() => void save(serverId ? { server_id: Number(serverId), server_site_key: key } : { unlink_server: true })}
+          onClick={() =>
+            serverId
+              ? change({ server_id: Number(serverId), server_site_key: key }, site.environment, Number(serverId))
+              : change({ unlink_server: true }, site.environment, null)
+          }
         >
           Save link
         </button>
       </div>
+      {chosen ? (
+        <p className="muted small" id={keyHintId}>
+          {keys.length
+            ? `Pick the key whose address is this site's (${site.url}); ${chosen.name} reports ${keys.length === 1 ? "one key" : `${keys.length} keys`}.`
+            : `${chosen.name} has reported no site keys yet: run Test connection on the CWP / Servers page first.`}
+        </p>
+      ) : null}
       <ErrorNote error={error ?? servers.error} />
+      {pending ? (
+        <TypedConfirm
+          title={`Take ${site.name} out of production`}
+          name={site.name}
+          action="Confirm the change"
+          error={confirmError}
+          onCancel={() => {
+            setPending(null);
+            setConfirmError(null);
+          }}
+          onConfirm={(typed) => save(pending.body, typed)}
+        >
+          {pending.reason.charAt(0).toUpperCase() + pending.reason.slice(1)}
+        </TypedConfirm>
+      ) : null}
     </div>
   );
 }
 
-function ServerSide({ site, onTask }: { site: Site; onTask: (t: Task) => void }) {
+function ServerSide({ site, production, onTask }: { site: Site; production: boolean | null; onTask: (t: Task) => void }) {
   const { canOperate } = useAuth();
   const [slug, setSlug] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -216,8 +323,15 @@ function ServerSide({ site, onTask }: { site: Site; onTask: (t: Task) => void })
           </div>
           <h3>Repairs</h3>
           <p className="small muted">
-            Each repair waits for approval{site.environment === "production" ? " by an admin who types the site's name (production)" : ""}, backs up the database
-            first, changes one thing and verifies the site afterwards. Repairs only run if the server allows changes.
+            Each repair waits for approval
+            {production === null
+              ? ""
+              : production
+                ? site.environment === "production"
+                  ? " by an admin who types the site's name (production)"
+                  : " by an admin who types the site's name (the site's server is production)"
+                : ""}
+            , backs up the database first, changes one thing and verifies the site afterwards. Repairs only run if the server allows changes.
           </p>
           <div className="row-actions">
             <input aria-label="Plugin folder name" placeholder="plugin, e.g. akismet" value={slug} onChange={(e) => setSlug(e.target.value.trim())} />
@@ -242,13 +356,19 @@ function ServerSide({ site, onTask }: { site: Site; onTask: (t: Task) => void })
   );
 }
 
-function SiteDetail({ site, onClose, onChanged }: { site: Site; onClose: () => void; onChanged: () => void }) {
+function SiteDetail({ site, onClose, onChanged }: { site: SiteView; onClose: () => void; onChanged: () => void }) {
   const { user, canOperate } = useAuth();
-  const detail = usePoll(() => api.get<{ site: Site }>(`/api/sites/${site.id}`), 10_000, [site.id]);
+  const detail = usePoll(() => api.get<{ site: SiteView }>(`/api/sites/${site.id}`), 10_000, [site.id]);
+  const servers = usePoll(() => (site.server_id ? api.get<{ servers: Server[] }>("/api/servers") : Promise.resolve(null)), 30_000, [site.server_id]);
   const checks = usePoll(() => api.get<{ checks: SiteCheck[] }>(`/api/sites/${site.id}/checks?limit=30`), 5_000, [site.id]);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const full = detail.data?.site ?? site;
+  const full: SiteView = { ...site, ...(detail.data?.site ?? {}) };
+  const server = full.server_id ? servers.data?.servers.find((s) => s.id === full.server_id) : null;
+  // Unknown until the server list has loaded; the note then says nothing rather than guess.
+  const production = full.server_id && !servers.data ? (full.environment === "production" ? true : null) : effectiveProduction(full.environment, server);
+  const issues = openIssues(full);
+  const sources = issueSources(full);
   const latestDeep = checks.data?.checks.find((c) => c.details.deep);
   const latest = checks.data?.checks[0] ?? site.last_check;
   const redirect = latestDeep?.details.redirect_check;
@@ -275,7 +395,8 @@ function SiteDetail({ site, onClose, onChanged }: { site: Site; onClose: () => v
         <a href={site.url} target="_blank" rel="noreferrer noopener">
           {site.url}
         </a>{" "}
-        <Pill value={site.last_status} /> <Pill value={full.environment} /> {site.client ? <span className="muted">· {site.client}</span> : null}
+        {full.enabled ? <Pill value={full.last_status} /> : <Pill value="disabled" label="Paused" />} <Pill value={full.environment} />{" "}
+        {site.client ? <span className="muted">· {site.client}</span> : null}
       </p>
       {canOperate ? (
         <div className="row-actions">
@@ -315,10 +436,19 @@ function SiteDetail({ site, onClose, onChanged }: { site: Site; onClose: () => v
       ) : null}
       <ErrorNote error={error ?? checks.error ?? detail.error} />
       <dl className="kv">
-        <dt>Uptime</dt>
+        <dt>Uptime 24 h</dt>
         <dd>
-          24 h {pct(full.uptime?.["24h"])} · 7 days {pct(full.uptime?.["7d"])} · 30 days {pct(full.uptime?.["30d"])}
-          {full.uptime?.avg_response_ms_24h != null ? ` · avg ${full.uptime.avg_response_ms_24h} ms` : ""}
+          <UptimeFigure site={full} window="24h" />
+          {full.uptime?.avg_response_ms_24h != null ? <span className="muted small"> · avg {full.uptime.avg_response_ms_24h} ms</span> : null}
+        </dd>
+        <dt>Uptime 7 days</dt>
+        <dd>
+          <UptimeFigure site={full} window="7d" />
+        </dd>
+        <dt>Uptime 30 days</dt>
+        <dd>
+          <UptimeFigure site={full} window="30d" />
+          {!full.enabled ? <span className="muted small"> · paused: not checked until monitoring is resumed</span> : null}
         </dd>
         {latest ? (
           <>
@@ -356,9 +486,36 @@ function SiteDetail({ site, onClose, onChanged }: { site: Site; onClose: () => v
           </>
         ) : null}
       </dl>
-      <h3>Security and health findings {latestDeep ? <span className="muted small">(security scan <Time iso={latestDeep.checked_at} />)</span> : null}</h3>
-      {latestDeep ? <Findings findings={latestDeep.findings} includeInfo /> : <p className="muted">No security scan yet.</p>}
-      <ServerSide site={full} onTask={onTask} />
+      <h3>Open issues {sources ? <span className="muted small">(from {sources})</span> : latest ? <span className="muted small">(from the latest check)</span> : null}</h3>
+      {issues.length ? (
+        <ul className="findings ws-open">
+          {issues.map((f, i) => (
+            <li key={`${f.code}-${i}`}>
+              <SeverityIcon severity={f.severity} />
+              <div>
+                <strong>{f.title}</strong>
+                {f.detail ? <div className="muted small">{f.detail}</div> : null}
+                {f.source ? (
+                  <div className="muted small">
+                    Found by the {SOURCE[f.source] ?? f.source}
+                    {f.checked_at ? (
+                      <>
+                        {" "}
+                        <Time iso={f.checked_at} />
+                      </>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">{latest || sources ? "No open issues." : "Not checked yet."}</p>
+      )}
+      <h3>Latest security scan {latestDeep ? <span className="muted small">(<Time iso={latestDeep.checked_at} />, including notes)</span> : null}</h3>
+      {latestDeep ? <Findings findings={latestDeep.findings} includeInfo /> : <p className="muted">No security scan in the latest 30 checks.</p>}
+      <ServerSide site={full} production={production} onTask={onTask} />
       {user.role === "admin" ? <ServerLink site={full} onChanged={() => { onChanged(); void detail.refresh(); }} /> : null}
       {full.incidents_30d?.length ? (
         <>
@@ -409,7 +566,8 @@ function SiteDetail({ site, onClose, onChanged }: { site: Site; onClose: () => v
 
 export default function Websites() {
   const { canOperate } = useAuth();
-  const sites = usePoll(() => api.get<{ sites: Site[] }>("/api/sites"), 8_000);
+  const sites = usePoll(() => api.get<{ sites: SiteView[] }>("/api/sites"), 8_000);
+  const schedules = usePoll(() => api.get<{ schedules: Schedule[] }>("/api/schedules"), 60_000);
   const [openId, setOpenId] = useState<number | null>(null);
   const open = sites.data?.sites.find((s) => s.id === openId) ?? null;
 
@@ -419,13 +577,27 @@ export default function Websites() {
   const monitored = all.filter((s) => s.enabled);
   const count = (status: Site["last_status"]) => monitored.filter((s) => s.last_status === status).length;
   const [up, down, degraded, unchecked] = [count("up"), count("down"), count("degraded"), count("unknown")];
-  const uptimes = all.map((s) => s.uptime?.["7d"]).filter((v): v is number => typeof v === "number");
+  const paused = all.length - monitored.length;
+  // The 7-day average covers monitored sites with enough checks behind their figure; paused sites are left out (C2-07, C2-09).
+  const weekly = monitored.map((s) => coverage(s.uptime, "7d"));
+  const uptimes = weekly.map((c) => c.pct).filter((v): v is number => v != null);
+  const thin = weekly.filter((c) => c.pct == null && (c.checks ?? 0) > 0).length;
+  const youngest = weekly.filter((c) => c.pct != null).map((c) => c.since).filter((v): v is string => !!v).sort()[0] ?? null;
   const avgUptime = uptimes.length ? uptimes.reduce((a, b) => a + b, 0) / uptimes.length : null;
-  const issues = all.flatMap((s) => (s.last_check ? s.last_check.findings.filter((f) => f.severity !== "info") : []));
+  // Open issues of monitored sites, from the latest uptime check and the latest security scan together (C2-10).
+  const issues = monitored.flatMap(openIssues);
   const critical = issues.filter((f) => f.severity === "critical").length;
-  const sitesWithIssues = all.filter((s) => s.last_check?.findings.some((f) => f.severity !== "info")).length;
+  const sitesWithIssues = monitored.filter((s) => openIssues(s).length).length;
+  const bothChecks = monitored.some((s) => s.open_findings_sources);
   const pending = sites.error ?? "…";
   const tone = uptimeTone(avgUptime);
+  const scheduleList = schedules.data?.schedules;
+  const intro = scheduleList
+    ? `Uptime and redirect checks ${runs(cadence(scheduleList, "monitoring", "check_all_sites"), true)} and the security scan ${runs(
+        cadence(scheduleList, "wordpress_security", "security_scan_all"),
+        false,
+      )}, all read-only.`
+    : "Uptime, redirect and security checks run on the schedules shown on Workflows, all read-only.";
 
   return (
     <div className="page ws-page">
@@ -434,8 +606,7 @@ export default function Websites() {
           <div className="eyebrow">Monitoring</div>
           <h1>Websites</h1>
           <p className="muted">
-            Uptime and redirect checks every 15 minutes and a nightly security scan, all read-only. Sites linked to a server also get WP-CLI checks; repairs
-            run only after approval.
+            {intro} Sites linked to a server also get WP-CLI checks; repairs run only after approval.
           </p>
         </div>
       </header>
@@ -456,7 +627,12 @@ export default function Websites() {
           <span className="tile-value tabular">{loaded ? monitored.length : "—"}</span>
           {loaded && all.length > monitored.length ? <span className="tile-of">of {all.length}</span> : null}
         </Tile>
-        <Tile icon="pulse" tone={!loaded ? "muted" : down ? "bad" : degraded ? "warn" : "green"} label="Up · down · degraded" hint={loaded ? "Latest check of each monitored site" : pending}>
+        <Tile
+          icon="pulse"
+          tone={!loaded || !monitored.length || unchecked === monitored.length ? "muted" : down ? "bad" : degraded ? "warn" : "green"}
+          label="Up · down · degraded"
+          hint={loaded ? `Latest check of each monitored site${unchecked ? ` · ${unchecked} not checked yet` : ""}${paused ? ` · ${paused} paused, not counted` : ""}` : pending}
+        >
           <div className="ws-status tabular">
             <span className="ws-status-item">
               <span className={`ws-status-value ${up ? "text-good" : ""}`}>{loaded ? up : "—"}</span> up
@@ -473,9 +649,23 @@ export default function Websites() {
           icon="clock"
           tone={tone === "good" ? "green" : tone}
           label="Average uptime, 7 days"
-          hint={loaded ? (avgUptime == null ? "No checks recorded yet" : `Average of ${uptimes.length} site${uptimes.length === 1 ? "" : "s"}`) : pending}
+          hint={
+            loaded
+              ? [
+                  avgUptime == null
+                    ? thin
+                      ? "Not enough data yet"
+                      : "No checks recorded yet"
+                    : `Average of ${uptimes.length} monitored site${uptimes.length === 1 ? "" : "s"}${youngest ? ` · checks since ${shortWhen(youngest)}` : ""}`,
+                  avgUptime != null && thin ? `${thin} with too few checks left out` : "",
+                  paused ? `${paused} paused, not included` : "",
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
+              : pending
+          }
         >
-          <span className="tile-value tabular">{avgUptime == null ? "—" : `${avgUptime.toFixed(avgUptime >= 99.995 ? 0 : 2)}%`}</span>
+          <span className="tile-value tabular">{avgUptime == null ? "—" : pctText(avgUptime)}</span>
           {avgUptime != null ? (
             <div className="meter" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Number(avgUptime.toFixed(2))} aria-label="Average uptime, 7 days">
               <span className={`meter-fill tone-${tone}`} style={{ width: `${Math.max(2, avgUptime)}%` }} />
@@ -484,13 +674,15 @@ export default function Websites() {
         </Tile>
         <Tile
           icon="alert"
-          tone={!loaded ? "muted" : critical ? "bad" : issues.length ? "warn" : "green"}
+          tone={!loaded || !monitored.length ? "muted" : critical ? "bad" : issues.length ? "warn" : unchecked === monitored.length ? "muted" : "green"}
           label="Open issues"
           hint={
             loaded
-              ? issues.length
-                ? `${critical} critical · on ${sitesWithIssues} site${sitesWithIssues === 1 ? "" : "s"}`
-                : "Nothing found in the latest checks"
+              ? (issues.length
+                  ? `${critical} critical · on ${sitesWithIssues} site${sitesWithIssues === 1 ? "" : "s"}`
+                  : monitored.length
+                    ? "None found"
+                    : "No monitored sites") + (bothChecks ? " · latest uptime checks and security scans" : " · latest check of each site")
               : pending
           }
         >
@@ -512,7 +704,7 @@ export default function Websites() {
       <Card
         title={
           <>
-            <Icon name="globe" size={18} className="card-icon" /> Monitored sites ({sites.data?.sites.length ?? 0})
+            <Icon name="globe" size={18} className="card-icon" /> Monitored sites ({sites.data ? sites.data.sites.length : "…"})
           </>
         }
         actions={sites.data?.sites.length ? <span className="muted small">Select a row for details</span> : null}
@@ -536,10 +728,11 @@ export default function Websites() {
               <tbody>
                 {sites.data.sites.map((s) => {
                   const c = s.last_check;
-                  const issues = c ? c.findings.filter((f) => f.severity !== "info") : [];
-                  const week = s.uptime?.["7d"];
+                  const issues = openIssues(s);
+                  const week = coverage(s.uptime, "7d");
+                  const from = issueSources(s);
                   return (
-                    <tr key={s.id} className="clickable" onClick={() => setOpenId(s.id)}>
+                    <tr key={s.id} className={`clickable ${s.enabled ? "" : "ws-paused"}`} onClick={() => setOpenId(s.id)}>
                       <td className="ws-site">
                         {/* The row opens on a click; this button is the keyboard path to the same dialog. */}
                         <button
@@ -557,7 +750,7 @@ export default function Websites() {
                         </div>
                       </td>
                       <td className="ws-nowrap">
-                        <Pill value={s.enabled ? s.last_status : "disabled"} label={s.enabled ? undefined : "paused"} />
+                        <Pill value={s.enabled ? s.last_status : "disabled"} label={s.enabled ? undefined : "Paused"} />
                         {s.environment && s.environment !== "production" ? (
                           <>
                             {" "}
@@ -566,12 +759,19 @@ export default function Websites() {
                         ) : null}
                       </td>
                       <td className="ws-uptime tabular">
-                        {pct(week)}
-                        {week != null ? (
-                          <div className="meter thin">
-                            <span className={`meter-fill tone-${uptimeTone(week)}`} style={{ width: `${Math.max(2, week)}%` }} />
-                          </div>
-                        ) : null}
+                        {week.pct != null ? (
+                          <>
+                            <span title={week.text}>{pctText(week.pct)}</span>
+                            {s.enabled ? (
+                              <div className="meter thin">
+                                <span className={`meter-fill tone-${uptimeTone(week.pct)}`} style={{ width: `${Math.max(2, week.pct)}%` }} />
+                              </div>
+                            ) : null}
+                            <div className="muted small ws-coverage">{week.text}</div>
+                          </>
+                        ) : (
+                          <span className="small ws-nodata">{week.checks ? week.text.replace(/ \(.*\)$/, "") : "—"}</span>
+                        )}
                       </td>
                       <td className="ws-nowrap">
                         <Time iso={s.last_checked_at} />
@@ -581,7 +781,9 @@ export default function Websites() {
                       <td className="ws-nowrap tabular">{c?.tls_days_left != null ? `${c.tls_days_left} d` : "—"}</td>
                       <td>
                         {issues.length ? (
-                          <Pill value={issues.some((f) => f.severity === "critical") ? "critical" : "warning"} label={String(issues.length)} />
+                          <span title={`${issues.map((f) => f.title).join("\n")}${from ? `\n(from ${from})` : ""}`}>
+                            <Pill value={issues.some((f) => f.severity === "critical") ? "critical" : "warning"} label={String(issues.length)} />
+                          </span>
                         ) : (
                           "—"
                         )}

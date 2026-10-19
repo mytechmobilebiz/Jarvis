@@ -85,3 +85,25 @@
 .table.ws-history td:first-child {
   white-space: nowrap;
 }
+
+/* uptime with its coverage (C2-07) and paused sites (C2-09) */
+.ws-nodata {
+  color: var(--muted);
+  font-style: italic;
+}
+.ws-coverage {
+  white-space: nowrap;
+  margin-top: 2px;
+}
+.ws-paused td {
+  color: var(--muted);
+}
+.ws-paused .ws-uptime span:first-child {
+  color: var(--muted);
+}
+.ws-figure strong {
+  color: var(--text);
+}
+.ws-open {
+  margin-bottom: 12px;
+}

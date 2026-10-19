@@ -159,3 +159,19 @@ pre.plain.sv-keyline {
     padding-left: 42px;
   }
 }
+
+/* a scanned host key that differs from the pinned one (C3-05) */
+.sv-changed {
+  border-width: 2px;
+}
+.sv-changed-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+.sv-changed p.small {
+  color: var(--text-2);
+}

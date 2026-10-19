@@ -1,5 +1,5 @@
-// Page fixes from the 0.4.0 final review: credit-repair task details, list windows, keyboard paths to row dialogs,
-// the Approvals view switch and the Dashboard tiles.
+// Page fixes from the 0.4.0 final review: credit-repair task details, list windows, keyboard paths to row dialogs and
+// the Approvals view switch.
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
@@ -268,64 +268,5 @@ describe("list windows (cr-2, cr-7)", () => {
   });
 });
 
-describe("dashboard tiles (cr-3, cr-4, cr-9, sparkline)", () => {
-  const site = (id: number, enabled: boolean, last_status: string, up: number | null) => ({
-    id, name: `Site ${id}`, url: `https://s${id}.example`, client: "", notes: "", enabled, last_status, last_checked_at: now, last_check: null,
-    environment: "production", server_id: null, server_site_key: "", uptime: up == null ? null : { "24h": up, "7d": up, "30d": up }, last_diagnosis: null,
-    last_diagnosis_at: null,
-  });
-  const agent = (name: string, role = "agent") => ({
-    name, role, title: name, description: "", enabled: true, entitled: true, sensitive: false, integrations: [], capabilities: [], stats_24h: {}, last_run_at: null,
-  });
-
-  it("counts monitored sites only, labels the uptime average and reports no workflow engine as not configured", async () => {
-    mockFetch({
-      // The status counts still include the paused site that is down.
-      "GET /api/system/status": { ...status, workflow_engine: "none", n8n: null, counts: { ...status.counts, sites: { up: 1, down: 1 } } },
-      "GET /api/auth/me": { user: admin },
-      "GET /api/agents": { agents: [agent("supervisor", "supervisor"), agent("a1"), agent("a2")] },
-      "GET /api/sites": { sites: [site(1, true, "up", 100), site(2, false, "down", null)] },
-      "GET /api/tasks": { tasks: [], total: 0 },
-      "GET /api/approvals": { approvals: [] },
-      "GET /api/events": { events: [] },
-      "GET /api/supervisor/requests": { requests: [] },
-    });
-    render(<App />);
-    const sites = await screen.findByRole("region", { name: "Websites monitored" });
-    await waitFor(() => expect(sites).toHaveTextContent("1 up · 0 down · 0 degraded"));
-    expect(sites).toHaveTextContent("1 paused");
-    expect(screen.getByRole("region", { name: "Website uptime (24 h)" })).toHaveTextContent("average of 1 site(s)");
-    const agents = screen.getByRole("region", { name: "Active AI agents" });
-    await waitFor(() => expect(agents).toHaveTextContent("of 2"));
-    const health = screen.getByRole("region", { name: "Worker and service health" });
-    expect(health).toHaveTextContent("All systems operational");
-    expect(within(health).getByText("not configured")).toBeInTheDocument();
-  });
-
-  it("says when every site is paused, names a webhook engine and says when it was not contacted yet", async () => {
-    mockFetch({
-      "GET /api/system/status": { ...status, workflow_engine: "webhook", n8n: null },
-      "GET /api/auth/me": { user: admin },
-      "GET /api/sites": { sites: [site(2, false, "down", null)] },
-    });
-    render(<App />);
-    const sites = await screen.findByRole("region", { name: "Websites monitored" });
-    await waitFor(() => expect(sites).toHaveTextContent("All sites paused"));
-    const health = screen.getByRole("region", { name: "Worker and service health" });
-    expect(within(health).getByText("Webhook")).toBeInTheDocument();
-    expect(within(health).getByText("not contacted yet")).toBeInTheDocument();
-    expect(health).not.toHaveTextContent("needs attention");
-    // Before the agents list loads there is no made-up total.
-    expect(screen.getByRole("region", { name: "Active AI agents" })).not.toHaveTextContent("of 7");
-  });
-
-  it("draws the 'completed today' sparkline as a line during the first hour of the day", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date(2026, 9, 19, 0, 30));
-    mockFetch({ "GET /api/system/status": status, "GET /api/auth/me": { user: admin }, "GET /api/tasks": { tasks: [], total: 0 } });
-    const { container } = render(<App />);
-    await waitFor(() => expect(container.querySelector(".sparkline-line")).not.toBeNull());
-    const points = container.querySelector(".sparkline-line")!.getAttribute("points")!.trim().split(/\s+/);
-    expect(points).toEqual(["0.0,29.0", "120.0,29.0"]);
-  });
-});
+// The 0.4.0 dashboard tiles (cr-3, cr-4, cr-9, sparkline) were replaced in 0.5.0; their successors are tested with the new
+// dashboard (shell-050.test.tsx and the dashboard's own tests).

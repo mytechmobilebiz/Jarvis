@@ -6,6 +6,7 @@ import { Card, Empty, ErrorNote, Modal, Pill, RiskBadge, Tile, Time } from "../c
 import { usePoll } from "../hooks";
 import { Icon, type IconName } from "../icons";
 import { ArtifactView, RunModal, TaskDetail } from "../work";
+import { mockLabel, SampleDataPill } from "./shared";
 import "./Social.css";
 
 const AGENT = "social_marketing";
@@ -657,7 +658,7 @@ export default function Social() {
                         <span className="so-row-meta">Approved by {e.approved_by || "—"}</span>
                       </span>
                       <span className="so-row-side">
-                        <Pill value={e.mode} label={e.mode === "mock" ? "Mock" : "Live"} />
+                        <Pill value={e.mode} label={e.mode === "mock" ? mockLabel("postonomous") : "Live: posted"} />
                         <Time iso={e.created_at} />
                       </span>
                     </button>
@@ -725,7 +726,10 @@ export default function Social() {
         ) : (
           <Empty>Loading…</Empty>
         )}
-        <p className="so-foot">Drafting and publishing tasks among the latest {RECENT} Social Media &amp; Marketing tasks; ad tasks are on SEO &amp; Marketing.</p>
+        <p className="so-foot">
+          Drafting and publishing tasks among the latest {RECENT} Social Media &amp; Marketing tasks. This agent's ad reports are on{" "}
+          <Link to="/seo">SEO &amp; Marketing</Link>, marked <SampleDataPill /> until an ad account is connected.
+        </p>
       </Card>
 
       {running && agent ? (

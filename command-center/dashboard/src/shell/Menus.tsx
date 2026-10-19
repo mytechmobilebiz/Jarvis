@@ -77,13 +77,25 @@ function readSeen(): number {
   }
 }
 
+/** How many of the latest events the bell reads. */
+const EVENT_LIMIT = 30;
+
+/** Unseen warnings and critical events among the latest `limit` events. `more` is true when even the oldest one read is
+ * unseen, so older unseen alerts may exist beyond the window and the count is a minimum (C2-14). */
+export function unseenAlerts(events: CCEvent[], seen: number, limit: number = EVENT_LIMIT): { count: number; more: boolean } {
+  const count = events.filter((e) => e.severity !== "info" && e.id > seen).length;
+  const more = events.length >= limit && Math.min(...events.map((e) => e.id)) > seen;
+  return { count, more };
+}
+
 export function NotificationsMenu({ status }: { status: SystemStatus | null }) {
-  const events = usePoll(() => api.get<{ events: CCEvent[] }>("/api/events?limit=30"), 20_000);
+  const events = usePoll(() => api.get<{ events: CCEvent[] }>(`/api/events?limit=${EVENT_LIMIT}`), 20_000);
   const [seen, setSeen] = useState(readSeen);
   const alerts = (events.data?.events ?? []).filter((e) => e.severity !== "info");
-  const unseen = alerts.filter((e) => e.id > seen).length;
+  const { count: unseen, more } = unseenAlerts(events.data?.events ?? [], seen);
   const approvals = status?.counts.approvals_pending ?? 0;
   const count = unseen + approvals;
+  const shown = count > 99 ? "99+" : `${count}${more ? "+" : ""}`;
   const markSeen = () => {
     const top = Math.max(seen, ...(events.data?.events ?? []).map((e) => e.id));
     setSeen(top);
@@ -95,12 +107,12 @@ export function NotificationsMenu({ status }: { status: SystemStatus | null }) {
   };
   return (
     <Popover
-      label={count ? `Notifications (${count} new)` : "Notifications"}
+      label={count ? `Notifications (${shown} new)` : "Notifications"}
       className="notifications"
       button={
         <>
           <Icon name="bell" size={21} strokeWidth={1.6} />
-          {count ? <span className="top-badge">{count > 99 ? "99+" : count}</span> : null}
+          {count ? <span className="top-badge">{shown}</span> : null}
         </>
       }
     >

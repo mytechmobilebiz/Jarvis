@@ -1,6 +1,6 @@
 // Sidebar Quick Actions (owner request 2): read-only checks and draft reports, which the task layer runs without approval.
 // Each one reports the real task the API created, and is disabled with the reason when it cannot run.
-import { FormEvent, ReactNode, useId, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { api, type Agent, type Server, type Site, type SystemStatus, type Task, type User } from "../api";
@@ -298,6 +298,7 @@ export default function QuickActions({ user, status }: { user: User; status: Sys
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [dialog, setDialog] = useState<"seo" | "report" | null>(null);
   const titleId = useId();
+  const live = useRef<HTMLDivElement>(null);
   const blockers = quickActionBlockers({ user, agents, sites, servers, active });
   const editor = user.role === "admin" ? n8nEditorUrl(status) : null;
   const draftsNote = (
@@ -323,6 +324,11 @@ export default function QuickActions({ user, status }: { user: User; status: Sys
       void active.refresh();
     }
   }
+
+  // In a short window the result lands below the fold of the scrolling sidebar: bring it into view.
+  useEffect(() => {
+    if (outcome) live.current?.scrollIntoView?.({ block: "nearest" });
+  }, [outcome]);
 
   async function checkServers() {
     const targets = checkableServers(servers.data ?? []);
@@ -365,7 +371,7 @@ export default function QuickActions({ user, status }: { user: User; status: Sys
           </li>
         ) : null}
       </ul>
-      <div className="qa-live" role="status">
+      <div className="qa-live" role="status" ref={live}>
         {outcome ? <OutcomeView outcome={outcome} onDismiss={() => setOutcome(null)} /> : null}
       </div>
       {/* In document.body: the sidebar is a stacking context (sticky, or transformed as the phone drawer) that would trap the dialog. */}

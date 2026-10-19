@@ -6,6 +6,7 @@ import { Card, Empty, ErrorNote, Pill, RiskBadge, Tile, Time } from "../componen
 import { usePoll } from "../hooks";
 import { Icon, type IconName } from "../icons";
 import { ArtifactView, RunModal, TaskDetail } from "../work";
+import { isSample, SampleDataPill } from "./shared";
 import "./SeoMarketing.css";
 
 const SEO = "seo_content";
@@ -335,7 +336,7 @@ export default function SeoMarketing() {
         <Tile
           icon="send"
           tone="orange"
-          label="WordPress publishes"
+          label={wordpress?.mode === "live" ? "WordPress publishes" : wordpress?.mode === "mock" ? "Publishes recorded (mock)" : "WordPress publishes"}
           to="/outbox"
           hint={
             publishing.data ? (
@@ -443,11 +444,11 @@ export default function SeoMarketing() {
                           {capitalize(info.noun)}
                           {score !== null ? ` · score ${score}/100` : ""}
                           {writer === "template" ? " · template" : writer ? ` · by ${writer}` : ""}
-                          {a.data?.sample_data ? " · sample data" : ""}
-                          {a.data?.published_mock ? " · publish recorded (mock)" : ""}
+                          {a.data?.published_mock ? " · publish recorded (mock), not published" : ""}
                         </span>
                       </span>
                       <span className="seo-row-side">
+                        {isSample(a.data) ? <SampleDataPill /> : null}
                         <Pill value={a.status} label={a.status === "approved" ? "Reviewed" : undefined} />
                         <Time iso={a.created_at} />
                       </span>
@@ -509,6 +510,7 @@ export default function SeoMarketing() {
                         </span>
                       </span>
                       <span className="seo-row-side">
+                        {isSample(t.result?.data) ? <SampleDataPill /> : null}
                         <Pill value={t.status} />
                         <Time iso={t.created_at} />
                       </span>

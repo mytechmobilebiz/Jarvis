@@ -127,8 +127,24 @@ def site_host(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-def same_host(a: str, b: str) -> bool:
-    return bool(site_host(a)) and site_host(a) == site_host(b)
+def site_address(url: str) -> str:
+    """Host and path of a site's address, for comparing two addresses of one site ("" without a host).
+
+    The host as site_host gives it; the path as given, without a final "/". The scheme, port and query do not count.
+    A WordPress install in a subfolder (http://site.test/blog) is a different install from the one at the root.
+    """
+    host = site_host(url)
+    if not host:
+        return ""
+    try:
+        path = urlsplit(url.strip()).path
+    except ValueError:
+        return ""
+    return host + path.rstrip("/")
+
+
+def same_address(a: str, b: str) -> bool:
+    return bool(site_address(a)) and site_address(a) == site_address(b)
 
 
 def gate_site_url(hello: dict[str, Any] | None, key: str) -> str | None:
@@ -148,7 +164,7 @@ def gate_link_problem(server: Server, key: str, site_url: str) -> str:
     if gate_url is None:
         return (f"server {server.name} has not reported a site key '{key}': run Test connection on the Servers page "
                 "(it reads the site keys from the server's cc-gate configuration), then link the site again")
-    if not same_host(gate_url, site_url):
+    if not same_address(gate_url, site_url):
         return (f"the cc-gate on server {server.name} gives site key '{key}' the address {gate_url}, which is not this site "
                 f"({site_url}); link the key whose address is this site's")
     return ""
@@ -261,7 +277,7 @@ async def check_gate_site(gate: Any, site: Site, approved: dict[str, Any] | None
     approved_url = (((approved or {}).get("binding") or {}).get("gate") or {}).get("url")
     if url is None:
         raise ValueError(f"the cc-gate on {gate.server.name} no longer lists site key '{key}'; nothing was changed")
-    if not same_host(url, site.url):
+    if not same_address(url, site.url):
         raise ValueError(f"the cc-gate on {gate.server.name} gives site key '{key}' the address {url}, not {site.name}'s ({site.url}); "
                          "nothing was changed. Link the site to the key for its own address")
     if url != approved_url:
@@ -309,7 +325,7 @@ def diagnosis_findings(diag: dict[str, Any], previous: dict[str, Any] | None) ->
                            detail="; ".join(f"{k}: {v}" for k, v in sorted(errors.items()))[:1000]))
     urls = diag.get("site_urls") or {}
     registered = diag.get("registered_url")
-    if urls.get("expected") and registered and not same_host(str(urls["expected"]), str(registered)):
+    if urls.get("expected") and registered and not same_address(str(urls["expected"]), str(registered)):
         out.append(Finding(code="gate_url_mismatch", severity="critical",
                            title=f"The server's cc-gate gives this site key the address {urls['expected']}, not the registered "
                                  f"{registered}",

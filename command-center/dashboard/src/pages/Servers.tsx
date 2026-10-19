@@ -5,7 +5,22 @@ import { useAuth } from "../App";
 import { Card, Empty, ErrorNote, Modal, Pill, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
 import { Icon } from "../icons";
+import { confirmReason, TypedConfirm } from "./shared";
 import "./Servers.css";
+
+/** POST /api/servers/{id}/host-key/scan: matches_pinned and pinned_fingerprint are null when no key is pinned (0.5.0 API). */
+interface ScanResult {
+  fingerprint: string;
+  host_key: string;
+  matches_pinned?: boolean | null;
+  pinned_fingerprint?: string | null;
+}
+
+/** A trust request the API refused until the server's name is typed (a different key than the one trusted before). */
+interface PendingTrust {
+  body: { fingerprint?: string; host_key?: string };
+  reason: string;
+}
 
 async function runTask(capability: string, params: Record<string, unknown>) {
   const r = await api.post<{ task: Task }>("/api/agents/server_management/tasks", { capability, params });
@@ -100,9 +115,14 @@ function AddServer({ onAdded }: { onAdded: () => void }) {
 }
 
 function HostKey({ server, onChanged }: { server: Server; onChanged: () => void }) {
-  const [scan, setScan] = useState<{ fingerprint: string; host_key: string } | null>(null);
+  const [scan, setScan] = useState<ScanResult | null>(null);
   const [pasted, setPasted] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState<PendingTrust | null>(null);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  // The scan found a different key than the pinned one: another machine may be answering at this address (C3-05).
+  const changed = !!scan && server.host_key_pinned && scan.matches_pinned === false;
+  const same = !!scan && scan.matches_pinned === true;
 
   async function act(fn: () => Promise<unknown>) {
     setError(null);
@@ -111,6 +131,24 @@ function HostKey({ server, onChanged }: { server: Server; onChanged: () => void 
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** Posts the key to trust; when the API asks for the server's name (a replaced key), asks the admin to type it. */
+  async function trust(body: PendingTrust["body"], confirm?: string) {
+    setError(null);
+    setConfirmError(null);
+    try {
+      await api.post(`/api/servers/${server.id}/host-key/trust`, confirm ? { ...body, confirm } : body);
+      setScan(null);
+      setPasted("");
+      setPending(null);
+      onChanged();
+    } catch (err) {
+      const reason = confirmReason(err);
+      if (reason && !confirm) setPending({ body, reason });
+      else if (confirm) setConfirmError(err instanceof Error ? err.message : String(err));
+      else setError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -126,10 +164,7 @@ function HostKey({ server, onChanged }: { server: Server; onChanged: () => void 
         <p className="small muted">Not pinned: no command can run on this server until its host key is pinned.</p>
       )}
       <div className="row-actions">
-        <button
-          className="btn small"
-          onClick={() => void act(async () => setScan(await api.post<{ fingerprint: string; host_key: string }>(`/api/servers/${server.id}/host-key/scan`)))}
-        >
+        <button className="btn small" onClick={() => void act(async () => setScan(await api.post<ScanResult>(`/api/servers/${server.id}/host-key/scan`)))}>
           Scan host key
         </button>
         {server.host_key_pinned ? (
@@ -138,16 +173,42 @@ function HostKey({ server, onChanged }: { server: Server; onChanged: () => void 
           </button>
         ) : null}
       </div>
-      {scan ? (
+      {changed && scan ? (
+        <div className="alert alert-bad sv-wrap sv-changed" role="alert">
+          <p className="sv-changed-title">
+            <Icon name="alert" size={18} /> <strong>Host key CHANGED</strong>
+          </p>
+          <p className="small">
+            The server at {server.host}:{server.port} now presents <code>{scan.fingerprint}</code>, not the pinned <code>{scan.pinned_fingerprint ?? server.host_key_fingerprint}</code>.
+            A different machine may be answering at this address. Replace the pinned key only if the server was reinstalled or its key was changed on purpose,
+            after comparing the new fingerprint on the server itself (<code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code>). Approvals given before
+            for this server and its sites stop applying.
+          </p>
+          <button
+            className="btn danger small"
+            onClick={() =>
+              setPending({
+                body: { fingerprint: scan.fingerprint },
+                reason: `host key CHANGED: ${server.name} now presents ${scan.fingerprint} instead of the pinned ${scan.pinned_fingerprint ?? server.host_key_fingerprint}. Approvals given before for this server and its sites stop applying.`,
+              })
+            }
+          >
+            Replace the pinned key…
+          </button>
+        </div>
+      ) : same && scan ? (
+        <div className="alert alert-good sv-wrap" role="status">
+          <p className="small">
+            The server presents the pinned key <code>{scan.fingerprint}</code>. Nothing to change.
+          </p>
+        </div>
+      ) : scan ? (
         <div className="alert alert-info sv-wrap">
           <p className="small">
             The server presents <code>{scan.fingerprint}</code>. Compare it with the fingerprint install-gate.sh printed on the server (or run{" "}
             <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code> there) before trusting it.
           </p>
-          <button
-            className="btn primary small"
-            onClick={() => void act(async () => { await api.post(`/api/servers/${server.id}/host-key/trust`, { fingerprint: scan.fingerprint }); setScan(null); })}
-          >
+          <button className="btn primary small" onClick={() => void trust({ fingerprint: scan.fingerprint })}>
             The fingerprints match: trust this key
           </button>
         </div>
@@ -156,13 +217,84 @@ function HostKey({ server, onChanged }: { server: Server; onChanged: () => void 
         <summary className="small">Or paste the server's public host key</summary>
         <div className="inline-form">
           <input aria-label="Public host key" placeholder="ssh-ed25519 AAAA…" value={pasted} onChange={(e) => setPasted(e.target.value)} />
-          <button className="btn small" onClick={() => void act(async () => { await api.post(`/api/servers/${server.id}/host-key/trust`, { host_key: pasted }); setPasted(""); })}>
+          <button className="btn small" disabled={!pasted.trim()} onClick={() => void trust({ host_key: pasted })}>
             Pin pasted key
           </button>
         </div>
       </details>
       <ErrorNote error={error} />
+      {pending ? (
+        <TypedConfirm
+          title={`Replace the host key of ${server.name}`}
+          name={server.name}
+          action="Replace the pinned key"
+          error={confirmError}
+          onCancel={() => {
+            setPending(null);
+            setConfirmError(null);
+          }}
+          onConfirm={(typed) => trust(pending.body, typed)}
+        >
+          {pending.reason.charAt(0).toUpperCase() + pending.reason.slice(1)}
+        </TypedConfirm>
+      ) : null}
     </div>
+  );
+}
+
+/** Changes the server's environment; taking it out of production asks for its name first (C3-06). */
+function EnvironmentSelect({ server, onChanged, onError }: { server: Server; onChanged: () => void; onError: (e: string | null) => void }) {
+  const [pending, setPending] = useState<{ environment: string; reason: string } | null>(null);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+
+  async function save(environment: string, confirm?: string) {
+    onError(null);
+    setConfirmError(null);
+    try {
+      await api.patch(`/api/servers/${server.id}`, confirm ? { environment, confirm } : { environment });
+      setPending(null);
+      onChanged();
+    } catch (err) {
+      const reason = confirmReason(err);
+      if (reason && !confirm) setPending({ environment, reason });
+      else if (confirm) setConfirmError(err instanceof Error ? err.message : String(err));
+      else onError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function choose(environment: string) {
+    if (environment === server.environment) return;
+    if (server.environment === "production")
+      setPending({
+        environment,
+        reason: `this takes ${server.name} out of production: changes on it and on its sites would no longer need an admin's typed confirmation.`,
+      });
+    else void save(environment);
+  }
+
+  return (
+    <>
+      <select aria-label="Server environment" value={server.environment} onChange={(e) => choose(e.target.value)}>
+        <option value="production">production</option>
+        <option value="staging">staging</option>
+        <option value="test">test</option>
+      </select>
+      {pending ? (
+        <TypedConfirm
+          title={`Take ${server.name} out of production`}
+          name={server.name}
+          action={`Change to ${pending.environment}`}
+          error={confirmError}
+          onCancel={() => {
+            setPending(null);
+            setConfirmError(null);
+          }}
+          onConfirm={(typed) => save(pending.environment, typed)}
+        >
+          {pending.reason.charAt(0).toUpperCase() + pending.reason.slice(1)}
+        </TypedConfirm>
+      ) : null}
+    </>
   );
 }
 
@@ -234,15 +366,7 @@ function ServerDetail({ server, onClose, onChanged }: { server: Server; onClose:
       ) : null}
       {isAdmin ? (
         <div className="row-actions">
-          <select
-            aria-label="Server environment"
-            value={server.environment}
-            onChange={(e) => void act(() => api.patch(`/api/servers/${server.id}`, { environment: e.target.value }))}
-          >
-            <option value="production">production</option>
-            <option value="staging">staging</option>
-            <option value="test">test</option>
-          </select>
+          <EnvironmentSelect server={server} onChanged={onChanged} onError={setError} />
           <button className="btn small" onClick={() => void act(() => api.patch(`/api/servers/${server.id}`, { enabled: !server.enabled }))}>
             {server.enabled ? "Disable" : "Enable"}
           </button>
@@ -260,7 +384,7 @@ function ServerDetail({ server, onClose, onChanged }: { server: Server; onClose:
       ) : (
         <p className="muted small">None linked. Link a site on the Websites page (admin).</p>
       )}
-      <h3>Command audit trail ({commands.data?.total ?? 0})</h3>
+      <h3>Command audit trail ({commands.data ? commands.data.total : "…"})</h3>
       {commands.data?.commands.length ? (
         <div className="table-wrap">
           <table className="table compact sv-audit">
@@ -426,7 +550,7 @@ export default function Servers() {
       <Card
         title={
           <>
-            <Icon name="server" size={18} className="card-icon" /> Servers ({servers.data?.servers.length ?? 0})
+            <Icon name="server" size={18} className="card-icon" /> Servers ({servers.data ? servers.data.servers.length : "…"})
           </>
         }
         actions={servers.data?.servers.length ? <span className="muted small">Select a row for details</span> : null}

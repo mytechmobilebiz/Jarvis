@@ -3,7 +3,13 @@ import { api, type OutboxRecord } from "../api";
 import { Card, Empty, ErrorNote, JsonView, Modal, Pill, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
 import { Icon } from "../icons";
+import { mockLabel } from "./shared";
 import "./Outbox.css";
+
+/** The entry's mode as a pill: "Recorded (mock), not sent" (not posted, not mailed…) in an info tone, or "Live: carried out". */
+function ModePill({ entry }: { entry: OutboxRecord }) {
+  return <Pill value={entry.mode} label={entry.mode === "mock" ? mockLabel(entry.integration) : "Live: carried out"} />;
+}
 
 /** The most the API returns in one list; when the list is that long the tiles count the latest entries, not all. */
 const LIMIT = 500;
@@ -30,8 +36,8 @@ export default function Outbox() {
           <div className="eyebrow">Communications</div>
           <h1>Outbox</h1>
           <p className="muted">
-            Every outward action that was approved: emails, posts, budget changes, letters. In this build all of these integrations are <strong>mocks</strong>,
-            so each entry is a record of what would have been sent. Nothing here left the machine.
+            Every outward action that was approved: emails, posts, budget changes, letters. A <strong>mock</strong> integration only records what it would have
+            done, and nothing it records leaves the machine; a <strong>live</strong> one really carries it out. Each entry says which.
           </p>
         </div>
       </header>
@@ -109,7 +115,7 @@ export default function Outbox() {
                             {e.integration}.{e.action}
                           </code>
                         </button>{" "}
-                        <Pill value={e.mode} label={e.mode.toUpperCase()} />
+                        <ModePill entry={e} />
                       </div>
                     </td>
                     <td className="small">
@@ -143,7 +149,7 @@ export default function Outbox() {
       {open ? (
         <Modal title={`Outbox #${open.id}: ${open.integration}.${open.action}`} onClose={() => setOpen(null)} wide>
           <p className="ob-detail-head">
-            <Pill value={open.mode} label={open.mode.toUpperCase()} /> {open.result} · approved by {open.approved_by} · task #{open.task_id}
+            <ModePill entry={open} /> {open.result} · approved by {open.approved_by} · task #{open.task_id}
           </p>
           <dl className="kv">
             <dt>To</dt>

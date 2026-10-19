@@ -37,7 +37,8 @@ async def social_publish_context(session: AsyncSession, params: dict[str, Any], 
         "production": False,
         "delivery": approvals.delivery("postonomous"),
         "draft": facts,
-        "binding": {"platform": platform, "account": POSTONOMOUS_ACCOUNT, "artifact_id": draft.id, "draft_sha256": facts["sha256"]},
+        "binding": {"platform": platform, "account": POSTONOMOUS_ACCOUNT, "artifact_id": draft.id, "draft_sha256": facts["sha256"],
+                    "delivery": approvals.delivery("postonomous")},  # approved as a mock: never published for real
     }
 
 

@@ -199,11 +199,17 @@ export function Modal({ title, onClose, children, wide }: { title: string; onClo
   }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") return onClose();
-      if (e.key !== "Tab" || !ref.current) return;
-      // Only the top dialog (the last one in the page) keeps the focus.
+      if ((e.key !== "Escape" && e.key !== "Tab") || !ref.current) return;
+      // Only the top dialog (the last one in the page) answers: Escape closes it alone, and it alone keeps the focus.
       const dialogs = document.querySelectorAll('[aria-modal="true"]');
       if (dialogs[dialogs.length - 1] !== ref.current) return;
+      if (e.key === "Escape") {
+        // An Escape already used (by a field inside, or by a dialog on top that has just closed) closes nothing more. Without
+        // this, a dialog under a closing one could see itself on top once React has removed the closed one.
+        if (e.defaultPrevented) return;
+        e.preventDefault();
+        return onClose();
+      }
       const items = Array.from(ref.current.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(tabbable);
       if (!items.length) {
         e.preventDefault();

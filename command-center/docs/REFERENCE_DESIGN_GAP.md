@@ -203,7 +203,7 @@ Checks that passed:
 | C3-20 | Schedules run only read and draft work, and anything consequential would still wait for approval |
 | C3-21 | The service token cannot approve, run capabilities directly, or change sites or servers |
 | C3-22 | The AI Supervisor's plans can only create tasks, and the task layer decides on approval |
-| C3-23 | Automatic monitoring touches only registered sites over GET/HEAD; SSH reads run only on request, on configured servers, with allowlisted read operations |
+| C3-23 | Automatic monitoring touches only registered sites over GET/HEAD; SSH reads run only on request, on configured servers, with allowlisted read operations. 0.5.0 adds one exception (C2-22): when a site gives no answer at all, a GET to api.wordpress.org, www.cloudflare.com and www.google.com tells an offline PC from a site that is down (no site data sent; the owner may prefer api.wordpress.org alone) |
 | C3-24 | Admin-only direct actions are human, audited, and send nothing to websites or servers (confirmation is uneven; see C3-01, C3-05, C3-06) |
 | C2-16 | No seed or demo data; most figures come from live API data and show their limits |
 

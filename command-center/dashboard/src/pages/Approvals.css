@@ -94,21 +94,57 @@
   margin: 0 0 12px;
   color: var(--text-2);
 }
-.ap-target {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+/* what exactly would happen, and to what: one row per fact */
+.ap-facts {
+  display: grid;
+  gap: 0;
   margin: 0 0 12px;
-  padding: 9px 12px;
   border: 1px solid var(--border);
   background: var(--surface-2);
   border-radius: var(--radius-sm);
-  overflow-wrap: anywhere;
   min-width: 0;
 }
-.ap-target-icon {
-  flex: none;
-  color: var(--info-text);
+.ap-fact {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  gap: 4px 12px;
+  padding: 7px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+.ap-fact:first-child {
+  border-top: 0;
+}
+.ap-fact dt {
+  color: var(--muted);
+  font-weight: 600;
+}
+.ap-fact dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+}
+.ap-fact dd strong {
+  color: var(--text);
+}
+.ap-url {
+  color: var(--muted);
+}
+.ap-quote {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-style: italic;
+}
+.ap-excerpt {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--border-2);
+  color: var(--text-2);
+  white-space: pre-wrap;
+  max-height: 9em;
+  overflow: auto;
 }
 
 /* collapsible parameters */
@@ -211,5 +247,8 @@
 @media (max-width: 560px) {
   .ap-decision .btn {
     flex: 1 1 120px;
+  }
+  .ap-fact {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

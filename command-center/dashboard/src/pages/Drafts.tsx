@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, type Artifact } from "../api";
 import { Card, Empty, ErrorNote, Pill, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
@@ -11,7 +12,19 @@ const LIMIT = 100;
 export default function Drafts() {
   const [kind, setKind] = useState("");
   const list = usePoll(() => api.get<{ artifacts: Artifact[] }>(`/api/artifacts?limit=${LIMIT}${kind ? `&kind=${encodeURIComponent(kind)}` : ""}`), 10_000, [kind]);
-  const [openId, setOpenId] = useState<number | null>(null);
+  // ?id=N opens that document (approval cards link to the exact draft they would send or publish).
+  const [params, setParams] = useSearchParams();
+  const linked = Number(params.get("id"));
+  const [picked, setPicked] = useState<number | null>(null);
+  const openId = picked ?? (Number.isInteger(linked) && linked > 0 ? linked : null);
+  function setOpenId(id: number | null) {
+    setPicked(id);
+    if (id === null && params.has("id")) {
+      const next = new URLSearchParams(params);
+      next.delete("id");
+      setParams(next, { replace: true });
+    }
+  }
   const kinds = Array.from(new Set((list.data?.artifacts ?? []).map((a) => a.kind)));
 
   // Summary of the same list the table shows (the latest LIMIT documents, of the selected kind if one is chosen).

@@ -4,6 +4,7 @@ import { useAuth } from "../App";
 import { Card, Empty, ErrorNote, Pill, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
 import { Icon } from "../icons";
+import { cronHint } from "./shared";
 import "./Schedules.css";
 
 export default function Schedules() {
@@ -32,7 +33,7 @@ export default function Schedules() {
         <div>
           <div className="eyebrow">Automation</div>
           <h1>Schedules</h1>
-          <p className="muted">Agent routines run by the worker (times in the server's time zone, cron syntax). Cross-system workflows run in n8n.</p>
+          <p className="muted">Agent routines run by the worker. Cron times are in UTC; next and last runs are shown in your local time. Cross-system workflows run in n8n.</p>
         </div>
       </header>
       {list.data ? (
@@ -100,6 +101,7 @@ export default function Schedules() {
                       ) : (
                         <code>{s.cron}</code>
                       )}
+                      {cronHint(s.cron) ? <div className="muted small sc-hint">{cronHint(s.cron)}</div> : null}
                     </td>
                     <td className="sc-nowrap sc-next" data-label="Next">
                       {s.enabled ? <Time iso={s.next_run_at} /> : "—"}

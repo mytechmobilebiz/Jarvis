@@ -442,20 +442,31 @@
   margin-top: 6px;
 }
 
-/* sidebar */
+/* sidebar: the menu and Quick Actions scroll when the window is short; Intern 2, the system lines and the versions stay pinned
+   at the bottom, so they are always in view (a 1536x1024 window shows everything without scrolling) */
 .sidebar {
   grid-area: side;
   position: sticky;
   top: var(--header-h);
   height: calc(100vh - var(--header-h));
-  overflow-y: auto;
+  overflow: hidden;
   background: var(--sidebar);
   border-right: 1px solid var(--sidebar-border);
   display: flex;
   flex-direction: column;
-  padding: 16px 10px 16px;
+}
+.sidebar-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 10px 8px;
   scrollbar-width: thin;
   scrollbar-color: var(--border-2) transparent;
+}
+.sidebar-pinned {
+  flex: none;
+  padding: 7px 10px 8px;
+  border-top: 1px solid var(--sidebar-border);
 }
 .nav-list {
   list-style: none;
@@ -463,14 +474,14 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 1px;
 }
 .nav-list[hidden] {
   display: none;
 }
 .nav-ops {
-  margin-top: 10px;
-  padding-top: 10px;
+  margin-top: 6px;
+  padding-top: 6px;
   border-top: 1px solid var(--sidebar-border);
 }
 .sidebar nav a,
@@ -479,7 +490,7 @@
   align-items: center;
   gap: 14px;
   width: 100%;
-  min-height: 38px;
+  min-height: 32px;
   padding: 0 12px;
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
@@ -532,7 +543,7 @@
   line-height: 18px;
 }
 .nav-more {
-  margin-top: 3px;
+  margin-top: 1px;
 }
 .nav-more-chevron {
   flex: none;
@@ -547,20 +558,20 @@
   transform: rotate(180deg);
 }
 .nav-more-list {
-  margin-top: 3px;
+  margin-top: 1px;
 }
 
 /* quick actions */
 .quick-actions {
-  margin-top: 14px;
-  padding: 14px 6px 0;
+  margin-top: 8px;
+  padding: 8px 6px 0;
   border-top: 1px solid var(--sidebar-border);
 }
 .qa-title {
   font-size: var(--fs-label);
   font-weight: 600;
   color: #f2f5ff;
-  padding: 0 6px 10px;
+  padding: 0 6px 6px;
 }
 .qa-list {
   list-style: none;
@@ -568,14 +579,14 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 .qa-btn {
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 34px;
+  min-height: 30px;
   padding: 0 12px;
   border-radius: var(--radius-xs);
   border: 1px solid var(--qa-border);
@@ -652,11 +663,11 @@
 
 /* Intern 2: never shown as connected without a verified heartbeat */
 .device-card {
-  margin: 14px 4px 0;
+  margin: 0;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px;
+  padding: 5px 10px;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: #0e1927;
@@ -664,8 +675,8 @@
 }
 .device-glyph {
   position: relative;
-  width: 36px;
-  height: 46px;
+  width: 30px;
+  height: 34px;
   display: grid;
   place-items: center;
   flex: none;
@@ -676,8 +687,9 @@
 .device-text {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
+  line-height: 1.25;
 }
 .device-name {
   font-size: var(--fs-label);
@@ -694,20 +706,24 @@
 
 /* system: worker, workflow engine, AI, versions */
 .sidebar-foot {
-  margin-top: 14px;
+  margin-top: 8px;
   font-size: var(--fs-small);
+  line-height: 1.3;
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 12px 10px 0;
-  border-top: 1px solid var(--sidebar-border);
+  gap: 4px;
+  padding: 0 6px;
   color: var(--text-2);
   flex: none;
 }
+/* the lines name themselves ("Worker running", "n8n connected"); the heading is kept for screen readers only */
 .health-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-2);
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 .health-line {
   display: flex;
@@ -716,7 +732,11 @@
   min-width: 0;
 }
 .version-line {
+  display: block;
   font-size: 12px;
+}
+.version-line .nowrap {
+  white-space: nowrap;
 }
 /* states and versions wrap rather than lose their end ("not checked since 10:21:05 AM") */
 .sidebar-foot .nav-label,
@@ -782,8 +802,11 @@
     width: auto;
     padding: 0 18px;
   }
-  .sidebar {
-    padding: 12px 8px;
+  .sidebar-scroll {
+    padding: 12px 8px 10px;
+  }
+  .sidebar-pinned {
+    padding: 8px 8px 10px;
   }
   /* labels visually hidden, not removed: a link keeps its name next to a count ("Approvals 2 need attention"), and the
      reasons and health texts reach screen readers */
@@ -836,8 +859,8 @@
     box-shadow: var(--shadow-pop);
   }
   .device-card {
-    margin: 12px 0 0;
-    padding: 8px 0;
+    margin: 0;
+    padding: 4px 0;
     justify-content: center;
     border: 0;
     background: none;
@@ -856,7 +879,7 @@
   }
   .sidebar-foot {
     align-items: center;
-    padding: 10px 0 0;
+    padding: 0;
   }
 }
 
@@ -944,6 +967,15 @@
     transition: transform 0.2s ease, visibility 0s linear 0.2s;
     padding: 18px 14px;
     box-shadow: var(--shadow-pop);
+    overflow-y: auto;
+  }
+  /* the whole drawer scrolls; nothing is pinned */
+  .sidebar-scroll,
+  .sidebar-pinned {
+    flex: none;
+    overflow: visible;
+    padding: 0;
+    border-top: 0;
   }
   .sidebar.open {
     transform: none;
@@ -998,7 +1030,7 @@
   }
   .device-card {
     margin: 14px 4px 0;
-    padding: 12px;
+    padding: 10px 12px;
     justify-content: flex-start;
     border: 1px solid var(--border);
     background: #0e1927;
@@ -1008,7 +1040,9 @@
   }
   .sidebar-foot {
     align-items: stretch;
+    margin-top: 14px;
     padding: 12px 10px 0;
+    border-top: 1px solid var(--sidebar-border);
   }
   .scrim {
     display: block;

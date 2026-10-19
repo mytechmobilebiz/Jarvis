@@ -5,6 +5,7 @@ import { useAuth } from "../App";
 import { Card, Empty, ErrorNote, Modal, Pill, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
 import { Icon } from "../icons";
+import { deliveryCounts, deliverySummary, leadStatus, type LeadWithDelivery } from "./shared";
 import "./Leads.css";
 
 const EMPTY = { name: "", company: "", email: "", phone: "", website: "", service_interest: "", message: "" };
@@ -18,11 +19,11 @@ function scoreTone(v: number): "good" | "warn" | "bad" {
 
 export default function Leads() {
   const { canOperate } = useAuth();
-  const leads = usePoll(() => api.get<{ leads: LeadRecord[] }>(`/api/leads?limit=${LIMIT}`), 6_000);
+  const leads = usePoll(() => api.get<{ leads: LeadWithDelivery[] }>(`/api/leads?limit=${LIMIT}`), 6_000);
   const [form, setForm] = useState(EMPTY);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const [open, setOpen] = useState<LeadRecord | null>(null);
+  const [open, setOpen] = useState<LeadWithDelivery | null>(null);
 
   async function add(e: FormEvent) {
     e.preventDefault();
@@ -57,6 +58,8 @@ export default function Leads() {
   const avgScore = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
   const spam = byStatus("spam");
   const capped = all.length >= LIMIT;
+  // "Sent" only for proposals a live email integration carried; mock sends were recorded, not sent (C2-01).
+  const proposals = deliveryCounts(all, "proposal_sent");
 
   return (
     <div className="page le-page">
@@ -84,7 +87,13 @@ export default function Leads() {
           icon="inbox"
           tone="cyan"
           label="New leads"
-          hint={loaded ? `${byStatus("qualified")} qualified · ${byStatus("proposal_drafted")} with a proposal · ${byStatus("proposal_sent")} sent` : pending}
+          hint={
+            loaded
+              ? `${byStatus("qualified")} qualified · ${byStatus("proposal_drafted")} with a proposal${
+                  byStatus("proposal_sent") ? ` · ${deliverySummary(proposals, "sent", "")}` : ""
+                }`
+              : pending
+          }
         >
           <span className="tile-value tabular">{loaded ? byStatus("new") : "—"}</span>
         </Tile>
@@ -131,7 +140,7 @@ export default function Leads() {
       <Card
         title={
           <>
-            <Icon name="trending" size={18} className="card-icon" /> Pipeline ({leads.data?.leads.length ?? 0})
+            <Icon name="trending" size={18} className="card-icon" /> Pipeline ({leads.data ? leads.data.leads.length : "…"})
           </>
         }
       >
@@ -169,7 +178,7 @@ export default function Leads() {
                     </td>
                     <td>{l.score === null ? "…" : <Pill value={l.score >= 75 ? "up" : l.score >= 50 ? "degraded" : "unknown"} label={String(l.score)} />}</td>
                     <td>
-                      <Pill value={l.status === "spam" ? "failed" : l.status === "proposal_sent" ? "succeeded" : "info"} label={l.status.replace(/_/g, " ")} />
+                      <Pill value={leadStatus(l)[0]} label={leadStatus(l)[1]} />
                     </td>
                     <td className="small">{l.source}</td>
                     <td className="le-nowrap">
@@ -177,7 +186,7 @@ export default function Leads() {
                     </td>
                     <td>
                       <div className="row-actions cell-actions">
-                        {l.proposal_artifact_id ? <Link to="/drafts">proposal</Link> : null}
+                        {l.proposal_artifact_id ? <Link to={`/drafts?id=${l.proposal_artifact_id}`}>proposal</Link> : null}
                         {canOperate && l.status !== "spam" && l.status !== "proposal_sent" ? (
                           <>
                             <button className="btn small" onClick={() => void run(l, "draft_proposal")}>

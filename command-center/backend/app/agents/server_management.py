@@ -30,6 +30,18 @@ def _version(value: Any) -> tuple[int, ...]:
         return (0,)
 
 
+def overview_summary(name: str, info: dict[str, Any]) -> str:
+    """One line from the gate's system_overview; a value the gate did not report says so instead of reading as 0 (C2-13)."""
+    seconds = info.get("uptime_seconds")
+    up = f"up {int(seconds) // 86400} day(s)" if isinstance(seconds, (int, float)) else "uptime not reported"
+    load = (info.get("load") or [None])[0]
+    mem = info.get("memory_mb") or {}
+    memory = (f"memory {mem['available']}/{mem['total']} MB free" if mem.get("available") is not None and mem.get("total")
+              else "memory not reported")
+    disks = "; ".join(f"{d.get('mount', '?')} {d.get('used_pct', '?')}%" for d in info.get("disks") or []) or "not reported"
+    return f"{name}: {up}, load {load if isinstance(load, (int, float)) else 'not reported'}, {memory}, disks {disks}"
+
+
 class ServerParams(Params):
     server_id: int = Field(description="ID of a registered server (Servers page)")
 
@@ -116,13 +128,10 @@ class ServerManagementAgent(BaseAgent):
         if mem.get("total") and mem.get("available") is not None and mem["available"] < 0.1 * mem["total"]:
             findings.append(Finding(code="memory_low", severity="warning", title=f"Only {mem['available']} MB of {mem['total']} MB memory available"))
         cpus = info.get("cpus") or 1
-        load = (info.get("load") or [0])[0]
-        if load > 2 * cpus:
+        load = (info.get("load") or [None])[0]
+        if isinstance(load, (int, float)) and load > 2 * cpus:
             findings.append(Finding(code="load_high", severity="warning", title=f"Load {load} on {cpus} CPU(s)"))
-        days = int(info.get("uptime_seconds", 0)) // 86400
-        disks = "; ".join(f"{d['mount']} {d['used_pct']}%" for d in info.get("disks", []))
-        return AgentResult(summary=f"{server.name}: up {days} day(s), load {load}, memory {mem.get('available')}/{mem.get('total')} MB free, disks {disks}",
-                           data=info, findings=findings)
+        return AgentResult(summary=overview_summary(server.name, info), data=info, findings=findings)
 
     @capability(risk=Risk.READ, description="Check every service listed in the server's cc-gate configuration.", params=ServerParams,
                 examples=("Are the services on server 1 running?",))

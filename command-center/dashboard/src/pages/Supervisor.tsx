@@ -147,7 +147,7 @@ export default function Supervisor() {
         </div>
       </header>
       <div className="tiles cols-4 su-tiles">
-        <Tile icon="pulse" tone="blue" label="Working now" hint="Planning or running">
+        <Tile icon="pulse" tone="blue" label="Working now" hint={recent ? `Planning or running · ${scope.charAt(0).toLowerCase()}${scope.slice(1)}` : scope}>
           {value(working)}
         </Tile>
         <Tile icon="approvals" tone={waiting ? "warn" : "orange"} label="Awaiting approval" to="/approvals" hint={scope}>

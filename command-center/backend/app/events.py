@@ -10,8 +10,9 @@ from .config import Settings
 from .models import Event
 
 SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
-# Forwarded to n8n whatever their severity: the owner wants to hear the all-clear.
-ALWAYS_FORWARD = frozenset({"site.recovered"})
+# Forwarded to n8n whatever their severity: the owner wants to hear the all-clear (a site back up, or this PC back
+# online after the warning that it lost its connection).
+ALWAYS_FORWARD = frozenset({"site.recovered", "monitoring.online"})
 
 
 def event_payload(event: Event) -> dict[str, Any]:

@@ -205,6 +205,7 @@ class Worker:
                 approved_target = dict(approval.details or {}) if approved_by else None
                 # Switched off (or out of the edition) after the task was created or approved: it does not run.
                 refused = await task_service.agent_unavailable(session, self.settings, agent_name)
+                switched_off = bool(refused) and not await task_service.agent_enabled(session, agent_name)
                 if approved_by and not refused:
                     # The approval covers the target as it was then; refuse if it was re-linked or changed since.
                     try:
@@ -212,6 +213,9 @@ class Worker:
                     except task_service.TargetChanged as exc:
                         refused = str(exc)
                 llm = self._fixed_llm or await runtime_provider(session, self.settings)
+            if switched_off:
+                await self._withdraw(task_id, refused)
+                return
             if refused:
                 await self._fail(task_id, f"refused: {refused}", [("error", refused)])
                 return
@@ -322,6 +326,20 @@ class Worker:
             task.locked_by = ""
             task.started_at = None
             task.updated_at = _now()
+
+    async def _withdraw(self, task_id: int, reason: str) -> None:
+        """Its agent was switched off before it started: cancelled, as switching off withdraws pending changes.
+
+        Nothing ran, so this is no failure (no task.failed event, and not in the agent's failure counts).
+        """
+        async with session_scope() as session:
+            task = await session.get(Task, task_id, with_for_update=True)
+            session.add(TaskLog(task_id=task_id, level="info", message=f"not run: {reason}"))
+            task.status = "cancelled"
+            task.error = f"cancelled: {reason}"
+            task.finished_at = _now()
+            task.updated_at = _now()
+            await task_service.on_task_terminal(session, self.settings, task)
 
     async def _fail(self, task_id: int, error: str, logs: list[tuple[str, str]]) -> None:
         async with session_scope() as session:

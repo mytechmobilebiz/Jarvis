@@ -5,6 +5,7 @@ import { api, type Agent, type Approval, type Artifact, type Capability, type Ta
 import { useAuth } from "./App";
 import { ErrorNote, Findings, JsonView, Markdown, Modal, Pill, RiskBadge, Time } from "./components";
 import { usePoll } from "./hooks";
+import { isSample, SampleDataPill } from "./pages/shared";
 
 /** Who may see sensitive (Credit Repair) data in the dashboard. The same rule as `visible()` in shell/nav.ts uses for
  *  `sensitiveOnly` pages; keep the two in step. */
@@ -113,6 +114,12 @@ export function ArtifactView({ id, onClose, onChanged }: { id: number; onClose: 
         <>
           <p className="muted small">
             {a.kind} by {a.agent} · <Time iso={a.created_at} /> · <Pill value={a.status} />
+            {isSample(a.data) ? (
+              <>
+                {" "}
+                <SampleDataPill /> Synthetic figures: no ad account is connected.
+              </>
+            ) : null}
           </p>
           {canOperate ? (
             <div className="row-actions">
@@ -156,6 +163,12 @@ export function TaskDetail({ id, onClose }: { id: number; onClose: () => void })
         {task.agent}.{task.capability}
       </code>{" "}
       <RiskBadge risk={task.risk} />
+      {isSample(task.result?.data) ? (
+        <>
+          {" "}
+          <SampleDataPill />
+        </>
+      ) : null}
     </p>
   ) : null;
 
@@ -225,6 +238,9 @@ export function TaskDetail({ id, onClose }: { id: number; onClose: () => void })
             </div>
           ) : null}
           {task.summary ? <p>{task.summary}</p> : null}
+          {isSample(task.result?.data) ? (
+            <p className="alert alert-warn small">Sample data: these figures and findings are synthetic, because no ad account is connected. They say nothing about real spend.</p>
+          ) : null}
           {task.error ? <p className="text-bad">{task.error}</p> : null}
           {task.result?.findings?.length ? (
             <>

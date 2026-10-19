@@ -17,12 +17,18 @@ export interface NavGroup {
   items: NavItem[];
 }
 
+/** Monitored sites that are down or degraded; a paused site's last state is not current, so it does not count (C2-09). */
+function siteProblems(s: SystemStatus): number {
+  const sites = s.counts.sites_enabled ?? s.counts.sites;
+  return (sites.down ?? 0) + (sites.degraded ?? 0);
+}
+
 /** The reference's twelve sections, always visible. */
 export const MAIN_NAV: NavItem[] = [
   { to: "/", label: "Dashboard", icon: "home" },
   { to: "/agents", label: "AI Agents", icon: "agents" },
   { to: "/workflows", label: "Workflows", icon: "tree" },
-  { to: "/websites", label: "Websites", icon: "grid", badge: (s) => (s.counts.sites.down ?? 0) + (s.counts.sites.degraded ?? 0) },
+  { to: "/websites", label: "Websites", icon: "grid", badge: siteProblems },
   { to: "/seo", label: "SEO & Marketing", icon: "trending" },
   { to: "/servers", label: "CWP / Servers", icon: "server" },
   { to: "/email", label: "Email", icon: "mail" },

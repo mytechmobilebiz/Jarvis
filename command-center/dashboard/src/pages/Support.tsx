@@ -1,10 +1,11 @@
 import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type Task, type Ticket } from "../api";
+import { api, type Task } from "../api";
 import { useAuth } from "../App";
 import { Card, Empty, ErrorNote, Pill, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
 import { Icon } from "../icons";
+import { deliveryCounts, ticketStatus, type TicketWithDelivery } from "./shared";
 import "./Support.css";
 
 const PRIORITY_TONE: Record<string, string> = { urgent: "critical", high: "warning", normal: "info", low: "unknown" };
@@ -15,7 +16,7 @@ const LIMIT = 500;
 
 export default function Support() {
   const { canOperate } = useAuth();
-  const tickets = usePoll(() => api.get<{ tickets: Ticket[] }>(`/api/support/tickets?limit=${LIMIT}`), 6_000);
+  const tickets = usePoll(() => api.get<{ tickets: TicketWithDelivery[] }>(`/api/support/tickets?limit=${LIMIT}`), 6_000);
   const [form, setForm] = useState({ customer_name: "", customer_email: "", subject: "", body: "" });
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -32,7 +33,7 @@ export default function Support() {
     }
   }
 
-  async function send(t: Ticket) {
+  async function send(t: TicketWithDelivery) {
     setError(null);
     try {
       const r = await api.post<{ task: Task }>("/api/agents/communications/tasks", { capability: "send_reply", params: { ticket_id: t.id } });
@@ -52,6 +53,15 @@ export default function Support() {
   const awaiting = open.filter((t) => t.reply_artifact_id).length;
   const untriaged = open.filter((t) => t.status === "open").length;
   const capped = all.length >= LIMIT;
+  // A reply counts as sent only when a live email integration carried it (C2-01).
+  const replies = deliveryCounts(all, "replied");
+  const closedCount = all.filter((t) => t.status === "closed").length;
+  const answered = [
+    closedCount ? `${closedCount} closed` : "",
+    replies.live ? `${replies.live} replied` : "",
+    replies.mock ? `${replies.mock} reply recorded (mock), not sent` : "",
+    replies.unknown ? `${replies.unknown} reply approved, delivery not recorded` : "",
+  ].filter(Boolean);
 
   return (
     <div className="page sp-page">
@@ -68,12 +78,12 @@ export default function Support() {
           icon="inbox"
           tone="blue"
           label="Open messages"
-          hint={loaded ? `${all.length - open.length} replied or closed${untriaged ? ` · ${untriaged} waiting for triage` : ""}` : pending}
+          hint={loaded ? `${answered.join(" · ") || "None answered or closed yet"}${untriaged ? ` · ${untriaged} waiting for triage` : ""}` : pending}
         >
           <span className="tile-value tabular">{loaded ? open.length : "—"}</span>
           {loaded ? <span className="tile-of">of {capped ? `the latest ${LIMIT}` : all.length}</span> : null}
         </Tile>
-        <Tile icon="alert" tone={urgent ? "bad" : high ? "warn" : "green"} label="Urgent or high priority" hint={loaded ? `${urgent} urgent · ${high} high, among open messages` : pending}>
+        <Tile icon="alert" tone={!loaded ? "muted" : urgent ? "bad" : high ? "warn" : "green"} label="Urgent or high priority" hint={loaded ? `${urgent} urgent · ${high} high, among open messages` : pending}>
           <span className="tile-value tabular">{loaded ? urgent + high : "—"}</span>
         </Tile>
         <Tile
@@ -144,14 +154,14 @@ export default function Support() {
                       <Pill value={PRIORITY_TONE[t.priority] ?? "info"} label={t.priority} />
                     </td>
                     <td>
-                      <Pill value={t.status === "replied" ? "succeeded" : "info"} label={t.status} />
+                      <Pill value={ticketStatus(t)[0]} label={ticketStatus(t)[1]} />
                     </td>
                     <td className="sp-nowrap">
                       <Time iso={t.created_at} />
                     </td>
                     <td>
                       <div className="row-actions cell-actions">
-                        {t.reply_artifact_id ? <Link to="/drafts">draft</Link> : null}
+                        {t.reply_artifact_id ? <Link to={`/drafts?id=${t.reply_artifact_id}`}>draft</Link> : null}
                         {canOperate && t.reply_artifact_id && t.status !== "replied" ? (
                           <button className="btn small" onClick={() => void send(t)}>
                             Send reply (needs approval)

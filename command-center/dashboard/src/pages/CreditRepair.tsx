@@ -4,12 +4,31 @@ import { useAuth } from "../App";
 import { Card, Empty, ErrorNote, Modal, Pill, Time } from "../components";
 import { usePoll } from "../hooks";
 import { Icon } from "../icons";
+import { mockLabel } from "./shared";
 import "./CreditRepair.css";
+
+/** How a letter was sent for mailing (0.5.0 API): "mock" recorded only, nothing mailed; "live" mailed by a provider; null not sent. */
+type MailMode = "mock" | "live" | null;
 
 interface ClientDetail {
   client: CRClient;
-  items: { id: number; bureau: string; creditor: string; account_last4: string; reason: string; detail: string; status: string }[];
-  letters: { id: number; bureau: string; status: string; created_at: string; mailed_at: string | null }[];
+  items: { id: number; bureau: string; creditor: string; account_last4: string; reason: string; detail: string; status: string; mail_mode?: MailMode }[];
+  letters: { id: number; bureau: string; status: string; created_at: string; mailed_at: string | null; mail_mode?: MailMode }[];
+}
+
+/** [Pill value, label] for a letter: "Mailed" only when a live provider mailed it (C2-02). */
+export function letterStatus(l: { status: string; mail_mode?: MailMode }): [string, string] {
+  const mode = l.mail_mode !== undefined ? l.mail_mode : l.status === "mailed_mock" ? "mock" : l.status === "mailed" ? "live" : null;
+  if (mode === "mock") return ["mock", mockLabel("postal_mail")];
+  if (mode === "live") return ["sent", "Mailed"];
+  return ["info", l.status.replace(/_/g, " ")];
+}
+
+/** An item in a letter that was only recorded by the mock mailer is not under dispute with the bureau (C2-02). */
+export function itemStatus(i: { status: string; mail_mode?: MailMode }): [string, string] {
+  if (i.status === "disputed" && i.mail_mode === "mock") return ["mock", "Dispute recorded (mock), not mailed"];
+  if (i.status === "disputed" && i.mail_mode === "live") return ["sent", "Disputed (mailed)"];
+  return ["info", i.status.replace(/_/g, " ")];
 }
 
 function ClientModal({ id, onClose }: { id: number; onClose: () => void }) {
@@ -75,7 +94,7 @@ function ClientModal({ id, onClose }: { id: number; onClose: () => void }) {
                     </td>
                     <td>{i.reason.replace(/_/g, " ")}</td>
                     <td>
-                      <Pill value="info" label={i.status.replace(/_/g, " ")} />
+                      <Pill value={itemStatus(i)[0]} label={itemStatus(i)[1]} />
                     </td>
                   </tr>
                 ))}
@@ -123,7 +142,13 @@ function ClientModal({ id, onClose }: { id: number; onClose: () => void }) {
             <ul className="list cr-letters">
               {detail.data!.letters.map((l) => (
                 <li key={l.id}>
-                  #{l.id} {l.bureau} <Pill value={l.status === "mailed_mock" ? "succeeded" : "info"} label={l.status.replace("_", " ")} /> <Time iso={l.created_at} />{" "}
+                  #{l.id} {l.bureau} <Pill value={letterStatus(l)[0]} label={letterStatus(l)[1]} /> drafted <Time iso={l.created_at} />
+                  {l.mailed_at ? (
+                    <>
+                      {" "}
+                      · {letterStatus(l)[0] === "sent" ? "mailed" : "recorded"} <Time iso={l.mailed_at} />
+                    </>
+                  ) : null}{" "}
                   <button className="btn small" onClick={() => void api.get<{ letter: { content: string } }>(`/api/credit-repair/letters/${l.id}`).then((r) => setLetter(r.letter.content))}>
                     Read
                   </button>

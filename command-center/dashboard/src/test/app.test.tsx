@@ -45,11 +45,14 @@ describe("App", () => {
 
     fireEvent.change(screen.getByLabelText("Password"), { target: { value: "right" } });
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
-    expect(await screen.findByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening), Admin$/ })).toBeInTheDocument();
-    expect(await screen.findByText("Broken is DOWN")).toBeInTheDocument();
-    const sites = screen.getByRole("region", { name: "Websites monitored" });
-    await waitFor(() => expect(within(sites).getByText("1 down")).toBeInTheDocument());
-    expect(within(sites).getByText("1", { selector: ".tile-value" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Welcome to Infinite AI Command Center" })).toBeInTheDocument();
+    // The pending approval is announced under the title; the down site is in the Websites card.
+    expect(await screen.findByText("1 action is waiting for your approval")).toBeInTheDocument();
+    const stats = document.querySelector(".stat-row") as HTMLElement;
+    const sites = within(stats).getByRole("link", { name: /Websites/ });
+    await waitFor(() => expect(sites).toHaveTextContent("1 down"));
+    expect(within(sites).getByText("1", { selector: ".stat-value" })).toBeInTheDocument();
+    expect(sites).toHaveAttribute("href", "/websites");
     const login = calls.find((c) => c.method === "POST" && c.path === "/api/auth/login");
     expect((login!.init.headers as Record<string, string>)["X-Requested-With"]).toBe("command-center");
   });

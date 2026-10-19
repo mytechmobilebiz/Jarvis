@@ -28,8 +28,8 @@ describe("record pages", () => {
   it("shows Credit Repair in the menu only to admins and permitted users", async () => {
     mockFetch({ "GET /api/system/status": status, "GET /api/auth/me": { user: { ...admin, role: "operator" } }, "GET /api/events": { events: [] }, "GET /api/sites": { sites: [] } });
     const { unmount } = render(<App />);
-    expect(await screen.findByRole("link", { name: "Leads" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Outbox" })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Websites" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Approvals" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Credit Repair" })).toBeNull();
     unmount();
 
@@ -77,7 +77,7 @@ describe("record pages", () => {
     expect(calls.find((c) => c.method === "POST" && c.path === "/api/leads")!.body).toMatchObject({ name: "Bo Diaz", email: "bo@diaz.example" });
   });
 
-  it("labels outbox entries as mock", async () => {
+  it("labels mock outbox entries as recorded, not sent (C2-01)", async () => {
     window.history.pushState({}, "", "/outbox");
     mockFetch({
       "GET /api/system/status": status,
@@ -88,7 +88,8 @@ describe("record pages", () => {
     });
     render(<App />);
     expect(await screen.findByText("recorded, not sent")).toBeInTheDocument();
-    expect(screen.getByText("MOCK")).toBeInTheDocument();
+    expect(screen.getByText("Recorded (mock), not sent")).toBeInTheDocument();
+    expect(screen.queryByText("MOCK")).toBeNull();
   });
 });
 

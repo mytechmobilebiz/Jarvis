@@ -473,9 +473,10 @@ async def record_check(ctx: AgentContext, site: Site, deep: bool, report: SiteRe
     _compare_scripts(report, previous)
     seen = [*(previous.findings if previous else []), *await _reported_since(ctx, site.id, deep, previous)]
     # A quick check (or a deep one cut short before it got there) does not compare what search visitors get: the
-    # cloaking the latest deep check found stays until a deep check that made the comparison clears it.
+    # cloaking the latest deep check that made the comparison found stays until another such deep check clears it.
     ran_cloaking = "variants" in (report.details.get("redirect_check") or {})
-    carried = [] if ran_cloaking else open_issues.carried_causes(await open_issues.latest_deep_check(ctx.session, site.id))
+    carried = [] if ran_cloaking else open_issues.carried_causes(
+        await open_issues.latest_deep_check(ctx.session, site.id, compared=True))
     status = open_issues.effective_status(report.status, carried)
     check = SiteCheck(
         site_id=site.id,
@@ -592,7 +593,7 @@ def change_events(site: Site, previous_status: str, seen: list[dict[str, Any]], 
                   carried: list[dict[str, Any]] | None = None) -> list[EventSpec]:
     """Status-change events, and one event for the findings whose code is not among the findings seen before.
 
-    carried: the latest deep check's cloaking findings, which keep a quick check's site status degraded.
+    carried: the cloaking findings of the latest deep check that compared, which keep a quick check's site status degraded.
     """
     out: list[EventSpec] = []
     status = open_issues.effective_status(report.status, carried or [])

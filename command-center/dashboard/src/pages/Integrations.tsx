@@ -2,8 +2,9 @@ import { useState } from "react";
 import { api, type CCEvent, type Integration } from "../api";
 import { useAuth } from "../App";
 import { Card, ErrorNote, Pill, Tile, Time } from "../components";
-import { usePoll } from "../hooks";
+import { useNow, usePoll } from "../hooks";
 import { Icon, type IconName } from "../icons";
+import { ageText, deliveredConnection, probedConnection } from "./shared";
 import "./Integrations.css";
 
 const ICONS: Record<string, IconName> = {
@@ -72,6 +73,7 @@ function N8nTest() {
 export default function Integrations() {
   const { canOperate } = useAuth();
   const list = usePoll(() => api.get<{ integrations: Integration[] }>("/api/integrations"), 15_000);
+  const now = useNow(10_000);
 
   // Summary of the same list the cards show.
   const all = list.data?.integrations ?? [];
@@ -80,6 +82,7 @@ export default function Integrations() {
   const inMode = (mode: Integration["mode"]) => all.filter((i) => i.mode === mode);
   const live = inMode("live");
   const failingNow = all.filter(failing);
+  const called = all.filter((i) => i.status?.last_ok_at || i.status?.last_error_at);
 
   return (
     <div className="page in-page">
@@ -107,9 +110,18 @@ export default function Integrations() {
         </Tile>
         <Tile
           icon="alert"
-          tone={failingNow.length ? "bad" : "green"}
+          // Green only for a real, checked good state: something was called and its latest call worked (C2-08).
+          tone={!loaded ? "muted" : failingNow.length ? "bad" : called.length ? "green" : "muted"}
           label="Failing now"
-          hint={loaded ? (failingNow.length ? failingNow.map((i) => i.title).join(" · ") : "No integration's latest call failed") : pending}
+          hint={
+            loaded
+              ? failingNow.length
+                ? failingNow.map((i) => i.title).join(" · ")
+                : called.length
+                  ? "No integration's latest call failed"
+                  : "No integration has been called yet"
+              : pending
+          }
         >
           <span className={`tile-value tabular ${failingNow.length ? "text-bad" : ""}`}>{loaded ? failingNow.length : "—"}</span>
         </Tile>
@@ -137,17 +149,28 @@ export default function Integrations() {
                 <strong>To go live:</strong> {i.live_requirements}
               </p>
             ) : null}
+            {i.name === "n8n" || i.name === "webhook" ? (
+              (() => {
+                // n8n is probed every 60 s: "Connected" only within 3 minutes; the webhook engine only reports deliveries (C2-04).
+                const c = i.name === "n8n" ? probedConnection(i.mode, i.status, now) : deliveredConnection(i.mode, i.status, now);
+                return (
+                  <p className={`in-conn small ${c.tone === "muted" ? "muted" : `text-${c.tone}`}`}>
+                    <span className={`dot dot-${c.tone}`} aria-hidden /> {c.label}
+                  </p>
+                );
+              })()
+            ) : null}
             {i.status ? (
               <ul className="in-status small">
                 <li>
-                  <span className={`dot dot-${i.status.last_ok_at ? "good" : "muted"}`} />
+                  <span className="dot dot-muted" aria-hidden />
                   <span>
-                    Last success <Time iso={i.status.last_ok_at} />
+                    Last success {i.status.last_ok_at ? <time title={new Date(i.status.last_ok_at).toLocaleString()}>{ageText(i.status.last_ok_at, now)}</time> : "never"}
                   </span>
                 </li>
                 {i.status.last_error_at ? (
                   <li>
-                    <span className={`dot dot-${failing(i) ? "bad" : "warn"}`} />
+                    <span className={`dot dot-${failing(i) ? "bad" : "warn"}`} aria-hidden />
                     <span className="in-error-line">
                       Last error <Time iso={i.status.last_error_at} />:{" "}
                       <span className="text-bad in-error" title={i.status.last_error}>
@@ -172,7 +195,10 @@ export default function Integrations() {
                     ))}
                   </ul>
                 ) : (
-                  <p className="small muted">Set N8N_API_KEY to list workflows here. Provisioned: event router, morning briefing, lead intake.</p>
+                  <p className="small muted">
+                    n8n imports the Command Center's event router, morning briefing and lead intake workflows when it starts. Set N8N_API_KEY to see here
+                    whether they exist and are active.
+                  </p>
                 )}
                 {canOperate ? <N8nTest /> : null}
               </div>

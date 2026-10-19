@@ -170,3 +170,8 @@ code.sc-cap {
     max-width: none;
   }
 }
+
+.sc-hint {
+  margin-top: 3px;
+  white-space: nowrap;
+}

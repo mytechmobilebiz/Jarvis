@@ -37,7 +37,9 @@ def email_context(*, recipient: str, subject: str, draft: Any, binding: dict[str
         "production": False,
         "delivery": approvals.delivery("email"),
         "draft": facts,
-        "binding": {**binding, "recipient": recipient, "subject": subject, "artifact_id": draft.id, "draft_sha256": facts["sha256"]},
+        # The delivery mode too: an approval given for a mock send must not become a real one after a configuration change.
+        "binding": {**binding, "recipient": recipient, "subject": subject, "artifact_id": draft.id, "draft_sha256": facts["sha256"],
+                    "delivery": approvals.delivery("email")},
     }
 
 

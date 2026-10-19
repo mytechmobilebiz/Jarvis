@@ -145,11 +145,6 @@ a:hover {
   outline-offset: 2px;
   border-radius: 6px;
 }
-/* chart bars are SVG groups: the focused hour gets a frame */
-.chart-bar:focus-visible .chart-hit {
-  stroke: var(--primary-text);
-  stroke-width: 2;
-}
 /* a button that looks like a link or plain text, e.g. the name in a clickable table row */
 .link-button {
   border: 0;

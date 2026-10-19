@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 
 from app.agents.monitoring import connectivity
 from app.agents.monitoring.checks import SiteChecker
-from app.agents.monitoring.findings import open_findings
+from app.agents.monitoring.findings import DEEP_STATUS_CODES, open_findings
 from app.credit_repair import store
 from app.db import session_scope
 from app.models import Event, Site, SiteCheck
@@ -88,6 +88,7 @@ async def test_an_offline_pc_records_no_downtime_and_warns_once(admin, web: Fake
     assert await count_checks() == 4
     [online] = await events_of(admin, connectivity.EVENT_ONLINE)
     assert online["severity"] == "info" and "back online" in online["title"]
+    assert online["forward_status"] != "skipped"  # n8n hears the all-clear as well as the warning
     assert len(await events_of(admin, connectivity.EVENT_OFFLINE)) == 1
     assert (await admin.get("/api/system/status")).json()["connectivity"]["state"] == "online"
 
@@ -223,6 +224,24 @@ async def test_open_findings_keep_the_night_scan_after_a_quick_sweep(admin, make
     assert row["issues"] == ["Spam shown only to Googlebot"] and row["issues_sources"] == sources
 
 
+async def test_the_sites_api_gives_the_open_findings_of_both_checks(admin):
+    site_id = (await add_sites())[0]
+    now = datetime.now(UTC)
+    async with session_scope() as s:
+        s.add(SiteCheck(site_id=site_id, checked_at=now - timedelta(minutes=40), status="degraded", details={"deep": True},
+                        findings=[{"code": "cloaked_spam", "severity": "critical", "title": "Spam"}]))
+        s.add(SiteCheck(site_id=site_id, checked_at=now - timedelta(minutes=5), status="up", details={"deep": False}, findings=[]))
+    listed = next(s for s in (await admin.get("/api/sites")).json()["sites"] if s["id"] == site_id)
+    assert [f["title"] for f in listed["open_findings"]] == ["Spam"] and listed["open_findings"][0]["source"] == "deep"
+    assert listed["open_findings_sources"]["quick"] and listed["open_findings_sources"]["deep"]
+    unchecked = next(s for s in (await admin.get("/api/sites")).json()["sites"] if s["id"] != site_id)
+    assert unchecked["open_findings"] == [] and unchecked["open_findings_sources"] == {"quick": None, "deep": None}
+    one = (await admin.get(f"/api/sites/{site_id}")).json()["site"]
+    assert one["open_findings"] == listed["open_findings"]
+    created = (await admin.post("/api/sites", json={"name": "Gamma", "url": "gamma.example.test"})).json()["site"]
+    assert created["open_findings"] == [] and created["open_findings_sources"] == {"quick": None, "deep": None}
+
+
 def _hacked(origin: str, state: dict):
     clean = wordpress_site(origin, version="6.8.3", exposed=False)
 
@@ -257,16 +276,27 @@ async def test_a_quick_sweep_does_not_clear_cloaking_or_announce_a_false_recover
         raise TimeoutError
 
     monkeypatch.setattr(SiteChecker, "_assess_cloaking", cut_short)  # a deep scan that ran out of time before comparing
-    await run_task(admin, make_worker, "wordpress_security", "security_scan", {"site_id": site_id})
-    alpha = next(s for s in (await statuses()).json()["sites"] if s["id"] == site_id)
-    assert alpha["last_check"]["details"]["partial"] is True and alpha["last_status"] == "degraded"
+    for _ in range(2):  # twice: the second must not take the first one, which compared nothing, as the latest word
+        await run_task(admin, make_worker, "wordpress_security", "security_scan", {"site_id": site_id})
+        alpha = next(s for s in (await statuses()).json()["sites"] if s["id"] == site_id)
+        assert alpha["last_check"]["details"]["partial"] is True and alpha["last_status"] == "degraded"
     assert await events_of(admin, "site.recovered") == []
+
+    await sweep(admin, make_worker)  # the next quick sweep: the cloaking stays, from the last scan that compared
+    alpha = next(s for s in (await statuses()).json()["sites"] if s["id"] == site_id)
+    assert alpha["last_status"] == "degraded" and alpha["last_check"]["status"] == "up"
+    assert await events_of(admin, "site.recovered") == []
+    open_codes = {f["code"]: f for f in alpha["open_findings"]}
+    cloaking = [f for code, f in open_codes.items() if code in DEEP_STATUS_CODES]
+    assert cloaking and all(f["checked_at"] < alpha["open_findings_sources"]["deep"] for f in cloaking)
+    assert "check_timeout" in open_codes  # and the note that the latest scan was cut short
 
     monkeypatch.setattr(SiteChecker, "_assess_cloaking", real_cloaking)  # the next full deep scan clears it
     await run_task(admin, make_worker, "wordpress_security", "security_scan", {"site_id": site_id})
     alpha = next(s for s in (await statuses()).json()["sites"] if s["id"] == site_id)
     assert alpha["last_status"] == "up"
     assert len(await events_of(admin, "site.recovered")) == 1
+    assert not any(f["code"] in DEEP_STATUS_CODES for f in alpha["open_findings"])
 
 
 # ---------------------------------------------------- C2-01 / C2-02 delivery
@@ -325,3 +355,48 @@ async def test_old_down_rows_are_left_as_they_are(admin):
     async with session_scope() as s:
         assert (await s.scalars(select(SiteCheck.status))).all() == ["down"]
         assert await s.scalar(select(func.count()).select_from(Event)) == 0
+
+
+# ------------------------------------------- C2-09, C2-10, C2-12 in the AI Supervisor's own texts
+
+
+async def test_the_daily_briefing_counts_monitored_sites_and_keeps_the_night_scan(admin, make_worker):
+    alpha, beta = await add_sites()
+    now = datetime.now(UTC)
+    async with session_scope() as s:
+        (await s.get(Site, beta)).enabled = False
+        site = await s.get(Site, alpha)
+        site.last_status, site.last_checked_at = "degraded", now - timedelta(minutes=5)
+        s.add(SiteCheck(site_id=alpha, checked_at=now - timedelta(minutes=40), status="degraded", details={"deep": True},
+                        findings=[{"code": "cloaked_spam", "severity": "critical", "title": "Spam shown only to Googlebot"}]))
+        s.add(SiteCheck(site_id=alpha, checked_at=now - timedelta(minutes=5), status="degraded", details={"deep": False}, findings=[]))
+    task = await run_task(admin, make_worker, "supervisor", "daily_briefing", {"hours": 24})
+    assert task["status"] == "succeeded", task["error"]
+    data = task["result"]["data"]
+    assert data["sites"] == {"degraded": 1} and data["sites_paused"] == 1  # the paused site is not counted as monitored
+    assert data["critical_site_issues"] == ["Alpha: Spam shown only to Googlebot"]  # from the deep scan, after a quick sweep
+    async with session_scope() as s:
+        from app.models import Artifact
+
+        content = (await s.scalar(select(Artifact).where(Artifact.kind == "briefing"))).content
+    assert "1 monitored, 1 paused: 0 up, 1 degraded, 0 down, 0 not checked yet." in content
+    assert "- critical: Alpha: Spam shown only to Googlebot" in content
+
+
+def test_request_summaries_say_when_results_are_sample_data():
+    from app.models import Task
+    from app.supervisor.agent import SUMMARY_SYSTEM, _task_digest, template_summary
+
+    ads = Task(id=1, agent="social_marketing", capability="ads_report", status="succeeded", risk="read", summary="",
+               error="", result={"data": {"sample_data": True}, "findings": []})
+    scan = Task(id=2, agent="monitoring", capability="check_site", status="succeeded", risk="read", summary="Alpha: up",
+                error="", result={"data": {}, "findings": []})
+    digests = [_task_digest(ads, None), _task_digest(scan, None)]
+    assert [d["sample_data"] for d in digests] == [True, False]
+    lines = template_summary("ads?", digests).splitlines()
+    assert "- social_marketing.ads_report: done (sample data, no ad account connected)" in lines
+    assert "- monitoring.check_site: Alpha: up" in lines
+    labelled = _task_digest(Task(id=3, agent="social_marketing", capability="ads_report", status="succeeded", risk="read",
+                                 summary="Ads (sample data, 7 days): 3 campaigns", error="", result={"data": {"sample_data": True}}), None)
+    assert template_summary("ads?", [labelled]).count("sample data") == 1  # not said twice
+    assert "sample_data are synthetic" in SUMMARY_SYSTEM and "no ad account connected" in SUMMARY_SYSTEM

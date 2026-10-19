@@ -30,11 +30,21 @@ export default function Agents() {
   const agents = usePoll(() => api.get<{ agents: Agent[] }>("/api/agents"), 15_000);
   const [running, setRunning] = useState<{ agent: Agent; cap: Capability } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
 
   async function toggle(agent: Agent) {
     setError(null);
+    setNote(null);
+    // Switching an agent off also withdraws its changes that have not started, approved or not (0.5.0 API, C3-04).
+    if (
+      agent.enabled &&
+      !window.confirm(`Switch off ${agent.title}? Its changes, sends and publishes that have not started yet, approved or not, are cancelled. Tasks already running finish.`)
+    )
+      return;
     try {
-      await api.patch(`/api/agents/${agent.name}`, { enabled: !agent.enabled });
+      const r = await api.patch<{ cancelled_tasks?: number[] }>(`/api/agents/${agent.name}`, { enabled: !agent.enabled });
+      const cancelled = r?.cancelled_tasks ?? [];
+      if (cancelled.length) setNote(`${agent.title} is off. Cancelled ${cancelled.length === 1 ? "task" : "tasks"} ${cancelled.map((id) => `#${id}`).join(", ")}.`);
       await agents.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -52,6 +62,10 @@ export default function Agents() {
   const succeeded24 = total(all, "succeeded");
   const inProgress = total(all, "queued") + total(all, "running");
   const awaiting = total(all, "awaiting_approval");
+  // Held now, however old (0.5.0 API: agents[].active); older APIs give only the last 24 hours' count (C2-14).
+  const hasActive = all.some((a) => a.active);
+  const awaitingNow = hasActive ? all.reduce((n, a) => n + (a.active?.awaiting_approval ?? 0), 0) : null;
+  const held = awaitingNow ?? awaiting;
   const failed = total(all, "failed");
   const failingAgents = all.filter((a) => (a.stats_24h?.failed ?? 0) > 0).length;
   const pending = agents.error ?? "…";
@@ -88,19 +102,26 @@ export default function Agents() {
           {agent.sensitive ? <Pill value="warning" label="sensitive data" /> : null}
         </div>
         <p className="muted ag-desc">{agent.description}</p>
-        <dl className="ag-stats" title="Tasks created in the last 24 hours">
+        <dl className="ag-stats">
           <div>
             <dt>Succeeded 24 h</dt>
             <dd className="tabular">{stats.succeeded ?? 0}</dd>
           </div>
           <div>
-            <dt>Failed</dt>
+            <dt>Failed 24 h</dt>
             <dd className={`tabular ${stats.failed ? "text-bad" : ""}`}>{stats.failed ?? 0}</dd>
           </div>
-          <div>
-            <dt>Awaiting approval</dt>
-            <dd className={`tabular ${stats.awaiting_approval ? "text-warn" : ""}`}>{stats.awaiting_approval ?? 0}</dd>
-          </div>
+          {agent.active ? (
+            <div title="Held for approval now, however old">
+              <dt>Awaiting approval now</dt>
+              <dd className={`tabular ${agent.active.awaiting_approval ? "text-warn" : ""}`}>{agent.active.awaiting_approval}</dd>
+            </div>
+          ) : (
+            <div>
+              <dt>Awaiting approval 24 h</dt>
+              <dd className={`tabular ${stats.awaiting_approval ? "text-warn" : ""}`}>{stats.awaiting_approval ?? 0}</dd>
+            </div>
+          )}
           <div>
             <dt>Last run</dt>
             <dd>
@@ -150,6 +171,11 @@ export default function Agents() {
         </div>
       </header>
       <ErrorNote error={agents.error ?? error} />
+      {note ? (
+        <div className="alert alert-info" role="status">
+          {note}
+        </div>
+      ) : null}
 
       <div className="tiles cols-4">
         <Tile
@@ -177,12 +203,22 @@ export default function Agents() {
         </Tile>
         <Tile
           icon="approvals"
-          tone={!loaded ? "muted" : awaiting ? "warn" : "green"}
-          label="Awaiting approval"
+          tone={!loaded ? "muted" : held ? "warn" : "green"}
+          label={awaitingNow === null ? "Awaiting approval, 24 h" : "Awaiting approval"}
           to="/approvals"
-          hint={loaded ? (awaiting ? "Tasks from the last 24 h held for you" : "Nothing from the last 24 h is held") : pending}
+          hint={
+            !loaded
+              ? pending
+              : awaitingNow === null
+                ? awaiting
+                  ? "Tasks from the last 24 h held for you; older ones are on Approvals"
+                  : "Nothing from the last 24 h is held; older ones are on Approvals"
+                : awaitingNow
+                  ? `Held for you now, however old · ${awaiting} requested in the last 24 h`
+                  : "Nothing is held for you"
+          }
         >
-          <span className="tile-value tabular">{loaded ? awaiting : "—"}</span>
+          <span className="tile-value tabular">{loaded ? held : "—"}</span>
         </Tile>
         <Tile
           icon="alert"
