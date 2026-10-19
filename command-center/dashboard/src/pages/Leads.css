@@ -18,6 +18,12 @@
 .le-lead:hover .le-name {
   color: var(--primary-text);
 }
+/* the lead's name is a button, the keyboard path to the lead; it hugs the clipped name */
+.link-button.le-open {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+}
 .le-name,
 .le-contact {
   display: block;

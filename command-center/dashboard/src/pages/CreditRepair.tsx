@@ -276,7 +276,19 @@ export default function CreditRepair() {
                     {clients.data.clients.map((c) => (
                       <tr key={c.id} className="clickable" onClick={() => setOpenId(c.id)}>
                         <td className="cr-ref tabular">{c.reference}</td>
-                        <td className="cr-name">{c.full_name}</td>
+                        <td className="cr-name">
+                          {/* The row opens on a click; this button is the keyboard path to the same dialog. */}
+                          <button
+                            type="button"
+                            className="link-button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenId(c.id);
+                            }}
+                          >
+                            {c.full_name}
+                          </button>
+                        </td>
                         <td>
                           <Pill value="info" label={c.status} />
                         </td>

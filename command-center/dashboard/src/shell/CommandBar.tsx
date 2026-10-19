@@ -82,14 +82,16 @@ export default function CommandBar() {
   const [askConsent, setAskConsent] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const box = useRef<HTMLDivElement>(null);
+  const mic = useRef<HTMLButtonElement>(null);
+  const consentButton = useRef<HTMLButtonElement>(null);
   const voice = useSpeech(setMessage);
+  const clearVoiceError = voice.clearError;
   const voiceAvailable = canOperate && speechSupported();
 
+  // Ctrl/Cmd+K jumps to the command input (no single-key shortcut), but not out of an open dialog.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      const typing = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
-      if ((e.key === "k" && (e.ctrlKey || e.metaKey)) || (e.key === "/" && !typing)) {
+      if (e.key === "k" && (e.ctrlKey || e.metaKey) && !document.querySelector('[aria-modal="true"]')) {
         e.preventDefault();
         input.current?.focus();
       }
@@ -103,17 +105,25 @@ export default function CommandBar() {
       if (box.current && !box.current.contains(e.target as Node)) {
         setFocused(false);
         setAskConsent(false);
+        setError(null);
+        clearVoiceError();
       }
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
-  }, []);
+  }, [clearVoiceError]);
+
+  // The consent question takes the focus while it is open.
+  useEffect(() => {
+    if (askConsent) consentButton.current?.focus();
+  }, [askConsent]);
 
   async function execute(e?: FormEvent) {
     e?.preventDefault();
     const text = message.trim();
     if (!text || busy) return;
-    voice.stop();
+    // abort, not stop: a late final result would put the sent command back in the box.
+    voice.abort();
     setBusy(true);
     setError(null);
     try {
@@ -134,9 +144,31 @@ export default function CommandBar() {
     voice.start();
   }
 
-  const showSuggestions = focused && canOperate && !message && !requestId;
+  function closeConsent() {
+    setAskConsent(false);
+    mic.current?.focus();
+  }
+
+  function clearErrors() {
+    setError(null);
+    clearVoiceError();
+  }
+
+  // One pop at a time, most recent need first: the consent question, then an error, then the answer, then suggestions.
+  const showError = !askConsent && Boolean(error || voice.error);
+  const showSuggestions = focused && canOperate && !message && !requestId && !askConsent && !voice.error && !error;
   return (
-    <div className="command" ref={box}>
+    <div
+      className="command"
+      ref={box}
+      onBlur={(e) => {
+        // Focus moved to something outside the command bar (a click on nothing is handled by the mousedown listener).
+        if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) {
+          setFocused(false);
+          setAskConsent(false);
+        }
+      }}
+    >
       <form className={`command-bar ${voice.listening ? "listening" : ""}`} onSubmit={execute} role="search">
         <Icon name="sparkles" size={18} className="command-icon" />
         <input
@@ -146,19 +178,28 @@ export default function CommandBar() {
           value={message}
           disabled={!canOperate}
           maxLength={4000}
-          onChange={(e) => setMessage(e.target.value)}
+          onChange={(e) => {
+            setMessage(e.target.value);
+            clearErrors();
+          }}
           onFocus={() => setFocused(true)}
-          onKeyDown={(e) => e.key === "Escape" && (e.currentTarget.blur(), setFocused(false))}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setFocused(false);
+              clearErrors();
+            }
+          }}
         />
         <kbd className="command-kbd" aria-hidden>
           Ctrl K
         </kbd>
         {voiceAvailable ? (
           <button
+            ref={mic}
             type="button"
             className={`btn ghost icon command-mic ${voice.listening ? "active" : ""}`}
             onClick={toggleVoice}
-            aria-label={voice.listening ? "Stop voice input" : "Voice input"}
+            aria-label="Voice input"
             aria-pressed={voice.listening}
             title={voice.listening ? "Listening… click to stop" : "Voice input (fills the box; nothing runs until you press Execute)"}
           >
@@ -171,36 +212,55 @@ export default function CommandBar() {
         </button>
       </form>
       {askConsent ? (
-        <div className="command-pop" role="dialog" aria-label="Voice input">
+        <div className="command-pop" role="dialog" aria-label="Voice input" onKeyDown={(e) => e.key === "Escape" && closeConsent()}>
           <p>
             <strong>Voice input uses your browser's speech service.</strong> In Chrome and Edge the audio is sent to Google or Microsoft to be turned into
             text. The text only fills the command box; nothing runs until you press Execute.
           </p>
           <div className="row-actions">
             <button
+              ref={consentButton}
               className="btn small primary"
               onClick={() => {
                 saveConsent();
-                setAskConsent(false);
+                closeConsent();
                 voice.start();
               }}
             >
               Use voice input
             </button>
-            <button className="btn small" onClick={() => setAskConsent(false)}>
+            <button className="btn small" onClick={closeConsent}>
               Not now
             </button>
           </div>
         </div>
       ) : null}
-      {voice.error ? <div className="command-pop command-note">{voice.error}</div> : null}
-      {error ? (
-        <div className="command-pop">
-          <ErrorNote error={error} />
+      {showError ? (
+        <div className="command-pop command-pop-dismissable">
+          <div className="command-pop-main">
+            <ErrorNote error={error} />
+            {voice.error ? (
+              <div className="command-note" role="alert">
+                {voice.error}
+              </div>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className="btn ghost icon"
+            onClick={() => {
+              clearErrors();
+              // The button goes away with the message; the focus goes back to the input instead of the page.
+              input.current?.focus();
+            }}
+            aria-label="Dismiss"
+          >
+            <Icon name="close" size={16} />
+          </button>
         </div>
       ) : null}
       {showSuggestions ? (
-        <div className="command-pop" role="listbox" aria-label="Suggestions">
+        <div className="command-pop" role="group" aria-label="Suggestions">
           <div className="muted small">Try</div>
           <div className="chips">
             {SUGGESTIONS.map((s) => (
@@ -222,8 +282,9 @@ export default function CommandBar() {
         </div>
       ) : null}
       {requestId ? (
-        <div className="command-pop">
-          <RequestResult id={requestId} onClose={() => setRequestId(null)} />
+        // Hidden, not unmounted, while another pop is open, so the answer keeps updating. A new request gets a fresh RequestResult.
+        <div className="command-pop" hidden={askConsent || showError}>
+          <RequestResult key={requestId} id={requestId} onClose={() => setRequestId(null)} />
         </div>
       ) : null}
     </div>

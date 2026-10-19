@@ -5,8 +5,11 @@ import { usePoll } from "../hooks";
 import { Icon } from "../icons";
 import "./Outbox.css";
 
+/** The most the API returns in one list; when the list is that long the tiles count the latest entries, not all. */
+const LIMIT = 500;
+
 export default function Outbox() {
-  const list = usePoll(() => api.get<{ entries: OutboxRecord[] }>("/api/outbox"), 8_000);
+  const list = usePoll(() => api.get<{ entries: OutboxRecord[] }>(`/api/outbox?limit=${LIMIT}`), 8_000);
   const [open, setOpen] = useState<OutboxRecord | null>(null);
 
   // Summary of the same list the table shows.
@@ -16,6 +19,8 @@ export default function Outbox() {
   const mock = all.filter((e) => e.mode === "mock").length;
   const live = all.filter((e) => e.mode === "live").length;
   const integrations = new Set(all.map((e) => e.integration)).size;
+  const capped = all.length >= LIMIT;
+  const windowNote = capped ? ` · in the latest ${LIMIT} entries` : "";
   const latest = all.reduce<string | null>((max, e) => (max === null || new Date(e.created_at).getTime() > new Date(max).getTime() ? e.created_at : max), null);
 
   return (
@@ -41,6 +46,7 @@ export default function Outbox() {
               latest ? (
                 <>
                   {integrations} integration{integrations === 1 ? "" : "s"} · latest <Time iso={latest} />
+                  {windowNote}
                 </>
               ) : (
                 "No approved outward action yet"
@@ -52,11 +58,11 @@ export default function Outbox() {
         >
           <span className="tile-value tabular">{loaded ? all.length : "—"}</span>
         </Tile>
-        <Tile icon="file" tone="cyan" label="Mock, recorded only" hint={loaded ? "Recorded what would have been sent; nothing was delivered" : pending}>
+        <Tile icon="file" tone="cyan" label="Mock, recorded only" hint={loaded ? `Recorded what would have been sent; nothing was delivered${windowNote}` : pending}>
           <span className="tile-value tabular">{loaded ? mock : "—"}</span>
           {loaded && all.length ? <span className="tile-of">{Math.round((mock / all.length) * 100)}%</span> : null}
         </Tile>
-        <Tile icon="external" tone={live ? "orange" : "muted"} label="Live, really sent" hint={loaded ? "Delivered through a live integration" : pending}>
+        <Tile icon="external" tone={live ? "orange" : "muted"} label="Live, really sent" hint={loaded ? `Delivered through a live integration${windowNote}` : pending}>
           <span className="tile-value tabular">{loaded ? live : "—"}</span>
           {loaded && all.length ? <span className="tile-of">{Math.round((live / all.length) * 100)}%</span> : null}
         </Tile>
@@ -90,9 +96,19 @@ export default function Outbox() {
                     <td className="muted tabular">{e.id}</td>
                     <td>
                       <div className="ob-action">
-                        <code>
-                          {e.integration}.{e.action}
-                        </code>{" "}
+                        {/* The row opens on a click; this button is the keyboard path to the same dialog. */}
+                        <button
+                          type="button"
+                          className="link-button"
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            setOpen(e);
+                          }}
+                        >
+                          <code>
+                            {e.integration}.{e.action}
+                          </code>
+                        </button>{" "}
                         <Pill value={e.mode} label={e.mode.toUpperCase()} />
                       </div>
                     </td>

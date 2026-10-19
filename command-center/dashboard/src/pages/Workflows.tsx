@@ -383,14 +383,11 @@ export default function Workflows() {
                         {s.last_run_at ? <Time iso={s.last_run_at} /> : <span className="muted">Never</span>}
                         {last ? (
                           <div className="wf-last">
-                            {agent?.sensitive ? (
+                            {/* The task dialog hides a credit-repair task's details from users without the sensitive-data permission. */}
+                            <button type="button" className="wf-task-link" onClick={() => setOpenTask(last.id)} aria-label={`Task #${last.id}: ${last.status.replace(/_/g, " ")}`}>
                               <Pill value={last.status} />
-                            ) : (
-                              <button type="button" className="wf-task-link" onClick={() => setOpenTask(last.id)} aria-label={`Task #${last.id}: ${last.status.replace(/_/g, " ")}`}>
-                                <Pill value={last.status} />
-                                <span className="muted small">#{last.id}</span>
-                              </button>
-                            )}
+                              <span className="muted small">#{last.id}</span>
+                            </button>
                           </div>
                         ) : null}
                       </td>

@@ -1,6 +1,7 @@
 /* Infinite AI Command Center: dark command-center design system.
    Tokens first; every component below uses them. Contrast on --surface:
-   --text 15.6:1, --text-2 10.2:1, --muted 5.8:1; white on --primary 4.6:1. */
+   --text 15.6:1, --text-2 10.2:1, --muted 5.8:1, --faint 5.2:1; white on --primary 4.6:1.
+   Non-text: focus ring (--primary-text) 7.2:1, --field-border 4.1:1. */
 :root {
   color-scheme: dark;
   --bg: #060a14;
@@ -13,7 +14,8 @@
   --text: #e8edf7;
   --text-2: #b7c1d8;
   --muted: #8591ad;
-  --faint: #6b7795;
+  --faint: #7d89a6;
+  --field-border: #6b7795;
 
   --primary: #1f6bff;
   --primary-hover: #1a5ef0;
@@ -49,7 +51,7 @@
   --radius-xs: 8px;
   --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 12px 32px -16px rgba(0, 0, 0, 0.7);
   --shadow-pop: 0 20px 50px -12px rgba(0, 0, 0, 0.75), 0 0 0 1px var(--border-2);
-  --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--primary-ring);
+  --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--primary-text);
   --font: "Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
   --header-h: 64px;
@@ -68,6 +70,8 @@
 }
 html {
   -webkit-text-size-adjust: 100%;
+  /* the sticky top bar must not cover the element that has the focus */
+  scroll-padding-top: calc(var(--header-h) + 12px);
 }
 body {
   margin: 0;
@@ -87,10 +91,34 @@ a {
 a:hover {
   text-decoration: underline;
 }
+/* An outline, so no component's own box-shadow can hide it (fields keep their own :focus style). */
 :focus-visible {
-  outline: none;
-  box-shadow: var(--focus);
+  outline: 2px solid var(--primary-text);
+  outline-offset: 2px;
   border-radius: 6px;
+}
+/* chart bars are SVG groups: the focused hour gets a frame */
+.chart-bar:focus-visible .chart-hit {
+  stroke: var(--primary-text);
+  stroke-width: 2;
+}
+/* a button that looks like a link or plain text, e.g. the name in a clickable table row */
+.link-button {
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.link-button:hover {
+  text-decoration: underline;
+}
+.link-button:focus-visible {
+  outline: 2px solid var(--primary-text);
+  outline-offset: 2px;
 }
 ::selection {
   background: rgba(47, 123, 255, 0.35);
@@ -206,8 +234,12 @@ h3 {
   margin-bottom: 18px;
   min-width: 0;
 }
+/* switched off: shown by its pill and a dashed, flatter card (not by opacity, which takes the text below 4.5:1) */
 .card.disabled {
-  opacity: 0.6;
+  border-style: dashed;
+  border-color: var(--border-2);
+  background: var(--chrome);
+  box-shadow: none;
 }
 .card-head {
   display: flex;
@@ -580,7 +612,7 @@ select {
   font: inherit;
   color: var(--text);
   background: var(--surface-2);
-  border: 1px solid var(--border-2);
+  border: 1px solid var(--field-border);
   border-radius: var(--radius-xs);
   padding: 9px 12px;
   width: 100%;
@@ -593,7 +625,7 @@ textarea::placeholder {
 input:hover,
 textarea:hover,
 select:hover {
-  border-color: #33477a;
+  border-color: var(--muted);
 }
 input:focus,
 textarea:focus,
@@ -810,7 +842,7 @@ label {
   color: var(--primary-ink);
 }
 .bubble-user .muted {
-  color: rgba(255, 255, 255, 0.82);
+  color: var(--primary-ink); /* 4.6:1 on the light end of the bubble; anything dimmer falls below 4.5:1 */
 }
 .bubble-ai {
   align-self: flex-start;
@@ -900,6 +932,11 @@ pre.json {
 }
 .modal > .card-head .btn {
   flex: none;
+}
+/* long unbroken words (agent.capability names, URLs) wrap instead of widening a dialog on a phone */
+.modal-body code,
+.markdown {
+  overflow-wrap: anywhere;
 }
 
 /* login */
@@ -1135,7 +1172,9 @@ pre.boxed {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  * {
+  *,
+  *::before,
+  *::after {
     transition: none !important;
     animation: none !important;
   }

@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Finding, Risk, Severity } from "./api";
 import { Icon, type IconName } from "./icons";
@@ -177,15 +177,54 @@ export function Markdown({ text }: { text: string }) {
   return <div className="markdown">{blocks}</div>;
 }
 
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), iframe, summary, [tabindex]:not([tabindex="-1"])';
+
+/** Whether Tab can reach `el`: not in a hidden or inert part, nor in a closed <details> (whose own summary it can reach). */
+function tabbable(el: HTMLElement): boolean {
+  if (el.closest("[hidden], [inert]")) return false;
+  const closed = el.closest("details:not([open])");
+  return !closed || (el.tagName === "SUMMARY" && el.parentElement === closed);
+}
+
+/** A dialog: takes the focus when it opens (the Close button, unless something inside already has it), keeps Tab inside, and gives
+ * the focus back to where it was when it closes. */
 export function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  // Read during the first render, before the dialog (or an autoFocus field in it) can take the focus.
+  const opener = useRef(typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null));
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const prev = opener.current;
+    if (ref.current && !ref.current.contains(document.activeElement)) ref.current.querySelector<HTMLElement>('button[aria-label="Close"]')?.focus();
+    return () => prev?.focus();
+  }, []);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") return onClose();
+      if (e.key !== "Tab" || !ref.current) return;
+      // Only the top dialog (the last one in the page) keeps the focus.
+      const dialogs = document.querySelectorAll('[aria-modal="true"]');
+      if (dialogs[dialogs.length - 1] !== ref.current) return;
+      const items = Array.from(ref.current.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(tabbable);
+      if (!items.length) {
+        e.preventDefault();
+        ref.current.focus();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+      const inside = active !== ref.current && ref.current.contains(active);
+      if (!inside || (e.shiftKey ? active === first : active === last)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      }
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={`modal ${wide ? "modal-wide" : ""}`} role="dialog" aria-modal="true" aria-label={title}>
+      <div className={`modal ${wide ? "modal-wide" : ""}`} role="dialog" aria-modal="true" aria-label={title} ref={ref} tabIndex={-1}>
         <header className="card-head">
           <h2>{title}</h2>
           <button className="btn ghost icon" onClick={onClose} aria-label="Close">

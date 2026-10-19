@@ -1,5 +1,5 @@
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { BrowserRouter, Link, Navigate, Route, Routes } from "react-router-dom";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { api, ApiError, type SystemStatus, type User } from "./api";
 import { usePoll } from "./hooks";
 import { Icon } from "./icons";
@@ -28,6 +28,7 @@ import Websites from "./pages/Websites";
 import Workflows from "./pages/Workflows";
 import CommandBar from "./shell/CommandBar";
 import { AccountMenu, NotificationsMenu } from "./shell/Menus";
+import { APP_TITLE, pageTitle } from "./shell/nav";
 import Sidebar, { MenuButton } from "./shell/Sidebar";
 
 interface AuthState {
@@ -48,15 +49,50 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
   const status = usePoll(() => api.get<SystemStatus>("/api/system/status"), 10_000);
   const canOperate = user.role === "admin" || user.role === "operator";
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuButton = useRef<HTMLButtonElement>(null);
+  const header = useRef<HTMLElement>(null);
+  const main = useRef<HTMLElement>(null);
+  const restoreFocus = useRef(false);
+  const { pathname } = useLocation();
   const s = status.data;
+
+  useEffect(() => {
+    document.title = pageTitle(pathname);
+  }, [pathname]);
+
+  const closeMenu = useCallback(() => {
+    restoreFocus.current = true;
+    setMenuOpen(false);
+  }, []);
+
+  // Phone drawer: while it is open the rest of the page is inert; Escape closes it and the focus goes back to the menu button.
+  useEffect(() => {
+    for (const el of [header.current, main.current]) if (el) el.inert = menuOpen;
+    if (!menuOpen) {
+      if (restoreFocus.current) menuButton.current?.focus();
+      restoreFocus.current = false;
+      return;
+    }
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeMenu();
+    // The drawer only exists on a phone-width screen; widening the window closes it.
+    const wide = window.matchMedia?.("(min-width: 761px)");
+    const onWide = () => wide?.matches && setMenuOpen(false);
+    document.addEventListener("keydown", onKey);
+    wide?.addEventListener("change", onWide);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      wide?.removeEventListener("change", onWide);
+    };
+  }, [menuOpen, closeMenu]);
+
   return (
     <AuthContext.Provider value={{ user, canOperate, signOut: onSignOut }}>
       <a className="skip-link" href="#main">
         Skip to content
       </a>
       <div className={`layout ${menuOpen ? "menu-open" : ""}`}>
-        <header className="topbar">
-          <MenuButton open={menuOpen} onClick={() => setMenuOpen((o) => !o)} />
+        <header className="topbar" ref={header}>
+          <MenuButton ref={menuButton} open={menuOpen} onClick={() => setMenuOpen((o) => !o)} />
           <Link to="/" className="brand" aria-label="Infinite AI Command Center, dashboard">
             <span className="logo" aria-hidden>
               ∞
@@ -77,9 +113,9 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
             <AccountMenu />
           </div>
         </header>
-        <Sidebar user={user} status={s} open={menuOpen} onNavigate={() => setMenuOpen(false)} />
-        {menuOpen ? <div className="scrim" onClick={() => setMenuOpen(false)} aria-hidden /> : null}
-        <main className="content" id="main" tabIndex={-1}>
+        <Sidebar user={user} status={s} open={menuOpen} onNavigate={() => setMenuOpen(false)} onClose={closeMenu} />
+        {menuOpen ? <div className="scrim" onClick={closeMenu} aria-hidden /> : null}
+        <main className="content" id="main" tabIndex={-1} ref={main}>
           <Routes>
             <Route path="/" element={<Dashboard status={s} />} />
             <Route path="/agents" element={<Agents />} />
@@ -133,6 +169,10 @@ export default function App() {
     window.addEventListener("cc:unauthorized", onUnauthorized);
     return () => window.removeEventListener("cc:unauthorized", onUnauthorized);
   }, [loadMe]);
+
+  useEffect(() => {
+    if (checked && !user) document.title = `Sign in · ${APP_TITLE}`;
+  }, [checked, user]);
 
   const signOut = useCallback(async () => {
     await api.post("/api/auth/logout").catch(() => undefined);

@@ -54,3 +54,14 @@ export function visible(item: NavItem, user: User): boolean {
   if (item.sensitiveOnly && !(user.role === "admin" || user.can_access_sensitive)) return false;
   return true;
 }
+
+export const APP_TITLE = "Infinite AI Command Center";
+/** Routes that are not in the sidebar. */
+const OTHER_PAGES: Record<string, string> = { "/schedules": "Schedules" };
+
+/** The document title for a route: "<sidebar label> · Infinite AI Command Center". */
+export function pageTitle(pathname: string): string {
+  const path = pathname.replace(/\/+$/, "") || "/";
+  const label = NAV.flatMap((g) => g.items).find((item) => item.to === path)?.label ?? OTHER_PAGES[path];
+  return label ? `${label} · ${APP_TITLE}` : APP_TITLE;
+}

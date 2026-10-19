@@ -322,9 +322,10 @@ label.lg-field {
   cursor: pointer;
   border-radius: 0;
 }
+/* the shared focus outline, drawn inside the item (one ring, not the outline plus an inner one) */
 .lg-item-main:focus-visible {
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-  box-shadow: inset 0 0 0 2px var(--primary-ring);
+  outline-offset: -2px;
 }
 .lg-item-top {
   display: flex;

@@ -18,9 +18,9 @@ const LIMITS = [100, 200, 500];
 const DEFAULT_LIMIT = 200;
 const REFRESH_MS = 15_000;
 const ENGINES = ["n8n", "webhook", "none"];
-// Credit-repair details (event detail and the linked task) stay on the Credit Repair page.
+// Credit-repair event details stay on the Credit Repair page. Their linked task opens like any other: the task dialog
+// itself hides a credit-repair task's details from users without the sensitive-data permission.
 const CREDIT_REPAIR = "credit_repair";
-const CREDIT_REPAIR_TASK = "Credit-repair tasks are opened from the Credit Repair page.";
 
 const FORWARD_LABEL: Record<ForwardStatus, string> = { sent: "Sent", pending: "Pending", failed: "Failed", skipped: "Skipped" };
 const FORWARD_HELP: Record<ForwardStatus, string> = {
@@ -146,11 +146,7 @@ function EventDetail({ id, engineLabel, onClose, onOpenTask }: { id: number; eng
             </dd>
             <dt>Task</dt>
             <dd>
-              {e.task_id && e.source === CREDIT_REPAIR ? (
-                <span>
-                  #{e.task_id} <span className="muted small">{CREDIT_REPAIR_TASK}</span>
-                </span>
-              ) : e.task_id ? (
+              {e.task_id ? (
                 <button className="btn small" onClick={() => onOpenTask(e.task_id as number)}>
                   <Icon name="tasks" size={14} /> Open task #{e.task_id}
                 </button>
@@ -315,11 +311,7 @@ export default function AutomationLogs() {
     openEvent(e.id);
   }
   const taskButton = (e: LogEvent) =>
-    e.task_id && e.source === CREDIT_REPAIR ? (
-      <span className="muted small tabular" title={CREDIT_REPAIR_TASK}>
-        #{e.task_id}
-      </span>
-    ) : e.task_id ? (
+    e.task_id ? (
       <button
         className="btn small lg-task"
         aria-label={`Open task ${e.task_id}`}

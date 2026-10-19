@@ -55,11 +55,14 @@ code.sc-cap {
   flex-wrap: wrap;
   gap: 8px 10px;
 }
-.sc-paused td {
-  opacity: 0.62;
+/* a paused routine: its pill says "paused" and the row is set on a darker tint, with the name and capability in the
+   secondary text colour; no opacity, so every text keeps its contrast */
+.sc-table tr.sc-paused {
+  background: var(--chrome);
 }
-.sc-paused td:last-child {
-  opacity: 1;
+.sc-table tr.sc-paused .sc-name strong,
+.sc-table tr.sc-paused code.sc-cap {
+  color: var(--text-2);
 }
 
 /* Below 1280px the table no longer fits next to the full sidebar: each routine

@@ -541,7 +541,17 @@ export default function Websites() {
                   return (
                     <tr key={s.id} className="clickable" onClick={() => setOpenId(s.id)}>
                       <td className="ws-site">
-                        <strong>{s.name}</strong>
+                        {/* The row opens on a click; this button is the keyboard path to the same dialog. */}
+                        <button
+                          type="button"
+                          className="link-button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setOpenId(s.id);
+                          }}
+                        >
+                          <strong>{s.name}</strong>
+                        </button>
                         <div className="muted small ws-url" title={s.url}>
                           {s.url}
                         </div>

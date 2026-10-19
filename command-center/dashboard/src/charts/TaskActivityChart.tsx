@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { KeyboardEvent, useEffect, useRef, useState } from "react";
 
 export interface HourBucket {
   start: Date;
@@ -27,12 +27,15 @@ function hourLabel(d: Date): string {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-/** Stacked columns per hour (completed, failed) for the last 24 hours, with hover/focus tooltips and a table view. */
+/** Stacked columns per hour (completed, failed) for the last 24 hours, with hover/focus tooltips and a table view.
+ * The bars are one tab stop; the arrow keys, Home and End move between the hours. */
 export default function TaskActivityChart({ buckets, dim }: { buckets: HourBucket[]; dim?: boolean }) {
   const wrap = useRef<HTMLDivElement>(null);
   const [{ width, height: HEIGHT }, setSize] = useState({ width: 640, height: MIN_HEIGHT });
   const [hover, setHover] = useState<number | null>(null);
+  const [active, setActive] = useState(0);
   const [table, setTable] = useState(false);
+  const bars = useRef<(SVGGElement | null)[]>([]);
 
   useEffect(() => {
     const el = wrap.current;
@@ -55,6 +58,17 @@ export default function TaskActivityChart({ buckets, dim }: { buckets: HourBucke
   const ticks = [0, max / 2, max];
   const sum = buckets.reduce((a, b) => ({ completed: a.completed + b.completed, failed: a.failed + b.failed }), { completed: 0, failed: 0 });
   const shown = hover !== null ? buckets[hover] : null;
+  const current = Math.min(active, Math.max(0, buckets.length - 1));
+
+  function onKeyDown(e: KeyboardEvent<SVGSVGElement>) {
+    const last = buckets.length - 1;
+    const next = e.key === "ArrowRight" ? current + 1 : e.key === "ArrowLeft" ? current - 1 : e.key === "Home" ? 0 : e.key === "End" ? last : null;
+    if (next === null || last < 0) return;
+    e.preventDefault();
+    const i = Math.max(0, Math.min(last, next));
+    setActive(i);
+    bars.current[i]?.focus();
+  }
 
   return (
     <div className={`chart ${dim ? "chart-dim" : ""}`}>
@@ -66,7 +80,7 @@ export default function TaskActivityChart({ buckets, dim }: { buckets: HourBucke
             </span>
           ))}
         </div>
-        <button className="btn ghost small" onClick={() => setTable((t) => !t)} aria-pressed={table}>
+        <button className="btn ghost small" onClick={() => setTable((t) => !t)}>
           {table ? "Show chart" : "View as table"}
         </button>
       </div>
@@ -93,7 +107,13 @@ export default function TaskActivityChart({ buckets, dim }: { buckets: HourBucke
         </div>
       ) : (
         <div className="chart-plot" ref={wrap} style={{ minHeight: MIN_HEIGHT }}>
-          <svg width={width} height={HEIGHT} role="img" aria-label={`Tasks per hour over the last 24 hours: ${sum.completed} completed, ${sum.failed} failed`}>
+          <svg
+            width={width}
+            height={HEIGHT}
+            role="group"
+            aria-label={`Tasks per hour over the last 24 hours: ${sum.completed} completed, ${sum.failed} failed`}
+            onKeyDown={onKeyDown}
+          >
             {ticks.map((t) => (
               <g key={t}>
                 <line x1={PAD.left} x2={width - PAD.right} y1={y(t)} y2={y(t)} className="chart-grid" />
@@ -113,13 +133,19 @@ export default function TaskActivityChart({ buckets, dim }: { buckets: HourBucke
               return (
                 <g
                   key={b.start.toISOString()}
-                  tabIndex={0}
+                  ref={(el) => {
+                    bars.current[i] = el;
+                  }}
+                  tabIndex={i === current ? 0 : -1}
                   role="img"
                   aria-label={label}
                   className={`chart-bar ${hover === i ? "hovered" : ""}`}
                   onPointerEnter={() => setHover(i)}
                   onPointerLeave={() => setHover(null)}
-                  onFocus={() => setHover(i)}
+                  onFocus={() => {
+                    setHover(i);
+                    setActive(i);
+                  }}
                   onBlur={() => setHover(null)}
                 >
                   <rect x={PAD.left + i * slot} y={PAD.top} width={slot} height={plotH} className="chart-hit" />

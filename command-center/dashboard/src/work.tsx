@@ -1,10 +1,21 @@
 // Shared views for running capabilities and inspecting their tasks and drafts; used by several pages.
 import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type Agent, type Approval, type Artifact, type Capability, type Task, type TaskLog } from "./api";
+import { api, type Agent, type Approval, type Artifact, type Capability, type Task, type TaskLog, type User } from "./api";
 import { useAuth } from "./App";
 import { ErrorNote, Findings, JsonView, Markdown, Modal, Pill, RiskBadge, Time } from "./components";
 import { usePoll } from "./hooks";
+
+/** Who may see sensitive (Credit Repair) data in the dashboard. The same rule as `visible()` in shell/nav.ts uses for
+ *  `sensitiveOnly` pages; keep the two in step. */
+export function canSeeSensitive(user: User): boolean {
+  return user.role === "admin" || !!user.can_access_sensitive;
+}
+
+/** True when `user` may see that a credit-repair task exists but not its details (summary, error, parameters, log, result). */
+export function hidesTaskDetail(task: Pick<Task, "agent">, user: User): boolean {
+  return task.agent === "credit_repair" && !canSeeSensitive(user);
+}
 
 export function defaultsFor(cap: Capability): string {
   const out: Record<string, unknown> = {};
@@ -135,10 +146,18 @@ export function ArtifactView({ id, onClose, onChanged }: { id: number; onClose: 
 
 /** One task: status, approval, logs, findings, with cancel and retry. */
 export function TaskDetail({ id, onClose }: { id: number; onClose: () => void }) {
-  const { canOperate } = useAuth();
+  const { canOperate, user } = useAuth();
   const detail = usePoll(() => api.get<{ task: Task; logs: TaskLog[]; approval: Approval | null }>(`/api/tasks/${id}`), 3_000, [id]);
   const [error, setError] = useState<string | null>(null);
   const task = detail.data?.task;
+  const head = task ? (
+    <p>
+      <Pill value={task.status} /> <code>
+        {task.agent}.{task.capability}
+      </code>{" "}
+      <RiskBadge risk={task.risk} />
+    </p>
+  ) : null;
 
   async function act(path: string) {
     setError(null);
@@ -153,14 +172,14 @@ export function TaskDetail({ id, onClose }: { id: number; onClose: () => void })
   return (
     <Modal title={`Task #${id}`} onClose={onClose} wide>
       <ErrorNote error={detail.error ?? error} />
-      {task ? (
+      {task && hidesTaskDetail(task, user) ? (
         <>
-          <p>
-            <Pill value={task.status} /> <code>
-              {task.agent}.{task.capability}
-            </code>{" "}
-            <RiskBadge risk={task.risk} />
-          </p>
+          {head}
+          <p className="muted">Details of credit-repair tasks need the sensitive-data permission.</p>
+        </>
+      ) : task ? (
+        <>
+          {head}
           <dl className="kv">
             <dt>Created</dt>
             <dd>

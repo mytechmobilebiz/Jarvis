@@ -50,11 +50,13 @@ function useClock(): Date {
 }
 
 function Sparkline({ values }: { values: number[] }) {
-  const max = Math.max(1, ...values);
+  // A single hour (00:00 to 00:59) draws a flat line at its value, with the area beneath it.
+  const vals = values.length < 2 ? [values[0] ?? 0, values[0] ?? 0] : values;
+  const max = Math.max(1, ...vals);
   const w = 120;
   const h = 32;
-  const step = w / Math.max(1, values.length - 1);
-  const pts = values.map((v, i) => `${(i * step).toFixed(1)},${(h - 3 - (v / max) * (h - 6)).toFixed(1)}`).join(" ");
+  const step = w / Math.max(1, vals.length - 1);
+  const pts = vals.map((v, i) => `${(i * step).toFixed(1)},${(h - 3 - (v / max) * (h - 6)).toFixed(1)}`).join(" ");
   return (
     <svg className="sparkline" width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden>
       <polyline points={`0,${h} ${pts} ${w},${h}`} className="sparkline-area" />
@@ -121,16 +123,23 @@ export default function Dashboard({ status }: { status: SystemStatus | null }) {
   const supervisor = agents.data?.agents.find((a) => a.role === "supervisor");
   const activeAgents = specialists.filter((a) => a.enabled && a.entitled).length;
   const siteList = sites.data?.sites ?? [];
-  const count = (k: string) => status?.counts.sites[k] ?? 0;
-  const monitored = siteList.filter((s) => s.enabled).length;
-  const uptime24 = average(siteList.map((s) => s.uptime?.["24h"]));
+  // Up / down / degraded count the monitored (enabled) sites only; paused sites are shown apart.
+  const enabledSites = siteList.filter((s) => s.enabled);
+  const count = (k: string) => enabledSites.filter((s) => s.last_status === k).length;
+  const monitored = enabledSites.length;
+  const up24 = siteList.map((s) => s.uptime?.["24h"]).filter((v): v is number => typeof v === "number");
+  const uptime24 = average(up24);
   const uptime7 = average(siteList.map((s) => s.uptime?.["7d"]));
   const health = serviceHealth(status);
   const services: { name: string; state: string; detail: string }[] = status
     ? [
         { name: "Database", state: health.database, detail: status.database.ok ? "connected" : "error" },
         { name: "Worker", state: health.worker, detail: health.worker === "good" ? "running" : "not reporting" },
-        { name: "n8n", state: health.n8n, detail: health.n8n === "good" ? "connected" : "problem" },
+        {
+          name: status.workflow_engine === "webhook" ? "Webhook" : "n8n",
+          state: health.n8n,
+          detail: status.workflow_engine === "none" ? "not configured" : !status.n8n ? "not contacted yet" : health.n8n === "good" ? "connected" : "problem",
+        },
         { name: "AI planner", state: status.llm.configured ? "good" : "muted", detail: status.llm.configured ? `Claude ${status.llm.model ?? ""}` : "rule-based" },
       ]
     : [];
@@ -179,7 +188,7 @@ export default function Dashboard({ status }: { status: SystemStatus | null }) {
           }
         >
           <span className="tile-value">{agents.data ? activeAgents : "—"}</span>
-          <span className="tile-of">of {specialists.length || 7}</span>
+          {agents.data ? <span className="tile-of">of {specialists.length}</span> : null}
         </Tile>
         <Tile
           icon="globe"
@@ -193,6 +202,8 @@ export default function Dashboard({ status }: { status: SystemStatus | null }) {
                   <span className="text-good">{count("up")} up</span> · <span className={count("down") ? "text-bad" : ""}>{count("down")} down</span> ·{" "}
                   <span className={count("degraded") ? "text-warn" : ""}>{count("degraded")} degraded</span>
                 </>
+              ) : siteList.length ? (
+                "All sites paused"
               ) : (
                 "Add your first site on the Websites page"
               )
@@ -228,7 +239,7 @@ export default function Dashboard({ status }: { status: SystemStatus | null }) {
           tone={uptimeTone(uptime24) === "muted" ? "green" : uptimeTone(uptime24)}
           label="Website uptime (24 h)"
           to="/websites"
-          hint={sites.data ? (uptime24 == null ? "No checks recorded yet" : `7 days: ${pct(uptime7)} · average of ${siteList.length} site(s)`) : "…"}
+          hint={sites.data ? (uptime24 == null ? "No checks recorded yet" : `7 days: ${pct(uptime7)} · average of ${up24.length} site(s)`) : "…"}
         >
           <span className="tile-value">{pct(uptime24)}</span>
           {uptime24 != null ? (

@@ -30,7 +30,10 @@ function recognitionCtor(): RecognitionCtor | null {
 /** Whether voice input can work here: the browser has speech recognition and the page may use the microphone. */
 export function speechSupported(): boolean {
   if (typeof window === "undefined" || !recognitionCtor() || !window.isSecureContext) return false;
-  const policy = (document as unknown as { permissionsPolicy?: { allowsFeature(f: string): boolean } }).permissionsPolicy;
+  // Chrome exposes the Permissions-Policy as document.featurePolicy; the standard name is permissionsPolicy.
+  type Policy = { allowsFeature(f: string): boolean };
+  const d = document as unknown as { permissionsPolicy?: Policy; featurePolicy?: Policy };
+  const policy = d.permissionsPolicy ?? d.featurePolicy;
   return policy ? policy.allowsFeature("microphone") : true;
 }
 
@@ -77,5 +80,16 @@ export function useSpeech(onText: (text: string) => void) {
   }, []);
 
   const stop = useCallback(() => rec.current?.stop(), []);
-  return { listening, error, start, stop };
+  /** Stops at once and drops any result still on its way (stop() can deliver a late final result). The browser reports an
+   * abort as an "aborted" error, which is not one, so that handler goes too. onend still resets `listening`. */
+  const abort = useCallback(() => {
+    const r = rec.current;
+    if (r) {
+      r.onresult = null;
+      r.onerror = null;
+      r.abort();
+    }
+  }, []);
+  const clearError = useCallback(() => setError(null), []);
+  return { listening, error, start, stop, abort, clearError };
 }

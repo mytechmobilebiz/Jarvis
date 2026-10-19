@@ -1,15 +1,17 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, type Task } from "../api";
+import { useAuth } from "../App";
 import { Card, Empty, ErrorNote, Pill, RiskBadge, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
 import { Icon } from "../icons";
-import { TaskDetail } from "../work";
+import { TaskDetail, hidesTaskDetail } from "../work";
 import "./Tasks.css";
 
 const STATUSES = ["", "queued", "running", "awaiting_approval", "succeeded", "failed", "rejected", "cancelled"];
 
 export default function Tasks() {
+  const { user } = useAuth();
   const [params, setParams] = useSearchParams();
   const [status, setStatus] = useState("");
   const [agent, setAgent] = useState("");
@@ -107,32 +109,48 @@ export default function Tasks() {
                 </tr>
               </thead>
               <tbody>
-                {list.data.tasks.map((t) => (
-                  <tr key={t.id} className="clickable" onClick={() => setParams({ id: String(t.id) })}>
-                    <td className="tk-id tabular">{t.id}</td>
-                    <td className="tk-action">
-                      <code className="tk-cap" title={`${t.agent}.${t.capability}`}>
-                        {t.capability}
-                      </code>
-                      <span className="tk-agent">{t.agent}</span>
-                    </td>
-                    <td className="tk-status">
-                      <Pill value={t.status} />
-                    </td>
-                    <td className="tk-risk">
-                      <RiskBadge risk={t.risk} />
-                    </td>
-                    <td className="tk-when small">
-                      <Time iso={t.created_at} />
-                      <span className="tk-source">via {t.source}</span>
-                    </td>
-                    <td className={`tk-summary small ${t.error ? "text-bad" : ""}`}>
-                      <span className="tk-clip" title={t.error || t.summary}>
-                        {t.error || t.summary}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {list.data.tasks.map((t) => {
+                  // A credit-repair task's summary and error stay hidden from users without the sensitive-data permission.
+                  const hidden = hidesTaskDetail(t, user);
+                  const summary = hidden ? "—" : t.error || t.summary;
+                  const open = () => setParams({ id: String(t.id) });
+                  return (
+                    <tr key={t.id} className="clickable" onClick={open}>
+                      <td className="tk-id tabular">{t.id}</td>
+                      <td className="tk-action">
+                        {/* The row opens on a click; this button is the keyboard path to the same dialog. */}
+                        <button
+                          type="button"
+                          className="link-button tk-open"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            open();
+                          }}
+                        >
+                          <code className="tk-cap" title={`${t.agent}.${t.capability}`}>
+                            {t.capability}
+                          </code>
+                        </button>
+                        <span className="tk-agent">{t.agent}</span>
+                      </td>
+                      <td className="tk-status">
+                        <Pill value={t.status} />
+                      </td>
+                      <td className="tk-risk">
+                        <RiskBadge risk={t.risk} />
+                      </td>
+                      <td className="tk-when small">
+                        <Time iso={t.created_at} />
+                        <span className="tk-source">via {t.source}</span>
+                      </td>
+                      <td className={`tk-summary small ${t.error && !hidden ? "text-bad" : ""}`}>
+                        <span className="tk-clip" title={summary}>
+                          {summary}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

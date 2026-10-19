@@ -94,9 +94,19 @@ export default function Drafts() {
                 {list.data.artifacts.map((a) => (
                   <tr key={a.id} className="clickable" onClick={() => setOpenId(a.id)}>
                     <td>
-                      <span className="dr-title" title={a.title}>
-                        {a.title}
-                      </span>
+                      {/* The row opens on a click; this button is the keyboard path to the same dialog. */}
+                      <button
+                        type="button"
+                        className="link-button dr-open"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenId(a.id);
+                        }}
+                      >
+                        <span className="dr-title" title={a.title}>
+                          {a.title}
+                        </span>
+                      </button>
                     </td>
                     <td>
                       <span className="dr-kind">{a.kind}</span>

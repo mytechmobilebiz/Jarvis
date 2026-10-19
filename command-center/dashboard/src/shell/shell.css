@@ -100,7 +100,7 @@
   height: 18px;
   padding: 0 5px;
   border-radius: 999px;
-  background: var(--bad);
+  background: #dc2626; /* white text 4.8:1 (on --bad it is 3.8:1) */
   color: white;
   font-size: 10.5px;
   font-weight: 700;
@@ -196,8 +196,26 @@
 .command-pop p {
   margin: 0;
 }
+.command-pop[hidden] {
+  display: none;
+}
 .command-note {
   color: var(--warn-text);
+}
+/* an error pop: the message(s) and a Dismiss button */
+.command-pop-dismissable {
+  flex-direction: row;
+  align-items: flex-start;
+}
+.command-pop-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.command-pop-main .alert {
+  margin: 0;
 }
 .command-result {
   display: flex;
@@ -466,7 +484,16 @@
   gap: 9px;
   min-width: 0;
 }
-.scrim {
+/* the state shows in the dot's shape as well as its colour: round = fine (or not in use), diamond = warning, square = failing */
+.health-line .dot-warn {
+  border-radius: 1px;
+  transform: rotate(45deg) scale(0.9);
+}
+.health-line .dot-bad {
+  border-radius: 1px;
+}
+.scrim,
+.drawer-close {
   display: none;
 }
 
@@ -486,7 +513,15 @@
   .sidebar {
     padding: 12px 10px;
   }
-  .sidebar .nav-label,
+  /* labels visually hidden, not removed: a link keeps its name next to a count ("Approvals 2 need attention") and the health texts reach screen readers */
+  .sidebar .nav-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
   .nav-group-title,
   .health-title {
     display: none;
@@ -523,6 +558,9 @@
 
 /* phone: drawer, command bar on its own row */
 @media (max-width: 760px) {
+  html {
+    scroll-padding-top: 124px; /* the top bar is two rows here */
+  }
   .layout {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
@@ -565,18 +603,34 @@
     z-index: 70;
     background: var(--chrome);
     transform: translateX(-102%);
-    transition: transform 0.2s ease;
+    /* hidden once it has slid out, so its links leave the tab order */
+    visibility: hidden;
+    transition: transform 0.2s ease, visibility 0s linear 0.2s;
     padding: 18px 14px;
     box-shadow: var(--shadow-pop);
   }
   .sidebar.open {
     transform: none;
+    visibility: visible;
+    transition: transform 0.2s ease;
+  }
+  .drawer-close {
+    display: inline-flex;
+    align-self: flex-end;
+    flex: none;
+    margin: -8px -4px 4px 0;
   }
   .sidebar .nav-label,
   .nav-group-title,
   .health-title,
   .health-line.muted {
     display: block;
+  }
+  .sidebar .nav-label {
+    position: static;
+    width: auto;
+    height: auto;
+    clip: auto;
   }
   .sidebar nav a {
     justify-content: flex-start;

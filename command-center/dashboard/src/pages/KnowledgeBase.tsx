@@ -113,7 +113,7 @@ const ARTICLES: Article[] = [
     link: { to: "/supervisor", label: "AI Supervisor" },
     blocks: [
       {
-        p: "The command input at the top of every page sends a request to the **AI Supervisor**. Press [[Ctrl]] + [[K]] (or [[⌘]] + [[K]] on a Mac), or [[/]] when you are not typing in a field, to jump to it. Type what you need and press **Execute** or [[Enter]]; [[Esc]] leaves the input.",
+        p: "The command input at the top of every page sends a request to the **AI Supervisor**. Press [[Ctrl]] + [[K]] (or [[⌘]] + [[K]] on a Mac) to jump to it. Type what you need and press **Execute** or [[Enter]]; [[Esc]] closes the suggestions.",
       },
       { h: "What Execute does" },
       {

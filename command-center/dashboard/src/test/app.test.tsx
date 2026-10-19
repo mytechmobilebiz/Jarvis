@@ -63,7 +63,7 @@ describe("App", () => {
     const calls = mockFetch({
       ...common,
       "GET /api/auth/me": { user: admin },
-      "GET /api/approvals?status=pending": { approvals: [approval] },
+      "GET /api/approvals?status=pending&limit=500": { approvals: [approval] },
       "POST /api/approvals/9/decision": { json: { approval: { ...approval, status: "approved" } } },
     });
     render(<App />);

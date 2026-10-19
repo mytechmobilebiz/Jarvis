@@ -9,6 +9,8 @@ import "./Leads.css";
 
 const EMPTY = { name: "", company: "", email: "", phone: "", website: "", service_interest: "", message: "" };
 const WEEK = 7 * 24 * 3_600_000;
+/** The most the API returns in one list; when the list is that long the tiles say they count the latest leads, not all. */
+const LIMIT = 500;
 
 function scoreTone(v: number): "good" | "warn" | "bad" {
   return v >= 75 ? "good" : v >= 50 ? "warn" : "bad";
@@ -16,7 +18,7 @@ function scoreTone(v: number): "good" | "warn" | "bad" {
 
 export default function Leads() {
   const { canOperate } = useAuth();
-  const leads = usePoll(() => api.get<{ leads: LeadRecord[] }>("/api/leads"), 6_000);
+  const leads = usePoll(() => api.get<{ leads: LeadRecord[] }>(`/api/leads?limit=${LIMIT}`), 6_000);
   const [form, setForm] = useState(EMPTY);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -54,6 +56,7 @@ export default function Leads() {
   const scores = all.map((l) => l.score).filter((v): v is number => typeof v === "number");
   const avgScore = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
   const spam = byStatus("spam");
+  const capped = all.length >= LIMIT;
 
   return (
     <div className="page le-page">
@@ -69,7 +72,12 @@ export default function Leads() {
       </header>
 
       <div className="tiles cols-4">
-        <Tile icon="users" tone="blue" label="Total leads" hint={loaded ? `${recent} received in the last 7 days` : pending}>
+        <Tile
+          icon="users"
+          tone="blue"
+          label={capped ? "Leads" : "Total leads"}
+          hint={loaded ? `${recent} received in the last 7 days${capped ? ` · in the latest ${LIMIT}` : ""}` : pending}
+        >
           <span className="tile-value tabular">{loaded ? all.length : "—"}</span>
         </Tile>
         <Tile
@@ -144,7 +152,17 @@ export default function Leads() {
                 {leads.data.leads.map((l) => (
                   <tr key={l.id}>
                     <td className="clickable le-lead" onClick={() => setOpen(l)}>
-                      <strong className="le-name">{l.company || l.name}</strong>
+                      {/* The cell opens on a click; this button is the keyboard path to the same dialog. */}
+                      <button
+                        type="button"
+                        className="link-button le-open"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpen(l);
+                        }}
+                      >
+                        <strong className="le-name">{l.company || l.name}</strong>
+                      </button>
                       <div className="muted small le-contact">
                         {l.name} · {l.email || "no email"}
                       </div>

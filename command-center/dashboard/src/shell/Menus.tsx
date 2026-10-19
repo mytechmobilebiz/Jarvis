@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useRef, useState } from "react";
+import { ReactNode, useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type CCEvent, type SystemStatus } from "../api";
 import { useAuth } from "../App";
@@ -8,14 +8,34 @@ import { Icon } from "../icons";
 
 const SEEN_KEY = "cc.notifications.seen";
 
-/** A button that opens a small panel; closes on outside click, Escape or navigation inside it. */
-function Popover({ label, button, children, className = "" }: { label: string; button: ReactNode; children: (close: () => void) => ReactNode; className?: string }) {
+/** A disclosure: a button that shows a small panel of links and buttons. Closes on outside click, Escape (focus goes back to the button),
+ * focus moving elsewhere, or navigation inside it. `label` names the panel; `buttonLabel` (default `label`) names the button. */
+function Popover({
+  label,
+  buttonLabel = label,
+  button,
+  children,
+  className = "",
+}: {
+  label: string;
+  buttonLabel?: string;
+  button: ReactNode;
+  children: (close: () => void) => ReactNode;
+  className?: string;
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const panelId = useId();
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && setOpen(false);
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        buttonRef.current?.focus();
+      }
+    };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -24,12 +44,24 @@ function Popover({ label, button, children, className = "" }: { label: string; b
     };
   }, [open]);
   return (
-    <div className={`popover ${className}`} ref={ref}>
-      <button className="top-btn" aria-label={label} aria-expanded={open} aria-haspopup="true" onClick={() => setOpen((o) => !o)}>
+    <div
+      className={`popover ${className}`}
+      ref={ref}
+      // Focus moved to something outside (a click on nothing is handled by the mousedown listener).
+      onBlur={(e) => e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node) && setOpen(false)}
+    >
+      <button
+        ref={buttonRef}
+        className="top-btn"
+        aria-label={buttonLabel}
+        aria-expanded={open}
+        aria-controls={open ? panelId : undefined}
+        onClick={() => setOpen((o) => !o)}
+      >
         {button}
       </button>
       {open ? (
-        <div className="popover-panel" role="menu" aria-label={label}>
+        <div className="popover-panel" id={panelId} role="group" aria-label={label}>
           {children(() => setOpen(false))}
         </div>
       ) : null}
@@ -129,6 +161,7 @@ export function AccountMenu() {
   return (
     <Popover
       label="Account menu"
+      buttonLabel={`${shortName}, account menu`}
       className="account"
       button={
         <>
@@ -157,18 +190,18 @@ export function AccountMenu() {
           </div>
           {user.role === "admin" ? (
             <>
-              <Link className="popover-row" to="/settings" onClick={close} role="menuitem">
+              <Link className="popover-row" to="/settings" onClick={close}>
                 <Icon name="settings" size={18} /> Settings and users
               </Link>
-              <Link className="popover-row" to="/activity" onClick={close} role="menuitem">
+              <Link className="popover-row" to="/activity" onClick={close}>
                 <Icon name="history" size={18} /> Activity log
               </Link>
             </>
           ) : null}
-          <Link className="popover-row" to="/kb" onClick={close} role="menuitem">
+          <Link className="popover-row" to="/kb" onClick={close}>
             <Icon name="book" size={18} /> Knowledge Base
           </Link>
-          <button className="popover-row" onClick={() => void signOut()} role="menuitem">
+          <button className="popover-row" onClick={() => void signOut()}>
             <Icon name="logout" size={18} /> Sign out
           </button>
         </>

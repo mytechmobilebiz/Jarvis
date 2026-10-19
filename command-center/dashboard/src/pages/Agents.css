@@ -38,6 +38,14 @@
 .ag-card .card-actions {
   flex: none;
 }
+/* a switched-off agent: its pill says "disabled" and the card sits on a darker tint with a dashed border;
+   no opacity, so every text keeps its contrast */
+.card.ag-card.disabled {
+  opacity: 1;
+  background: var(--chrome);
+  border-style: dashed;
+  border-color: var(--border-2);
+}
 .ag-title {
   min-width: 0;
   overflow-wrap: anywhere;

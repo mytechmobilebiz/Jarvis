@@ -132,7 +132,7 @@ def test_agents_and_approvals_pages(signed_in: Page):
 def test_sign_out(signed_in: Page):
     page = signed_in
     page.get_by_role("button", name="Account menu").click()
-    page.get_by_role("menuitem", name="Sign out").click()
+    page.get_by_role("button", name="Sign out").click()
     expect(page.get_by_role("button", name="Sign in")).to_be_visible()
 
 

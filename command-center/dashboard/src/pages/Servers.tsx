@@ -453,7 +453,17 @@ export default function Servers() {
                           <Icon name="server" size={16} />
                         </span>
                         <div className="sv-server-main">
-                          <strong>{s.name}</strong>
+                          {/* The row opens on a click; this button is the keyboard path to the same dialog. */}
+                          <button
+                            type="button"
+                            className="link-button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenId(s.id);
+                            }}
+                          >
+                            <strong>{s.name}</strong>
+                          </button>
                           <div className="muted small sv-addr" title={`${s.username}@${s.host}:${s.port}`}>
                             {s.username}@{s.host}:{s.port}
                           </div>

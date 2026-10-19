@@ -21,11 +21,6 @@
   padding-left: 34px;
 }
 
-/* task dialog (rendered after the tasks card): a long agent.capability name wraps instead of running past the dialog on a phone */
-.tk-card ~ .modal-backdrop .modal-body code {
-  overflow-wrap: anywhere;
-}
-
 /* Table: fixed-size columns hug their content, the summary column takes the
    width that is left (width 100% + max-width 0) and clamps inside it, so the
    table never runs past the card. */
@@ -71,6 +66,12 @@ code.tk-cap {
   color: var(--text);
   font-weight: 500;
   line-height: 1.45;
+}
+/* the capability is a button, the keyboard path to the task; it hugs the clipped name */
+.link-button.tk-open {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
 }
 .tk-agent,
 .tk-source {

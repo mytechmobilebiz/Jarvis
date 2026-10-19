@@ -7,6 +7,9 @@ import { usePoll } from "../hooks";
 import { Icon } from "../icons";
 import "./Approvals.css";
 
+/** The most the API returns in one list. */
+const LIMIT = 500;
+
 function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: () => void }) {
   const { user, canOperate } = useAuth();
   const [note, setNote] = useState("");
@@ -112,11 +115,11 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
 
 export default function Approvals() {
   const [tab, setTab] = useState<"pending" | "all">("pending");
-  const list = usePoll(() => api.get<{ approvals: Approval[] }>(`/api/approvals?status=${tab}`), 5_000, [tab]);
-  // Tiles summarise the pending approvals in the list already loaded. History holds the newest 100 of every status,
-  // so when it is full an older pending approval could sit outside it and the tiles say so.
+  const list = usePoll(() => api.get<{ approvals: Approval[] }>(`/api/approvals?status=${tab}&limit=${LIMIT}`), 5_000, [tab]);
+  // Tiles summarise the pending approvals in the list already loaded, which holds the newest LIMIT (pending ones, or
+  // of every status on History). When it is full an older pending approval could sit outside it and the tiles say so.
   const pending = list.data ? list.data.approvals.filter((a) => a.status === "pending") : null;
-  const partial = tab === "all" && (list.data?.approvals.length ?? 0) >= 100;
+  const partial = (list.data?.approvals.length ?? 0) >= LIMIT;
   const productionPending = pending?.filter((a) => a.details.production === true) ?? [];
   const changes = pending?.filter((a) => a.risk === "change" || a.risk === "destructive").length ?? 0;
   const outbound = pending?.filter((a) => a.risk === "external").length ?? 0;
@@ -135,11 +138,11 @@ export default function Approvals() {
             not sent); server and WordPress repairs are real and go through the restricted cc-gate.
           </p>
         </div>
-        <div className="tabs">
-          <button className={tab === "pending" ? "active" : ""} onClick={() => setTab("pending")}>
+        <div className="tabs" role="group" aria-label="Approvals view">
+          <button type="button" className={tab === "pending" ? "active" : ""} aria-pressed={tab === "pending"} onClick={() => setTab("pending")}>
             Pending
           </button>
-          <button className={tab === "all" ? "active" : ""} onClick={() => setTab("all")}>
+          <button type="button" className={tab === "all" ? "active" : ""} aria-pressed={tab === "all"} onClick={() => setTab("all")}>
             History
           </button>
         </div>
@@ -153,7 +156,7 @@ export default function Approvals() {
             !pending ? (
               list.error ? "The list did not load" : "Loading…"
             ) : partial ? (
-              "Among the newest 100 approvals; Pending lists them all"
+              `Among the newest ${LIMIT}${tab === "all" ? " approvals of every status" : " pending"}`
             ) : oldest ? (
               <>
                 Oldest requested <Time iso={oldest.created_at} />

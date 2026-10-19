@@ -35,7 +35,7 @@ describe("production approvals", () => {
     const calls = mockFetch({
       "GET /api/system/status": status,
       "GET /api/auth/me": { user: admin },
-      "GET /api/approvals?status=pending": { approvals: [approval] },
+      "GET /api/approvals?status=pending&limit=500": { approvals: [approval] },
       "POST /api/approvals/4/decision": { json: { approval: { ...approval, status: "approved" } } },
     });
     render(<App />);
@@ -55,7 +55,7 @@ describe("production approvals", () => {
     mockFetch({
       "GET /api/system/status": status,
       "GET /api/auth/me": { user: { ...admin, role: "operator" } },
-      "GET /api/approvals?status=pending": { approvals: [approval] },
+      "GET /api/approvals?status=pending&limit=500": { approvals: [approval] },
     });
     render(<App />);
     expect(await screen.findByText("Production change: an admin must approve it.")).toBeInTheDocument();

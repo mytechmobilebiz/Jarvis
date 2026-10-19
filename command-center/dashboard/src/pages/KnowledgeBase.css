@@ -32,11 +32,11 @@
   padding-left: 40px;
   padding-right: 40px;
   background: var(--surface);
-  border-color: var(--border-2);
+  border-color: var(--field-border);
   box-shadow: var(--shadow);
 }
 .kb-search input:hover {
-  border-color: #33477a;
+  border-color: var(--muted);
 }
 .kb-search input:focus {
   border-color: var(--primary-bright);

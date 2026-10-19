@@ -10,10 +10,12 @@ import "./Support.css";
 const PRIORITY_TONE: Record<string, string> = { urgent: "critical", high: "warning", normal: "info", low: "unknown" };
 /** Statuses that close a message (the Support agent's own overview counts everything else as open). */
 const CLOSED = ["replied", "closed"];
+/** The most the API returns in one list; when the list is that long the tiles count the latest messages, not all. */
+const LIMIT = 500;
 
 export default function Support() {
   const { canOperate } = useAuth();
-  const tickets = usePoll(() => api.get<{ tickets: Ticket[] }>("/api/support/tickets"), 6_000);
+  const tickets = usePoll(() => api.get<{ tickets: Ticket[] }>(`/api/support/tickets?limit=${LIMIT}`), 6_000);
   const [form, setForm] = useState({ customer_name: "", customer_email: "", subject: "", body: "" });
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -49,6 +51,7 @@ export default function Support() {
   const high = open.filter((t) => t.priority === "high").length;
   const awaiting = open.filter((t) => t.reply_artifact_id).length;
   const untriaged = open.filter((t) => t.status === "open").length;
+  const capped = all.length >= LIMIT;
 
   return (
     <div className="page sp-page">
@@ -68,7 +71,7 @@ export default function Support() {
           hint={loaded ? `${all.length - open.length} replied or closed${untriaged ? ` · ${untriaged} waiting for triage` : ""}` : pending}
         >
           <span className="tile-value tabular">{loaded ? open.length : "—"}</span>
-          {loaded ? <span className="tile-of">of {all.length}</span> : null}
+          {loaded ? <span className="tile-of">of {capped ? `the latest ${LIMIT}` : all.length}</span> : null}
         </Tile>
         <Tile icon="alert" tone={urgent ? "bad" : high ? "warn" : "green"} label="Urgent or high priority" hint={loaded ? `${urgent} urgent · ${high} high, among open messages` : pending}>
           <span className="tile-value tabular">{loaded ? urgent + high : "—"}</span>

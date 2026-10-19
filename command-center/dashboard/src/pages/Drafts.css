@@ -60,13 +60,14 @@
   white-space: nowrap;
   font-weight: 600;
 }
+/* the title is a button, the keyboard path to the draft; it hugs the clipped title */
+.link-button.dr-open {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+}
 .dr-nowrap {
   white-space: nowrap;
-}
-
-/* draft dialog: long unbroken words in a briefing (capability calls, URLs) wrap instead of widening the dialog on a phone */
-.dr-page .modal .markdown {
-  overflow-wrap: anywhere;
 }
 
 /* three tiles stay on one row down to tablet width (the shared grid drops to two columns at 1280px) */
