@@ -30,6 +30,8 @@ def get_engine() -> AsyncEngine:
             settings.database_url,
             pool_size=settings.db_pool_size,
             pool_pre_ping=True,
+            # Errors carry the statement, never the row values (which can be customer or imported text).
+            hide_parameters=True,
         )
         _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine
