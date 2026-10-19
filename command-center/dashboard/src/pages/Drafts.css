@@ -64,6 +64,11 @@
   white-space: nowrap;
 }
 
+/* draft dialog: long unbroken words in a briefing (capability calls, URLs) wrap instead of widening the dialog on a phone */
+.dr-page .modal .markdown {
+  overflow-wrap: anywhere;
+}
+
 /* three tiles stay on one row down to tablet width (the shared grid drops to two columns at 1280px) */
 @media (min-width: 761px) {
   .dr-page .tiles {

@@ -1,4 +1,4 @@
-/* AI Agents page (prefix ag-). Page stylesheets load before styles.css, so rules that adjust shared classes carry an extra class. */
+/* AI Agents page (prefix ag-). Page stylesheets load after the shared ones (styles.css, tiles.css, shell.css), so a rule here wins over a shared rule of equal specificity. */
 .ag-section-head {
   margin-bottom: 12px;
 }

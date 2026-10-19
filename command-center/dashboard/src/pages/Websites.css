@@ -1,4 +1,4 @@
-/* Websites page (prefix ws-). Page stylesheets load before styles.css, so rules that adjust shared classes carry an extra class. */
+/* Websites page (prefix ws-). Page stylesheets load after the shared ones (styles.css, tiles.css, shell.css), so a rule here wins over a shared rule of equal specificity. */
 .ws-status {
   display: flex;
   flex-wrap: wrap;

@@ -34,6 +34,12 @@
   font-size: 30px;
   white-space: nowrap;
 }
+/* four tiles across with the full sidebar: the narrowest tiles, so a long value like "due 59 min ago" still fits */
+@media (min-width: 1281px) and (max-width: 1400px) {
+  .wf-when {
+    font-size: 25px;
+  }
+}
 .wf-tile-sub {
   flex-basis: 100%;
   display: flex;

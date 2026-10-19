@@ -21,6 +21,11 @@
   padding-left: 34px;
 }
 
+/* task dialog (rendered after the tasks card): a long agent.capability name wraps instead of running past the dialog on a phone */
+.tk-card ~ .modal-backdrop .modal-body code {
+  overflow-wrap: anywhere;
+}
+
 /* Table: fixed-size columns hug their content, the summary column takes the
    width that is left (width 100% + max-width 0) and clamps inside it, so the
    table never runs past the card. */
@@ -134,6 +139,7 @@ code.tk-cap {
   .tk-table td.tk-id {
     grid-area: id;
     width: auto;
+    min-width: 3ch; /* one- and two-digit ids keep the action column in line */
     align-self: start;
     line-height: 1.45;
   }

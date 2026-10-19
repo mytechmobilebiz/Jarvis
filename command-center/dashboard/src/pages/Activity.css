@@ -97,14 +97,18 @@ code.ac-tone-bad {
   background: var(--bad-soft);
 }
 
-@media (max-width: 1100px) {
+/* up to 1280px the who and target columns give up width, so the detail column keeps some room and the table fits the card */
+@media (min-width: 1001px) and (max-width: 1280px) {
   .ac-actor {
-    max-width: 200px;
+    max-width: 150px;
+  }
+  .ac-table td.ac-target {
+    white-space: normal;
   }
 }
 
-/* narrow screens: each entry becomes a stacked row instead of a wide table */
-@media (max-width: 880px) {
+/* up to 1000px the five columns no longer fit the card: each entry becomes a stacked row instead of a wide table */
+@media (max-width: 1000px) {
   .ac-table,
   .ac-table tbody {
     display: block;

@@ -35,6 +35,13 @@
   border-color: var(--border-2);
   box-shadow: var(--shadow);
 }
+.kb-search input:hover {
+  border-color: #33477a;
+}
+.kb-search input:focus {
+  border-color: var(--primary-bright);
+  box-shadow: 0 0 0 3px rgba(47, 123, 255, 0.22);
+}
 .kb-search input::-webkit-search-cancel-button {
   -webkit-appearance: none;
   appearance: none;
@@ -223,8 +230,12 @@
   color: var(--text);
   white-space: normal;
 }
+/* a short command stays on one line, moving to the next line whole; it wraps only when it is wider than its column */
 .kb-body code.kb-nowrap {
-  white-space: nowrap;
+  display: inline-block;
+  max-width: 100%;
+  white-space: normal;
+  line-height: 1.4;
 }
 .kb-h {
   color: var(--text);
@@ -636,6 +647,14 @@ a.kb-area:hover .kb-area-name {
 }
 .kb-body .kb-foot {
   margin: 0;
+}
+
+/* a laptop with the full sidebar and the contents column leaves the articles about 500-680px: the term column of a
+   definition list narrows so the answers are not squeezed into a column as narrow as the terms */
+@media (min-width: 1101px) and (max-width: 1280px) {
+  .kb-dl {
+    grid-template-columns: minmax(120px, 170px) minmax(0, 1fr);
+  }
 }
 
 /* tablet and phone: the contents fold up above the articles */

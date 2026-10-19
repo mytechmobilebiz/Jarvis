@@ -30,15 +30,13 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
-@media (max-width: 900px) {
-  .grid-form.sp-form {
-    grid-template-columns: minmax(0, 1fr);
-  }
+/* up to 1180px (a full sidebar leaves the table about 750px): the subject is clipped sooner, and the draft link and the
+   send button stack with a label that may wrap, so the table fits the card */
+@media (max-width: 1180px) {
   .sp-subject,
   .sp-from {
-    max-width: 200px;
+    max-width: 180px;
   }
-  /* the draft link and the send button stack, and the button label may wrap, so the table fits a tablet */
   .sp-table .cell-actions {
     flex-direction: column;
     align-items: flex-end;
@@ -48,9 +46,8 @@
     min-width: 130px;
   }
 }
-@media (max-width: 560px) {
-  .sp-subject,
-  .sp-from {
-    max-width: 200px;
+@media (max-width: 900px) {
+  .grid-form.sp-form {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

@@ -67,6 +67,9 @@
   font-size: 12.5px;
   overflow-wrap: anywhere;
 }
+.em-delivery-req.text-bad {
+  color: var(--bad-text);
+}
 .em-delivery-req-label {
   color: var(--text-2);
   font-weight: 600;
@@ -79,7 +82,7 @@
   justify-content: flex-end;
 }
 
-/* agent switched off (two classes: page CSS loads before styles.css, so .alert would win) */
+/* agent switched off (adjusts the shared .alert box) */
 .alert.em-alert {
   display: flex;
   gap: 10px;

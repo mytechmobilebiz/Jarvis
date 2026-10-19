@@ -1,4 +1,4 @@
-/* Credit Repair page (prefix cr-). Page stylesheets load before styles.css, so rules that adjust shared classes carry an extra class. */
+/* Credit Repair page (prefix cr-). Page stylesheets load after the shared ones (styles.css, tiles.css, shell.css), so a rule here wins over a shared rule of equal specificity. */
 
 /* a card title that wraps keeps its icon at full size */
 .cr-page .card-head h2 > svg {

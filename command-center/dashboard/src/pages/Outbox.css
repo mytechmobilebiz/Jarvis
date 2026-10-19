@@ -57,8 +57,28 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
-@media (max-width: 900px) {
+/* up to 1340px the recipient and the approver are clipped sooner (the full values are in their tooltips and the entry
+   dialog), so the table fits the card on a laptop */
+@media (max-width: 1340px) {
   .ob-clip {
-    max-width: 180px;
+    max-width: 130px;
+  }
+  .ob-subject {
+    min-width: 130px;
+  }
+}
+/* up to 1180px (a full sidebar leaves the table about 750px) every column narrows a little more */
+@media (max-width: 1180px) {
+  .ob-clip {
+    max-width: 100px;
+  }
+  .ob-action {
+    min-width: 140px;
+  }
+  .ob-subject {
+    min-width: 120px;
+  }
+  .ob-result {
+    min-width: 80px;
   }
 }

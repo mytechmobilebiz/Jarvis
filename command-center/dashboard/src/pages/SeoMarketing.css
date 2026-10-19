@@ -37,7 +37,7 @@
   quotes: "\201C" "\201D";
 }
 
-/* disabled-agent alert (two classes: page CSS loads before styles.css, so .alert would win) */
+/* disabled-agent alert (adjusts the shared .alert box) */
 .alert.seo-alert {
   display: flex;
   gap: 10px;

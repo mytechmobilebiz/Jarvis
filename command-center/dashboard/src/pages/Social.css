@@ -17,7 +17,7 @@
   background: var(--info-soft);
 }
 
-/* disabled-agent alert (two classes: page CSS loads before styles.css, so .alert would win) */
+/* disabled-agent alert (adjusts the shared .alert box) */
 .alert.so-alert {
   display: flex;
   gap: 10px;
