@@ -72,7 +72,8 @@ See [docs/SERVER_SETUP.md](docs/SERVER_SETUP.md).
 
 ## The dashboard
 
-A dark command-center interface (0.4.0) at http://localhost:8090:
+A dark command-center interface (redesigned in 0.4.0, closer to the approved
+reference in 0.5.0) at http://localhost:8090:
 
 - **Top bar**: the Infinite AI logo, the **AI command input** with an
   **Execute** button, notifications, settings (admins) and the account menu.
@@ -89,15 +90,22 @@ A dark command-center interface (0.4.0) at http://localhost:8090:
   Execute.
 - **Sidebar**: Dashboard, AI Agents, Workflows, Websites, SEO & Marketing,
   CWP / Servers, Email, Credit Repair (admins and users allowed to see
-  sensitive data), Social Media / Postonomous, Automation Logs, Knowledge
-  Base, Settings (admins); then Approvals, Tasks, AI Supervisor, Leads, Client
-  support, Drafts & reports, Outbox, Integrations and Activity log. On a
-  tablet the sidebar becomes an icon rail; on a phone, a menu.
-- **Dashboard**: active AI agents, websites monitored, tasks completed today,
-  website uptime, local date and time, worker and service health, a 24-hour
-  task chart (with a table view), agents, websites, approvals, alerts and
-  recent supervisor requests. Every number comes from the API; nothing is
-  sample data.
+  sensitive data), Postonomous, Automation Logs, Knowledge Base, Settings
+  (admins); then Approvals, Tasks, AI Supervisor and Activity log; Leads,
+  Client support, Drafts & reports, Outbox and Integrations under **More**.
+  Below them: **Quick Actions** (scan all websites, SEO audit, check servers,
+  generate a report, open n8n for admins), the **Intern 2** card ("Not
+  connected": no Intern 2 integration exists yet), system health and the
+  dashboard's and API's versions (a banner warns if they differ). On a tablet
+  the sidebar becomes an icon rail; on a phone, a menu.
+- **Dashboard**: AI agents, websites, tasks today (against yesterday at the
+  same time) and website uptime with its coverage; date, time and system
+  status; a card for each of the seven agents (state, current work, 24-hour
+  success rate); task activity by category over 24 hours, 7 or 30 days (with
+  a table view); PC Resources ("Not connected": the PC cannot be measured
+  from inside Docker, so no gauges are drawn); service status, each row
+  saying what was checked and when; recent tasks and active workflows. Every
+  number comes from the API; nothing is sample data.
 
 The typeface (Inter, SIL Open Font License) is bundled into the dashboard;
 the page loads nothing from other sites.

@@ -1,6 +1,6 @@
-# Software bill of materials: Infinite AI Command Center 0.4.0
+# Software bill of materials: Infinite AI Command Center 0.5.0
 
-Generated 2026-10-18 by `scripts/generate-sbom.py`; machine-readable copy: `sbom.cdx.json` (CycloneDX 1.5).
+Generated 2026-10-19 by `scripts/generate-sbom.py`; machine-readable copy: `sbom.cdx.json` (CycloneDX 1.5).
 
 Infinite Marketing's own code (everything under `command-center/` except the dependencies below) is proprietary.
 No third-party component is vendored into this repository: each is fetched from its publisher at build or install time.

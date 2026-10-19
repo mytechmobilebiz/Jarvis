@@ -320,7 +320,7 @@ const ARTICLES: Article[] = [
         p: "A **paused** site is marked Paused, is not checked, and is left out of the counts and averages at the top of the page.",
       },
       {
-        p: "**When this PC has no internet**: if a site gives no answer at all, the monitor first asks whether this PC can reach the internet, with a GET request to api.wordpress.org, www.cloudflare.com and www.google.com (no site data is sent). If none of them answers, the site is not checked: nothing is recorded as down, its last result stays, a banner says the PC has no internet, and one warning event marks the start of the outage and one info event its end. A site that answers with an error page is always recorded as it is.",
+        p: "**When this PC has no internet**: if a site gives no answer at all, the monitor first asks whether this PC can reach the internet, with a GET request to api.wordpress.org, www.cloudflare.com and www.google.com (no site data is sent). If none of them answers, the site is not checked: nothing is recorded as down, its last result stays, a banner says the PC has no internet, and one warning event marks the start of the outage and one info event its end. A site that answers with an error page is always recorded as it is. If your network blocks those hosts on purpose, `MONITOR_CONTROL_URLS` in `.env` replaces www.cloudflare.com and www.google.com with addresses of your choice.",
       },
       { h: "Open issues" },
       {
@@ -349,7 +349,7 @@ const ARTICLES: Article[] = [
           "On [CWP / Servers](/servers), press **Create SSH key** and copy the key from the line shown, starting at `ssh-ed25519` (leave out the `command=…,restrict` part in front; `install-gate.sh` adds it). The private half stays encrypted in the Command Center and is never shown, logged or sent to an AI model.",
           "On the server, as root, run `install-gate.sh` from the package's `server` folder with that public key. It prints the server's host-key fingerprints: note them.",
           "List each WordPress site in `/etc/cc-gate/config.json`, keep `\"allow_changes\": false` for now, and run `install-gate.sh --sync-sites`.",
-          "Add the server in the dashboard, press **Scan host key**, compare the fingerprint with the one the installer printed and trust it only if they match. From then on the key is pinned and a different one is refused.",
+          "Add the server in the dashboard, press **Scan host key** (the worker reads the key the server presents; it does not log in), compare the fingerprint with the one the installer printed and trust it only if they match. From then on the key is pinned and a different one is refused.",
           "Press **Test connection**, then link each site to its server from the site's page and run a server-side check.",
         ],
       },

@@ -7,7 +7,7 @@ network and volumes, so it does not touch XAMPP or other Docker projects
 
 | What | Where |
 |---|---|
-| Installation package | `InfiniteAI-CommandCenter-0.4.0-windows.zip` (in the GitHub repo at `command-center/releases/`, with a `.sha256` file) |
+| Installation package | `InfiniteAI-CommandCenter-0.5.0-windows.zip` (in the GitHub repo at `command-center/releases/`, with a `.sha256` file) |
 | Source | GitHub `mytechmobilebiz/Jarvis`, branch `ccr-eb27a2af-8u7i39`, folder `command-center/` |
 | Install location on the PC | `C:\InfiniteAI\InfiniteAI-CommandCenter` (outside `C:\xampp`) |
 | Dashboard | http://localhost:8090 (bound to 127.0.0.1 only) |
@@ -31,9 +31,9 @@ The scripts are run with `-ExecutionPolicy Bypass` for that one process only;
 the machine-wide execution policy is not changed. `preflight.ps1` and
 `status.ps1` are read-only; read any script first if you wish.
 
-1. Download `InfiniteAI-CommandCenter-0.4.0-windows.zip` and, optionally,
+1. Download `InfiniteAI-CommandCenter-0.5.0-windows.zip` and, optionally,
    check it against the `.sha256` file:
-   `Get-FileHash .\InfiniteAI-CommandCenter-0.4.0-windows.zip -Algorithm SHA256`
+   `Get-FileHash .\InfiniteAI-CommandCenter-0.5.0-windows.zip -Algorithm SHA256`
 2. Extract it to `C:\InfiniteAI` (you get `C:\InfiniteAI\InfiniteAI-CommandCenter`).
 3. Open PowerShell and run:
 
@@ -73,9 +73,17 @@ and run the same command from `Jarvis\command-center`.
 | `ANTHROPIC_API_KEY` (optional) | Deployment default for Claude; normally leave empty and enter your key on the dashboard's Settings page instead (stored encrypted) |
 | `DASHBOARD_PORT`, `N8N_PORT`, `TZ` | Local ports and time zone |
 
+Upgrading from 0.4.0 to 0.5.0 needs no new keys and changes no
+data: there are no new migrations, and the agents, their on/off states and the
+approval rules stay as they are. Follow "Updating" below. One thing to know
+first: pending approvals from 0.4.0 for a repair, a service restart, an email
+or a publication cannot be approved after the upgrade (0.5.0 approvals name
+the exact draft, version or key, and those older requests do not). Reject them
+and request them again. See [RELEASE_NOTES_0.5.0.md](RELEASE_NOTES_0.5.0.md).
+
 Upgrading from 0.3.0 to 0.4.0 needs no new keys and changes no data: 0.4.0
 is the redesigned dashboard; the database, agents and approval rules are
-unchanged. Follow "Updating" below.
+unchanged.
 
 Upgrading from 0.2.0 to 0.3.0 needs no new keys; follow "Updating" below. The
 first start renames the agents to the seven official ones and keeps all your
@@ -94,7 +102,16 @@ Put your own template there (placeholders such as `{{CLIENT_NAME}}` and
 `{{CLIENT_COMPANY}}`; see `templates\README.md`). The folder
 is read-only to the application and is not included in backups or git.
 
-## The dashboard (redesigned in 0.4.0)
+## The dashboard (redesigned in 0.4.0, closer to the reference in 0.5.0)
+
+The Dashboard page shows the four stat cards (AI agents, websites, tasks
+today, website uptime), a card for each of the seven agents, task activity by
+category, service status, recent tasks and active workflows. Every value comes
+from the Command Center itself. Where nothing can be measured it says so:
+**PC Resources** and the **Intern 2** card in the sidebar show "Not connected"
+because no source for them exists yet. **Quick Actions** in the sidebar run
+read-only checks and reports (and, for admins, open the n8n editor). The
+bottom of the sidebar shows the dashboard's and the API's versions.
 
 Type a request into the command input at the top of every page (or press
 <kbd>Ctrl</kbd>+<kbd>K</kbd>) and press **Execute**; it goes to the AI
@@ -119,6 +136,11 @@ restricted, non-root SSH account that can only run an allowlist of operations
 follow [SERVER_SETUP.md](SERVER_SETUP.md). The `server` folder of this package
 holds what you copy there. Until you do, everything else works as before and no
 SSH connection is made.
+
+**Scan host key** is carried out by the worker (since 0.5.0; before, the scan ran
+in the API container, which has no route to the internet, and could not reach
+a real server). It reads only the key the server presents; nothing is trusted
+until you compare the fingerprint and press Trust.
 
 ## Remote access (optional, not set up)
 
@@ -203,6 +225,9 @@ followed by `docker volume rm infinite-command-center_wp_test_html`.
 
 ## Troubleshooting
 
+- **Version mismatch banner, or the smoke test's "versions match this folder" fails**: the API container still runs an older version. Run `install.ps1` again from the new version's folder (with the `.env` copied there), then `smoke.ps1`. `.\scripts\status.ps1` prints the folder's version, the running API's version and the folder the API container was created from: if that folder is the old one, the install was run from there.
+- **"No internet on this PC" banner**: the monitor could not reach api.wordpress.org, www.cloudflare.com or www.google.com, so websites are marked "not checked" instead of down. If your network blocks those hosts on purpose, set `MONITOR_CONTROL_URLS` in `.env` to addresses that answer (see `.env.example`), then `start.ps1 -NoBuild`.
+- **Scan host key says the worker is not running**: `.\scripts\status.ps1`, then `start.ps1 -NoBuild`.
 - **No microphone button**: open the dashboard as `http://localhost:8090` (not the PC's IP address) in Chrome or Edge, and sign in as an admin or operator; viewers cannot send commands. If the browser blocked the microphone, allow it from the padlock/site icon in the address bar.
 - **Port in use**: set `DASHBOARD_PORT` / `N8N_PORT` in `.env`, then `start.ps1`.
 - **`docker compose up` fails pulling images**: check Docker Desktop is signed in or that Docker Hub is reachable.
