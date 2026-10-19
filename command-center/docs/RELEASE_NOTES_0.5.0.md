@@ -101,10 +101,16 @@ Read-only monitoring still runs automatically, as before.
 
 | Suite | Result |
 |---|---|
-| Backend, unit and integration (pytest, PostgreSQL 18) | see PROJECT_STATUS.md, "Test results" |
-| Dashboard (Vitest) | see PROJECT_STATUS.md |
-| End-to-end on the running stack (Playwright Chromium; disposable WordPress with real OpenSSH and cc-gate) | see PROJECT_STATUS.md |
-| Upgrade 0.4.0 → 0.5.0 from the zips (PowerShell 7.4) | see PROJECT_STATUS.md |
+| Backend, unit and integration (pytest, PostgreSQL 18) | 501 passed, 0 failed |
+| Dashboard (Vitest) | 166 passed |
+| End-to-end on the running stack (Playwright Chromium; disposable WordPress with real OpenSSH and cc-gate) | 41 passed in each of 3 consecutive runs |
+| PowerShell scripts | all 11 parse with PowerShell's parser; ASCII-only |
+| Upgrade 0.4.0 → 0.5.0 from the zips (PowerShell 7.4) | passed: the shipped 0.4.0 zip with data, then this package with the copied `.env`. Seven smoke checks passed, data and switched-off agent kept, the old email approval refused and re-requested, uninstall took a final backup and left another Docker project untouched |
+
+The upgrade test caught two script problems before release, both fixed. The
+new smoke check had a PowerShell syntax error. And `install.ps1` reported
+success when a script it calls could not run at all; it now stops with an
+error instead.
 
 Nothing was run on your PC, your websites or your servers.
 
@@ -114,9 +120,11 @@ Nothing was run on your PC, your websites or your servers.
   publishes a newer version between the approval and the run, that newer
   version is installed. The approval shows the version found when it was
   requested. Pinning needs a cc-gate change, planned for a later release.
-- At 1440 × 900 the dashboard needs about 1,280 px of height. The reference
-  fits in 1,024, because 0.5.0 keeps the Recent Tasks and Active Workflows
-  panels below the fold rather than shrinking text.
+- The dashboard page is about 1,280 px tall at desktop widths. The reference
+  fits in 1,024, so Recent Tasks and Active Workflows are below the fold.
+- On screens less than about 1,000 px tall, the upper part of the sidebar
+  (pages and Quick Actions) scrolls, while Intern 2 and the system lines stay
+  at the bottom.
 - Owner decisions still open (REFERENCE_DESIGN_GAP.md): what Intern 2 is and
   how it connects; a source for PC resources; system uptime; approval
   expiry and self-approval (C3-12, C3-13); on-demand checks of any public

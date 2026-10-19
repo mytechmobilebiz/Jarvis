@@ -169,9 +169,11 @@ Known limits that remain (by design or not yet done):
 
 | Suite | Result | What it covers |
 |---|---|---|
-| Backend unit + integration (pytest, real PostgreSQL 18) | **425 passed, 0 failed** | API, auth, roles, approvals (binding, production, run-time re-checks), worker, supervisor, all agents, the gate and its installer, cc-wp and the site helper (real programs), SSH through a real asyncssh server running the real cc-gate, repairs, monitoring checks incl. hostile-input timing, Credit Repair isolation |
-| Dashboard (Vitest) | **62 passed** | sign-in, the new dashboard, sidebar sections by role, the AI command input (sends through the Supervisor API; viewers blocked), voice input shown only where supported and only after consent, keyboard paths (drawer, dialogs, popovers, chart, clickable rows), Credit Repair task details hidden without the sensitive-data permission, approvals incl. typed production confirmation, servers and records pages |
-| End-to-end, running stack (pytest + Playwright Chromium) | **41 passed** in each of the last 3 consecutive full runs (0.4.0 production build) | the new dashboard tiles, the command input running a real request and linking to it, every sidebar section opening without errors, everything from 0.2.0, plus a disposable WordPress server with **real OpenSSH, sudo, WP-CLI and cc-gate installed by install-gate.sh**: the key can do nothing but run cc-gate; cloaking malware found and its plugin deactivated after approval; hijacked home/siteurl repaired; debug.log quarantined; a planted WP-CLI config ignored; a local plugin never reinstalled from WordPress.org; service restart through the sudo rule; production confirmation; audit on both sides; an impostor host key refused |
+| Backend unit + integration (pytest, real PostgreSQL 18) | **501 passed, 0 failed** (0.5.0) | API, auth, roles, approvals (binding, production, run-time re-checks), worker, supervisor, all agents, the gate and its installer, cc-wp and the site helper (real programs), SSH through a real asyncssh server running the real cc-gate, repairs, monitoring checks incl. hostile-input timing, Credit Repair isolation |
+| Dashboard (Vitest) | **166 passed** (0.5.0) | the 0.5.0 dashboard (stat cards, agent cards, service status, PC resources and Intern 2 not connected, task activity by category, recent tasks, active workflows), Quick Actions, the version line and mismatch banner, the offline banner, approvals with exact targets and typed confirmations, plus everything from 0.4.0: sign-in, sidebar sections by role, the command input, voice input gating, keyboard paths, Credit Repair details hidden without permission |
+| End-to-end, running stack (pytest + Playwright Chromium) | **41 passed** in each of the last 3 consecutive full runs (0.5.0 production build) | the 0.5.0 dashboard (seven agent cards, service status from real checks, PC Resources not connected), the command input running a real request, every sidebar section opening without errors (including the pages under More), everything from 0.2.0, plus a disposable WordPress server with **real OpenSSH, sudo, WP-CLI and cc-gate installed by install-gate.sh**: the host key scanned **by the worker** and pinned; the key can do nothing but run cc-gate; cloaking malware found and its plugin deactivated after approval; hijacked home/siteurl repaired; debug.log quarantined; a planted WP-CLI config ignored; a local plugin never reinstalled from WordPress.org; service restart through the sudo rule; production confirmation (and the typed name to leave production); audit on both sides; an impostor host key refused |
+| PowerShell scripts | **all 11 parse** with PowerShell's own parser; ASCII-only | the parser check is new in 0.5.0, after the upgrade test found a parse error in the new smoke check (fixed before release) |
+| Upgrade 0.4.0 → 0.5.0 from the zips (PowerShell 7.4) | **passed** | the shipped 0.4.0 zip (checksum verified) installed, smoke test passed; data added (a site, a switched-off agent, a production server, a lead with a pending email approval, supervisor requests). Before upgrading, the new smoke test run against the old containers **failed** its version check as intended ("the API reports 0.4.0 but this folder is 0.5.0"). 0.5.0 installed over it with the copied `.env`: no new migrations; **all seven smoke checks passed**; `status.ps1` showed folder 0.5.0, API 0.5.0 and the new folder; data kept, the agent still off; the 0.4.0 email approval refused with "the target changed since this was requested" and rejected; a new one named the recipient, subject and draft and ran (recorded in the Outbox as mock); the host-key scan ran as a worker task; with no internet, a site check recorded nothing as down and set the offline state; uninstall with data deletion took a final backup (three dumps) and left an unrelated Docker project untouched |
 | Server programs on Python 3.6 (EL8's platform-python) | **passed** | cc-gate, cc-wp and cc-site-helper run, time out and cap output correctly |
 | Upgrade 0.3.0 → 0.4.0 from the zips (PowerShell 7.4) | **passed** | the shipped 0.3.0 zip installed (smoke test passed), data added (a site, a switched-off agent, a lead with a pending send approval, supervisor requests); 0.4.0 installed over it with the copied `.env`: no new migrations, data kept, the agent still off, the old approval approved and run (recorded in the Outbox), new dashboard served with `microphone=(self)`, smoke test passed; uninstall with data deletion took a final backup and left an unrelated Docker project untouched |
 | Upgrade 0.2.0 → 0.3.0 from the zips (PowerShell 7.4) | **passed** | the shipped 0.2.0 installed, data added (a site, a switched-off agent, a pending approval, a Credit Repair client); 0.3.0 installed over it with the copied `.env`: migrations 0004 and 0005 applied, agents renamed, the agent still off, the old approval approved and run, Credit Repair data readable, smoke test passed |
@@ -183,12 +185,14 @@ Known limits that remain (by design or not yet done):
 |---|---|---|
 | 0.2.0 install and smoke test | verified | **verified by the owner** |
 | 0.3.0 install, upgrade from 0.2.0, smoke test | verified (PowerShell 7.4) | **verified by the owner** (six smoke tests passed) |
-| 0.4.0 upgrade from 0.3.0, smoke test, new dashboard | verified (PowerShell 7.4, Chromium) | not yet |
+| 0.4.0 upgrade from 0.3.0, smoke test, new dashboard | verified (PowerShell 7.4, Chromium) | **verified by the owner** (six smoke tests passed; the footer showed v0.2.0, see 0.5.0) |
+| 0.5.0 upgrade from 0.4.0, seven smoke checks, new dashboard | verified (PowerShell 7.4, Chromium) | not yet |
 | Voice dictation | the button, consent and gating tested in Chromium with a simulated recogniser; real speech recognition **not tested** (the sandbox has no microphone and no Google/Microsoft speech service) | not yet: try it in Chrome or Edge at `http://localhost:8090` |
-| Scripts under Windows PowerShell 5.1 | static checks only (ASCII-only, no 6/7-only syntax) | 0.3.0 scripts verified by the owner; unchanged in 0.4.0 |
+| Scripts under Windows PowerShell 5.1 | static checks only (ASCII-only, no 6/7-only syntax); every script parses with PowerShell 7.4's parser | 0.4.0 scripts verified by the owner; smoke, status, start, install, restore and uninstall changed in 0.5.0 |
 | cc-gate on EL8/EL9 (AlmaLinux/Rocky) with CWP | tested on Alpine Linux with OpenSSH, sudo 1.9 and Python 3.12; Python 3.6 compatibility checked separately | **not yet: nothing has been run on a CWP server** |
 | Operations that download from WordPress.org (core checksums, core reinstall, plugin update/reinstall) | implemented, refusal and failure paths tested; success paths **not verified** (the sandbox cannot reach WordPress.org) | not yet |
-| Monitoring real internet sites | blocked by the sandbox's network | not yet |
+| Monitoring real internet sites | blocked by the sandbox's network (which let the offline control check be tested for real: nothing recorded as down) | not yet |
+| Host-key scan of a real server | the worker's scan tested against the disposable server; a real public server cannot be reached from the sandbox | not yet |
 | Claude API with a real key | mocked only | not yet |
 
 ## Owner decisions (2026-10-19)
@@ -269,19 +273,28 @@ owner's approval; the dashboard and the n8n editor stay bound to localhost.
    (B8) need decisions before selling.
 4. **Repository** (B3): the Command Center sits inside the Jarvis repository,
    which is public; it should move to its own private repository.
+5. **Remote access** (docs/REMOTE_ACCESS_PLAN.md): waiting for the DNS
+   inventory report and the owner's approval; no DNS, Cloudflare or tunnel
+   change is made before that.
 
 ## Next steps
 
-1. Owner: upgrade the PC to 0.4.0 (DEPLOY_WINDOWS.md, "Updating": back up,
-   extract the new zip, copy `.env`, run `install.ps1`), check the six smoke
-   tests, then open http://localhost:8090 and try the command input (and, if
-   you like, voice dictation in Chrome or Edge).
-2. Owner: send the Windows test results (the six smoke tests and anything
-   that looks wrong), and answer the questions in docs/REFERENCE_DESIGN_GAP.md.
-3. Owner: on a test server, follow SERVER_SETUP.md; on the CWP / Servers page
-   scan and compare the host key, then run Test connection and a server-side
-   check.
-4. Next development, after 0.4.0 is verified on the PC: the design changes
-   in docs/REFERENCE_DESIGN_GAP.md, an
-   owner-acknowledged administrator baseline, and the first real integration
-   you choose (for example email through your SMTP account).
+1. Owner: back up, verify the 0.5.0 zip against its `.sha256`, and upgrade
+   (DEPLOY_WINDOWS.md, "Updating": extract to a new folder, copy `.env`, run
+   `install.ps1`). All **seven** smoke checks should pass. If "versions match
+   this folder" fails, send the output of `.\scripts\status.ps1`.
+2. Owner: send the Windows results and a screenshot of the dashboard (the
+   screenshot sent with the 0.4.0 results did not arrive here).
+3. Owner: reject and re-request any repair, restart, email or publication
+   approvals still pending from 0.4.0.
+4. Owner decisions: the open items in docs/REFERENCE_DESIGN_GAP.md (Intern 2,
+   PC resources, system uptime, C3-11 to C3-14); for remote access, run
+   `scripts\dns-inventory.ps1` and send the report (docs/REMOTE_ACCESS_PLAN.md);
+   the six 0.6.0 messaging decisions above.
+5. Owner: on a test server, follow SERVER_SETUP.md; on the CWP / Servers page
+   scan and compare the host key (this now works from the PC), then run Test
+   connection and a server-side check.
+6. Next development, after 0.5.0 is verified on the PC: whatever the owner
+   decides from item 4, pinning the plugin version in cc-gate's update
+   (C3-07), an owner-acknowledged administrator baseline, and the first real
+   integration you choose (for example email through your SMTP account).

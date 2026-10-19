@@ -18,6 +18,12 @@ external action needs an explicit approval that names the exact action and
 target; preserve the database, Docker volumes, agents, approval rules and
 APIs (additive read-only API changes only).
 
+**Status after 0.5.0** (2026-10-19): the items marked "0.5.0" below are in
+0.5.0 (see [RELEASE_NOTES_0.5.0.md](RELEASE_NOTES_0.5.0.md)), with one
+exception: C3-07 shows the plugin version a diagnosis found, but cc-gate
+does not yet pin that version when it updates. Items marked "deferred" or
+"owner decision" are unchanged.
+
 ## Summary
 
 - The reference is **denser** than 0.4.0 everywhere: 70 px header, 208 px
