@@ -185,15 +185,16 @@ export function InternetLost({ status, meta }: { status: SystemStatus | null; me
   );
 }
 
-/** Shown when the API answering this dashboard is a different version, e.g. an API container the last install did not replace. */
+/** Shown when the API answering this dashboard reports a different version. Up to 0.5.0, a new release could be built from out-of-date
+ * copies of the files that hold the version numbers (Docker kept them from an earlier build; see scripts/prepare-build.ps1). */
 function VersionMismatch({ status }: { status: SystemStatus | null }) {
   if (!status || status.version === __APP_VERSION__) return null;
   return (
     <div className="version-banner">
       <div className="alert alert-warn" role="status">
-        <strong>Version mismatch.</strong> This dashboard is version {__APP_VERSION__}, but the API it talks to reports version {status.version}. The last
-        installation did not replace the API container. Run <code>scripts\install.ps1</code> again from the {__APP_VERSION__} folder, then{" "}
-        <code>scripts\smoke.ps1</code>; see <Link to="/kb#troubleshooting">Knowledge Base › Troubleshooting</Link>.
+        <strong>Version mismatch.</strong> This dashboard reports version {__APP_VERSION__}, but the API it talks to reports version {status.version}: at
+        least one of them was not built from the files of the version you installed. Run <code>scripts\install.ps1</code> again from that version's
+        folder, then <code>scripts\smoke.ps1</code>; see <Link to="/kb#troubleshooting">Knowledge Base › Troubleshooting</Link>.
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
 // 0.5.0 shell: reference header and sidebar, Quick Actions, the Intern 2 card, and stale-status handling (C2-03, C2-04).
 import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
+import releaseFile from "../../../VERSION?raw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import { usePoll } from "../hooks";
@@ -266,6 +267,25 @@ describe("sidebar", () => {
   it("shows the dashboard and API versions in the system footer", async () => {
     const { nav } = await renderShell();
     await waitFor(() => expect(nav.querySelector(".version-line")).toHaveTextContent(`Dashboard v${__APP_VERSION__} · API v0.5.0`));
+  });
+
+  it("builds the dashboard as the release in the VERSION file (0.5.1: stale copies of the version numbers)", () => {
+    expect(__APP_VERSION__).toBe(releaseFile.trim());
+  });
+
+  it("warns on every page when the API reports another version, without claiming which side is current", async () => {
+    await renderShell({ "GET /api/system/status": { ...status, version: "0.2.0" } });
+    const banner = await screen.findByText(/Version mismatch\./);
+    expect(banner.closest(".alert")).toHaveTextContent(
+      `This dashboard reports version ${__APP_VERSION__}, but the API it talks to reports version 0.2.0: at least one of them was not built from the files of the version you installed.`,
+    );
+    expect(banner.closest(".alert")).toHaveTextContent("Run scripts\\install.ps1 again from that version's folder");
+  });
+
+  it("shows no mismatch banner when the API reports this dashboard's version", async () => {
+    await renderShell({ "GET /api/system/status": { ...status, version: __APP_VERSION__ } });
+    await screen.findByRole("complementary", { name: "Main navigation" });
+    expect(screen.queryByText(/Version mismatch\./)).toBeNull();
   });
 });
 

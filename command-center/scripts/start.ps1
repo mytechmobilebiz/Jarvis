@@ -25,6 +25,11 @@ if ($envValues["COMPOSE_FILE"] -match 'docker-compose\.tunnel\.yml') {
   }
 }
 
+# Also with -NoBuild: compose builds an image that is missing, and that build must be checked too.
+$global:LASTEXITCODE = 1
+& (Join-Path $PSScriptRoot "prepare-build.ps1")
+if ($LASTEXITCODE -ne 0) { exit 1 }
+
 $composeArgs = @("compose", "up", "-d")
 if (-not $NoBuild) { $composeArgs += "--build" }
 Write-Host "docker $($composeArgs -join ' ')"

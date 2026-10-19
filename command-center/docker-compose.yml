@@ -79,6 +79,8 @@ services:
       context: ./backend
       args:
         REGISTRY: ${REGISTRY:-docker.io}
+        # Set by the install and start scripts from the VERSION file; the build checks the copied code against it.
+        APP_VERSION: ${CC_RELEASE_VERSION:-}
       secrets: [extra_ca]
     image: infinite-command-center/backend:local
     restart: unless-stopped
@@ -113,6 +115,7 @@ services:
       context: ./dashboard
       args:
         REGISTRY: ${REGISTRY:-docker.io}
+        APP_VERSION: ${CC_RELEASE_VERSION:-}
       secrets: [extra_ca]
     image: infinite-command-center/dashboard:local
     restart: unless-stopped

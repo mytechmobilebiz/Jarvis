@@ -15,7 +15,12 @@ if ($apiVersion) {
   $color = if ($apiVersion -eq $expected) { "Green" } else { "Yellow" }
   Write-Host "Running API container: version $apiVersion" -ForegroundColor $color
 } else { Write-Host "Running API container: not answering" -ForegroundColor Red }
-# Which folder the running API container was created from (an older install folder means it was not replaced).
+try {
+  $dashboardVersion = (Invoke-RestMethod "http://127.0.0.1:$port/version.json" -TimeoutSec 5).version
+  $color = if ($dashboardVersion -eq $expected) { "Green" } else { "Yellow" }
+  Write-Host "Running dashboard: version $dashboardVersion" -ForegroundColor $color
+} catch { Write-Host "Running dashboard: version not available" -ForegroundColor Red }
+# Which folder the running API container was created from (another folder means the containers were last created from there).
 $apiId = (docker compose ps -q api 2>$null | Out-String).Trim()
 if ($apiId) {
   $labels = docker inspect $apiId --format '{{json .Config.Labels}}' 2>$null | Out-String | ConvertFrom-Json

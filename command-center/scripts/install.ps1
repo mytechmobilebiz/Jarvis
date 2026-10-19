@@ -41,6 +41,9 @@ docker compose config --quiet
 if ($LASTEXITCODE -ne 0) { Fail "docker compose rejected the configuration (see the message above)" }
 
 Step "3/5 Building and validating the application image"
+$global:LASTEXITCODE = 1
+& (Join-Path $scripts "prepare-build.ps1")
+if ($LASTEXITCODE -ne 0) { Fail "could not prepare the build folders (see the message above)" }
 docker compose build
 if ($LASTEXITCODE -ne 0) { Fail "the image build failed; check the internet connection and Docker Desktop" }
 docker compose run --rm --no-deps api python -m app.cli check-config

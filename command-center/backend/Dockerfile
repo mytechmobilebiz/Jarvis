@@ -15,6 +15,11 @@ RUN --mount=type=secret,id=extra_ca,required=false \
     if [ -s /run/secrets/extra_ca ]; then export PIP_CERT=/run/secrets/extra_ca; fi; \
     pip install -r requirements.txt
 COPY app ./app
+# APP_VERSION is this release's version, from the folder's VERSION file (the install and start scripts pass
+# it). If the copied code says otherwise, Docker built from an out-of-date copy of the build folder: fail
+# here rather than run old code. Empty (a manual build) skips the check.
+ARG APP_VERSION=""
+RUN if [ -n "$APP_VERSION" ]; then python -c "import sys, app; v = app.__version__; sys.exit(0 if v == sys.argv[1] else f'app/__init__.py in this build says {v}, but this release is {sys.argv[1]}: Docker used an out-of-date copy of the backend folder')" "$APP_VERSION"; fi
 
 USER cc
 EXPOSE 8000

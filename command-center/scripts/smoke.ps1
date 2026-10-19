@@ -47,8 +47,9 @@ Check "versions match this folder" {
   $expected = (Get-Content (Join-Path $root "VERSION") -TotalCount 1).Trim()
   $apiVersion = (Invoke-RestMethod "$base/api/system/status" -WebSession $web).version
   $dashboardVersion = (Invoke-RestMethod "$base/version.json").version
-  if ($apiVersion -ne $expected) { throw "the API reports $apiVersion but this folder is ${expected}: the API container was not replaced. Run install.ps1 from this folder again" }
-  if ($dashboardVersion -ne $expected) { throw "the dashboard reports $dashboardVersion but this folder is ${expected}: run install.ps1 from this folder again" }
+  if ($apiVersion -ne $expected -or $dashboardVersion -ne $expected) {
+    throw "this folder is $expected, but the API reports $apiVersion and the dashboard $dashboardVersion. Run install.ps1 from this folder again (it rebuilds from fresh copies of the files); if this stays, send the output of status.ps1"
+  }
   "API $apiVersion, dashboard $dashboardVersion"
 }
 Check "worker running" {

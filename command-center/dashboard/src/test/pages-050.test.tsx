@@ -757,7 +757,9 @@ describe("Knowledge Base (0.5.0)", () => {
     expect(screen.getAllByText(/cannot measure this PC's processor, memory or disk/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Not connected/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/smoke\.ps1/, { selector: "code" }).length).toBeGreaterThan(0);
-    expect(screen.getByText(/the running API container's version and the folder the container was created from/)).toBeInTheDocument();
+    expect(screen.getAllByText(/the versions the API and the dashboard report and the folder the API container was created from/).length).toBe(2);
+    // 0.5.1: the cause of a mismatch is out-of-date copies of the files in Docker's build, not a container left running.
+    expect(screen.getByText(/refresh the files before every build and the build stops if the copied code is the wrong version/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Typed confirmations" })).toBeInTheDocument();
     expect(screen.getAllByText(/Host key CHANGED/).length).toBeGreaterThan(0);
     expect(screen.getByRole("heading", { name: "What an approval card shows" })).toBeInTheDocument();
