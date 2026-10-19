@@ -72,10 +72,22 @@
   gap: 4px 6px;
   margin: -4px 0 12px;
 }
-.ap-meta code {
-  overflow-wrap: anywhere;
+/* the agent.capability chip stays on one line and ellipsises on narrow screens */
+.ap-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+.ap-action code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ap-meta-icon {
+  flex: none;
   color: var(--faint);
 }
 .ap-description {
@@ -187,6 +199,13 @@
   color: var(--good-text);
   background: var(--good-soft);
   border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+/* three-tile row: keep three columns until the phone layout (tiles.css drops to two at 1280px) */
+@media (min-width: 761px) and (max-width: 1280px) {
+  .tiles.ap-tiles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 560px) {

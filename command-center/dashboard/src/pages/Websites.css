@@ -30,6 +30,11 @@
   color: var(--bad-text);
 }
 
+/* a card title that wraps keeps its icon at full size */
+.ws-page .card-head h2 > svg {
+  flex: none;
+}
+
 /* sites table */
 .table.ws-table td {
   vertical-align: middle;
@@ -56,6 +61,27 @@
 }
 
 /* site detail dialog */
+/* dialog header: a long title wraps beside the close button instead of pushing it onto its own line */
+.ws-page .modal .card-head {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+.ws-page .modal .card-head h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding-top: 6px;
+}
+.ws-page .modal .card-head .btn {
+  flex: none;
+}
+
 .ws-detail-head {
   overflow-wrap: anywhere;
+}
+/* list items with inline times and text read as one sentence (the shared .list lays children out as flex items) */
+.list.ws-incidents li {
+  display: block;
+}
+.table.ws-history td:first-child {
+  white-space: nowrap;
 }

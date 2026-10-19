@@ -82,7 +82,7 @@ def test_every_sidebar_section_opens(signed_in: Page):
 def test_supervisor_console(signed_in: Page):
     page = signed_in
     nav(page, "AI Supervisor")
-    page.get_by_role("button", name="Check all websites").click()
+    page.get_by_role("button", name="Check all websites", exact=True).click()
     page.get_by_role("button", name="Send").click()
     expect(page.get_by_text("Routing this to: monitoring.check_all_sites.")).to_be_visible(timeout=30_000)
     expect(page.locator(".summary")).to_contain_text("Checked", timeout=90_000)

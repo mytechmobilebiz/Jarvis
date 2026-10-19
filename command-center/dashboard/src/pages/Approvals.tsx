@@ -44,11 +44,12 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
       }
     >
       <p className="muted small ap-meta">
-        <Icon name="agents" size={14} className="ap-meta-icon" />
-        <code>
-          {approval.agent}.<wbr />
-          {approval.capability}
-        </code>{" "}
+        <span className="ap-action">
+          <Icon name="agents" size={14} className="ap-meta-icon" />
+          <code title={`${approval.agent}.${approval.capability}`}>
+            {approval.agent}.{approval.capability}
+          </code>
+        </span>{" "}
         · requested <Time iso={approval.created_at} /> · <Link to={`/tasks?id=${approval.task_id}`}>task #{approval.task_id}</Link>
       </p>
       {approval.details.capability_description ? <p className="ap-description">{approval.details.capability_description}</p> : null}
@@ -112,8 +113,10 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
 export default function Approvals() {
   const [tab, setTab] = useState<"pending" | "all">("pending");
   const list = usePoll(() => api.get<{ approvals: Approval[] }>(`/api/approvals?status=${tab}`), 5_000, [tab]);
-  // Tiles summarise the pending approvals in the list already loaded (History holds the newest of every status).
+  // Tiles summarise the pending approvals in the list already loaded. History holds the newest 100 of every status,
+  // so when it is full an older pending approval could sit outside it and the tiles say so.
   const pending = list.data ? list.data.approvals.filter((a) => a.status === "pending") : null;
+  const partial = tab === "all" && (list.data?.approvals.length ?? 0) >= 100;
   const productionPending = pending?.filter((a) => a.details.production === true) ?? [];
   const changes = pending?.filter((a) => a.risk === "change" || a.risk === "destructive").length ?? 0;
   const outbound = pending?.filter((a) => a.risk === "external").length ?? 0;
@@ -141,14 +144,16 @@ export default function Approvals() {
           </button>
         </div>
       </header>
-      <div className="tiles">
+      <div className="tiles ap-tiles">
         <Tile
           icon="approvals"
           tone={!pending ? "muted" : pending.length ? "warn" : "green"}
           label="Waiting for a decision"
           hint={
             !pending ? (
-              (list.error ?? "…")
+              list.error ? "The list did not load" : "Loading…"
+            ) : partial ? (
+              "Among the newest 100 approvals; Pending lists them all"
             ) : oldest ? (
               <>
                 Oldest requested <Time iso={oldest.created_at} />
@@ -176,7 +181,7 @@ export default function Approvals() {
         >
           {value(pending ? productionPending.length : undefined)}
         </Tile>
-        <Tile icon="server" tone="cyan" label="Site and server changes" hint={pending ? `${outbound} to send or publish · ${spending} to spend money` : "…"}>
+        <Tile icon="server" tone="cyan" label="Site and server changes" hint={pending ? `${outbound} to send or publish · ${spending} to spend money` : undefined}>
           {value(pending ? changes : undefined)}
         </Tile>
       </div>

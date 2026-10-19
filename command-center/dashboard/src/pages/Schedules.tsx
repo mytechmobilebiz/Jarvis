@@ -36,7 +36,7 @@ export default function Schedules() {
         </div>
       </header>
       {list.data ? (
-        <div className="tiles">
+        <div className="tiles sc-tiles">
           <Tile
             icon="calendar"
             tone="purple"
@@ -61,7 +61,7 @@ export default function Schedules() {
             <Icon name="calendar" size={18} className="card-icon" /> Agent routines
           </>
         }
-        actions={<span className="muted small">Cross-system workflows run in n8n</span>}
+        actions={canOperate ? <span className="muted small">Cron changes save when you leave the field</span> : null}
       >
         {list.data?.schedules.length ? (
           <div className="table-wrap">
@@ -83,13 +83,13 @@ export default function Schedules() {
                       <strong>{s.name}</strong>
                       <div className="muted small">{s.description}</div>
                     </td>
-                    <td className="sc-runs">
-                      <code>
-                        {s.agent}.<wbr />
+                    <td className="sc-runs" data-label="Runs">
+                      <code className="sc-cap" title={`${s.agent}.${s.capability}`}>
                         {s.capability}
                       </code>
+                      <span className="sc-agent">{s.agent}</span>
                     </td>
-                    <td>
+                    <td className="sc-cron" data-label="Cron">
                       {canOperate ? (
                         <input
                           aria-label={`Cron for ${s.name}`}
@@ -101,11 +101,13 @@ export default function Schedules() {
                         <code>{s.cron}</code>
                       )}
                     </td>
-                    <td className="sc-nowrap">{s.enabled ? <Time iso={s.next_run_at} /> : "—"}</td>
-                    <td className="sc-nowrap muted">
+                    <td className="sc-nowrap sc-next" data-label="Next">
+                      {s.enabled ? <Time iso={s.next_run_at} /> : "—"}
+                    </td>
+                    <td className="sc-nowrap sc-last muted" data-label="Last">
                       <Time iso={s.last_run_at} />
                     </td>
-                    <td className="sc-nowrap">
+                    <td className="sc-nowrap sc-state-cell">
                       {canOperate ? (
                         <span className="sc-state">
                           <Pill value={s.enabled ? "up" : "disabled"} label={s.enabled ? "enabled" : "paused"} />

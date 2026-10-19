@@ -363,7 +363,7 @@ function SiteDetail({ site, onClose, onChanged }: { site: Site; onClose: () => v
       {full.incidents_30d?.length ? (
         <>
           <h3>Downtime in the last 30 days</h3>
-          <ul className="list small">
+          <ul className="list small ws-incidents">
             {full.incidents_30d.map((i) => (
               <li key={i.start}>
                 <Time iso={i.start} />, {i.minutes} min{i.end ? "" : " (ongoing)"}: {i.reason}
@@ -374,7 +374,7 @@ function SiteDetail({ site, onClose, onChanged }: { site: Site; onClose: () => v
       ) : null}
       <h3>History</h3>
       <div className="table-wrap">
-        <table className="table compact">
+        <table className="table compact ws-history">
           <thead>
             <tr>
               <th>When</th>

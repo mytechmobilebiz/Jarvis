@@ -1,0 +1,160 @@
+/* CWP / Servers page (prefix sv-). Page stylesheets load before styles.css, so rules that adjust shared classes carry an extra class. */
+.sv-tile-time {
+  font-size: 28px;
+}
+/* a card title that wraps keeps its icon at full size */
+.sv-page .card-head h2 > svg {
+  flex: none;
+}
+
+/* long fingerprints, keys and commands wrap instead of widening the page */
+.sv-wrap code,
+.sv-steps code,
+.sv-page .page-head code {
+  overflow-wrap: anywhere;
+}
+pre.plain.sv-keyline {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+  margin: 0 0 12px;
+}
+
+/* setup steps */
+.sv-steps {
+  list-style: none;
+  counter-reset: sv-step;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.sv-steps li {
+  counter-increment: sv-step;
+  position: relative;
+  padding: 9px 12px 9px 46px;
+  min-height: 40px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-2);
+  min-width: 0;
+}
+.sv-steps li::before {
+  content: counter(sv-step);
+  position: absolute;
+  left: 11px;
+  top: 7px;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  background: var(--primary-soft);
+  border: 1px solid rgba(47, 123, 255, 0.35);
+  color: var(--primary-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+.sv-setup > p {
+  margin: 0;
+}
+
+/* add-server form: name and host get more room than port and account */
+.grid-form.sv-add {
+  grid-template-columns: 1.3fr 1.3fr 0.6fr 1fr 1fr auto;
+}
+
+/* servers table */
+.table.sv-table td {
+  vertical-align: middle;
+}
+.sv-server {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 200px;
+}
+.sv-server-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--primary-text);
+  background: var(--primary-soft);
+  border: 1px solid rgba(47, 123, 255, 0.3);
+}
+.sv-server-main {
+  min-width: 0;
+}
+.sv-addr {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sv-nowrap {
+  white-space: nowrap;
+}
+
+/* server dialog */
+/* dialog header: a long title wraps beside the close button instead of pushing it onto its own line */
+.sv-page .modal .card-head {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+.sv-page .modal .card-head h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding-top: 6px;
+}
+.sv-page .modal .card-head .btn {
+  flex: none;
+}
+.sv-detail-head {
+  overflow-wrap: anywhere;
+}
+/* site lines read as one sentence (the shared .list lays children out as flex items) */
+.list.sv-sites li {
+  display: block;
+}
+.sv-page .modal .row-actions select {
+  padding: 4px 30px 4px 10px;
+  font-size: 12.5px;
+  min-width: 180px;
+}
+.sv-op code {
+  overflow-wrap: anywhere;
+}
+.table.sv-audit td.sv-op {
+  min-width: 250px;
+}
+.table.sv-audit .truncate {
+  max-width: 260px;
+}
+.table.sv-audit td.sv-who {
+  min-width: 150px;
+  overflow-wrap: break-word;
+}
+
+.grid-form.sv-add .alert {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 1180px) {
+  .grid-form.sv-add {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  .grid-form.sv-add {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sv-steps li {
+    padding-left: 42px;
+  }
+}

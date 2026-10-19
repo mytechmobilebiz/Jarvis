@@ -2,10 +2,14 @@ import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type Task, type Ticket } from "../api";
 import { useAuth } from "../App";
-import { Card, Empty, ErrorNote, Pill, Time } from "../components";
+import { Card, Empty, ErrorNote, Pill, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
+import { Icon } from "../icons";
+import "./Support.css";
 
 const PRIORITY_TONE: Record<string, string> = { urgent: "critical", high: "warning", normal: "info", low: "unknown" };
+/** Statuses that close a message (the Support agent's own overview counts everything else as open). */
+const CLOSED = ["replied", "closed"];
 
 export default function Support() {
   const { canOperate } = useAuth();
@@ -36,17 +40,58 @@ export default function Support() {
     }
   }
 
+  // Summary of the same list the messages table shows.
+  const all = tickets.data?.tickets ?? [];
+  const loaded = !!tickets.data;
+  const pending = tickets.error ?? "…";
+  const open = all.filter((t) => !CLOSED.includes(t.status));
+  const urgent = open.filter((t) => t.priority === "urgent").length;
+  const high = open.filter((t) => t.priority === "high").length;
+  const awaiting = open.filter((t) => t.reply_artifact_id).length;
+  const untriaged = open.filter((t) => t.status === "open").length;
+
   return (
-    <div className="page">
+    <div className="page sp-page">
       <header className="page-head">
         <div>
+          <div className="eyebrow">Communications</div>
           <h1>Client support</h1>
           <p className="muted">Client messages are triaged (category, priority, sentiment) and a reply is drafted for review. Replies go out only after approval.</p>
         </div>
       </header>
+
+      <div className="tiles">
+        <Tile
+          icon="inbox"
+          tone="blue"
+          label="Open messages"
+          hint={loaded ? `${all.length - open.length} replied or closed${untriaged ? ` · ${untriaged} waiting for triage` : ""}` : pending}
+        >
+          <span className="tile-value tabular">{loaded ? open.length : "—"}</span>
+          {loaded ? <span className="tile-of">of {all.length}</span> : null}
+        </Tile>
+        <Tile icon="alert" tone={urgent ? "bad" : high ? "warn" : "green"} label="Urgent or high priority" hint={loaded ? `${urgent} urgent · ${high} high, among open messages` : pending}>
+          <span className="tile-value tabular">{loaded ? urgent + high : "—"}</span>
+        </Tile>
+        <Tile
+          icon="mail"
+          tone="purple"
+          label="Awaiting reply"
+          hint={loaded ? `Reply drafted, not sent yet${open.length > awaiting ? ` · ${open.length - awaiting} open without a draft` : ""}` : pending}
+        >
+          <span className="tile-value tabular">{loaded ? awaiting : "—"}</span>
+        </Tile>
+      </div>
+
       {canOperate ? (
-        <Card title="Log a client message">
-          <form className="grid-form" onSubmit={add}>
+        <Card
+          title={
+            <>
+              <Icon name="mail" size={18} className="card-icon" /> Log a client message
+            </>
+          }
+        >
+          <form className="grid-form sp-form" onSubmit={add}>
             <input aria-label="client name" placeholder="client name" value={form.customer_name} onChange={(e) => setForm({ ...form, customer_name: e.target.value })} />
             <input aria-label="client email" placeholder="client email" type="email" value={form.customer_email} onChange={(e) => setForm({ ...form, customer_email: e.target.value })} />
             <input aria-label="subject" placeholder="subject" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} required />
@@ -59,53 +104,63 @@ export default function Support() {
       ) : null}
       <ErrorNote error={tickets.error ?? error} />
       {note ? <div className="alert alert-good">{note}</div> : null}
-      <Card title="Messages">
+      <Card
+        title={
+          <>
+            <Icon name="inbox" size={18} className="card-icon" /> Messages
+          </>
+        }
+      >
         {tickets.data?.tickets.length ? (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Message</th>
-                <th>Category</th>
-                <th>Priority</th>
-                <th>Status</th>
-                <th>Received</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {tickets.data.tickets.map((t) => (
-                <tr key={t.id}>
-                  <td>
-                    <strong>{t.subject}</strong>
-                    <div className="muted small">
-                      {t.customer_name || "unknown"} · {t.customer_email || "no email"}
-                      {t.sentiment ? ` · ${t.sentiment}` : ""}
-                    </div>
-                  </td>
-                  <td>{t.category || "…"}</td>
-                  <td>
-                    <Pill value={PRIORITY_TONE[t.priority] ?? "info"} label={t.priority} />
-                  </td>
-                  <td>
-                    <Pill value={t.status === "replied" ? "succeeded" : "info"} label={t.status} />
-                  </td>
-                  <td>
-                    <Time iso={t.created_at} />
-                  </td>
-                  <td>
-                    <div className="row-actions cell-actions">
-                      {t.reply_artifact_id ? <Link to="/drafts">draft</Link> : null}
-                      {canOperate && t.reply_artifact_id && t.status !== "replied" ? (
-                        <button className="btn small" onClick={() => void send(t)}>
-                          Send reply (needs approval)
-                        </button>
-                      ) : null}
-                    </div>
-                  </td>
+          <div className="table-wrap">
+            <table className="table sp-table">
+              <thead>
+                <tr>
+                  <th>Message</th>
+                  <th>Category</th>
+                  <th>Priority</th>
+                  <th>Status</th>
+                  <th>Received</th>
+                  <th />
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {tickets.data.tickets.map((t) => (
+                  <tr key={t.id}>
+                    <td className="sp-message">
+                      <strong className="sp-subject" title={t.subject}>
+                        {t.subject}
+                      </strong>
+                      <div className="muted small sp-from">
+                        {t.customer_name || "unknown"} · {t.customer_email || "no email"}
+                        {t.sentiment ? ` · ${t.sentiment}` : ""}
+                      </div>
+                    </td>
+                    <td>{t.category || "…"}</td>
+                    <td>
+                      <Pill value={PRIORITY_TONE[t.priority] ?? "info"} label={t.priority} />
+                    </td>
+                    <td>
+                      <Pill value={t.status === "replied" ? "succeeded" : "info"} label={t.status} />
+                    </td>
+                    <td className="sp-nowrap">
+                      <Time iso={t.created_at} />
+                    </td>
+                    <td>
+                      <div className="row-actions cell-actions">
+                        {t.reply_artifact_id ? <Link to="/drafts">draft</Link> : null}
+                        {canOperate && t.reply_artifact_id && t.status !== "replied" ? (
+                          <button className="btn small" onClick={() => void send(t)}>
+                            Send reply (needs approval)
+                          </button>
+                        ) : null}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <Empty>No client messages yet.</Empty>
         )}

@@ -202,11 +202,9 @@ export default function Workflows() {
           <p className="muted">Every automation that runs the platform: schedules, the workflow engine and AI Supervisor requests.</p>
         </div>
         <div className="row-actions">
-          {isAdmin ? (
-            <Link className="btn" to="/integrations">
-              <Icon name="plug" size={16} /> Workflow engine
-            </Link>
-          ) : null}
+          <Link className="btn" to="/integrations">
+            <Icon name="plug" size={16} /> Workflow engine
+          </Link>
           <Link className={`btn ${canOperate ? "primary" : ""}`} to="/supervisor">
             <Icon name="sparkles" size={16} /> {canOperate ? "New request" : "AI Supervisor"}
           </Link>
@@ -272,7 +270,7 @@ export default function Workflows() {
           icon="workflows"
           tone={TILE_TONE[state.tone]}
           label="Workflow engine"
-          to={isAdmin ? "/integrations" : undefined}
+          to="/integrations"
           hint={
             !integrations.data ? (
               integrations.error ?? "…"
@@ -439,11 +437,9 @@ export default function Workflows() {
             </>
           }
           actions={
-            isAdmin ? (
-              <Link className="small" to="/integrations">
-                Integrations
-              </Link>
-            ) : null
+            <Link className="small" to="/integrations">
+              Integrations
+            </Link>
           }
         >
           <ErrorNote error={integrations.error} />

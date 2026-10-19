@@ -7,6 +7,9 @@
   align-items: center;
   gap: 8px;
 }
+.ag-section-head h2 > svg {
+  flex: none;
+}
 .ag-section-head p {
   margin: 0;
 }

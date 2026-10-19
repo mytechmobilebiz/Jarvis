@@ -1,5 +1,5 @@
 /* Activity log. Every class here starts with ac-. */
-.ac-locked {
+.alert.ac-locked {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -7,12 +7,12 @@
 
 /* The detail column takes the width that is left and ellipsises inside it. */
 .ac-table {
-  min-width: 860px;
+  min-width: 730px;
 }
-.ac-table td {
+.table.ac-table td {
   vertical-align: middle;
 }
-.ac-table.compact td {
+.table.compact.ac-table td {
   padding-top: 8px;
   padding-bottom: 8px;
 }
@@ -41,7 +41,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: 260px;
+  max-width: 240px;
   min-width: 0;
 }
 .ac-initial {
@@ -97,11 +97,72 @@ code.ac-tone-bad {
   background: var(--bad-soft);
 }
 
-@media (max-width: 760px) {
-  .ac-table {
-    min-width: 720px;
-  }
+@media (max-width: 1100px) {
   .ac-actor {
     max-width: 200px;
+  }
+}
+
+/* narrow screens: each entry becomes a stacked row instead of a wide table */
+@media (max-width: 880px) {
+  .ac-table,
+  .ac-table tbody {
+    display: block;
+    min-width: 0;
+  }
+  .ac-table thead {
+    display: none;
+  }
+  .ac-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "who when"
+      "action target"
+      "detail detail";
+    align-items: center;
+    gap: 6px 12px;
+    padding: 11px 2px;
+    border-bottom: 1px solid var(--border);
+  }
+  .ac-table tr:last-child {
+    border-bottom: 0;
+  }
+  .table.compact.ac-table td {
+    display: block;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+  }
+  .ac-table td.ac-who {
+    grid-area: who;
+  }
+  .ac-actor {
+    max-width: 100%;
+  }
+  .ac-table td.ac-when {
+    grid-area: when;
+    justify-self: end;
+  }
+  .ac-table td.ac-action-cell {
+    grid-area: action;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ac-table td.ac-target {
+    grid-area: target;
+    justify-self: end;
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ac-table td.ac-detail {
+    grid-area: detail;
+    width: auto;
+    max-width: none;
+  }
+  .ac-table td.ac-detail:empty,
+  .ac-table td.ac-detail:has(.ac-clip:empty) {
+    display: none;
   }
 }

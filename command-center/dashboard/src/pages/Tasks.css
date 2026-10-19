@@ -2,7 +2,7 @@
 .tk-filters {
   align-items: center;
 }
-.tk-filters select {
+.filters.tk-filters select {
   min-width: 170px;
 }
 .tk-search {
@@ -16,17 +16,18 @@
   color: var(--muted);
   pointer-events: none;
 }
-.tk-search input {
+.filters.tk-filters .tk-search input {
   width: 200px;
   padding-left: 34px;
 }
 
-/* The summary column takes whatever width is left and ellipsises inside it
-   (width 100% + max-width 0), so the table never runs past the card. */
+/* Table: fixed-size columns hug their content, the summary column takes the
+   width that is left (width 100% + max-width 0) and clamps inside it, so the
+   table never runs past the card. */
 .tk-table {
-  min-width: 820px;
+  min-width: 720px;
 }
-.tk-table td {
+.table.tk-table td {
   vertical-align: middle;
 }
 .tk-table th.tk-summary,
@@ -35,44 +36,149 @@
   max-width: 0;
 }
 .tk-clip {
-  display: block;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
 }
 .tk-id {
+  width: 1%;
   color: var(--muted);
   font-weight: 600;
   white-space: nowrap;
 }
-.tk-nowrap {
+.tk-action,
+.tk-status,
+.tk-risk,
+.tk-when {
   white-space: nowrap;
 }
-.tk-action {
-  min-width: 190px;
-}
-.tk-action code {
-  display: inline-block;
-  max-width: 300px;
-  line-height: 1.5;
+code.tk-cap {
+  display: block;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--text);
+  font-weight: 500;
+  line-height: 1.45;
 }
-.tk-table tr.clickable:hover .tk-action code {
-  border-color: var(--border-2);
+.tk-agent,
+.tk-source {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.tk-when time {
+  color: var(--text-2);
+}
+.tk-table tr.clickable:hover code.tk-cap {
+  color: var(--primary-text);
 }
 
+/* phones: the filters share the card header's full width */
 @media (max-width: 760px) {
   .tk-filters {
     width: 100%;
   }
-  .tk-filters select,
+  .filters.tk-filters select,
   .tk-search,
-  .tk-search input {
+  .filters.tk-filters .tk-search input {
     flex: 1 1 140px;
     min-width: 0;
     width: 100%;
   }
-  .tk-table {
-    min-width: 760px;
+}
+
+/* narrow screens: every row becomes a stacked entry instead of a wide table */
+@media (max-width: 880px) {
+  .tk-table,
+  .tk-table tbody {
+    display: block;
+    min-width: 0;
+  }
+  .tk-table thead {
+    display: none;
+  }
+  .tk-table tr {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) 136px;
+    grid-template-areas:
+      "id action status"
+      ". summary summary"
+      ". when risk";
+    gap: 6px 10px;
+    align-items: center;
+    padding: 12px 2px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tk-table tr:last-child {
+    border-bottom: 0;
+  }
+  .table.tk-table td,
+  .table.tk-table tr.clickable:hover td {
+    display: block;
+    padding: 0;
+    border: 0;
+    background: none;
+  }
+  .tk-table tr.clickable:active {
+    background: var(--surface-2);
+  }
+  .tk-table td.tk-id {
+    grid-area: id;
+    width: auto;
+    align-self: start;
+    line-height: 1.45;
+  }
+  .tk-table td.tk-action {
+    grid-area: action;
+    min-width: 0;
+  }
+  code.tk-cap {
+    max-width: 100%;
+  }
+  .tk-table td.tk-status {
+    grid-area: status;
+    align-self: start;
+    justify-self: end;
+  }
+  .tk-table td.tk-summary {
+    grid-area: summary;
+    width: auto;
+    max-width: none;
+  }
+  .tk-table td.tk-when {
+    grid-area: when;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 6px;
+    min-width: 0;
+  }
+  .tk-when .tk-source {
+    margin: 0;
+  }
+  .tk-when .tk-source::before {
+    content: "· ";
+  }
+  .tk-table td.tk-risk {
+    grid-area: risk;
+    justify-self: end;
+  }
+}
+
+/* phones: the source goes under the time instead of wrapping onto a line that starts with "·" */
+@media (max-width: 560px) {
+  .tk-table td.tk-when {
+    display: block;
+  }
+  .tk-when .tk-source::before {
+    content: none;
   }
 }

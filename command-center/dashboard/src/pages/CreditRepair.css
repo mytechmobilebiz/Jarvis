@@ -1,0 +1,131 @@
+/* Credit Repair page (prefix cr-). Page stylesheets load before styles.css, so rules that adjust shared classes carry an extra class. */
+
+/* a card title that wraps keeps its icon at full size */
+.cr-page .card-head h2 > svg {
+  flex: none;
+}
+
+/* module state (not configured, not in this edition, no permission) */
+.card.cr-state {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  color: var(--text-2);
+}
+.cr-state-icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--warn-text);
+}
+
+/* compliance notice before the module is enabled */
+.card.cr-compliance {
+  border-color: rgba(245, 158, 11, 0.3);
+  background: radial-gradient(560px 180px at 100% 0%, var(--warn-soft), transparent 70%), var(--surface);
+}
+.cr-compliance .card-icon {
+  color: var(--warn-text);
+}
+.cr-notice {
+  margin: 0 0 12px;
+  max-width: 900px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.cr-enable {
+  margin-top: 4px;
+}
+
+/* who enabled the module */
+.cr-enabled {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 18px;
+  padding: 10px 14px;
+  border: 1px solid rgba(139, 92, 246, 0.28);
+  background: var(--purple-soft);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.cr-enabled-icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--purple-text);
+}
+
+/* add-client form */
+.grid-form.cr-add {
+  grid-template-columns: 1.2fr 1.4fr 1.25fr 0.9fr auto;
+}
+
+/* clients table */
+.table.cr-clients td {
+  vertical-align: middle;
+}
+.cr-ref {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.cr-name {
+  font-weight: 600;
+  min-width: 160px;
+  overflow-wrap: anywhere;
+}
+.cr-contract {
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+/* client dialog */
+/* dialog header: a long title wraps beside the close button instead of pushing it onto its own line */
+.cr-page .modal .card-head {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+.cr-page .modal .card-head h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding-top: 6px;
+}
+.cr-page .modal .card-head .btn {
+  flex: none;
+}
+
+.cr-page .modal .kv input[type="date"] {
+  width: auto;
+  min-width: 190px;
+  max-width: 100%;
+}
+.table.cr-items td:first-child,
+.table.cr-items td:nth-child(3) {
+  white-space: nowrap;
+}
+.table.cr-items td:nth-child(2) {
+  min-width: 160px;
+}
+.grid-form.cr-item-form {
+  margin-top: 12px;
+}
+.list.cr-letters li {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+pre.plain.cr-letter {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1180px) {
+  .grid-form.cr-add {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  .grid-form.cr-add {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

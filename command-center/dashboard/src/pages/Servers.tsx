@@ -2,8 +2,10 @@ import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type Server, type ServerCommand, type SshKey, type Task } from "../api";
 import { useAuth } from "../App";
-import { Card, Empty, ErrorNote, Modal, Pill, Time } from "../components";
+import { Card, Empty, ErrorNote, Modal, Pill, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
+import { Icon } from "../icons";
+import "./Servers.css";
 
 async function runTask(capability: string, params: Record<string, unknown>) {
   const r = await api.post<{ task: Task }>("/api/agents/server_management/tasks", { capability, params });
@@ -27,27 +29,34 @@ function KeyPanel() {
 
   const k = key.data?.key;
   return (
-    <Card title="This installation's SSH key">
+    <Card
+      className="sv-key"
+      title={
+        <>
+          <Icon name="lock" size={18} className="card-icon" /> This installation's SSH key
+        </>
+      }
+    >
       <ErrorNote error={key.error ?? error} />
       {k ? (
         <>
-          <p className="small muted">
+          <p className="small muted sv-wrap">
             Fingerprint <code>{k.fingerprint}</code>, created by {k.created_by} <Time iso={k.created_at} />. The private half is stored encrypted and is never
             shown, sent to an AI model or written to logs.
           </p>
           <p className="small">Line for the restricted account's authorized_keys (install-gate.sh writes it for you):</p>
-          <pre className="plain boxed small" aria-label="authorized_keys line">
+          <pre className="plain boxed small sv-keyline" aria-label="authorized_keys line">
             {k.authorized_keys_line}
           </pre>
           <button className="btn small" onClick={() => void create(true)}>
-            Replace key…
+            <Icon name="refresh" size={14} /> Replace key…
           </button>
         </>
       ) : (
         <>
           <p className="muted small">No key yet. Create one, then install it on each server with install-gate.sh.</p>
           <button className="btn primary" onClick={() => void create(false)}>
-            Create SSH key
+            <Icon name="lock" size={16} /> Create SSH key
           </button>
         </>
       )}
@@ -72,7 +81,7 @@ function AddServer({ onAdded }: { onAdded: () => void }) {
   }
 
   return (
-    <form className="grid-form" onSubmit={submit}>
+    <form className="grid-form sv-add" onSubmit={submit}>
       <input aria-label="Server name" placeholder="name, e.g. cwp-1" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
       <input aria-label="Host" placeholder="host name or IP" value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} required />
       <input aria-label="SSH port" placeholder="port" value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} inputMode="numeric" />
@@ -109,7 +118,7 @@ function HostKey({ server, onChanged }: { server: Server; onChanged: () => void 
     <div className="boxed-section">
       <h3>Host key</h3>
       {server.host_key_pinned ? (
-        <p className="small">
+        <p className="small sv-wrap">
           Pinned: <code>{server.host_key_fingerprint}</code> by {server.host_key_trusted_by} <Time iso={server.host_key_trusted_at} />. The Command Center refuses
           to connect if the server ever presents a different key.
         </p>
@@ -130,7 +139,7 @@ function HostKey({ server, onChanged }: { server: Server; onChanged: () => void 
         ) : null}
       </div>
       {scan ? (
-        <div className="alert">
+        <div className="alert alert-info sv-wrap">
           <p className="small">
             The server presents <code>{scan.fingerprint}</code>. Compare it with the fingerprint install-gate.sh printed on the server (or run{" "}
             <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code> there) before trusting it.
@@ -183,7 +192,7 @@ function ServerDetail({ server, onClose, onChanged }: { server: Server; onClose:
 
   return (
     <Modal title={`${server.name} (${server.username}@${server.host}:${server.port})`} onClose={onClose} wide>
-      <p>
+      <p className="sv-detail-head">
         <Pill value={server.environment} /> {server.enabled ? null : <Pill value="disabled" />}{" "}
         {hello.gate_version ? (
           <span className="small muted">
@@ -241,7 +250,7 @@ function ServerDetail({ server, onClose, onChanged }: { server: Server; onClose:
       ) : null}
       <h3>Sites on this server</h3>
       {server.sites.length ? (
-        <ul className="list small">
+        <ul className="list small sv-sites">
           {server.sites.map((s) => (
             <li key={s.id}>
               {s.name} (site key <code>{s.server_site_key}</code>, {s.environment})
@@ -253,42 +262,44 @@ function ServerDetail({ server, onClose, onChanged }: { server: Server; onClose:
       )}
       <h3>Command audit trail ({commands.data?.total ?? 0})</h3>
       {commands.data?.commands.length ? (
-        <table className="table compact">
-          <thead>
-            <tr>
-              <th>When</th>
-              <th>Operation</th>
-              <th>Kind</th>
-              <th>Result</th>
-              <th>Requested / approved</th>
-              <th>Task</th>
-            </tr>
-          </thead>
-          <tbody>
-            {commands.data.commands.map((c) => (
-              <tr key={c.id}>
-                <td>
-                  <Time iso={c.started_at} />
-                </td>
-                <td>
-                  <code>
-                    {c.op} {Object.values(c.args).join(" ")}
-                  </code>
-                </td>
-                <td>{c.kind === "change" ? <Pill value="warning" label="change" /> : "read"}</td>
-                <td>
-                  {c.ok ? <Pill value="succeeded" label="ok" /> : c.refused ? <Pill value="rejected" label="refused" /> : c.ok === false ? <Pill value="failed" /> : "…"}
-                  {c.error ? <div className="small muted truncate" title={c.error}>{c.error}</div> : null}
-                </td>
-                <td className="small">
-                  {c.requested_by}
-                  {c.approved_by ? ` / ${c.approved_by}` : ""}
-                </td>
-                <td>{c.task_id ? <Link to={`/tasks?id=${c.task_id}`}>#{c.task_id}</Link> : "—"}</td>
+        <div className="table-wrap">
+          <table className="table compact sv-audit">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Operation</th>
+                <th>Kind</th>
+                <th>Result</th>
+                <th>Requested / approved</th>
+                <th>Task</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {commands.data.commands.map((c) => (
+                <tr key={c.id}>
+                  <td className="sv-nowrap">
+                    <Time iso={c.started_at} />
+                  </td>
+                  <td className="sv-op">
+                    <code>
+                      {c.op} {Object.values(c.args).join(" ")}
+                    </code>
+                  </td>
+                  <td>{c.kind === "change" ? <Pill value="warning" label="change" /> : "read"}</td>
+                  <td>
+                    {c.ok ? <Pill value="succeeded" label="ok" /> : c.refused ? <Pill value="rejected" label="refused" /> : c.ok === false ? <Pill value="failed" /> : "…"}
+                    {c.error ? <div className="small muted truncate" title={c.error}>{c.error}</div> : null}
+                  </td>
+                  <td className="small sv-who">
+                    {c.requested_by}
+                    {c.approved_by ? ` / ${c.approved_by}` : ""}
+                  </td>
+                  <td>{c.task_id ? <Link to={`/tasks?id=${c.task_id}`}>#{c.task_id}</Link> : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       ) : (
         <p className="muted small">No commands yet.</p>
       )}
@@ -303,11 +314,25 @@ export default function Servers() {
   const [openId, setOpenId] = useState<number | null>(null);
   const open = servers.data?.servers.find((s) => s.id === openId) ?? null;
 
+  // Summary of the same list the table shows.
+  const all = servers.data?.servers ?? [];
+  const loaded = !!servers.data;
+  const pending = servers.error ?? "…";
+  const enabled = all.filter((s) => s.enabled).length;
+  const pinned = all.filter((s) => s.host_key_pinned).length;
+  const environments = (["production", "staging", "test"] as const)
+    .map((env) => [env, all.filter((s) => s.environment === env).length] as const)
+    .filter(([, n]) => n > 0)
+    .map(([env, n]) => `${n} ${env}`)
+    .join(" · ");
+  const latest = all.reduce<Server | null>((best, s) => (s.last_seen_at && (!best?.last_seen_at || s.last_seen_at > best.last_seen_at) ? s : best), null);
+
   return (
-    <div className="page">
+    <div className="page sv-page">
       <header className="page-head">
         <div>
-          <h1>Servers</h1>
+          <div className="eyebrow">Infrastructure</div>
+          <h1>CWP / Servers</h1>
           <p className="muted">
             Servers the VPS & Server Management and WordPress Security agents reach over SSH. They log in as a restricted, non-root account whose key can
             only run <code>cc-gate</code>: a short list of allowlisted operations. Every command is recorded; changes need approval, and production changes
@@ -315,10 +340,64 @@ export default function Servers() {
           </p>
         </div>
       </header>
+
+      <div className="tiles cols-4">
+        <Tile icon="server" tone="blue" label="Servers" hint={loaded ? environments || "No servers yet" : pending}>
+          <span className="tile-value tabular">{loaded ? all.length : "—"}</span>
+        </Tile>
+        <Tile
+          icon="check"
+          tone={!loaded || !all.length ? "muted" : enabled === all.length ? "green" : "warn"}
+          label="Enabled"
+          hint={loaded ? (all.length === enabled ? (all.length ? "All servers enabled" : "Nothing to enable yet") : `${all.length - enabled} disabled: no connections are made`) : pending}
+        >
+          <span className="tile-value tabular">{loaded ? enabled : "—"}</span>
+          {loaded && all.length ? <span className="tile-of">of {all.length}</span> : null}
+        </Tile>
+        <Tile
+          icon="lock"
+          tone={!loaded || !all.length ? "muted" : pinned === all.length ? "purple" : "warn"}
+          label="Host keys pinned"
+          hint={
+            loaded
+              ? pinned === all.length
+                ? all.length
+                  ? "Connections to a different key are refused"
+                  : "Pin each server's key after adding it"
+                : `${all.length - pinned} without a pinned key: no command can run there`
+              : pending
+          }
+        >
+          <span className="tile-value tabular">{loaded ? pinned : "—"}</span>
+          {loaded && all.length ? <span className="tile-of">of {all.length}</span> : null}
+        </Tile>
+        <Tile
+          icon="clock"
+          tone={latest ? "cyan" : "muted"}
+          label="Last contact"
+          hint={
+            loaded
+              ? latest
+                ? `${latest.name}${latest.last_hello.gate_version ? `, cc-gate ${latest.last_hello.gate_version}` : ""}`
+                : "No server has answered yet"
+              : pending
+          }
+        >
+          <span className="tile-value sv-tile-time">{loaded ? latest ? <Time iso={latest.last_seen_at} /> : "Never" : "—"}</span>
+        </Tile>
+      </div>
+
       {isAdmin ? (
         <>
-          <Card title="Setting up a server (once per server, by you, on the server)">
-            <ol className="small">
+          <Card
+            className="sv-setup"
+            title={
+              <>
+                <Icon name="book" size={18} className="card-icon" /> Setting up a server (once per server, by you, on the server)
+              </>
+            }
+          >
+            <ol className="small sv-steps">
               <li>Create the SSH key below.</li>
               <li>
                 Copy the <code>server</code> folder of this package to the server and run, as root:{" "}
@@ -333,45 +412,67 @@ export default function Servers() {
             <p className="small muted">Full guide: docs/SERVER_SETUP.md. Nothing here is installed on a server automatically.</p>
           </Card>
           <KeyPanel />
-          <Card title="Add a server">
+          <Card
+            title={
+              <>
+                <Icon name="plug" size={18} className="card-icon" /> Add a server
+              </>
+            }
+          >
             <AddServer onAdded={() => void servers.refresh()} />
           </Card>
         </>
       ) : null}
-      <Card title={`Servers (${servers.data?.servers.length ?? 0})`}>
+      <Card
+        title={
+          <>
+            <Icon name="server" size={18} className="card-icon" /> Servers ({servers.data?.servers.length ?? 0})
+          </>
+        }
+        actions={servers.data?.servers.length ? <span className="muted small">Select a row for details</span> : null}
+      >
         <ErrorNote error={servers.error} />
         {servers.data?.servers.length ? (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Server</th>
-                <th>Environment</th>
-                <th>Host key</th>
-                <th>Last contact</th>
-                <th>Sites</th>
-              </tr>
-            </thead>
-            <tbody>
-              {servers.data.servers.map((s) => (
-                <tr key={s.id} className="clickable" onClick={() => setOpenId(s.id)}>
-                  <td>
-                    <strong>{s.name}</strong>
-                    <div className="muted small">
-                      {s.username}@{s.host}:{s.port}
-                    </div>
-                  </td>
-                  <td>
-                    <Pill value={s.environment} /> {s.enabled ? null : <Pill value="disabled" />}
-                  </td>
-                  <td>{s.host_key_pinned ? <Pill value="succeeded" label="pinned" /> : <Pill value="warning" label="not pinned" />}</td>
-                  <td>
-                    <Time iso={s.last_seen_at} />
-                  </td>
-                  <td>{s.sites.length}</td>
+          <div className="table-wrap">
+            <table className="table sv-table">
+              <thead>
+                <tr>
+                  <th>Server</th>
+                  <th>Environment</th>
+                  <th>Host key</th>
+                  <th>Last contact</th>
+                  <th>Sites</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {servers.data.servers.map((s) => (
+                  <tr key={s.id} className="clickable" onClick={() => setOpenId(s.id)}>
+                    <td>
+                      <div className="sv-server">
+                        <span className="sv-server-icon" aria-hidden>
+                          <Icon name="server" size={16} />
+                        </span>
+                        <div className="sv-server-main">
+                          <strong>{s.name}</strong>
+                          <div className="muted small sv-addr" title={`${s.username}@${s.host}:${s.port}`}>
+                            {s.username}@{s.host}:{s.port}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="sv-nowrap">
+                      <Pill value={s.environment} /> {s.enabled ? null : <Pill value="disabled" />}
+                    </td>
+                    <td className="sv-nowrap">{s.host_key_pinned ? <Pill value="succeeded" label="pinned" /> : <Pill value="warning" label="not pinned" />}</td>
+                    <td className="sv-nowrap">
+                      <Time iso={s.last_seen_at} />
+                    </td>
+                    <td className="tabular">{s.sites.length}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <Empty>No servers yet.</Empty>
         )}

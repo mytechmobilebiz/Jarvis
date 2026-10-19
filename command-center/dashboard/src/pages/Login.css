@@ -31,7 +31,7 @@
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
   box-shadow:
-    0 40px 90px -30px rgba(0, 0, 0, 0.85),
+    0 24px 60px -28px rgba(0, 0, 0, 0.7),
     0 0 0 1px rgba(255, 255, 255, 0.02) inset,
     0 0 80px -30px rgba(47, 123, 255, 0.45);
 }
@@ -114,12 +114,13 @@
   background: linear-gradient(135deg, #1f6bff 0%, #4357ef 60%, #6150f2 100%);
 }
 .lo-foot {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
   margin: 18px 0 0;
   text-align: center;
+  text-wrap: balance;
+}
+.lo-foot svg {
+  vertical-align: -2px;
+  margin-right: 4px;
 }
 
 @media (max-width: 480px) {

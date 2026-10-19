@@ -68,7 +68,7 @@ export default function Activity() {
                           <span className="ac-actor-name">{e.actor}</span>
                         </span>
                       </td>
-                      <td className="ac-nowrap">
+                      <td className="ac-nowrap ac-action-cell">
                         <code className={`ac-action ac-tone-${actionTone(e.action)}`}>{e.action}</code>
                       </td>
                       <td className="ac-target small">

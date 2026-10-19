@@ -3,6 +3,8 @@ import { api, type EditionInfo, type ManagedUser, type SettingsPage } from "../a
 import { useAuth } from "../App";
 import { Card, ErrorNote, Pill, Time } from "../components";
 import { usePoll } from "../hooks";
+import { Icon } from "../icons";
+import "./Settings.css";
 
 function BusinessSettings({ page, onSaved }: { page: SettingsPage; onSaved: () => void }) {
   const [draft, setDraft] = useState<Record<string, string | number>>(() =>
@@ -216,57 +218,59 @@ function Users() {
   return (
     <>
       <ErrorNote error={users.error ?? error} />
-      <table className="table compact">
-        <thead>
-          <tr>
-            <th>User</th>
-            <th>Role</th>
-            <th title="Access to the isolated Credit Repair client data">Sensitive data</th>
-            <th>Last sign-in</th>
-            <th>State</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(users.data?.users ?? []).map((u) => (
-            <tr key={u.id}>
-              <td>
-                {u.email}
-                {u.id === me.id ? <span className="muted small"> (you)</span> : null}
-              </td>
-              <td>
-                <select aria-label={`Role for ${u.email}`} value={u.role} onChange={(e) => void patch(u, { role: e.target.value as ManagedUser["role"] })}>
-                  <option value="admin">admin</option>
-                  <option value="operator">operator</option>
-                  <option value="viewer">viewer</option>
-                </select>
-              </td>
-              <td>
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    aria-label={`Sensitive data access for ${u.email}`}
-                    checked={u.can_access_sensitive}
-                    onChange={(e) => void patch(u, { can_access_sensitive: e.target.checked })}
-                  />{" "}
-                  {u.can_access_sensitive ? "allowed" : "no"}
-                </label>
-              </td>
-              <td>
-                <Time iso={u.last_login_at} />
-              </td>
-              <td>
-                {u.id === me.id ? (
-                  <Pill value="up" label="active" />
-                ) : (
-                  <button className="btn small" onClick={() => void patch(u, { is_active: !u.is_active })}>
-                    {u.is_active ? "Deactivate" : "Reactivate"}
-                  </button>
-                )}
-              </td>
+      <div className="table-wrap">
+        <table className="table compact st-users">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Role</th>
+              <th title="Access to the isolated Credit Repair client data">Sensitive data</th>
+              <th>Last sign-in</th>
+              <th>State</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {(users.data?.users ?? []).map((u) => (
+              <tr key={u.id}>
+                <td>
+                  {u.email}
+                  {u.id === me.id ? <span className="muted small"> (you)</span> : null}
+                </td>
+                <td>
+                  <select aria-label={`Role for ${u.email}`} value={u.role} onChange={(e) => void patch(u, { role: e.target.value as ManagedUser["role"] })}>
+                    <option value="admin">admin</option>
+                    <option value="operator">operator</option>
+                    <option value="viewer">viewer</option>
+                  </select>
+                </td>
+                <td>
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      aria-label={`Sensitive data access for ${u.email}`}
+                      checked={u.can_access_sensitive}
+                      onChange={(e) => void patch(u, { can_access_sensitive: e.target.checked })}
+                    />{" "}
+                    {u.can_access_sensitive ? "allowed" : "no"}
+                  </label>
+                </td>
+                <td>
+                  <Time iso={u.last_login_at} />
+                </td>
+                <td>
+                  {u.id === me.id ? (
+                    <Pill value="up" label="active" />
+                  ) : (
+                    <button className="btn small" onClick={() => void patch(u, { is_active: !u.is_active })}>
+                      {u.is_active ? "Deactivate" : "Reactivate"}
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       <form className="inline-form users-form" onSubmit={add}>
         <input aria-label="New user email" type="email" placeholder="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
         <select aria-label="New user role" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
@@ -298,9 +302,14 @@ export default function Settings() {
   const edition = usePoll(() => api.get<EditionInfo>("/api/system/edition"), 0);
   if (user.role !== "admin") {
     return (
-      <div className="page">
-        <h1>Settings</h1>
-        <p className="muted">Only admins can change settings.</p>
+      <div className="page st-page">
+        <header className="page-head">
+          <div>
+            <div className="eyebrow">System</div>
+            <h1>Settings</h1>
+            <p className="muted">Only admins can change settings.</p>
+          </div>
+        </header>
       </div>
     );
   }
@@ -309,9 +318,10 @@ export default function Settings() {
     void edition.refresh();
   };
   return (
-    <div className="page">
+    <div className="page st-page">
       <header className="page-head">
         <div>
+          <div className="eyebrow">System</div>
           <h1>Settings</h1>
           <p className="muted">
             Business settings, your AI provider and key, edition and license, and who can sign in. Installation settings (database, ports, deployment
@@ -321,12 +331,26 @@ export default function Settings() {
       </header>
       <ErrorNote error={page.error ?? edition.error} />
       <div className="grid-2">
-        <Card title="Business">{page.data ? <BusinessSettings key={JSON.stringify(page.data.settings)} page={page.data} onSaved={refresh} /> : null}</Card>
-        <div>
-          <Card title="AI provider">
+        <Card
+          title={
+            <>
+              <Icon name="settings" size={18} className="card-icon" /> Business
+            </>
+          }
+        >
+          {page.data ? <BusinessSettings key={JSON.stringify(page.data.settings)} page={page.data} onSaved={refresh} /> : null}
+        </Card>
+        <div className="st-column">
+          <Card
+            title={
+              <>
+                <Icon name="sparkles" size={18} className="card-icon" /> AI provider
+              </>
+            }
+          >
             {page.data ? (
               <>
-                <p>
+                <p className="st-now">
                   Now using:{" "}
                   {page.data.ai.provider === "anthropic" ? (
                     <Pill value="live" label={`Claude · ${page.data.ai.model}`} />
@@ -343,10 +367,24 @@ export default function Settings() {
               </>
             ) : null}
           </Card>
-          <Card title="Edition and license">{edition.data ? <EditionPanel edition={edition.data} onChanged={refresh} /> : null}</Card>
+          <Card
+            title={
+              <>
+                <Icon name="lock" size={18} className="card-icon" /> Edition and license
+              </>
+            }
+          >
+            {edition.data ? <EditionPanel edition={edition.data} onChanged={refresh} /> : null}
+          </Card>
         </div>
       </div>
-      <Card title="Users">
+      <Card
+        title={
+          <>
+            <Icon name="users" size={18} className="card-icon" /> Users
+          </>
+        }
+      >
         <Users />
       </Card>
     </div>

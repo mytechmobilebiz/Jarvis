@@ -10,6 +10,7 @@
 }
 .seo-head-side {
   flex: 0 1 340px;
+  margin-top: 8px; /* lines the buttons up with .row-actions on other pages */
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -36,8 +37,8 @@
   quotes: "\201C" "\201D";
 }
 
-/* disabled-agent alert */
-.seo-alert {
+/* disabled-agent alert (two classes: page CSS loads before styles.css, so .alert would win) */
+.alert.seo-alert {
   display: flex;
   gap: 10px;
   align-items: flex-start;
@@ -52,7 +53,7 @@
   flex: none;
   margin-top: 1px;
 }
-.seo-alert-warn {
+.alert.seo-alert-warn {
   background: var(--warn-soft);
   color: var(--warn-text);
   border-color: rgba(245, 158, 11, 0.3);
@@ -225,7 +226,7 @@
 }
 .seo-foot {
   margin: 12px 0 0;
-  color: var(--faint);
+  color: var(--muted);
   font-size: 12px;
   overflow-wrap: anywhere;
 }

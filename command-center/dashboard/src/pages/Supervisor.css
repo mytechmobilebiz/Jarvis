@@ -1,7 +1,7 @@
 /* AI Supervisor console. Every class here starts with su-. */
 
 /* ask form */
-.su-ask-card {
+.card.su-ask-card {
   background:
     radial-gradient(640px 180px at 0% 0%, rgba(47, 123, 255, 0.1), transparent 70%),
     radial-gradient(520px 160px at 100% 100%, rgba(139, 92, 246, 0.08), transparent 70%), var(--surface);
@@ -27,11 +27,19 @@
   font-family: var(--mono);
   font-size: 11.5px;
 }
-.su-readonly {
+.alert.su-readonly {
   display: flex;
   align-items: center;
   gap: 8px;
   margin: 0 0 18px;
+}
+
+/* history and conversation side by side; stacked below 900px without a double gap */
+.split.su-split {
+  margin-bottom: 18px;
+}
+.su-split > .card {
+  margin-bottom: 0;
 }
 
 /* history list: message on top, status and time below */
@@ -85,7 +93,7 @@
 .su-conversation {
   min-height: 320px;
 }
-.su-thread {
+.request-detail.su-thread {
   gap: 14px;
 }
 .su-turn {
@@ -133,7 +141,7 @@
 }
 
 /* agent steps, indented under the supervisor's avatar */
-.su-steps {
+.task-steps.su-steps {
   margin-left: 42px;
   gap: 10px;
 }
@@ -198,35 +206,13 @@
 }
 
 @media (max-width: 760px) {
-  .tiles.su-tiles {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
-  }
-  .su-tiles .tile {
-    padding: 14px;
-    gap: 6px;
-  }
-  .su-tiles .tile-hint {
-    display: none;
-  }
-  .su-tiles .tile-value {
-    font-size: 28px;
-  }
-  .su-tiles .tile-label {
-    font-size: 13px;
-    line-height: 1.3;
-  }
-  .su-tiles .tile-icon {
-    width: 30px;
-    height: 30px;
-  }
   .su-shortcut {
     display: none;
   }
   .su-send {
     width: 100%;
   }
-  .su-steps {
+  .task-steps.su-steps {
     margin-left: 0;
   }
   .su-avatar {

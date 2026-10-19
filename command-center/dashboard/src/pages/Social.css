@@ -1,0 +1,635 @@
+/* Social Media / Postonomous page (metric tiles live in ../tiles.css). */
+.so-card-icon {
+  color: var(--primary-text);
+  flex: none;
+}
+.so-text-orange {
+  color: var(--orange-text);
+}
+.so-tone-purple {
+  --tone: var(--purple);
+  color: var(--purple-text);
+  background: var(--purple-soft);
+}
+.so-tone-cyan {
+  --tone: var(--info);
+  color: var(--info-text);
+  background: var(--info-soft);
+}
+
+/* disabled-agent alert (two classes: page CSS loads before styles.css, so .alert would win) */
+.alert.so-alert {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 0 0 18px;
+}
+.so-alert-icon {
+  flex: none;
+  margin-top: 1px;
+}
+.alert.so-alert-warn {
+  background: var(--warn-soft);
+  color: var(--warn-text);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+/* tiles */
+.so-tile-line {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.so-tile-line .dot {
+  flex: none;
+}
+
+/* create + connection row */
+.so-top {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 18px;
+  margin-bottom: 18px;
+}
+.so-top .card {
+  margin-bottom: 0;
+}
+.so-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.so-note svg {
+  flex: none;
+  margin-top: 2px;
+}
+.so-note-warn {
+  color: var(--warn-text);
+}
+.so-actions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.so-actions > li {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.so-action {
+  --tone: var(--purple);
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 14px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.so-action:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: color-mix(in srgb, var(--primary-bright) 45%, var(--border-2));
+}
+.so-action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.so-action-static {
+  cursor: default;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+.so-action-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--tone) 35%, transparent);
+}
+.so-action-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.so-action-name {
+  font-weight: 650;
+  color: var(--text);
+}
+.so-action-desc {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.so-action-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.so-approval {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--warn-text);
+  background: var(--warn-soft);
+  border-radius: 6px;
+  padding: 0 7px;
+  white-space: nowrap;
+}
+.so-action-go {
+  color: var(--muted);
+  align-self: center;
+}
+.so-action:hover:not(:disabled) .so-action-go {
+  color: var(--text);
+}
+.so-examples {
+  margin: 0;
+  padding: 0 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.so-examples-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.so-examples-label svg {
+  color: var(--purple-text);
+}
+.so-examples ul {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+.so-examples q {
+  color: var(--text-2);
+  quotes: "\201C" "\201D";
+}
+.so-examples-plain {
+  line-height: 1.5;
+}
+
+/* publishing pipeline */
+.so-flow-title {
+  margin: 20px 0 10px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.so-flow {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 22px;
+}
+.so-flow-step {
+  position: relative;
+  min-width: 0;
+  display: flex;
+}
+.so-flow-step + .so-flow-step::before {
+  content: "";
+  position: absolute;
+  left: -16px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-top: 1.8px solid var(--faint);
+  border-right: 1.8px solid var(--faint);
+  transform: translateY(-50%) rotate(45deg);
+}
+.so-flow-box {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 11px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: inherit;
+}
+a.so-flow-box:hover {
+  text-decoration: none;
+  background: var(--surface-3);
+  border-color: var(--border-2);
+}
+.so-flow-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.so-flow-drafted .so-flow-icon {
+  color: var(--purple-text);
+  background: var(--purple-soft);
+}
+.so-flow-reviewed .so-flow-icon {
+  color: var(--primary-text);
+  background: var(--primary-soft);
+}
+.so-flow-approval .so-flow-icon {
+  color: var(--warn-text);
+  background: var(--warn-soft);
+}
+.so-flow-posted .so-flow-icon {
+  color: var(--info-text);
+  background: var(--info-soft);
+}
+.so-flow-text {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 6px;
+}
+.so-flow-value {
+  font-size: 20px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--text);
+}
+.so-flow-label {
+  font-weight: 600;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.so-flow-hint {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* Postonomous connection */
+.so-connection {
+  display: flex;
+  flex-direction: column;
+}
+.so-conn-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  min-width: 0;
+}
+.so-conn-badge {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--orange-text);
+  background: var(--orange-soft);
+  border: 1px solid rgba(251, 146, 60, 0.35);
+}
+.so-mode-live .so-conn-badge {
+  color: var(--good-text);
+  background: var(--good-soft);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.so-mode-disabled .so-conn-badge {
+  color: var(--muted-text);
+  background: var(--muted-soft);
+  border-color: var(--border-2);
+}
+.so-conn-title {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+.so-callout {
+  border-radius: var(--radius-xs);
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  border: 1px solid transparent;
+  overflow-wrap: anywhere;
+}
+.so-callout a {
+  color: inherit;
+  text-decoration: underline;
+  font-weight: 600;
+}
+.so-callout-mock {
+  background: var(--orange-soft);
+  color: var(--orange-text);
+  border-color: rgba(251, 146, 60, 0.3);
+}
+.so-callout-off {
+  background: var(--muted-soft);
+  color: var(--muted-text);
+  border-color: var(--border-2);
+}
+.so-callout-live {
+  background: var(--good-soft);
+  color: var(--good-text);
+  border-color: rgba(34, 197, 94, 0.28);
+}
+.so-conn-desc {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.so-requirements {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-xs);
+  border: 1px dashed var(--border-2);
+  background: var(--surface-2);
+}
+.so-requirements h3 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.so-requirements p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.so-conn-kv {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 14px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.so-conn-kv dt {
+  color: var(--muted);
+}
+.so-conn-kv dd {
+  margin: 0;
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.so-conn-error {
+  display: block;
+  color: var(--bad-text);
+}
+
+/* drafts and posts */
+.so-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-bottom: 18px;
+}
+.so-grid .card {
+  margin-bottom: 0;
+}
+.so-list-card {
+  display: flex;
+  flex-direction: column;
+}
+.so-list-card .so-foot {
+  margin-top: auto;
+  padding-top: 12px;
+}
+.so-filter {
+  align-self: flex-start;
+  margin-bottom: 8px;
+}
+.tabs.so-filter button {
+  font-size: 12.5px;
+  padding: 4px 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.so-filter-count {
+  font-size: 11px;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  text-align: center;
+  line-height: 17px;
+}
+.so-rows {
+  list-style: none;
+  margin: 0 -10px;
+  padding: 0;
+}
+.so-rows > li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.so-rows > li + li {
+  border-top: 1px solid var(--border);
+}
+.so-row {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-xs);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.so-row:hover {
+  background: var(--surface-2);
+}
+.so-row-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+}
+.so-row-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.so-row-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.so-row-tag {
+  font-size: 11.5px;
+  font-weight: 550;
+  color: var(--muted);
+  margin-left: 6px;
+}
+.so-row-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  color: var(--muted);
+  font-size: 12.5px;
+  min-width: 0;
+}
+.so-row-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.so-row-text.text-bad {
+  color: var(--bad-text);
+}
+.so-row-meta {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.so-platform {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: var(--surface-3);
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  padding: 0 6px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.so-row-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.so-row-action {
+  flex: none;
+  margin-right: 10px;
+}
+.so-foot {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.so-post-body {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1180px) {
+  .so-top {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 1000px) {
+  .so-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 900px) {
+  .so-flow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 22px;
+  }
+  .so-flow-step:nth-child(3)::before {
+    display: none;
+  }
+}
+@media (max-width: 640px) {
+  .so-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .so-flow {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+  .so-flow-step + .so-flow-step::before {
+    display: none;
+  }
+  .so-row {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+  }
+  .so-row-side {
+    grid-column: 2;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    white-space: normal;
+  }
+  .so-rows > li.so-row-with-action {
+    flex-wrap: wrap;
+    gap: 0;
+  }
+  .so-row-with-action .so-row {
+    flex-basis: 100%;
+  }
+  .so-row-with-action .so-row-action {
+    margin: -4px 10px 10px 52px;
+  }
+  .so-row-by {
+    display: none;
+  }
+}

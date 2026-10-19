@@ -1,0 +1,133 @@
+/* Integrations page (prefix in-). Page stylesheets load before styles.css, so rules that adjust shared classes carry an extra class. */
+.in-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(330px, 100%), 1fr));
+  gap: 18px;
+}
+
+/* one card per integration, with a thin accent line in the colour of its mode (like the metric tiles) */
+.card.in-card {
+  --in-tone: var(--border-2);
+  --in-soft: var(--muted-soft);
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+}
+.card.in-card::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--in-tone), transparent 70%);
+  opacity: 0.85;
+}
+.card.in-live {
+  --in-tone: var(--good);
+  --in-soft: var(--good-soft);
+}
+.card.in-mock {
+  --in-tone: var(--info);
+  --in-soft: var(--info-soft);
+}
+.in-card .card-head {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+.in-card .card-head h2 {
+  min-width: 0;
+  gap: 12px;
+  align-items: center;
+}
+.in-card .card-actions {
+  flex: none;
+  padding-top: 7px;
+}
+.in-logo {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--in-tone);
+  background: var(--in-soft);
+  border: 1px solid color-mix(in srgb, var(--in-tone) 35%, transparent);
+}
+.in-card:not(.in-live):not(.in-mock) .in-logo {
+  color: var(--muted-text);
+}
+.in-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.in-desc {
+  margin: 0 0 12px;
+}
+.in-req {
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+}
+.in-req strong {
+  color: var(--text);
+}
+
+/* last success / last error */
+.in-status {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.in-status li {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  min-width: 0;
+}
+.in-status .dot {
+  position: relative;
+  top: -1px;
+}
+.in-error-line {
+  min-width: 0;
+}
+.in-error {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  margin-top: 2px;
+}
+
+/* n8n: webhook, workflows and the test button sit at the bottom of the card */
+.in-n8n {
+  margin-top: auto;
+  padding-top: 4px;
+}
+.in-n8n p {
+  margin: 0 0 10px;
+}
+.in-url {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.n8n-test.in-test {
+  margin-top: 4px;
+}
+.in-test .btn {
+  margin-bottom: 4px;
+}

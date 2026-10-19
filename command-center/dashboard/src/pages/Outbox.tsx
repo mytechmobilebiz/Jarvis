@@ -1,15 +1,28 @@
 import { useState } from "react";
 import { api, type OutboxRecord } from "../api";
-import { Card, Empty, ErrorNote, JsonView, Modal, Pill, Time } from "../components";
+import { Card, Empty, ErrorNote, JsonView, Modal, Pill, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
+import { Icon } from "../icons";
+import "./Outbox.css";
 
 export default function Outbox() {
   const list = usePoll(() => api.get<{ entries: OutboxRecord[] }>("/api/outbox"), 8_000);
   const [open, setOpen] = useState<OutboxRecord | null>(null);
+
+  // Summary of the same list the table shows.
+  const all = list.data?.entries ?? [];
+  const loaded = !!list.data;
+  const pending = list.error ?? "…";
+  const mock = all.filter((e) => e.mode === "mock").length;
+  const live = all.filter((e) => e.mode === "live").length;
+  const integrations = new Set(all.map((e) => e.integration)).size;
+  const latest = all.reduce<string | null>((max, e) => (max === null || new Date(e.created_at).getTime() > new Date(max).getTime() ? e.created_at : max), null);
+
   return (
-    <div className="page">
+    <div className="page ob-page">
       <header className="page-head">
         <div>
+          <div className="eyebrow">Communications</div>
           <h1>Outbox</h1>
           <p className="muted">
             Every outward action that was approved: emails, posts, budget changes, letters. In this build all of these integrations are <strong>mocks</strong>,
@@ -17,49 +30,103 @@ export default function Outbox() {
           </p>
         </div>
       </header>
+
+      <div className="tiles">
+        <Tile
+          icon="send"
+          tone="blue"
+          label="Entries"
+          hint={
+            loaded ? (
+              latest ? (
+                <>
+                  {integrations} integration{integrations === 1 ? "" : "s"} · latest <Time iso={latest} />
+                </>
+              ) : (
+                "No approved outward action yet"
+              )
+            ) : (
+              pending
+            )
+          }
+        >
+          <span className="tile-value tabular">{loaded ? all.length : "—"}</span>
+        </Tile>
+        <Tile icon="file" tone="cyan" label="Mock, recorded only" hint={loaded ? "Recorded what would have been sent; nothing was delivered" : pending}>
+          <span className="tile-value tabular">{loaded ? mock : "—"}</span>
+          {loaded && all.length ? <span className="tile-of">{Math.round((mock / all.length) * 100)}%</span> : null}
+        </Tile>
+        <Tile icon="external" tone={live ? "orange" : "muted"} label="Live, really sent" hint={loaded ? "Delivered through a live integration" : pending}>
+          <span className="tile-value tabular">{loaded ? live : "—"}</span>
+          {loaded && all.length ? <span className="tile-of">{Math.round((live / all.length) * 100)}%</span> : null}
+        </Tile>
+      </div>
+
       <ErrorNote error={list.error} />
-      <Card>
+      <Card
+        title={
+          <>
+            <Icon name="send" size={18} className="card-icon" /> Approved outward actions
+          </>
+        }
+      >
         {list.data?.entries.length ? (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Action</th>
-                <th>To</th>
-                <th>Subject</th>
-                <th>Approved by</th>
-                <th>Result</th>
-                <th>When</th>
-              </tr>
-            </thead>
-            <tbody>
-              {list.data.entries.map((e) => (
-                <tr key={e.id} className="clickable" onClick={() => setOpen(e)}>
-                  <td>{e.id}</td>
-                  <td>
-                    <code>
-                      {e.integration}.{e.action}
-                    </code>{" "}
-                    <Pill value={e.mode} label={e.mode.toUpperCase()} />
-                  </td>
-                  <td className="small">{e.recipient}</td>
-                  <td className="truncate small">{e.subject}</td>
-                  <td className="small">{e.approved_by}</td>
-                  <td className="small">{e.result}</td>
-                  <td>
-                    <Time iso={e.created_at} />
-                  </td>
+          <div className="table-wrap">
+            <table className="table ob-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Action</th>
+                  <th>To</th>
+                  <th>Subject</th>
+                  <th>Approved by</th>
+                  <th>Result</th>
+                  <th>When</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {list.data.entries.map((e) => (
+                  <tr key={e.id} className="clickable" onClick={() => setOpen(e)}>
+                    <td className="muted tabular">{e.id}</td>
+                    <td>
+                      <div className="ob-action">
+                        <code>
+                          {e.integration}.{e.action}
+                        </code>{" "}
+                        <Pill value={e.mode} label={e.mode.toUpperCase()} />
+                      </div>
+                    </td>
+                    <td className="small">
+                      <span className="ob-clip" title={e.recipient}>
+                        {e.recipient}
+                      </span>
+                    </td>
+                    <td className="small">
+                      <span className="ob-subject" title={e.subject}>
+                        {e.subject}
+                      </span>
+                    </td>
+                    <td className="small">
+                      <span className="ob-clip" title={e.approved_by}>
+                        {e.approved_by}
+                      </span>
+                    </td>
+                    <td className="small ob-result">{e.result}</td>
+                    <td className="ob-nowrap">
+                      <Time iso={e.created_at} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <Empty>Nothing yet. Approved emails, posts and other outward actions appear here.</Empty>
         )}
       </Card>
       {open ? (
         <Modal title={`Outbox #${open.id}: ${open.integration}.${open.action}`} onClose={() => setOpen(null)} wide>
-          <p>
+          <p className="ob-detail-head">
             <Pill value={open.mode} label={open.mode.toUpperCase()} /> {open.result} · approved by {open.approved_by} · task #{open.task_id}
           </p>
           <dl className="kv">

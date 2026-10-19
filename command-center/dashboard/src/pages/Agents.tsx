@@ -45,9 +45,9 @@ export default function Agents() {
   const supervisor = all.find((a) => a.role === "supervisor");
   const specialists = all.filter((a) => a.role !== "supervisor");
   const loaded = !!agents.data;
-  const active = specialists.filter((a) => a.enabled && a.entitled).length;
+  const active = specialists.filter((a) => a.enabled && a.entitled !== false).length;
   const switchedOff = specialists.filter((a) => !a.enabled).length;
-  const notEntitled = specialists.filter((a) => !a.entitled).length;
+  const notEntitled = specialists.filter((a) => a.entitled === false).length;
   const tasks24 = total(all);
   const succeeded24 = total(all, "succeeded");
   const inProgress = total(all, "queued") + total(all, "running");

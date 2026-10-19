@@ -9,22 +9,6 @@ import "./Tasks.css";
 
 const STATUSES = ["", "queued", "running", "awaiting_approval", "succeeded", "failed", "rejected", "cancelled"];
 
-/** Status groups counted for the tiles: one `limit=1` read each, using the list's `total`. */
-const TOTALS = { active: "running,queued", awaiting: "awaiting_approval", failed: "failed", succeeded: "succeeded" } as const;
-type Totals = Record<keyof typeof TOTALS, number>;
-
-async function statusTotals(agent: string): Promise<Totals> {
-  const keys = Object.keys(TOTALS) as (keyof typeof TOTALS)[];
-  const totals = await Promise.all(
-    keys.map((k) => {
-      const q = new URLSearchParams({ status: TOTALS[k], limit: "1" });
-      if (agent) q.set("agent", agent);
-      return api.get<{ total: number }>(`/api/tasks?${q}`).then((r) => r.total);
-    }),
-  );
-  return Object.fromEntries(keys.map((k, i) => [k, totals[i]])) as Totals;
-}
-
 export default function Tasks() {
   const [params, setParams] = useSearchParams();
   const [status, setStatus] = useState("");
@@ -32,23 +16,31 @@ export default function Tasks() {
   const query = new URLSearchParams({ limit: "100" });
   if (status) query.set("status", status);
   if (agent) query.set("agent", agent);
-  // The tile totals ride on the list's own poll; a failed count never hides the list.
-  const list = usePoll(
-    async () => {
-      const [page, totals] = await Promise.all([api.get<{ tasks: Task[]; total: number }>(`/api/tasks?${query}`), statusTotals(agent).catch(() => null)]);
-      return { ...page, totals };
-    },
-    5_000,
-    [status, agent],
-  );
+  const list = usePoll(() => api.get<{ tasks: Task[]; total: number }>(`/api/tasks?${query}`), 5_000, [status, agent]);
   const openId = params.get("id") ? Number(params.get("id")) : null;
-  const totals = list.data?.totals ?? null;
-  const scope = agent ? (
+  // Tiles count the tasks the list already loaded (the newest 100 that match the filters) and say when that is not all of them.
+  const shown = list.data?.tasks ?? null;
+  const count = (...statuses: string[]) => (shown ? shown.filter((t) => statuses.includes(t.status)).length : undefined);
+  const scope = (
     <>
-      agent <code>{agent}</code>
+      {agent ? (
+        <>
+          agent <code>{agent}</code>
+        </>
+      ) : (
+        "all agents"
+      )}
+      {status ? ` · ${status.replace(/_/g, " ")} only` : ""}
     </>
+  );
+  const loaded = list.data;
+  const tasksWord = loaded ? `${loaded.total.toLocaleString()} task${loaded.total === 1 ? "" : "s"}` : "";
+  const basis = !loaded ? (
+    list.error ? "The list did not load" : "Loading…"
   ) : (
-    "all agents"
+    <>
+      {loaded.total > loaded.tasks.length ? `Newest ${loaded.tasks.length} of ${tasksWord}` : `All ${tasksWord}`} · {scope}
+    </>
   );
   const value = (n: number | undefined) => <span className="tile-value tabular">{n == null ? "—" : n.toLocaleString()}</span>;
 
@@ -62,24 +54,18 @@ export default function Tasks() {
         </div>
       </header>
 
-      <div className="tiles cols-4">
-        <Tile icon="play" tone="blue" label="Running or queued" hint={<>Working now or waiting for a worker · {scope}</>}>
-          {value(totals?.active)}
+      <div className="tiles cols-4 tk-tiles">
+        <Tile icon="play" tone="blue" label="Running or queued" hint={basis}>
+          {value(count("running", "queued"))}
         </Tile>
-        <Tile
-          icon="approvals"
-          tone={totals?.awaiting ? "warn" : "orange"}
-          label="Awaiting approval"
-          to="/approvals"
-          hint={<>Held until an operator decides · {scope}</>}
-        >
-          {value(totals?.awaiting)}
+        <Tile icon="approvals" tone={count("awaiting_approval") ? "warn" : "orange"} label="Awaiting approval" to="/approvals" hint={basis}>
+          {value(count("awaiting_approval"))}
         </Tile>
-        <Tile icon="alert" tone={totals?.failed ? "bad" : "muted"} label="Failed" hint={<>All time · {scope}</>}>
-          {value(totals?.failed)}
+        <Tile icon="alert" tone={count("failed") ? "bad" : "muted"} label="Failed" hint={basis}>
+          {value(count("failed"))}
         </Tile>
-        <Tile icon="check" tone="green" label="Succeeded" hint={<>All time · {scope}</>}>
-          {value(totals?.succeeded)}
+        <Tile icon="check" tone="green" label="Succeeded" hint={basis}>
+          {value(count("succeeded"))}
         </Tile>
       </div>
 
@@ -112,11 +98,10 @@ export default function Tasks() {
             <table className="table tk-table">
               <thead>
                 <tr>
-                  <th>#</th>
+                  <th className="tk-id">#</th>
                   <th>Action</th>
                   <th>Status</th>
                   <th>Risk</th>
-                  <th>Source</th>
                   <th>Created</th>
                   <th className="tk-summary">Summary</th>
                 </tr>
@@ -126,20 +111,20 @@ export default function Tasks() {
                   <tr key={t.id} className="clickable" onClick={() => setParams({ id: String(t.id) })}>
                     <td className="tk-id tabular">{t.id}</td>
                     <td className="tk-action">
-                      <code>
-                        {t.agent}.<wbr />
+                      <code className="tk-cap" title={`${t.agent}.${t.capability}`}>
                         {t.capability}
                       </code>
+                      <span className="tk-agent">{t.agent}</span>
                     </td>
-                    <td>
+                    <td className="tk-status">
                       <Pill value={t.status} />
                     </td>
-                    <td>
+                    <td className="tk-risk">
                       <RiskBadge risk={t.risk} />
                     </td>
-                    <td className="small muted tk-nowrap">{t.source}</td>
-                    <td className="small tk-nowrap">
+                    <td className="tk-when small">
                       <Time iso={t.created_at} />
+                      <span className="tk-source">via {t.source}</span>
                     </td>
                     <td className={`tk-summary small ${t.error ? "text-bad" : ""}`}>
                       <span className="tk-clip" title={t.error || t.summary}>

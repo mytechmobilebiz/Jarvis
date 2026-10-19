@@ -132,7 +132,7 @@ export default function Supervisor() {
   const working = countOf("planning", "running");
   const waiting = countOf("awaiting_approval");
   const failed = countOf("failed");
-  const scope = recent ? `Latest ${recent.length} request${recent.length === 1 ? "" : "s"}` : (list.error ?? "…");
+  const scope = recent ? `In the latest ${recent.length} request${recent.length === 1 ? "" : "s"}` : list.error ? "The list did not load" : "Loading…";
   const value = (n: number | null) => <span className="tile-value tabular">{n ?? "—"}</span>;
   return (
     <div className="page">
@@ -147,7 +147,7 @@ export default function Supervisor() {
         </div>
       </header>
       <div className="tiles cols-4 su-tiles">
-        <Tile icon="pulse" tone="blue" label="Working now" hint={<>Planning or running · {scope}</>}>
+        <Tile icon="pulse" tone="blue" label="Working now" hint="Planning or running">
           {value(working)}
         </Tile>
         <Tile icon="approvals" tone={waiting ? "warn" : "orange"} label="Awaiting approval" to="/approvals" hint={scope}>
@@ -202,7 +202,7 @@ export default function Supervisor() {
           <Icon name="lock" size={15} /> Your role is read-only; ask an operator to submit requests.
         </p>
       )}
-      <div className="split">
+      <div className="split su-split">
         <Card
           title={
             <>

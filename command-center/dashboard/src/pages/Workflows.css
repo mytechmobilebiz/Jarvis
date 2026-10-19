@@ -46,9 +46,6 @@
 }
 
 /* schedules table */
-.wf-table td {
-  vertical-align: middle;
-}
 .wf-table .wf-col-name {
   min-width: 220px;
   max-width: 380px;
@@ -175,7 +172,7 @@
 .wf-engine-head + p {
   margin: 8px 0 14px;
 }
-.wf-kv {
+.kv.wf-kv {
   grid-template-columns: 140px minmax(0, 1fr);
   padding: 12px 14px;
   background: var(--surface-2);
@@ -195,7 +192,7 @@
   font-size: 13px;
   margin: 18px 0 6px;
 }
-.wf-flows li {
+.list.wf-flows li {
   align-items: center;
 }
 .wf-flow-name {
@@ -204,7 +201,7 @@
 }
 
 /* on-demand card */
-.wf-requests li {
+.list.wf-requests li {
   align-items: flex-start;
 }
 .wf-requests .pill {
@@ -373,7 +370,7 @@
   .wf-table .wf-col-runs {
     grid-column: 1 / -1;
   }
-  .wf-kv {
+  .kv.wf-kv {
     grid-template-columns: minmax(0, 1fr);
   }
   .wf-channel-list {

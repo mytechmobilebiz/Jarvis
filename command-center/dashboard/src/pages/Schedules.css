@@ -7,28 +7,44 @@
 }
 .tile-value.sc-time {
   font-size: 30px;
+  white-space: nowrap;
 }
 
-.sc-table {
-  min-width: 860px;
-}
-.sc-table td {
+/* routines table (wide screens) */
+.table.sc-table td {
   vertical-align: middle;
 }
 .sc-name {
-  min-width: 240px;
+  min-width: 220px;
 }
 .sc-name strong {
   display: block;
   color: var(--text);
 }
 .sc-name .muted {
+  max-width: 380px;
   margin-top: 2px;
   line-height: 1.45;
 }
-.sc-runs code {
-  display: inline-block;
-  line-height: 1.5;
+code.sc-cap {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+.sc-agent {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.sc-cron .cron {
+  width: 120px;
 }
 .sc-nowrap {
   white-space: nowrap;
@@ -36,7 +52,8 @@
 .sc-state {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
 }
 .sc-paused td {
   opacity: 0.62;
@@ -45,11 +62,108 @@
   opacity: 1;
 }
 
-@media (max-width: 760px) {
-  .sc-table {
-    min-width: 760px;
+/* Below 1280px the table no longer fits next to the full sidebar: each routine
+   becomes a two-row entry (name and state, then runs / cron / next / last). */
+@media (max-width: 1280px) {
+  .sc-table,
+  .sc-table tbody {
+    display: block;
+  }
+  .sc-table thead {
+    display: none;
+  }
+  .sc-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 0.8fr);
+    grid-template-areas:
+      "name name state state"
+      "runs cron next last";
+    gap: 12px 16px;
+    align-items: start;
+    padding: 16px 2px;
+    border-bottom: 1px solid var(--border);
+  }
+  .sc-table tr:last-child {
+    border-bottom: 0;
+  }
+  .table.sc-table td {
+    display: block;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+  }
+  .sc-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .sc-table td.sc-name {
+    grid-area: name;
+  }
+  .sc-name .muted {
+    max-width: 640px;
+  }
+  .sc-table td.sc-runs {
+    grid-area: runs;
+  }
+  code.sc-cap {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .sc-table td.sc-cron {
+    grid-area: cron;
+  }
+  .sc-cron .cron {
+    width: 100%;
+    max-width: 200px;
+  }
+  .sc-table td.sc-next {
+    grid-area: next;
+  }
+  .sc-table td.sc-last {
+    grid-area: last;
+  }
+  .sc-table td.sc-state-cell {
+    grid-area: state;
+    justify-self: end;
+    white-space: normal;
+  }
+  .sc-state {
+    justify-content: flex-end;
+  }
+}
+
+/* three-tile row: keep three columns until the phone layout (tiles.css drops to two at 1280px) */
+@media (min-width: 761px) and (max-width: 1280px) {
+  .tiles.sc-tiles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
   .tile-value.sc-time {
     font-size: 26px;
+  }
+}
+
+/* small phones: two columns per entry */
+@media (max-width: 640px) {
+  .sc-table tr {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "name name"
+      "runs runs"
+      "cron state"
+      "next last";
+    gap: 10px 14px;
+    padding: 14px 2px;
+  }
+  .sc-table td.sc-state-cell {
+    align-self: end;
+  }
+  .sc-cron .cron {
+    max-width: none;
   }
 }

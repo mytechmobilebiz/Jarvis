@@ -1,0 +1,34 @@
+/* Settings page (prefix st-). Page stylesheets load before styles.css, so rules that adjust shared classes carry an extra class. */
+.st-page .card-head h2 > svg {
+  flex: none;
+}
+.st-column {
+  min-width: 0;
+}
+.st-now {
+  margin: 0 0 4px;
+  overflow-wrap: anywhere;
+}
+
+/* users table */
+.table.st-users td {
+  vertical-align: middle;
+}
+.table.st-users td:first-child {
+  overflow-wrap: anywhere;
+  min-width: 180px;
+}
+.st-users select {
+  min-width: 130px;
+}
+.st-users .check {
+  margin: 0;
+  white-space: nowrap;
+}
+
+/* one column (900px and below): each card's own bottom margin already separates them, so the grid gap would double the space */
+@media (max-width: 900px) {
+  .st-page .grid-2 {
+    gap: 0;
+  }
+}

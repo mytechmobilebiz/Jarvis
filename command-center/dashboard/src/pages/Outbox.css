@@ -1,0 +1,64 @@
+/* Outbox page (prefix ob-). Page stylesheets load before styles.css, so rules that adjust shared classes carry an extra class. */
+.ob-page .card-head h2 > svg {
+  flex: none;
+}
+
+/* entries table */
+.table.ob-table td {
+  vertical-align: middle;
+}
+.ob-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 150px;
+}
+.ob-action code {
+  overflow-wrap: anywhere;
+}
+.ob-clip {
+  display: block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* the subject wraps onto two lines at most, so the table fits the card at desktop width */
+.ob-subject {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  min-width: 160px;
+  max-width: 340px;
+  color: var(--text);
+}
+.ob-result {
+  min-width: 96px;
+  color: var(--text-2);
+}
+.ob-nowrap {
+  white-space: nowrap;
+}
+
+/* entry dialog */
+.ob-detail-head {
+  overflow-wrap: anywhere;
+}
+.ob-page .modal pre.plain.boxed {
+  overflow-wrap: anywhere;
+}
+
+/* three tiles stay on one row down to tablet width (the shared grid drops to two columns at 1280px) */
+@media (min-width: 761px) {
+  .ob-page .tiles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 900px) {
+  .ob-clip {
+    max-width: 180px;
+  }
+}

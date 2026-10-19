@@ -1,0 +1,50 @@
+/* Leads page (prefix le-). Page stylesheets load before styles.css, so rules that adjust shared classes carry an extra class. */
+.le-page .card-head h2 > svg {
+  flex: none;
+}
+
+/* add-a-lead form: two even rows of three fields instead of five plus one */
+.grid-form.le-form {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* pipeline table */
+.table.le-table td {
+  vertical-align: middle;
+}
+.le-lead {
+  cursor: pointer;
+}
+.le-lead:hover .le-name {
+  color: var(--primary-text);
+}
+.le-name,
+.le-contact {
+  display: block;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.le-nowrap {
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .grid-form.le-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .le-name,
+  .le-contact {
+    max-width: 240px;
+  }
+}
+@media (max-width: 560px) {
+  .grid-form.le-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .le-name,
+  .le-contact {
+    max-width: 200px;
+  }
+}

@@ -3,6 +3,8 @@ import { api, type CRClient, type CRStatus, type Task } from "../api";
 import { useAuth } from "../App";
 import { Card, Empty, ErrorNote, Modal, Pill, Time } from "../components";
 import { usePoll } from "../hooks";
+import { Icon } from "../icons";
+import "./CreditRepair.css";
 
 interface ClientDetail {
   client: CRClient;
@@ -62,24 +64,26 @@ function ClientModal({ id, onClose }: { id: number; onClose: () => void }) {
             </dd>
           </dl>
           <h3>Disputed items</h3>
-          <table className="table compact">
-            <tbody>
-              {detail.data!.items.map((i) => (
-                <tr key={i.id}>
-                  <td>{i.bureau}</td>
-                  <td>
-                    {i.creditor} {i.account_last4 ? `…${i.account_last4}` : ""}
-                  </td>
-                  <td>{i.reason.replace(/_/g, " ")}</td>
-                  <td>
-                    <Pill value="info" label={i.status.replace(/_/g, " ")} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="table-wrap">
+            <table className="table compact cr-items">
+              <tbody>
+                {detail.data!.items.map((i) => (
+                  <tr key={i.id}>
+                    <td>{i.bureau}</td>
+                    <td>
+                      {i.creditor} {i.account_last4 ? `…${i.account_last4}` : ""}
+                    </td>
+                    <td>{i.reason.replace(/_/g, " ")}</td>
+                    <td>
+                      <Pill value="info" label={i.status.replace(/_/g, " ")} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           <form
-            className="grid-form"
+            className="grid-form cr-item-form"
             onSubmit={(e: FormEvent) => {
               e.preventDefault();
               void act(() => api.post(`/api/credit-repair/clients/${id}/items`, item).then(() => setItem({ ...item, creditor: "", account_last4: "", detail: "" })));
@@ -116,7 +120,7 @@ function ClientModal({ id, onClose }: { id: number; onClose: () => void }) {
           </div>
           <h3>Letters</h3>
           {detail.data!.letters.length ? (
-            <ul className="list">
+            <ul className="list cr-letters">
               {detail.data!.letters.map((l) => (
                 <li key={l.id}>
                   #{l.id} {l.bureau} <Pill value={l.status === "mailed_mock" ? "succeeded" : "info"} label={l.status.replace("_", " ")} /> <Time iso={l.created_at} />{" "}
@@ -134,7 +138,7 @@ function ClientModal({ id, onClose }: { id: number; onClose: () => void }) {
           ) : (
             <p className="muted">No letters yet.</p>
           )}
-          {letter ? <pre className="plain boxed">{letter}</pre> : null}
+          {letter ? <pre className="plain boxed cr-letter">{letter}</pre> : null}
         </>
       ) : (
         <p className="muted">Loading…</p>
@@ -177,9 +181,10 @@ export default function CreditRepair() {
   }
 
   return (
-    <div className="page">
+    <div className="page cr-page">
       <header className="page-head">
         <div>
+          <div className="eyebrow">Sensitive module</div>
           <h1>Credit Repair</h1>
           <p className="muted">
             An isolated module: client data lives in its own encrypted database, every access is logged, and nothing personal reaches the AI, other agents or the
@@ -188,19 +193,38 @@ export default function CreditRepair() {
         </div>
       </header>
       <ErrorNote error={status.error ?? clients.error ?? error} />
-      {s && !s.configured ? <Card>The Credit Repair store is not configured on this installation.</Card> : null}
-      {s && !s.entitled ? <Card>The Credit Repair module is not included in this edition.</Card> : null}
+      {s && !s.configured ? (
+        <Card className="cr-state">
+          <Icon name="database" size={18} className="cr-state-icon" />
+          The Credit Repair store is not configured on this installation.
+        </Card>
+      ) : null}
+      {s && !s.entitled ? (
+        <Card className="cr-state">
+          <Icon name="lock" size={18} className="cr-state-icon" />
+          The Credit Repair module is not included in this edition.
+        </Card>
+      ) : null}
       {s && s.configured && s.entitled && !s.enabled ? (
-        <Card title="Compliance notice">
-          <p>{s.notice}</p>
+        <Card
+          className="cr-compliance"
+          title={
+            <>
+              <Icon name="shield" size={18} className="card-icon" /> Compliance notice
+            </>
+          }
+        >
+          <p className="cr-notice">{s.notice}</p>
           {user.role === "admin" ? (
             <>
               <label className="check">
                 <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} /> I have read this notice and accept responsibility for compliance.
               </label>
-              <button className="btn primary" disabled={!ack} onClick={() => void enable()}>
-                Enable the module
-              </button>
+              <div className="cr-enable">
+                <button className="btn primary" disabled={!ack} onClick={() => void enable()}>
+                  <Icon name="shield" size={16} /> Enable the module
+                </button>
+              </div>
             </>
           ) : (
             <p className="muted">An admin must enable the module.</p>
@@ -208,15 +232,27 @@ export default function CreditRepair() {
         </Card>
       ) : null}
       {s?.enabled && !s.can_access ? (
-        <Card>Your account does not have the sensitive-data permission. An admin can grant it on the Settings page.</Card>
+        <Card className="cr-state">
+          <Icon name="lock" size={18} className="cr-state-icon" />
+          Your account does not have the sensitive-data permission. An admin can grant it on the Settings page.
+        </Card>
       ) : null}
       {ready ? (
         <>
-          <p className="muted small">
-            Enabled by {s!.enabled!.acknowledged_by} <Time iso={s!.enabled!.acknowledged_at} />. Use test data only until the module has had legal review.
+          <p className="muted small cr-enabled">
+            <Icon name="shield" size={16} className="cr-enabled-icon" />
+            <span>
+              Enabled by {s!.enabled!.acknowledged_by} <Time iso={s!.enabled!.acknowledged_at} />. Use test data only until the module has had legal review.
+            </span>
           </p>
-          <Card title="Add a client">
-            <form className="grid-form" onSubmit={add}>
+          <Card
+            title={
+              <>
+                <Icon name="user" size={18} className="card-icon" /> Add a client
+              </>
+            }
+          >
+            <form className="grid-form cr-add" onSubmit={add}>
               <input aria-label="full name" placeholder="full name" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} required />
               <input aria-label="address" placeholder="address" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
               <input aria-label="date of birth" placeholder="date of birth (YYYY-MM-DD)" value={form.dob} onChange={(e) => setForm({ ...form, dob: e.target.value })} />
@@ -226,22 +262,30 @@ export default function CreditRepair() {
               </button>
             </form>
           </Card>
-          <Card title="Clients">
+          <Card
+            title={
+              <>
+                <Icon name="users" size={18} className="card-icon" /> Clients
+              </>
+            }
+          >
             {clients.data?.clients.length ? (
-              <table className="table">
-                <tbody>
-                  {clients.data.clients.map((c) => (
-                    <tr key={c.id} className="clickable" onClick={() => setOpenId(c.id)}>
-                      <td>{c.reference}</td>
-                      <td>{c.full_name}</td>
-                      <td>
-                        <Pill value="info" label={c.status} />
-                      </td>
-                      <td className="small">contract: {c.contract_signed_on ?? "not signed"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div className="table-wrap">
+                <table className="table cr-clients">
+                  <tbody>
+                    {clients.data.clients.map((c) => (
+                      <tr key={c.id} className="clickable" onClick={() => setOpenId(c.id)}>
+                        <td className="cr-ref tabular">{c.reference}</td>
+                        <td className="cr-name">{c.full_name}</td>
+                        <td>
+                          <Pill value="info" label={c.status} />
+                        </td>
+                        <td className="small cr-contract">contract: {c.contract_signed_on ?? "not signed"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             ) : (
               <Empty>No clients.</Empty>
             )}
