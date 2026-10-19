@@ -101,6 +101,8 @@ class SupportCapabilities:
             prompt=f"Category: {ticket.category}; priority: {ticket.priority}; client: {ticket.customer_name}\n"
                    f"Subject: {ticket.subject}\nMessage:\n{untrusted(ticket.body)}",
             fallback=template,
+            # The category only (a rule-based label such as "billing"): the client's own words never search memory.
+            memory_query=ticket.category,
         )
         artifact = Artifact(task_id=ctx.task_id, agent=self.name, kind="support_reply", title=f"Reply - ticket #{ticket.id}: {ticket.subject[:60]}",
                             content=text, content_type="text/plain", data={"ticket_id": ticket.id, "writer": writer})

@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from . import __version__
 from .bootstrap import bootstrap
+from .brain.store import BrainError
 from .config import get_settings
 from .db import dispose_engine
 from .security import LoginThrottle
@@ -43,6 +44,11 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
     async def task_error(_: Request, exc: TaskError) -> JSONResponse:
         return JSONResponse({"detail": str(exc)}, status_code=400)
 
+    @app.exception_handler(BrainError)
+    async def brain_error(_: Request, exc: BrainError) -> JSONResponse:
+        # The memory service refused the request; its messages carry no stored text (app/brain/store.py).
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
         response = await call_next(request)
@@ -50,8 +56,22 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
         response.headers.setdefault("Cache-Control", "no-store")
         return response
 
-    from .api import admin, auth, credit_repair, integrations, records, servers, sites, stats, supervisor, system, work
+    from .api import (
+        admin,
+        auth,
+        brain,
+        credit_repair,
+        integrations,
+        records,
+        servers,
+        sites,
+        stats,
+        supervisor,
+        system,
+        work,
+    )
 
-    for module in (auth, system, work, stats, supervisor, sites, servers, integrations, admin, records, credit_repair):
+    for module in (auth, system, work, stats, supervisor, sites, servers, integrations, admin, records, credit_repair,
+                   brain):
         app.include_router(module.router)
     return app

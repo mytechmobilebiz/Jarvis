@@ -18,6 +18,24 @@ export function hidesTaskDetail(task: Pick<Task, "agent">, user: User): boolean 
   return task.agent === "credit_repair" && !canSeeSensitive(user);
 }
 
+export interface MemoryNote {
+  id: number;
+  kind: string;
+  title: string;
+}
+
+/** result.data.memory_notes (0.6.0 API): up to 5 approved, general JARVIS Brain items that matched the task's topic words,
+ * added by the worker after the task succeeded. Absent when nothing matched, and removed by the API for viewers. */
+export function memoryNotes(task: Pick<Task, "result">): MemoryNote[] {
+  const raw = (task.result?.data as { memory_notes?: unknown } | undefined)?.memory_notes;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((n) => {
+    const note = n as Partial<Record<keyof MemoryNote, unknown>> | null;
+    if (!note || typeof note.id !== "number" || typeof note.title !== "string") return [];
+    return [{ id: note.id, kind: typeof note.kind === "string" ? note.kind : "", title: note.title }];
+  });
+}
+
 export function defaultsFor(cap: Capability): string {
   const out: Record<string, unknown> = {};
   for (const [key, prop] of Object.entries(cap.params_schema.properties ?? {})) {
@@ -247,6 +265,22 @@ export function TaskDetail({ id, onClose }: { id: number; onClose: () => void })
               <h3>Findings</h3>
               <Findings findings={task.result.findings} />
             </>
+          ) : null}
+          {memoryNotes(task).length ? (
+            <section className="memory-notes" aria-label="Reference notes from memory">
+              <h3>Reference notes from memory</h3>
+              <p className="muted small">
+                Approved notes from the JARVIS Brain that matched this task's topic words. They are reference only: they changed nothing the agent did.
+              </p>
+              <ul>
+                {memoryNotes(task).map((n) => (
+                  <li key={n.id}>
+                    <Link to={`/brain?item=${n.id}`}>{n.title}</Link>
+                    {n.kind ? <span className="muted small"> · {n.kind.replace(/_/g, " ")}</span> : null}
+                  </li>
+                ))}
+              </ul>
+            </section>
           ) : null}
           <h3>Parameters</h3>
           <JsonView value={task.params} />

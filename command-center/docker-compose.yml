@@ -25,6 +25,10 @@ x-api-env: &api-env
   WORKFLOW_WEBHOOK_URL: ${WORKFLOW_WEBHOOK_URL:-}
   WORKFLOW_WEBHOOK_SECRET: ${WORKFLOW_WEBHOOK_SECRET:-}
   COOKIE_SECURE: ${COOKIE_SECURE:-false}
+  # A second installation on this PC (the JARVIS Brain test copy) sets its own cookie name and a banner label;
+  # these defaults keep this installation as it was.
+  SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-cc_session}
+  CC_INSTANCE_LABEL: ${CC_INSTANCE_LABEL:-}
   LLM_PROVIDER: ${LLM_PROVIDER:-auto}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   LLM_MODEL: ${LLM_MODEL:-claude-opus-5-5}

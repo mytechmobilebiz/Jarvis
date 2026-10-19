@@ -424,6 +424,9 @@ export interface SystemStatus {
     sites_enabled?: Record<string, number>;
     sites_paused?: number;
   };
+  /** CC_INSTANCE_LABEL: set on a test copy (the JARVIS Brain test instance), empty or absent on a live install (0.6.0 API;
+   * absent from older APIs). The shell shows a "TEST COPY" banner while it is set. */
+  instance_label?: string | null;
 }
 
 /** GET /api/stats/task-activity: finished tasks (succeeded or failed) per category and local time bucket. The AI
@@ -566,4 +569,292 @@ export interface CRClient {
   dob?: string;
   ssn_last4?: string;
   notes?: string;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// JARVIS Brain (0.6.0 API, /api/brain; docs/JARVIS_BRAIN_SPEC.md section 3). Imported text is reference data: nothing here
+// approves, runs or schedules anything. The API applies each person's scope (viewer, operator, admin, sensitive-data
+// permission); these shapes are what it returns within that scope.
+
+export type MemoryKind =
+  | "business"
+  | "knowledge"
+  | "agent_note"
+  | "instruction"
+  | "skill"
+  | "workflow"
+  | "project"
+  | "decision"
+  | "accomplishment"
+  | "problem";
+export type MemoryStatus = "pending_review" | "quarantined" | "approved" | "rejected" | "archived";
+export type Sensitivity = "general" | "customer" | "restricted";
+
+/** MemoryItemOut. `flags` holds review hints (secrets_redacted, masked, instruction_like, approval_conflict, script,
+ * plugin_or_hook, custom, owner_profile, template, truncated, conflict, ...) and, for skills, the mapping (skill, staff,
+ * capabilities, compatibility, note, frontmatter). `needs_admin`: approving or editing it needs an admin. */
+export interface MemoryItem {
+  id: number;
+  kind: MemoryKind;
+  kind_label: string;
+  /** "" = shared by every agent; otherwise the one agent it belongs to. */
+  agent: string;
+  title: string;
+  body: string;
+  tags: string[];
+  sensitivity: "general" | "customer";
+  status: MemoryStatus;
+  origin: "import" | "manual" | "promoted";
+  flags: Record<string, unknown>;
+  source_system: string;
+  source_ref: string;
+  source_at: string | null;
+  import_run_id: number | null;
+  version: number;
+  created_at: string;
+  created_by: string;
+  updated_at: string;
+  updated_by: string;
+  reviewed_by: string;
+  reviewed_at: string | null;
+  review_note: string;
+  deleted_at: string | null;
+  needs_admin: boolean;
+  /** In list and search results only. */
+  excerpt?: string;
+  rank?: number;
+}
+
+/** One row of memory_item_versions: every change to an item, in full. A redacted version has its title and body blanked. */
+export interface MemoryItemVersion {
+  id?: number;
+  item_id?: number;
+  version: number;
+  change: string;
+  kind: string;
+  agent: string;
+  title: string;
+  body: string;
+  tags?: string[];
+  sensitivity: string;
+  status: string;
+  changed_by: string;
+  changed_at: string;
+  note: string;
+}
+
+/** ArchiveSessionOut: the archive_sessions columns except `search`. A "restricted" session is withheld entirely: its title,
+ * summary and every message's text are empty (the text stays only in the JARVIS backup). */
+export interface ArchiveSession {
+  id: number;
+  source_system: string;
+  source_key: string;
+  source_session_id: string;
+  title: string;
+  staff: string;
+  agent: string;
+  origin: "chat" | "scheduled";
+  channel: string;
+  lineage: "" | "continuation" | "branch" | "delegated";
+  parent_source_session_id: string;
+  job_id: string;
+  job_name: string;
+  started_at: string | null;
+  ended_at: string | null;
+  end_reason: string;
+  hermes_archived: boolean;
+  source_message_count: number;
+  imported_messages: number;
+  withheld_messages: number;
+  tool_calls: number;
+  sensitivity: Sensitivity;
+  /** Messages per keyword-matched label (accomplishment, problem, decision). */
+  labels: Record<string, number>;
+  summary: string;
+  /** flags.attribution: "job id" or "default" (how the staff member was inferred); flags.time_assumed_local. */
+  flags: Record<string, unknown>;
+  import_run_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ArchiveToolCall {
+  name: string;
+  arguments: string;
+}
+
+/** ArchiveMessageOut. A withheld message has no text. */
+export interface ArchiveMessage {
+  id: number;
+  session_id: number;
+  position: number;
+  role: string;
+  content: string;
+  truncated: boolean;
+  tool_name: string;
+  tool_calls: ArchiveToolCall[];
+  at: string | null;
+  state: "live" | "compacted";
+  sensitivity: Sensitivity;
+  withheld: boolean;
+  /** Labels matched by keywords: accomplishment, problem, decision. */
+  labels: string[];
+  /** Secret types (and counts) removed from this message; never the values. */
+  redactions: Record<string, unknown>;
+  flags: Record<string, unknown>;
+}
+
+export interface BrainSearchHit {
+  message: ArchiveMessage;
+  session: { id: number; title: string; staff: string; agent: string; started_at: string | null };
+  excerpt: string;
+}
+
+/** GET /api/brain/search. `filtered` is false when the words filter nothing (empty or only common words): the newest are shown. */
+export interface BrainSearch {
+  memory: { hits: MemoryItem[]; total: number };
+  archive: { hits: BrainSearchHit[]; total: number };
+  filtered: boolean;
+}
+
+export type ConflictKind = "memory_item" | "source_changed" | "instruction" | "schedule" | "site" | "workflow";
+export type ConflictResolution = "keep_existing" | "use_incoming" | "keep_both" | "dismissed";
+
+/** A row of memory_conflicts: something an import found that a person must decide. Never resolved by overwriting. */
+export interface MemoryConflict {
+  id: number;
+  run_id: number | null;
+  kind: ConflictKind;
+  title: string;
+  source_key?: string;
+  existing_table?: string;
+  existing_id?: number | null;
+  incoming_item_id?: number | null;
+  existing?: Record<string, unknown>;
+  incoming?: Record<string, unknown>;
+  status: "open" | ConflictResolution;
+  effects?: Record<string, unknown>;
+  decided_by?: string;
+  decided_at?: string | null;
+  note?: string;
+  created_at: string;
+}
+
+/** A row of workflow_drafts: one of JARVIS's scheduled jobs. A draft never runs; converting it (admin) creates a disabled
+ * schedule. */
+export interface WorkflowDraft {
+  id: number;
+  source_system: string;
+  source_key: string;
+  name: string;
+  staff: string;
+  agent: string;
+  capability: string;
+  params: Record<string, unknown>;
+  compatibility: "mapped" | "partial" | "reference_only";
+  trigger: "schedule" | "manual" | "event";
+  /** "" when JARVIS's expression was not a valid cron. In JARVIS it ran in the PC's local time. */
+  cron: string;
+  schedule_display: string;
+  timezone: string;
+  enabled_in_source: boolean;
+  deliver: string;
+  approval: { jarvis?: string; jarvis_rules?: string[]; command_center?: string } & Record<string, unknown>;
+  error_handling: { jarvis?: string[]; command_center?: string } & Record<string, unknown>;
+  duplicate_guard: { jarvis_job_enabled?: boolean; overlaps?: string | string[] | null; rule?: string } & Record<string, unknown>;
+  spec: string;
+  history: { runs?: number; first?: string | null; last?: string | null; with_problems?: number; last_runs?: string[]; from?: string } & Record<string, unknown>;
+  notes: string[];
+  status: "draft" | "reviewed" | "converted" | "rejected";
+  schedule_id: number | null;
+  import_run_id: number | null;
+  created_at: string;
+  updated_at: string;
+  reviewed_by: string;
+  reviewed_at: string | null;
+}
+
+/** The import report (spec 2.8): counts, ids, kinds and safe labels only, never message text or titles. */
+export interface ImportReport {
+  selection?: Record<string, unknown>;
+  totals?: Partial<Record<"sessions" | "messages" | "files" | "jobs" | "urls", number>>;
+  by_action?: Record<string, number>;
+  by_reason?: Record<string, number>;
+  by_type?: Record<string, number>;
+  by_agent?: Record<string, number>;
+  by_staff?: Record<string, number>;
+  by_kind?: Record<string, number>;
+  by_sensitivity?: Record<string, number>;
+  /** The credential rotation list: secret types and how often each was found. Never the values. */
+  secrets?: { types?: Record<string, number>; where?: Partial<Record<"messages" | "files" | "drafts", number>> };
+  restricted?: { types?: Record<string, number> | string[]; sessions_withheld?: number; files_excluded?: number };
+  masked?: { email_address?: number; phone_number?: number };
+  conflicts?: Record<string, number>;
+  drafts?: { name: string; compatibility: string; enabled_in_source: boolean }[];
+  time_range?: { first?: string | null; last?: string | null };
+  missing_from_source?: number;
+  discovery_check?: unknown;
+  /** Written by `brain-import verify`. */
+  verification?: Record<string, unknown>;
+  /** Written by a rollback: what it deleted and reverted. */
+  rollback?: Record<string, unknown>;
+}
+
+/** ImportRunOut: every import_runs column; `report` comes only with the single run. */
+export interface ImportRun {
+  id: number;
+  source_system: string;
+  label: string;
+  status: "running" | "completed" | "failed" | "interrupted" | "rolled_back";
+  scope: Record<string, unknown>;
+  source: Record<string, unknown>;
+  importer_version: string;
+  created_by: string;
+  started_at: string;
+  heartbeat_at: string;
+  finished_at: string | null;
+  checkpoint: Record<string, unknown>;
+  counts: Record<string, unknown>;
+  report?: ImportReport;
+  error: string;
+  rolled_back_at: string | null;
+  rolled_back_by: string;
+}
+
+/** GET /api/brain/imports/{id}. `reviewed_items`: items of this run reviewed or edited since (a rollback refuses them unless
+ * they are discarded). */
+export interface ImportRunDetail {
+  run: ImportRun;
+  records_by_action: Record<string, number>;
+  records_by_type: Record<string, number>;
+  can_roll_back: boolean;
+  reviewed_items: number;
+}
+
+/** GET /api/brain/overview. Counts follow the person's scope; viewers get archive totals only. */
+export interface BrainOverview {
+  memory: { total: number; by_status?: Record<string, number>; by_kind?: Record<string, number>; by_agent?: Record<string, number> };
+  archive: { sessions: number; messages: number; withheld_messages?: number; first_at?: string | null; last_at?: string | null; by_staff?: Record<string, number> };
+  review?: { pending_items: number; quarantined_items: number; open_conflicts: number };
+  workflows?: { drafts: number; by_status?: Record<string, number> };
+  imports: { runs: number; latest: ImportRun | null };
+  /** The owner's setting brain_ai_context: "off" (default: memory never goes into AI prompts) or "approved_general". */
+  ai_context: string;
+  instance_label?: string | null;
+}
+
+/** GET /api/brain/agents: what each agent reads (policy.describe()), where it reads memory, and counts. Counts may be absent
+ * (Credit Repair's need the sensitive-data permission). */
+export interface BrainAgent {
+  agent: string;
+  title: string;
+  reads_shared: boolean;
+  reads_own: boolean;
+  reads_other_agents: boolean;
+  reads_customer_items: boolean;
+  archive: "all" | "own" | "none";
+  statuses: string[];
+  used_by: string[];
+  items?: { approved: number; by_kind?: Record<string, number> };
+  sessions?: number;
 }

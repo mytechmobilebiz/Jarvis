@@ -1,0 +1,53 @@
+# JARVIS Brain test copy: an overlay used only by scripts/brain-test.ps1 (docs/JARVIS_BRAIN_SPEC.md 6.2).
+#
+#   docker compose -p cc-brain-test -f docker-compose.yml -f docker-compose.brain-test.yml --env-file .env.brain-test ...
+#
+# A second, separate Command Center on this PC for trying the JARVIS import: its own project name (so its
+# containers, volumes and networks are cc-brain-test_*), its own image names (building it never replaces the live
+# installation's images), its own .env.brain-test with fresh secrets, the dashboard on 127.0.0.1:8190, no n8n,
+# and a worker with no route to the internet. Nothing restarts it by itself. Needs Docker Compose 2.24.4 or later
+# (!override).
+#
+# What keeps AI off is the network and the fresh keys, not the settings below: a seeded ai_provider row cannot
+# reach the internet, and the seed deletes stored secret values.
+
+# Even a command without -p resolves to this project, never to infinite-command-center.
+name: cc-brain-test
+
+x-test-copy-env: &test-copy-env
+  WORKFLOW_ENGINE: none
+  LLM_PROVIDER: rule_based
+  ANTHROPIC_API_KEY: ""
+  N8N_EDITOR_URL: ""
+  CC_INSTANCE_LABEL: cc-brain-test
+  SESSION_COOKIE_NAME: cc_session_brain_test
+
+services:
+  postgres:
+    restart: "no"
+
+  db-init:
+    restart: "no"
+
+  api:
+    image: infinite-command-center-brain-test/backend:local
+    restart: "no"
+    environment: *test-copy-env
+
+  worker:
+    image: infinite-command-center-brain-test/backend:local
+    pull_policy: never
+    restart: "no"
+    environment: *test-copy-env
+    # The private network only: no internet (the live worker also has "egress").
+    networks: !override [internal]
+
+  dashboard:
+    image: infinite-command-center-brain-test/dashboard:local
+    restart: "no"
+    ports: !override ["127.0.0.1:${BRAIN_TEST_PORT:-8190}:8080"]
+
+  n8n:
+    # Never started: no profile of this name is ever activated.
+    profiles: ["never"]
+    restart: "no"

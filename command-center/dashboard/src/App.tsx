@@ -7,6 +7,7 @@ import Activity from "./pages/Activity";
 import Agents from "./pages/Agents";
 import AutomationLogs from "./pages/AutomationLogs";
 import Approvals from "./pages/Approvals";
+import Brain from "./pages/Brain";
 import CreditRepair from "./pages/CreditRepair";
 import Dashboard from "./pages/Dashboard";
 import Drafts from "./pages/Drafts";
@@ -96,7 +97,8 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
       <a className="skip-link" href="#main">
         Skip to content
       </a>
-      <div className={`layout ${menuOpen ? "menu-open" : ""}`}>
+      <TestCopyBanner status={s} />
+      <div className={`layout ${menuOpen ? "menu-open" : ""}${s?.instance_label?.trim() ? " has-test-banner" : ""}`}>
         <header className="topbar" ref={header}>
           <MenuButton ref={menuButton} open={menuOpen} onClick={() => setMenuOpen((o) => !o)} />
           <Link to="/" className="brand" aria-label="Infinite AI Command Center, dashboard">
@@ -139,6 +141,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
             <Route path="/approvals" element={<Approvals />} />
             <Route path="/tasks" element={<Tasks />} />
             <Route path="/supervisor" element={<Supervisor />} />
+            <Route path="/brain" element={<Brain />} />
             <Route path="/leads" element={<Leads />} />
             <Route path="/support" element={<Support />} />
             <Route path="/drafts" element={<Drafts />} />
@@ -151,6 +154,18 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
         </main>
       </div>
     </AuthContext.Provider>
+  );
+}
+
+/** A test copy of the Command Center (CC_INSTANCE_LABEL set; the JARVIS Brain test instance) says so on every page, so it is
+ * never taken for the live install. Absent from older APIs, empty on a live one. */
+export function TestCopyBanner({ status }: { status: SystemStatus | null }) {
+  const label = status?.instance_label?.trim();
+  if (!label) return null;
+  return (
+    <div className="test-banner" role="status">
+      <strong>TEST COPY</strong> · {label} · not your live Command Center
+    </div>
   );
 }
 

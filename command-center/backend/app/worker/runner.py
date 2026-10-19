@@ -19,6 +19,9 @@ from ..agents.base import AgentContext, AgentResult
 from ..agents.http import ReadOnlyHttpClient
 from ..agents.registry import get_agent
 from ..agents.wp_server import SiteBusy
+from ..brain.notes import reference_notes
+from ..brain.policy import POLICIES, SENSITIVE_AGENT
+from ..brain.store import AgentMemory
 from ..config import Settings
 from ..db import session_scope, sessionmaker
 from ..integrations import IntegrationHub, build_hub
@@ -232,6 +235,8 @@ class Worker:
                 if cap is not None and cap.timeout_seconds:
                     timeout = cap.timeout_seconds
                 async with sessionmaker()() as session:
+                    # Read-only memory through the agent's access policy (none for agents without one).
+                    memory = AgentMemory(session, agent_name) if agent_name in POLICIES else None
                     ctx = AgentContext(
                         session=session,
                         settings=self.settings,
@@ -247,9 +252,12 @@ class Worker:
                         requested_by=requested_by,
                         agent_name=agent_name,
                         deadline=asyncio.get_running_loop().time() + timeout,
+                        memory=memory,
                     )
                     try:
                         result = await asyncio.wait_for(agent.run(ctx, cap_name, params), timeout=timeout)
+                        if memory is not None and agent_name != SENSITIVE_AGENT:  # never for Credit Repair
+                            await self._add_memory_notes(session, task_id, memory, params, result)
                         await self._complete(session, task_id, agent_name, result, logs)
                         await session.commit()
                     except BaseException:
@@ -266,6 +274,24 @@ class Worker:
             finally:
                 beat.cancel()
                 await http.aclose()
+
+    async def _add_memory_notes(self, session: Any, task_id: int, memory: AgentMemory, params: dict[str, Any],
+                                result: AgentResult) -> None:
+        """Adds result.data.memory_notes: approved, general memory items about the task's site or topic (app/brain/notes.py).
+
+        Local and read-only: the capability has already run, and its summary and output stay as they are. A failure
+        here never fails the task: the lookup runs in a SAVEPOINT and is skipped with a warning.
+        """
+        # The capability's own changes are flushed first, as _complete would, so their errors surface unchanged.
+        await session.flush()
+        try:
+            async with session.begin_nested():
+                notes = await reference_notes(memory, params)
+        except Exception as exc:  # noqa: BLE001 - reference notes are optional
+            log.warning("reference notes for task %s skipped (%s)", task_id, exc.__class__.__name__)
+            return
+        if notes:
+            result.data = {**result.data, "memory_notes": notes}
 
     async def _heartbeat(self, task_id: int) -> None:
         """Keep a long task's heartbeat fresh so the stale-task reaper leaves it alone."""

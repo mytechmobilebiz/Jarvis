@@ -16,8 +16,10 @@ async def _task(agent: str, capability: str, status: str, finished: datetime | N
 
 async def test_task_activity_buckets_categories_and_comparison(admin):
     now = datetime.now(UTC)
-    await _task("monitoring", "check_all_sites", "succeeded", now - timedelta(minutes=5))
-    await _task("monitoring", "check_all_sites", "failed", now - timedelta(minutes=6))
+    # Both inside the current hour's bucket, also in the first minutes of an hour.
+    into_hour = now - now.replace(minute=0, second=0, microsecond=0)
+    await _task("monitoring", "check_all_sites", "succeeded", now - min(timedelta(minutes=5), into_hour / 2))
+    await _task("monitoring", "check_all_sites", "failed", now - min(timedelta(minutes=6), into_hour * 3 / 4))
     await _task("seo_content", "audit_page", "succeeded", now - timedelta(hours=3))
     await _task("supervisor", "plan_request", "succeeded", now - timedelta(minutes=1))  # internal: never counted
     await _task("monitoring", "check_all_sites", "queued", None)  # not finished: not counted

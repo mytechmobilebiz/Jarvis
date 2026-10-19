@@ -1,0 +1,75 @@
+# JARVIS Brain importer: a one-off container used only by scripts/jarvis-import.ps1 (docs/JARVIS_BRAIN_SPEC.md 6.5).
+#
+#   docker compose -p <project> -f docker-compose.yml [-f docker-compose.brain-test.yml] -f docker-compose.brain-import.yml
+#     --env-file <env> --profile brain-import run --rm --no-deps -T brain-importer <plan|run|resume|verify ...>
+#
+# It runs "python -m app.cli brain-import" from the image the running api uses (BRAIN_IMPORT_IMAGE: the image name
+# the api was created from, which the script first checks still points to the api's exact image), on the private network only (no internet), with a read-only system, no capabilities, and
+# only three environment variables: the database address, the time zone and the environment. The JARVIS backup and
+# the restored profile are mounted read-only; only the reports folder is writable. Every host path comes from an
+# environment variable the script sets, and a path that does not exist makes Compose stop instead of creating an
+# empty folder in its place (create_host_path: false).
+#
+# brain-importer reads the JARVIS source (plan, run, resume, verify). brain-importer-nosource is the same container
+# without the source mounts, for the commands that only use the database (status, rollback, rescan, the review
+# decisions), so they work after the restored files have been deleted.
+
+x-brain-importer: &brain-importer
+  image: ${BRAIN_IMPORT_IMAGE:?set by scripts/jarvis-import.ps1 to the image the running api uses}
+  pull_policy: never
+  profiles: ["brain-import"]
+  entrypoint: ["python", "-m", "app.cli", "brain-import"]
+  command: ["status"]
+  restart: "no"
+  networks: [internal]
+  environment:
+    DATABASE_URL: postgresql+asyncpg://command_center:${CC_DB_PASSWORD:?}@postgres:5432/command_center
+    TZ: ${TZ:-America/New_York}
+    ENVIRONMENT: ${ENVIRONMENT:-production}
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  mem_limit: 3g
+  pids_limit: 256
+  labels:
+    cc.brain-import: "1"
+
+x-reports: &reports
+  type: bind
+  source: ${BRAIN_IMPORT_REPORTS:?set by scripts/jarvis-import.ps1}
+  target: /reports
+  read_only: false
+  bind:
+    create_host_path: false
+
+services:
+  brain-importer:
+    <<: *brain-importer
+    volumes:
+      - type: bind
+        source: ${BRAIN_IMPORT_DB:-/nonexistent/brain-import-db-not-set}
+        target: /jarvis/state.db
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${BRAIN_IMPORT_PROFILE:-/nonexistent/brain-import-profile-not-set}
+        target: /jarvis/profile
+        read_only: true
+        bind:
+          create_host_path: false
+      # Optional: without a content folder the profile folder stands in (read-only) and the importer is not
+      # given --content, so nothing reads it there.
+      - type: bind
+        source: ${BRAIN_IMPORT_CONTENT:-${BRAIN_IMPORT_PROFILE:-/nonexistent/brain-import-profile-not-set}}
+        target: /jarvis/content
+        read_only: true
+        bind:
+          create_host_path: false
+      - *reports
+
+  brain-importer-nosource:
+    <<: *brain-importer
+    volumes:
+      - *reports

@@ -39,6 +39,7 @@ from ..models import (
     WorkerHeartbeat,
 )
 from .planner import make_plan
+from .recall import RecallParams, recall_history
 
 SUMMARY_SYSTEM = """You are the supervisor of Infinite AI Command Center, reporting to the owner of \
 Infinite Marketing. Summarise what the agents did for the request below in at most 8 short lines of plain \
@@ -91,7 +92,9 @@ def _task_digest(task: Task, approval: Approval | None) -> dict[str, Any]:
     }
 
 
-def template_summary(message: str, digests: list[dict[str, Any]]) -> str:
+def template_summary(message: str, digests: list[dict[str, Any]], answers: list[list[str]] | None = None) -> str:
+    """The summary without an AI model. answers: the lines of local-only answers (supervisor.recall), appended as they
+    are; they never go to a model."""
     lines: list[str] = []
     attention = [d for d in digests if d["status"] in ("failed", "awaiting_approval", "rejected")]
     critical = [(d, f) for d in digests for f in d["findings"] if f["severity"] == "critical"]
@@ -111,6 +114,8 @@ def template_summary(message: str, digests: list[dict[str, Any]]) -> str:
             for f in d["findings"]:
                 if f["severity"] == "warning":
                     lines.append(f"  - warning: {f['title']}")
+    for answer in answers or []:
+        lines += [str(line) for line in answer]
     return "\n".join(lines) if lines else "No tasks ran for this request."
 
 
@@ -135,6 +140,15 @@ class SupervisorAgent(BaseAgent):
                 (r"\b(system|platform|command center|agent|worker)s?\b.{0,20}\b(health|healthy|status|ok|okay|working|running)\b",
                  r"\bhealth (review|check)\b"),
                 lambda text, urls: {} if not urls else None,
+            ),
+            # Questions about JARVIS's history: answered locally from the JARVIS Brain, never by an AI model.
+            Intent(
+                "recall",
+                (r"\bjarvis\b", r"\b(previously|in the past)\b",
+                 r"\bwhat\s+did\b.{0,60}\b(do|accomplish(ed)?|achieve[ds]?|get done)\b",
+                 r"\bwhat\s+(problems?|issues?|decisions?)\b"),
+                lambda text, urls: {"question": text.strip()[:500]} if text.strip() else None,
+                weight=2,
             ),
         ]
 
@@ -220,9 +234,20 @@ class SupervisorAgent(BaseAgent):
             for a in (await session.scalars(select(Approval).where(Approval.task_id.in_([t.id for t in work])))).all()
         }
         digests = [_task_digest(t, approvals.get(t.id)) for t in work]
-        summary = template_summary(request.message, digests)
+        # Answers about JARVIS's history (supervisor.recall) are local only: never sent to a model, so this request is
+        # summarised by the template, with those answers appended.
+        answers: list[list[str]] = []
+        for t in work:
+            data = (t.result or {}).get("data") or {}
+            if data.get("local_only"):
+                answers.append(list(data.get("answer") or []))
+        local_only = bool(answers)
+        summary = template_summary(request.message, digests, answers)
         summarizer = "template"
-        if ctx.llm.available:
+        if local_only:
+            request.plan = {**(request.plan or {}), "local_only": True}
+            ctx.log("an answer from the JARVIS Brain is local only: summarised without an AI model")
+        elif ctx.llm.available:
             try:
                 summary = await ctx.llm.text(
                     purpose="summarize",
@@ -399,3 +424,16 @@ class SupervisorAgent(BaseAgent):
             findings=findings,
             events=events,
         )
+
+    # ------------------------------------------------------------ memory
+
+    @capability(
+        risk=Risk.READ,
+        description="Answer a question about the previous assistant JARVIS's history (what was done, what went wrong, "
+        "what was decided) from the imported conversation archive and approved memory. A local search: no AI model "
+        "reads the history, and customer conversations are never quoted.",
+        params=RecallParams,
+        examples=("What did JARVIS accomplish last month?", "What problems did JARVIS have with SSL?"),
+    )
+    async def recall(self, ctx: AgentContext, params: RecallParams) -> AgentResult:
+        return await recall_history(ctx, params)

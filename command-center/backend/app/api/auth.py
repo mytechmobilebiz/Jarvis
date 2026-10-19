@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import audit
 from ..config import Settings, get_settings
 from ..models import Session, User
-from ..security import SESSION_COOKIE, hash_password, hash_token, new_session_token, verify_password
+from ..security import hash_password, hash_token, new_session_token, verify_password
 from .deps import Principal, client_ip, get_db, require_user
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -71,7 +71,7 @@ async def login(
     await audit.record(session, user.email, "auth.login", "user", user.id, ip=ip)
     await session.commit()
     response.set_cookie(
-        SESSION_COOKIE,
+        settings.session_cookie_name,
         token,
         max_age=settings.session_ttl_hours * 3600,
         httponly=True,
@@ -83,12 +83,17 @@ async def login(
 
 
 @router.post("/logout")
-async def logout(request: Request, response: Response, session: AsyncSession = Depends(get_db)) -> dict:
-    token = request.cookies.get(SESSION_COOKIE)
+async def logout(
+    request: Request,
+    response: Response,
+    session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    token = request.cookies.get(settings.session_cookie_name)
     if token:
         await session.execute(delete(Session).where(Session.token_hash == hash_token(token)))
         await session.commit()
-    response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(settings.session_cookie_name, path="/")
     return {"ok": True}
 
 
@@ -104,13 +109,14 @@ async def change_password(
     request: Request,
     principal: Principal = Depends(require_user),
     session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> dict:
     user = await session.get(User, principal.user_id)
     if not verify_password(body.current_password, user.password_hash):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "current password is wrong")
     user.password_hash = hash_password(body.new_password)
     # Sign out every other session.
-    current = hash_token(request.cookies.get(SESSION_COOKIE, ""))
+    current = hash_token(request.cookies.get(settings.session_cookie_name, ""))
     await session.execute(delete(Session).where(Session.user_id == user.id, Session.token_hash != current))
     await audit.record(session, user.email, "auth.password_changed", "user", user.id, ip=client_ip(request))
     await session.commit()

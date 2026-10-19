@@ -15,7 +15,7 @@ from .. import tasks as task_service
 from ..agents.registry import all_agents, get_agent
 from ..config import Settings, get_settings
 from ..models import AgentState, Approval, Task, TaskLog, User
-from .deps import Principal, client_ip, get_db, require_operator, require_user, to_dict
+from .deps import OPERATOR_ROLES, Principal, client_ip, get_db, require_operator, require_user, to_dict
 
 router = APIRouter(prefix="/api", tags=["work"])
 
@@ -46,8 +46,21 @@ async def require_sensitive_access(session: AsyncSession, principal: Principal, 
         raise HTTPException(403, "this agent handles protected personal data; your account needs the sensitive-data permission")
 
 
-def task_view(task: Task) -> dict[str, Any]:
-    return to_dict(task)
+# Parts of a task result that only operators and admins see: answers quoted from JARVIS's history (supervisor.recall)
+# and reference notes from memory (titles of memory items a viewer may not be allowed to read).
+OPERATOR_ONLY_RESULT_DATA = ("answer", "memory_notes")
+
+
+def task_view(task: Task, principal: Principal | None = None) -> dict[str, Any]:
+    """A task as the API returns it. For a viewer (any role that does not operate), the operator-only parts of the
+    result are left out; callers that already require an operator pass no principal."""
+    out = to_dict(task)
+    if principal is not None and principal.role not in OPERATOR_ROLES:
+        result = out.get("result")
+        data = result.get("data") if isinstance(result, dict) else None
+        if isinstance(data, dict) and any(key in data for key in OPERATOR_ONLY_RESULT_DATA):
+            out["result"] = {**result, "data": {k: v for k, v in data.items() if k not in OPERATOR_ONLY_RESULT_DATA}}
+    return out
 
 
 @router.get("/agents")
@@ -156,7 +169,7 @@ async def run_capability(
 
 @router.get("/tasks")
 async def list_tasks(
-    _: Principal = Depends(require_user),
+    principal: Principal = Depends(require_user),
     session: AsyncSession = Depends(get_db),
     status: str | None = None,
     agent: str | None = None,
@@ -173,18 +186,18 @@ async def list_tasks(
         q = q.where(Task.request_id == request_id)
     total = await session.scalar(select(func.count()).select_from(q.subquery()))
     rows = (await session.scalars(q.order_by(Task.id.desc()).limit(limit).offset(offset))).all()
-    return {"tasks": [task_view(t) for t in rows], "total": total}
+    return {"tasks": [task_view(t, principal) for t in rows], "total": total}
 
 
 @router.get("/tasks/{task_id}")
-async def get_task(task_id: int, _: Principal = Depends(require_user), session: AsyncSession = Depends(get_db)) -> dict:
+async def get_task(task_id: int, principal: Principal = Depends(require_user), session: AsyncSession = Depends(get_db)) -> dict:
     task = await session.get(Task, task_id)
     if task is None:
         raise HTTPException(404, "no such task")
     logs = (await session.scalars(select(TaskLog).where(TaskLog.task_id == task_id).order_by(TaskLog.id))).all()
     approval = await session.scalar(select(Approval).where(Approval.task_id == task_id))
     return {
-        "task": task_view(task),
+        "task": task_view(task, principal),
         "logs": [to_dict(entry) for entry in logs],
         "approval": to_dict(approval) if approval else None,
     }

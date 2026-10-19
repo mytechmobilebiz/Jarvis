@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import Settings, get_settings
 from ..db import sessionmaker
 from ..models import Session, User
-from ..security import CSRF_HEADER, CSRF_VALUE, SESSION_COOKIE, hash_token, tokens_equal
+from ..security import CSRF_HEADER, CSRF_VALUE, hash_token, tokens_equal
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 OPERATOR_ROLES = frozenset({"admin", "operator"})
@@ -57,7 +57,7 @@ async def current_principal(
             return Principal(kind="service", name="service:n8n", role="service")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid service token")
 
-    token = request.cookies.get(SESSION_COOKIE)
+    token = request.cookies.get(settings.session_cookie_name)
     if not token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "not signed in")
     now = datetime.now(UTC)

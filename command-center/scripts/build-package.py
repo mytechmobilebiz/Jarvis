@@ -40,6 +40,20 @@ DEV_ONLY = (
     "scripts/generate-sbom.py",
     "releases/",
 )
+# The owner's operations files: the package is refused if one is missing (testing/ stays out, as above).
+REQUIRED = (
+    "VERSION",
+    "docker-compose.yml",
+    "docker-compose.brain-test.yml",
+    "docker-compose.brain-import.yml",
+    "scripts/install.ps1",
+    "scripts/prepare-build.ps1",
+    "scripts/brain-common.ps1",
+    "scripts/brain-precheck.ps1",
+    "scripts/brain-test.ps1",
+    "scripts/jarvis-import.ps1",
+    "migration/jarvis/jarvis-kit.ps1",
+)
 FORBIDDEN_NAMES = (".env", "id_rsa", "id_ed25519")
 FORBIDDEN_SUFFIXES = (".key", ".p12", ".pfx", ".dump", ".sqlite", ".pyc")
 
@@ -68,13 +82,16 @@ def local_secret_values() -> list[str]:
 
 def check(files: list[str]) -> None:
     secrets = local_secret_values()
-    problems = []
+    problems = [f"{f}: missing from the package" for f in REQUIRED if f not in files]
     for f in files:
         name = PurePosixPath(f).name
         if name in FORBIDDEN_NAMES or name.endswith(FORBIDDEN_SUFFIXES) or (name.startswith(".env") and name != ".env.example"):
             problems.append(f"{f}: looks like a credential or data file")
             continue
         data = (ROOT / f).read_bytes()
+        if f.endswith(".ps1") and not data.isascii():
+            # Windows PowerShell 5.1 reads a file without a byte order mark in the ANSI code page.
+            problems.append(f"{f}: PowerShell scripts must be plain ASCII")
         for value in secrets:
             if value.encode() in data:
                 problems.append(f"{f}: contains a value from the local .env")

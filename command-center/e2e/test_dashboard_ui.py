@@ -88,7 +88,7 @@ def test_every_sidebar_section_opens(signed_in: Page):
         ("CWP / Servers", "CWP / Servers"), ("Email", "Email"), ("Credit Repair", "Credit Repair"),
         ("Postonomous", "Social Media / Postonomous"), ("Automation Logs", "Automation Logs"),
         ("Knowledge Base", "Knowledge Base"), ("Settings", "Settings"), ("Approvals", "Approvals"), ("Tasks", "Tasks"),
-        ("AI Supervisor", "AI Supervisor"), ("Activity log", "Activity log"),
+        ("AI Supervisor", "AI Supervisor"), ("JARVIS Brain", "JARVIS Brain"), ("Activity log", "Activity log"),
     ):
         nav(page, label)
         expect(page.get_by_role("heading", level=1, name=heading, exact=True)).to_be_visible()

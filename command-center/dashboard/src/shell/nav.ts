@@ -44,6 +44,8 @@ export const OPS_NAV: NavItem[] = [
   { to: "/approvals", label: "Approvals", icon: "approvals", badge: (s) => s.counts.approvals_pending },
   { to: "/tasks", label: "Tasks", icon: "tasks" },
   { to: "/supervisor", label: "AI Supervisor", icon: "sparkles" },
+  // Every signed-in user: the API scopes what each role sees (viewers: approved business knowledge only).
+  { to: "/brain", label: "JARVIS Brain", icon: "brain" },
   { to: "/activity", label: "Activity log", icon: "history", adminOnly: true },
 ];
 

@@ -200,6 +200,7 @@ class SEOCapabilities:
                    "You have no live search-volume data: never invent volumes or rankings; say what to validate.",
             prompt=f"Topic: {params.topic}\nLocation: {params.location or 'not specified'}",
             fallback=template,
+            memory_query=params.topic,
         )
         return AgentResult(summary=f"Keyword brief for '{params.topic}{where}' ({writer})",
                            artifacts=[ArtifactSpec(kind="keyword_brief", title=f"Keyword brief - {params.topic}", content=text, data={"writer": writer})],

@@ -189,8 +189,10 @@ def _secret_after_word(text: str, m: re.Match[str]) -> tuple[int, int] | None:
     pos = sep.end() if sep else 0
     seen = 0
     for w in re.finditer(r"[\"'`]?(?P<w>[^\s\"'`]+)[\"'`]?", window[pos:]):
-        word = w.group("w").rstrip(".,;)")
+        word = w.group("w").rstrip(".,;)…")  # "…" is where one_line() cut a summary, not part of a word
         if word.lower() in FILLER or word in ("/", "|", "-", ":"):
+            continue
+        if len(word) > 1 and word.endswith(":"):  # a label before the value ("creds for wp-admin: <value>")
             continue
         seen += 1
         if seen > 3:
@@ -221,7 +223,8 @@ def _chat_secrets(text: str) -> tuple[str, dict[str, int]]:
                 spans.append((m.start("v"), m.end("v"), name))
     for m in CODE_SECRET.finditer(text):
         group = next(g for g in "abcd" if m.group(g) is not None)
-        spans.append((m.start(group), m.end(group), "credential_assignment"))
+        if not _already(m.group(group)):  # cleaning cleaned text again finds nothing new (verify, rescan)
+            spans.append((m.start(group), m.end(group), "credential_assignment"))
     for m in TOKEN.finditer(text):
         tok = m.group(0)
         mixed = re.search(r"[a-z]", tok) and re.search(r"[A-Z]", tok) and re.search(r"[0-9]", tok)
@@ -272,13 +275,37 @@ def _clean_string(text: str, kind: str, out: Cleaned) -> str:
     return PHONE_CONTEXT.sub(ctx_phone, text)
 
 
+# A JSON key that says its value is a secret ({"password": "..."}): cleaned value by value, the value alone would not
+# show it. The names follow the kit's credential_assignment rule.
+SECRET_KEY = re.compile(
+    r"(?i:^(?:[A-Za-z0-9]{1,32}[_\-]){0,4}(?:password|passwd|pwd|pass|passphrase|passcode|secret|api[_\-]?key|apikey"
+    r"|token|access[_\-]?key|client[_\-]?secret|(?:secret|private|auth|encryption|signing|master|server|app|license)"
+    r"[_\-]?key|credentials?|cookie|authorization|pin)$)"
+    r"|^_?[a-z][a-z0-9]*(?:Password|Passwd|Pass|Secret|Token|ApiKey|AccessKey|SecretKey|PrivateKey)$"
+    r"|^_?(?:api|access|secret|private|client|auth)Key$")
+
+
 def _clean_json(value: object, kind: str, out: Cleaned) -> object:
     if isinstance(value, str):
         return _clean_string(sanitize(value), kind, out)
     if isinstance(value, list):
         return [_clean_json(v, kind, out) for v in value]
     if isinstance(value, dict):
-        return {sanitize(str(k)): _clean_json(v, kind, out) for k, v in value.items()}
+        cleaned: dict[str, object] = {}
+        for k, v in value.items():
+            key = _clean_string(sanitize(str(k)), kind, out)  # keys can be addresses or numbers too
+            if key in cleaned:
+                n = 2
+                while "%s (%d)" % (key, n) in cleaned:
+                    n += 1
+                key = "%s (%d)" % (key, n)
+            if (isinstance(v, str) and SECRET_KEY.match(str(k)) and len(v.strip()) >= 4
+                    and not _already(v.strip())):
+                out.secret_types["credential_assignment"] = out.secret_types.get("credential_assignment", 0) + 1
+                cleaned[key] = REDACTED % "credential_assignment"
+            else:
+                cleaned[key] = _clean_json(v, kind, out)
+        return cleaned
     return value
 
 

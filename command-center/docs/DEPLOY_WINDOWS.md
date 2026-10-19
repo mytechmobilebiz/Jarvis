@@ -237,6 +237,148 @@ code until it is reloaded.
 (With Git instead: `git pull`, then `install.ps1`.) Once the new folder is
 verified, the old one can be deleted; keep its `backups\` folder.
 
+## JARVIS Brain: test copy and import
+
+JARVIS's knowledge and history come into the Command Center's memory in
+stages: first into a **test copy** on this PC, where you review everything,
+and only after your approval into the live installation. The live
+installation is not touched by the test: every script prints a
+*fingerprint* of it (its images, containers and volumes) before and after
+each step and stops with a large red warning if anything changed. A script
+that finds a problem before it starts prints `NOT RUN: ...` and
+`Nothing was changed.`
+
+You need, from the JARVIS migration kit (`migration\jarvis\README.md`):
+- the JARVIS database backup, for example
+  `C:\InfiniteAI\JarvisMigration\backups\jarvis-state-<time>.db`;
+- the profile backup restored into a folder:
+  `.\jarvis-kit.ps1 -Action VerifyBackup -Archive "<the .ccjb file>" -ExtractTo C:\InfiniteAI\JarvisMigration\restored`
+  (it gets `restored\profile` and `restored\content`);
+- optionally the kit's `discovery-summary.json` (the importer then checks that
+  the backup holds the same number of sessions and messages).
+
+| Folder | What it is |
+|---|---|
+| `C:\InfiniteAI\InfiniteAI-CommandCenter` (or wherever it is now) | the live installation, with its `.env`. Stays as it is. |
+| `C:\InfiniteAI\v0.6.0-brain-test\InfiniteAI-CommandCenter` | 0.6.0 extracted into a new folder, **without** a `.env`. The test copy runs only from here. |
+| `C:\InfiniteAI\JarvisMigration` | the kit, the JARVIS backups, `restored`, the pre-check reports and `import-reports` |
+
+The test copy is a separate Docker project, `cc-brain-test`: its own
+containers, database, images and secrets (in `.env.brain-test`, never
+`.env`), its dashboard at **http://127.0.0.1:8190** with a `cc-brain-test`
+label on every page, no n8n, and a worker without internet. It needs Docker
+Desktop with Docker Compose 2.24.4 or later.
+
+**1. Folders.** Extract the 0.6.0 zip into `C:\InfiniteAI\v0.6.0-brain-test`
+(Explorer: right-click, Extract All). Do not copy `.env` there.
+
+```powershell
+$test = "C:\InfiniteAI\v0.6.0-brain-test\InfiniteAI-CommandCenter"
+$db = "C:\InfiniteAI\JarvisMigration\backups\jarvis-state-<time>.db"
+$restored = "C:\InfiniteAI\JarvisMigration\restored"
+$discovery = "C:\InfiniteAI\JarvisMigration\discovery-<time>\discovery-summary.json"
+Set-Location $test
+```
+
+**2. Before the test: a read-only check of the live installation.** It writes
+`C:\InfiniteAI\JarvisMigration\precheck-<time>.txt` and changes nothing.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\brain-precheck.ps1
+```
+
+**3. The test copy.** Empty, or with a copy of your live data from the folder
+of a `backup.ps1` run (schedules then come in switched off, open tasks are
+cancelled, pending approvals rejected, and stored keys and sign-ins deleted).
+The first start builds the images and takes a few minutes.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\brain-test.ps1 -Action Start
+# or, with a copy of the live data:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\brain-test.ps1 -Action Start -SeedFromBackup "C:\InfiniteAI\InfiniteAI-CommandCenter\backups\<timestamp>"
+```
+
+It prints the address and how to sign in: without a seed, the email it shows
+and the `ADMIN_PASSWORD` in `.env.brain-test`; after a seed, your usual
+accounts. `-Action Status` shows how it is doing, `-Action Stop` stops it
+(data kept), `-Action Start` starts it again.
+
+**4. The staged import into the test copy.** First a plan (nothing is
+written), then 5 sessions, review them, then about 10 % of the sessions (the
+plan shows how many there are), review again, then everything. Each import
+prints its run number; check each run with `Verify`.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Test -Mode Plan -All -BackupDb $db -Restored $restored -Discovery $discovery
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Test -Mode Import -Sample 5 -BackupDb $db -Restored $restored -Discovery $discovery
+#   review at http://127.0.0.1:8190 (JARVIS Brain page), then:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Test -Mode Import -Sample <about 10 % of the sessions> -BackupDb $db -Restored $restored -Discovery $discovery
+#   review again, then:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Test -Mode Import -All -BackupDb $db -Restored $restored -Discovery $discovery
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Test -Mode Verify -Run <run number> -BackupDb $db -Restored $restored
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Test -Mode Status
+```
+
+Reports go to `C:\InfiniteAI\JarvisMigration\import-reports`. To undo one
+import in the test copy: `-Mode Rollback -Run <run number>` (newest first).
+An interrupted import continues with `-Mode Resume -Run <run number>` and the
+same `-BackupDb` and `-Restored`.
+
+**5. Your review** happens in the test copy at http://127.0.0.1:8190. When you
+are done, save your review decisions so they can be carried over:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Test -Mode ExportDecisions
+```
+
+It writes `import-reports\decisions-test-<time>.json`. Then run the pre-check
+of step 2 again and compare the two reports: the fingerprint and counts must
+be the same.
+
+**6. Approval.** Upgrading the live installation to 0.6.0 is a separate step
+that you approve: `backup.ps1`, install 0.6.0 from a **new** folder as in
+"Updating" above (copy `.env` there, `install.ps1`), then `smoke.ps1` must
+pass. From then on, that new folder is the live installation's folder.
+
+**7. The import into the live installation.** From the live installation's
+folder only (the script refuses anywhere else). `Import` asks you to type
+`IMPORT INTO PRODUCTION`; before importing it writes a dump of the
+`command_center` database to `import-reports\pre-import\`, checks it and
+prints its path and SHA-256. To undo an import use `-Mode Rollback` (it asks
+you to type `ROLL BACK PRODUCTION`); restoring that dump is only for a
+disaster, because it also loses everything done since. The dump holds your
+data unencrypted: keep it on this PC and delete it once the import is
+verified and reviewed.
+
+```powershell
+Set-Location "<the live 0.6.0 folder>"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Plan -All -BackupDb $db -Restored $restored -Discovery $discovery
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Import -All -BackupDb $db -Restored $restored -Discovery $discovery
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Verify -Run <run number> -BackupDb $db -Restored $restored
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode ApplyDecisions -Run <run number> -Decisions "C:\InfiniteAI\JarvisMigration\import-reports\decisions-test-<time>.json" -Actor <your admin email>
+```
+
+Workflows converted from JARVIS's jobs are created **switched off**. Switch
+the matching job off in JARVIS first, then switch the Command Center's
+schedule on.
+
+**8. Clean-up.** Remove the test copy (type `REMOVE TEST COPY` when asked),
+then delete the restored JARVIS files (they are plain text) and the test
+copy's secrets file:
+
+```powershell
+Set-Location $test
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\brain-test.ps1 -Action Remove
+Remove-Item -Recurse -Force C:\InfiniteAI\JarvisMigration\restored
+Remove-Item "$test\.env.brain-test"
+```
+
+If a step stops with `NOT RUN`, the message says why and nothing was changed;
+fix that and run the same command again. If one prints
+`THE LIVE INSTALLATION (infinite-command-center) CHANGED DURING THIS RUN`,
+stop and send the whole output together with the output of `status.ps1` from
+the live folder.
+
 ## Trying it against a throwaway WordPress
 
 The test overlay (in the Git repository, not in the zip) adds a disposable

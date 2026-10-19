@@ -64,6 +64,13 @@ SPECS: dict[str, Spec] = {
                         choices=("auto", "anthropic", "rule_based")),
     "ai_model": Spec("AI model", "Claude model used by the supervisor and agents", "text", max_length=100),
     "ai_daily_request_cap": Spec("AI requests per day", "Most AI requests per day (protects your bill)", "integer", minimum=1, maximum=100_000),
+    # Read by app/brain/store.py (AI_CONTEXT_KEY): memory goes into AI drafting prompts only when this is
+    # approved_general, and then only approved, general business and knowledge notes (never customer data, rules or
+    # the conversation archive).
+    "brain_ai_context": Spec("JARVIS Brain in AI prompts",
+                             "off (default): memory never goes to the AI model. approved_general: approved, general "
+                             "notes (no customer data, no rules, no conversation history) may be added to AI drafting "
+                             "prompts as reference material", "choice", choices=("off", "approved_general")),
 }
 
 SECRETS: dict[str, tuple[str, str]] = {
@@ -79,6 +86,7 @@ def defaults(settings: Settings) -> dict[str, Any]:
         "ai_provider": settings.llm_provider,
         "ai_model": settings.llm_model,
         "ai_daily_request_cap": settings.llm_daily_request_cap,
+        "brain_ai_context": "off",
     }
 
 

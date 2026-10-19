@@ -10,7 +10,8 @@ from collections import defaultdict, deque
 
 import bcrypt
 
-SESSION_COOKIE = "cc_session"
+# The session cookie's name is a setting: Settings.session_cookie_name (SESSION_COOKIE_NAME; default in config.py).
+
 # Mutating requests made with the session cookie must carry this header. A
 # cross-site form cannot set custom headers, so this (with SameSite=Strict)
 # keeps the cookie from being used by another origin.

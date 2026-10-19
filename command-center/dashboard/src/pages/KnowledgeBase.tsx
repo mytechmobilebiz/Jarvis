@@ -47,6 +47,7 @@ const AREAS: Area[] = [
   { group: "Operations", to: "/approvals", label: "Approvals", icon: "approvals", text: "Actions waiting for a person to approve or reject. The badge shows how many." },
   { group: "Operations", to: "/tasks", label: "Tasks", icon: "tasks", text: "Every unit of agent work: status, parameters, log and result." },
   { group: "Operations", to: "/supervisor", label: "AI Supervisor", icon: "sparkles", text: "The full console for requests: the plan, each task and the summary." },
+  { group: "Operations", to: "/brain", label: "JARVIS Brain", icon: "brain", text: "What the Command Center keeps from JARVIS, your previous assistant: knowledge, skills, its scheduled jobs as drafts that never run, and its conversations, all as reference data. Viewers see approved business knowledge; review, conversations and imports are for operators and admins. See The JARVIS Brain below." },
   { group: "Operations", to: "/activity", label: "Activity log", icon: "history", text: "The audit log of everything a person did.", admin: true },
   { group: "More", to: "/leads", label: "Leads", icon: "users", text: "Enquiries from the dashboard or the n8n lead-intake webhook, scored by the agent." },
   { group: "More", to: "/support", label: "Client support", icon: "inbox", text: "Client messages, triaged with a reply drafted for review." },
@@ -408,6 +409,64 @@ const ARTICLES: Article[] = [
       { h: "Events forwarded to n8n" },
       {
         p: "Events of warning severity and above, plus every site recovery, are queued for n8n. The worker delivers them and retries a failed delivery with growing delays, up to 8 attempts. The connection state is on [Integrations](/integrations) and [Workflows](/workflows), with its age: the worker checks n8n every minute, so it says **Connected** only when n8n answered in the last 3 minutes, and otherwise **Not checked since** the last answer.",
+      },
+    ],
+  },
+  {
+    id: "jarvis-brain",
+    title: "The JARVIS Brain",
+    icon: "brain",
+    tone: "blue",
+    summary: "What the Command Center keeps from JARVIS, who sees what, and how review and rollback work.",
+    link: { to: "/brain", label: "JARVIS Brain" },
+    blocks: [
+      {
+        p: "JARVIS (Hermes Agent, with its staff Jarvis, Sarah, Scout, Tom, Ava and Bobby) was your previous assistant. The [JARVIS Brain](/brain) keeps what it knew: business knowledge and notes, operating instructions, skills, its scheduled jobs and its conversations. Everything is read from a verified backup, read-only; JARVIS itself is never changed.",
+      },
+      {
+        note: "Imported text is reference only. It never becomes an instruction, an approval, a setting or a running job. Approvals are still decided by the Command Center from each action's risk, and a JARVIS job becomes a schedule only when an admin converts it; that schedule is created disabled.",
+        tone: "info",
+      },
+      { h: "What is kept, and what is not" },
+      {
+        ul: [
+          "**Secrets are never stored**: passwords, keys and tokens are removed as the text is read. Only their kinds and counts are kept, so each import lists the kinds of credential to rotate.",
+          "**Restricted data is never stored**: a conversation that held a social security number, card or bank details, a date of birth or a client's credit file is withheld entirely. It shows as withheld and stays only in the JARVIS backup. Credit Repair work belongs in the Credit Repair module.",
+          "**Customer contact details are masked**: e-mail addresses and phone numbers become `[email]` and `[phone]`, and the item or message is marked **customer data (masked)**. Sarah's conversations, and those that used mail, WhatsApp, SMS, CRM or lead tools, count as customer data as a whole, because names and street addresses are not detected.",
+          "**JARVIS's reasoning is never read.** Labels such as accomplishment, problem and decision come from keyword matching: they are marked **matched by keywords** and can be wrong. The staff member a conversation belongs to is inferred from its scheduled job; everything else counts as Jarvis.",
+        ],
+      },
+      { h: "Who sees what" },
+      {
+        dl: [
+          ["Viewers", "Approved business knowledge (facts, shared knowledge, agent notes, projects, decisions, accomplishments and problems), the agents' reading rules and the overview counts. No conversations and no review."],
+          ["Operators", "Everything except customer data and quarantined items: items waiting for review, the general conversation archive, workflow drafts, conflicts and the import history. Operators approve plain items, promote a message into memory and resolve most conflicts."],
+          ["Admins", "Everything, including customer data and quarantined items. Admins approve operating instructions, skills, workflow references, Credit Repair items and anything flagged; they delete, restore, purge and redact versions, withhold a message, convert a workflow draft and roll back an import. A withheld conversation's dates and counts also need the sensitive-data permission."],
+          ["Agents", "Approved items only: the shared ones and their own, and for the AI Supervisor every agent's except Credit Repair's. Customer items reach only the AI Supervisor and Email & Customer Communications, never an AI model. After a task succeeds, matching approved notes are listed on it as **Reference notes from memory**; they change nothing the agent does."],
+        ],
+      },
+      {
+        p: "Memory goes into AI prompts only when an admin sets **JARVIS Brain in AI prompts** on the Settings page to approved, general memory; it is off by default. Even then only approved business facts, shared knowledge, agent notes and project context without any flag are used, marked as reference data. Customer data, instructions, skills and quarantined items never are.",
+      },
+      { h: "Review" },
+      {
+        ol: [
+          "Everything imported waits on the **Review** tab; no agent reads it before a person approves it.",
+          "**Quarantined** items held a secret (now removed) or an instruction-like rule. Only an admin may approve them, and they never reach an AI prompt.",
+          "Open an item to read its text, its flags in plain words, where it came from and every version. Editing creates a new version with your note; an approved item that is edited goes back to review.",
+          "**Conflicts**: an import never overwrites anything. When it finds a clash (the same title with different text, a changed file, a JARVIS rule that bypasses approval, a job that overlaps an automation, a website JARVIS watched, a changed job) it asks on the Review tab, explains each choice and records the decision.",
+        ],
+      },
+      { h: "JARVIS's scheduled jobs" },
+      {
+        p: "Each job is a draft that never runs. Operators mark it reviewed; an admin can convert it into a Command Center schedule named `jarvis-<job>`, which is created **disabled**. If the job is still switched on in JARVIS, the admin first confirms that it is switched off, so the work is not done twice. JARVIS ran its jobs in the PC's local time; Command Center schedules run in UTC.",
+      },
+      { h: "Imports and rollback" },
+      {
+        p: "The import runs from the command line (`scripts\\jarvis-import.ps1`), first on a separate test copy that shows a **TEST COPY** banner on every page, and in stages: a plan that changes nothing, a small sample, about 10 %, then everything. The **Import history** tab shows each run: what it did with every record, the verification result and the kinds of credential to rotate.",
+      },
+      {
+        p: "An admin can roll back a run by typing its number. Everything it imported is removed and what it changed is put back; a converted draft's disabled schedule and items promoted from its conversations stay. If items from the run were reviewed or edited since, the rollback is refused unless **Discard reviewed items** is ticked. Later runs must be rolled back first.",
       },
     ],
   },

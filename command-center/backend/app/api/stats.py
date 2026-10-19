@@ -73,6 +73,7 @@ CATEGORY_OF: dict[tuple[str, str], str] = {
     ("monitoring", "uptime_report"): "reports",
     ("supervisor", "daily_briefing"): "reports",
     ("supervisor", "health_review"): "reports",
+    ("supervisor", "recall"): "reports",
     ("credit_repair", "compliance_review"): "credit_repair",
     ("credit_repair", "draft_dispute_letters"): "credit_repair",
     ("credit_repair", "mail_dispute_letter"): "credit_repair",

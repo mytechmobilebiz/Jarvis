@@ -90,6 +90,8 @@ async def system_status(
         "app": settings.app_name,
         "version": __version__,
         "environment": settings.environment,
+        # CC_INSTANCE_LABEL: set on a test copy (the dashboard shows it as a banner on every page); "" on a live install.
+        "instance_label": settings.instance_label,
         "time": now.isoformat(),
         "database": {"ok": True},
         "workers": [

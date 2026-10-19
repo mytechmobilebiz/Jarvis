@@ -315,6 +315,14 @@ const paths = {
       <path d="M5.5 5h13L21 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-6l2.5-8Z" />
     </>
   ),
+  /** The JARVIS Brain: two hemispheres either side of a midline. */
+  brain: (
+    <>
+      <path d="M12 5.5a3 3 0 0 0-5.5-1.6A3 3 0 0 0 4 8a3 3 0 0 0-.5 5.2A3.5 3.5 0 0 0 7 19a3 3 0 0 0 5 1V5.5Z" />
+      <path d="M12 5.5a3 3 0 0 1 5.5-1.6A3 3 0 0 1 20 8a3 3 0 0 1 .5 5.2A3.5 3.5 0 0 1 17 19a3 3 0 0 1-5 1" />
+      <path d="M7.5 9.5a2.5 2.5 0 0 0 2.5 2.5M16.5 9.5a2.5 2.5 0 0 1-2.5 2.5M8 15.5h1.5M16 15.5h-1.5" />
+    </>
+  ),
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof paths;

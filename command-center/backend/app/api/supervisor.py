@@ -9,7 +9,19 @@ from .. import audit
 from .. import tasks as task_service
 from ..config import Settings, get_settings
 from ..models import SupervisorRequest, Task
-from .deps import Principal, client_ip, get_db, require_operator_or_service, require_user, to_dict
+from .deps import OPERATOR_ROLES, Principal, client_ip, get_db, require_operator_or_service, require_user, to_dict
+from .work import task_view
+
+# What a viewer reads instead of the summary of a request answered from JARVIS's history (supervisor.recall): the
+# answer quotes archived conversations, which only operators and admins may read.
+LOCAL_ONLY_VIEWER_SUMMARY = "Answer about JARVIS's history (visible to operators and admins)"
+
+
+def request_view(req: SupervisorRequest, principal: Principal) -> dict:
+    out = to_dict(req)
+    if principal.role not in OPERATOR_ROLES and (req.plan or {}).get("local_only"):
+        out["summary"] = LOCAL_ONLY_VIEWER_SUMMARY
+    return out
 
 router = APIRouter(prefix="/api/supervisor", tags=["supervisor"])
 
@@ -55,7 +67,7 @@ async def create_request(
 
 @router.get("/requests")
 async def list_requests(
-    _: Principal = Depends(require_user),
+    principal: Principal = Depends(require_user),
     session: AsyncSession = Depends(get_db),
     limit: int = Query(30, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -64,13 +76,15 @@ async def list_requests(
     rows = (
         await session.scalars(select(SupervisorRequest).order_by(SupervisorRequest.id.desc()).limit(limit).offset(offset))
     ).all()
-    return {"requests": [to_dict(r) for r in rows], "total": total}
+    return {"requests": [request_view(r, principal) for r in rows], "total": total}
 
 
 @router.get("/requests/{request_id}")
-async def get_request(request_id: int, _: Principal = Depends(require_user), session: AsyncSession = Depends(get_db)) -> dict:
+async def get_request(
+    request_id: int, principal: Principal = Depends(require_user), session: AsyncSession = Depends(get_db)
+) -> dict:
     req = await session.get(SupervisorRequest, request_id)
     if req is None:
         raise HTTPException(404, "no such request")
     tasks = (await session.scalars(select(Task).where(Task.request_id == request_id).order_by(Task.id))).all()
-    return {"request": to_dict(req), "tasks": [to_dict(t) for t in tasks]}
+    return {"request": request_view(req, principal), "tasks": [task_view(t, principal) for t in tasks]}

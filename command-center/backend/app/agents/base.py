@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from ..brain.store import AgentMemory
     from ..config import Settings
     from ..integrations import IntegrationHub
     from ..llm.base import LLMProvider
@@ -103,6 +104,9 @@ class AgentContext:
     requested_by: str = ""
     agent_name: str = ""
     deadline: float | None = None  # loop.time() when the task's time runs out
+    # This agent's read-only view of the JARVIS Brain (app/brain/store.py), through its access policy; None for agents
+    # without a policy (test stand-ins). Memory is reference data: it never decides what a capability may do.
+    memory: AgentMemory | None = None
 
     def time_left(self) -> float | None:
         if self.deadline is None:

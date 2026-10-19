@@ -72,6 +72,7 @@ class ContentCapabilities:
                    "client names, prices, guarantees or results.",
             prompt=f"Topic: {params.topic}\nAudience: {params.audience}\nLength: about {params.words} words",
             fallback=template,
+            memory_query=params.topic,
         )
         title = text.splitlines()[0].lstrip("# ").strip() or params.topic
         return AgentResult(summary=f"Blog draft '{title}' ready for review ({writer})", data={"writer": writer},
@@ -125,6 +126,7 @@ class SocialCapabilities:
                    "No invented statistics, prices, guarantees or client names. Markdown: one H2 per post named '<platform> #<n>'.",
             prompt=f"Topic: {params.topic}\nPlatforms: {', '.join(platforms)}\nPosts per platform: {params.posts_per_platform}",
             fallback=template,
+            memory_query=params.topic,
         )
         return AgentResult(summary=f"{len(platforms) * params.posts_per_platform} social post draft(s) on '{params.topic}' ({writer})",
                            data={"writer": writer, "platforms": platforms},

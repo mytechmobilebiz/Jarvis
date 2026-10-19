@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+SESSION_COOKIE_DEFAULT = "cc_session"
+# A cookie name is an HTTP token; this is a safe subset of one (no separators, quotes, spaces or controls).
+COOKIE_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
+INSTANCE_LABEL = re.compile(r"[\x20-\x7e]*")
 
 
 class Settings(BaseSettings):
@@ -32,8 +38,16 @@ class Settings(BaseSettings):
     service_token: SecretStr | None = Field(default=None, validation_alias="CC_SERVICE_TOKEN")
     session_ttl_hours: int = 12
     cookie_secure: bool = False
+    # The sign-in cookie's name. Browsers share cookies between ports of one host, so a second installation on
+    # this PC (the JARVIS Brain test copy on 127.0.0.1:8190) uses its own name and never replaces, or is signed in
+    # by, the live installation's cookie. The default keeps the live installation as it was.
+    session_cookie_name: str = SESSION_COOKIE_DEFAULT
     login_max_failures: int = 5
     login_lockout_minutes: int = 15
+
+    # A label for this installation, shown as a banner on every dashboard page and returned by
+    # /api/system/status (the JARVIS Brain test copy sets "cc-brain-test"). Empty for the live installation.
+    instance_label: str = Field(default="", validation_alias="CC_INSTANCE_LABEL")
 
     # Encrypts customer secrets stored in the database (app/secrets.py).
     secrets_key: SecretStr | None = Field(default=None, validation_alias="CC_SECRETS_KEY")
@@ -104,6 +118,21 @@ class Settings(BaseSettings):
     ssh_slow_command_timeout_seconds: int = 660
     wp_core_version_check: bool = True
     wp_version_api_url: str = "https://api.wordpress.org/core/version-check/1.7/"
+
+    @field_validator("session_cookie_name")
+    @classmethod
+    def _cookie_name_is_a_token(cls, value: str) -> str:
+        if not COOKIE_NAME.fullmatch(value):
+            raise ValueError("SESSION_COOKIE_NAME must be 1-64 letters, digits, '_' or '-' (for example cc_session)")
+        return value
+
+    @field_validator("instance_label")
+    @classmethod
+    def _label_is_one_short_line(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) > 64 or not INSTANCE_LABEL.fullmatch(value):
+            raise ValueError("CC_INSTANCE_LABEL must be at most 64 printable ASCII characters")
+        return value
 
     @property
     def allowed_private_hosts(self) -> set[str]:
