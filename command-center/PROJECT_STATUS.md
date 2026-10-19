@@ -50,6 +50,34 @@ Every approved mock action is listed on the **Outbox** page as
 through cc-gate, only after approval, and only if the server's own
 `allow_changes` switch is on.
 
+## JARVIS migration (branch `jarvis-migration`, not in a release)
+
+First deliverable, waiting for the owner's approval. Nothing has been imported
+or activated, and nothing has run on the PC.
+
+- **Design and source analysis:**
+  [docs/JARVIS_MIGRATION_DESIGN.md](docs/JARVIS_MIGRATION_DESIGN.md).
+  - What JARVIS is, and where its live state is.
+  - The owner's changes that bypass approval.
+  - Staff-to-agent mapping.
+  - Six memory stores.
+  - Importer design.
+  - Workflow conversion, all as disabled drafts.
+  - Risks and decisions.
+- **Read-only kit:** `migration/jarvis/`, kit 0.1.0.
+  - `jarvis-kit.ps1 -Action Backup` makes an encrypted backup of the profile
+    and content, with no secret files and secret values redacted.
+  - `-Action Discover` makes an inventory of counts and structure only.
+  - It runs in a container with no network, the JARVIS folders mounted
+    read-only and the database backup opened read-only.
+- **Tests (cloud sandbox, synthetic installation with planted secrets and
+  personal data):**
+  - kit tests: 92 passed;
+  - `testing/jarvis-kit-check.sh`: 13 of 13 passed;
+  - three independent review rounds confirmed 21, 17 and then 14 problems.
+    All are fixed: the code fixes with tests, and the document corrections
+    checked by hand.
+
 ## Completed in 0.5.1 (no database migrations, no new keys)
 
 Full list and the exact upgrade steps: [docs/RELEASE_NOTES_0.5.1.md](docs/RELEASE_NOTES_0.5.1.md).
