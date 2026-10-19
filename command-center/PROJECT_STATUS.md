@@ -177,6 +177,54 @@ Known limits that remain (by design or not yet done):
   the exact action and target. Read-only monitoring may run automatically
   within the approved scope.
 
+## Planned 0.6.0: Messaging & Channels (after 0.5.0 is verified)
+
+Builds on the existing approvals, secrets store, audit log, worker and n8n;
+nothing is rebuilt. Each phase is a tested, upgradeable step.
+
+1. **Foundations, mock providers only**: channels (tokens encrypted with the
+   existing secrets key), contacts with consent, conversations and messages;
+   duplicates dropped by the provider's message ID; rate limits; audit
+   entries. A "Messaging & Channels" page that shows Connected only after a
+   real sign-in and a health check against the provider.
+2. **Telegram owner bot** (long polling: outbound connections only, no public
+   port; dashboard and n8n stay on localhost). The account is linked with a
+   one-time code generated and confirmed in the signed-in dashboard; a chat
+   ID or phone number alone grants nothing. Commands come from a fixed list
+   of read-only actions and report drafts. Approvals are never decided in
+   chat: the bot links to the dashboard. Message text is data only.
+3. **Telegram customer bot**: answers only from business knowledge the owner
+   approves; qualifies leads into the existing Leads records; collects
+   contact details only after consent; hands over to a person (assignment
+   and queue). Any agent action goes through the normal approval rules.
+4. **WhatsApp Cloud API**: needs a public HTTPS webhook, so a separate
+   messaging gateway that checks Meta's `X-Hub-Signature-256` on every
+   message and the verify-token handshake (Telegram webhooks, if used, are
+   checked with the secret-token header). WhatsApp stays mock-only until the
+   gateway exists and the owner approves it.
+5. **Setup guides** (BotFather, Meta Business: requirements, limits, fees,
+   linking to Meta's current pricing rather than quoting figures), the full
+   test suite and the Windows upgrade test, keeping all data and credentials.
+
+Fixed whatever the answers below: Credit Repair data never flows through
+messaging; nothing is sent or created with real providers without the
+owner's approval; the dashboard and the n8n editor stay bound to localhost.
+
+**Decisions needed before 0.6.0 starts:**
+
+1. Who the "authorized customers" are and how they prove who they are (today
+   clients are records, not users; giving them their own reports needs a
+   client model and a sign-in method).
+2. Which calendar service bookings use (Google Calendar, Calendly, Cal.com).
+3. Where the public gateway runs (a small VPS or a tunnel service).
+4. Whether customer bots may answer automatically from approved knowledge
+   (proposed: replies within an ongoing conversation yes; follow-ups,
+   reminders and anything the business starts need approval).
+5. Which alert severities go to Telegram or WhatsApp (business-initiated
+   WhatsApp messages outside the 24-hour window need paid, approved
+   templates; the Telegram Bot API is free).
+6. How long message history is kept, and the wording of the consent request.
+
 ## Blockers and open questions
 
 1. **First server run**: set up a test (non-production) server first,
