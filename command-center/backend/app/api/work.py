@@ -66,6 +66,16 @@ async def list_agents(
     last_runs = dict(
         (await session.execute(select(Task.agent, func.max(Task.finished_at)).group_by(Task.agent))).all()
     )
+    # Work in progress right now, however old the task (stats_24h only covers tasks created in the last 24 h).
+    active: dict[str, dict[str, int]] = {}
+    for agent, status, n in (
+        await session.execute(
+            select(Task.agent, Task.status, func.count())
+            .where(Task.status.in_(("queued", "running", "awaiting_approval")))
+            .group_by(Task.agent, Task.status)
+        )
+    ).all():
+        active.setdefault(agent, {})[status] = n
     ent = await licensing.current_entitlements(session, settings)
     out = []
     for name, agent in all_agents().items():
@@ -74,6 +84,7 @@ async def list_agents(
         d["enabled"] = True if state is None else state.enabled
         d["entitled"] = ent.allows_agent(name)
         d["stats_24h"] = stats.get(name, {})
+        d["active"] = {k: active.get(name, {}).get(k, 0) for k in ("queued", "running", "awaiting_approval")}
         last = last_runs.get(name)
         d["last_run_at"] = last.isoformat() if last else None
         out.append(d)

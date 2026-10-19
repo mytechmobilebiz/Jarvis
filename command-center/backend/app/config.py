@@ -68,6 +68,8 @@ class Settings(BaseSettings):
 
     # n8n
     n8n_base_url: str = "http://n8n:5678"
+    # Where a person opens the n8n editor in their browser (the dashboard's "Open n8n" link).
+    n8n_editor_url: str = "http://localhost:5680"
     n8n_events_webhook_path: str = "cc-events"
     n8n_webhook_secret: SecretStr | None = None
     n8n_api_key: SecretStr | None = None

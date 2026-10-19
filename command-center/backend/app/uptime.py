@@ -25,7 +25,8 @@ SELECT site_id,
        count(*) FILTER (WHERE checked_at > now() - interval '7 days' AND status <> 'down')   AS up_7d,
        count(*)                                                                               AS n_30d,
        count(*) FILTER (WHERE status <> 'down')                                               AS up_30d,
-       avg(response_ms) FILTER (WHERE checked_at > now() - interval '24 hours')               AS avg_ms_24h
+       avg(response_ms) FILTER (WHERE checked_at > now() - interval '24 hours')               AS avg_ms_24h,
+       min(checked_at)                                                                        AS first_30d
   FROM site_checks
  WHERE checked_at > now() - interval '30 days'
  GROUP BY site_id
@@ -37,7 +38,9 @@ def _pct(up: int, n: int) -> float | None:
 
 
 async def uptime_stats(session: AsyncSession) -> dict[int, dict[str, Any]]:
-    """{site_id: {"24h": %, "7d": %, "30d": %, "checks_30d": n, "avg_response_ms_24h": ms}} for every site with checks."""
+    """{site_id: {"24h": %, "7d": %, "30d": %, "checks_30d": n, "avg_response_ms_24h": ms, "first_check_at": iso}}
+    for every site with checks. first_check_at is the oldest check in the 30-day window: on a younger site the
+    30-day figure covers only the time since then."""
     out: dict[int, dict[str, Any]] = {}
     for r in (await session.execute(_STATS_SQL)).mappings():
         out[r["site_id"]] = {
@@ -46,6 +49,7 @@ async def uptime_stats(session: AsyncSession) -> dict[int, dict[str, Any]]:
             "30d": _pct(r["up_30d"], r["n_30d"]),
             "checks_30d": r["n_30d"],
             "avg_response_ms_24h": int(r["avg_ms_24h"]) if r["avg_ms_24h"] is not None else None,
+            "first_check_at": r["first_30d"].isoformat() if r["first_30d"] else None,
         }
     return out
 

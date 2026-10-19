@@ -72,6 +72,11 @@ async def system_status(
     drafts = await session.scalar(select(func.count()).select_from(Artifact).where(Artifact.status == "draft"))
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     llm_today = await session.scalar(select(func.count()).select_from(LLMUsage).where(LLMUsage.at >= start))
+    # When the model last answered or failed, so "available" can mean verified rather than merely configured.
+    llm_last_ok = await session.scalar(select(func.max(LLMUsage.at)).where(LLMUsage.ok.is_(True)))
+    llm_last_error = (
+        await session.execute(select(LLMUsage.at, LLMUsage.error).where(LLMUsage.ok.is_(False)).order_by(LLMUsage.at.desc()).limit(1))
+    ).first()
     integrations = {r.name: to_dict(r) for r in (await session.scalars(select(IntegrationStatus))).all()}
     ai, _key = await customer_settings.resolve_ai(session, settings)
     ent = await licensing.current_entitlements(session, settings)
@@ -91,10 +96,16 @@ async def system_status(
             "requests_today": llm_today,
             "daily_cap": ai.daily_cap,
             "reason": ai.reason,
+            "last_ok_at": llm_last_ok.isoformat() if llm_last_ok else None,
+            "last_error_at": llm_last_error[0].isoformat() if llm_last_error else None,
+            "last_error": (llm_last_error[1] or "")[:300] if llm_last_error else "",
         },
         "workflow_engine": settings.workflow_engine,
         "edition": {"code": ent.edition.code, "title": ent.edition.title, "source": ent.source},
         "n8n": integrations.get(settings.workflow_engine),
+        "n8n_editor_url": settings.n8n_editor_url
+        if settings.workflow_engine == "n8n" and settings.n8n_editor_url.startswith(("http://", "https://"))
+        else None,
         "counts": {
             "sites": site_counts,
             "tasks_24h": task_counts,
