@@ -217,10 +217,15 @@
   .tiles.cols-4 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  /* A row of exactly three tiles stays three across rather than leaving one alone. */
+  .tiles:has(> :nth-child(3):last-child) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 @media (max-width: 760px) {
   .tiles,
-  .tiles.cols-4 {
+  .tiles.cols-4,
+  .tiles:has(> :nth-child(3):last-child) {
     grid-template-columns: minmax(0, 1fr);
   }
   .tile {

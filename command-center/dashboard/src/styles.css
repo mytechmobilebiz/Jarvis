@@ -221,6 +221,13 @@ h3 {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+}
+.card-head h2 > svg {
+  flex: none;
+}
+.card-icon {
+  color: var(--primary-text);
 }
 .card-actions {
   display: flex;
@@ -541,6 +548,9 @@ h3 {
 }
 .table.compact td {
   padding: 6px 10px;
+}
+.table td.clickable {
+  cursor: pointer;
 }
 .table tr.clickable {
   cursor: pointer;
@@ -879,6 +889,17 @@ pre.json {
 }
 .modal-wide {
   width: min(1000px, 100%);
+}
+/* Keep the close button beside a long title, even on a phone. */
+.modal > .card-head {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+.modal > .card-head h2 {
+  overflow-wrap: anywhere;
+}
+.modal > .card-head .btn {
+  flex: none;
 }
 
 /* login */

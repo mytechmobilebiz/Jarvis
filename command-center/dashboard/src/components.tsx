@@ -188,8 +188,8 @@ export function Modal({ title, onClose, children, wide }: { title: string; onClo
       <div className={`modal ${wide ? "modal-wide" : ""}`} role="dialog" aria-modal="true" aria-label={title}>
         <header className="card-head">
           <h2>{title}</h2>
-          <button className="btn ghost" onClick={onClose} aria-label="Close">
-            ✕
+          <button className="btn ghost icon" onClick={onClose} aria-label="Close">
+            <Icon name="close" size={18} />
           </button>
         </header>
         <div className="modal-body">{children}</div>

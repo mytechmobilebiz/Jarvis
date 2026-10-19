@@ -14,9 +14,6 @@
 .dash-grid .span-3 {
   grid-column: 1 / -1;
 }
-.card-icon {
-  color: var(--primary-text);
-}
 .agent-list,
 .site-list {
   list-style: none;
