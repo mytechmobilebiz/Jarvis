@@ -16,7 +16,10 @@ sites (or sites on production servers), an admin must type the site's name.
 Only one repair or server-side check runs per WordPress install at a time;
 a task that finds its install busy goes back to the queue. Just before a
 repair opens the gate, its site and server are read again and compared with
-what was approved. If a repair fails or cannot confirm its result after it
+what was approved; once the gate is open, the server's own cc-gate must still
+map the site key to this site's address (and to the one approved), and the
+dry run refuses when the version or address it would apply is not the one
+the approval names. If a repair fails or cannot confirm its result after it
 sent a change to the site, the site is checked over HTTP and a critical
 repair.failed event says what happened and where the backup is.
 
@@ -31,6 +34,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic import Field
 from sqlalchemy import text
@@ -105,15 +109,54 @@ async def linked_as_approved(ctx: AgentContext, site_id: int) -> tuple[Site, Ser
     """
     site, server = await linked(ctx, site_id, refresh=True)
     # Computed from the rows just read (they are in the identity map now), which are the ones the gate is given.
-    task_service.check_target(ctx.approved_target or {}, await site_approval_context(ctx.session, site_id))
+    try:
+        fresh = await site_approval_context(ctx.session, site_id)
+    except ValueError as exc:
+        raise task_service.TargetChanged(f"the target changed since this was requested: {exc}; reject it and request the "
+                                         "change again") from exc
+    task_service.check_target(ctx.approved_target or {}, fresh)
     return site, server
+
+
+def site_host(url: str) -> str:
+    """The host a site is reached at, for comparing two addresses of one site: lower case, without "www." or a final dot."""
+    host = (urlsplit(url.strip()).hostname or "").rstrip(".")
+    return host[4:] if host.startswith("www.") else host
+
+
+def same_host(a: str, b: str) -> bool:
+    return bool(site_host(a)) and site_host(a) == site_host(b)
+
+
+def gate_site_url(hello: dict[str, Any] | None, key: str) -> str | None:
+    """The URL a server's cc-gate configuration gives a site key (from its hello answer), or None if it does not list the key."""
+    entry = ((hello or {}).get("sites") or {}).get(key) if key else None
+    url = entry.get("url") if isinstance(entry, dict) else None
+    return url if isinstance(url, str) and url else None
+
+
+def gate_link_problem(server: Server, key: str, site_url: str) -> str:
+    """Why this site may not be linked to (or changed through) this server's site key, from the server's last hello; "" if fine.
+
+    cc-gate acts on whatever its root-owned configuration holds for a key, so a key that belongs to another
+    site would make a repair change a different WordPress install than the one the approval names.
+    """
+    gate_url = gate_site_url(server.last_hello, key)
+    if gate_url is None:
+        return (f"server {server.name} has not reported a site key '{key}': run Test connection on the Servers page "
+                "(it reads the site keys from the server's cc-gate configuration), then link the site again")
+    if not same_host(gate_url, site_url):
+        return (f"the cc-gate on server {server.name} gives site key '{key}' the address {gate_url}, which is not this site "
+                f"({site_url}); link the key whose address is this site's")
+    return ""
 
 
 async def site_approval_context(session: AsyncSession, site_id: int | None, *, lock: bool = False) -> dict[str, Any]:
     """What an approval for a change on this site is about (see BaseAgent.approval_context).
 
     "binding" pins the exact target: if the site is re-linked, renamed or its
-    server changes after the request, the approval no longer matches and the
+    server changes (its host key re-pinned, or its cc-gate giving the site key
+    another address) after the request, the approval no longer matches and the
     change is refused (tasks.decide_approval, and again by the worker).
     """
     if site_id is None:
@@ -123,20 +166,104 @@ async def site_approval_context(session: AsyncSession, site_id: int | None, *, l
         raise ValueError(f"no monitored site with id {site_id}")
     server = await session.get(Server, site.server_id, with_for_update=lock) if site.server_id else None
     production = site.environment == "production" or (server is not None and server.environment == "production")
+    gate = None
+    if server is not None and site.server_site_key:
+        problem = gate_link_problem(server, site.server_site_key, site.url)
+        if problem:
+            raise ValueError(problem)
+        gate = {"key": site.server_site_key, "url": gate_site_url(server.last_hello, site.server_site_key)}
+    target = f"site {site.name} ({site.url})"
+    if server is not None:
+        target += f" on server {server_label(server)}"
+    if gate:
+        target += f", cc-gate site key {gate['key']} ({gate['url']})"
     return {
-        "target": f"site {site.name} ({site.url})" + (f" on server {server.name}" if server else ""),
+        "target": target,
         "environment": "production" if production else site.environment,
         "production": production,
         "confirm": site.name,
         "binding": {"site_id": site.id, "name": site.name, "url": site.url, "server_site_key": site.server_site_key or "",
-                    "server": server_binding(server)},
+                    "server": server_binding(server), "gate": gate},
     }
 
 
+def server_label(server: Server) -> str:
+    return f"{server.name} ({server.username}@{server.host}:{server.port})"
+
+
 def server_binding(server: Server | None) -> dict[str, Any] | None:
+    """The exact machine: a re-pinned host key means another machine may be answering, so approvals given before no longer apply."""
     if server is None:
         return None
-    return {"server_id": server.id, "name": server.name, "host": server.host, "port": server.port, "username": server.username}
+    return {"server_id": server.id, "name": server.name, "host": server.host, "port": server.port, "username": server.username,
+            "host_key_fingerprint": server.host_key_fingerprint or ""}
+
+
+def _checked_at(diag: dict[str, Any]) -> str:
+    return str(diag.get("at") or "")[:16].replace("T", " ") + " UTC" if diag.get("at") else "an unknown time"
+
+
+def repair_expectations(capability: str, params: dict[str, Any], site: Site) -> dict[str, Any] | None:
+    """The exact version or address a repair will apply, from the site's latest server-side check (None: nothing to record).
+
+    The approval records these, and the repair's dry run refuses when the server is about to apply anything else.
+    Raises ValueError when the latest check does not show it, so the approval cannot be vague.
+    """
+    if capability not in ("repair_update_plugin", "repair_reinstall_plugin", "repair_reinstall_core", "repair_restore_site_url"):
+        return None
+    diag = site.last_diagnosis or {}
+    when = _checked_at(diag)
+    first = f"run the server-side check of {site.name} (wp_diagnose) first, so the approval can name the exact "
+    if capability in ("repair_update_plugin", "repair_reinstall_plugin"):
+        slug = params.get("slug")
+        plugin = next((p for p in diag.get("plugins") or [] if isinstance(p, dict) and p.get("name") == slug), None)
+        if plugin is None or not isinstance(plugin.get("version"), str):
+            raise ValueError(f"plugin {slug} is not in the latest server-side check ({when}); " + first + "version")
+        if capability == "repair_reinstall_plugin":
+            return {"plugin": slug, "version": plugin["version"], "checked_at": diag.get("at"),
+                    "summary": f"reinstall {slug} {plugin['version']}"}
+        if plugin.get("update") != "available" or not plugin.get("update_version"):
+            raise ValueError(f"the latest server-side check ({when}) found no update for {slug} {plugin['version']}; "
+                             "run it again if one was released since")
+        return {"plugin": slug, "version": plugin["version"], "update_version": str(plugin["update_version"]), "checked_at": diag.get("at"),
+                "summary": f"update {slug} {plugin['version']} → {plugin['update_version']}"}
+    if capability == "repair_reinstall_core":
+        version = diag.get("core_version")
+        if not isinstance(version, str) or not version:
+            raise ValueError(f"the latest server-side check ({when}) has no WordPress version; " + first + "version")
+        return {"core_version": version, "checked_at": diag.get("at"), "summary": f"reinstall WordPress {version} core files"}
+    urls = diag.get("site_urls") or {}
+    home = urls.get("expected")
+    if not isinstance(home, str) or not home:
+        raise ValueError(f"the latest server-side check ({when}) did not read home/siteurl; " + first + "addresses")
+    siteurl = urls.get("expected_siteurl") or home
+    return {"home": home, "siteurl": siteurl, "checked_at": diag.get("at"),
+            "summary": f"set home to {home}" + (f" and siteurl to {siteurl}" if siteurl != home else " and siteurl to the same")}
+
+
+def approved_expectations(ctx: AgentContext) -> dict[str, Any]:
+    """What the approval says the repair applies; ValueError if it names nothing (an approval given before versions were recorded)."""
+    expected = (ctx.approved_target or {}).get("expected")
+    if not isinstance(expected, dict) or not expected:
+        raise ValueError("this approval does not name the exact version or address the repair applies; reject it and request "
+                         "the repair again")
+    return expected
+
+
+async def check_gate_site(gate: Any, site: Site, approved: dict[str, Any] | None) -> None:
+    """The server's own answer, right before a change: its cc-gate gives the site key this site's address, and the one approved."""
+    hello = await gate.run("hello")
+    key = site.server_site_key
+    url = gate_site_url(hello, key)
+    approved_url = (((approved or {}).get("binding") or {}).get("gate") or {}).get("url")
+    if url is None:
+        raise ValueError(f"the cc-gate on {gate.server.name} no longer lists site key '{key}'; nothing was changed")
+    if not same_host(url, site.url):
+        raise ValueError(f"the cc-gate on {gate.server.name} gives site key '{key}' the address {url}, not {site.name}'s ({site.url}); "
+                         "nothing was changed. Link the site to the key for its own address")
+    if url != approved_url:
+        raise ValueError(f"the cc-gate on {gate.server.name} now gives site key '{key}' the address {url} (approved: {approved_url}); "
+                         "nothing was changed; request the repair again")
 
 
 # Lists the site's own code can fill with anything (WP-CLI loads it): each entry must be an object with this text field.
@@ -178,6 +305,14 @@ def diagnosis_findings(diag: dict[str, Any], previous: dict[str, Any] | None) ->
                            title="Server-side check incomplete; could not check: " + ", ".join(sorted(errors)),
                            detail="; ".join(f"{k}: {v}" for k, v in sorted(errors.items()))[:1000]))
     urls = diag.get("site_urls") or {}
+    registered = diag.get("registered_url")
+    if urls.get("expected") and registered and not same_host(str(urls["expected"]), str(registered)):
+        out.append(Finding(code="gate_url_mismatch", severity="critical",
+                           title=f"The server's cc-gate gives this site key the address {urls['expected']}, not the registered "
+                                 f"{registered}",
+                           detail="These server-side results may be about a different WordPress install. Link the site to the key "
+                                  "for its own address (Websites page), or fix the key's \"url\" in the server's cc-gate configuration; "
+                                  "repairs are refused until they match."))
     if urls.get("subdirectory_install_suspected"):
         # home is right, and siteurl is home plus the folder the site's path ends in: most likely the configuration, not a hack.
         out.append(Finding(code="subdirectory_install_suspected", severity="warning",
@@ -302,6 +437,7 @@ class ServerSideCapabilities:
         diag["errors"] = errors
         diag["at"] = datetime.now(UTC).isoformat()
         diag["server"] = server.name
+        diag["registered_url"] = site.url
         return diag
 
     @capability(risk=Risk.READ, description="Server-side diagnosis through WP-CLI (read-only): core checksums, home/siteurl, plugins and "
@@ -352,6 +488,7 @@ class ServerSideCapabilities:
         gate_session = ctx.ssh.open(ctx, server)
         try:
             async with gate_session as gate:
+                await check_gate_site(gate, site, ctx.approved_target)
                 outcome = await steps(gate, key, notes, dry=True)
                 if outcome == "nothing to do":
                     return AgentResult(summary=f"{site.name}: {title} not needed ({'; '.join(notes) or 'already correct'}); nothing was changed.",
@@ -418,6 +555,12 @@ class ServerSideCapabilities:
                 if urls.get("matches"):
                     notes.append(f"home and siteurl already {urls.get('expected')}")
                     return "nothing to do"
+                expected = approved_expectations(ctx)
+                applies = (urls.get("expected"), urls.get("expected_siteurl") or urls.get("expected"))
+                if applies != (expected.get("home"), expected.get("siteurl")):
+                    raise ValueError(f"the server would now set home {applies[0]} and siteurl {applies[1]}, but the approval names "
+                                     f"home {expected.get('home')} and siteurl {expected.get('siteurl')}; nothing was changed; "
+                                     "request the repair again")
                 notes.append(f"was home {urls.get('home')}, siteurl {urls.get('siteurl')}")
                 return "change"
             result = await gate.run("wp_set_site_urls", site=key)
@@ -487,10 +630,17 @@ class ServerSideCapabilities:
             plugin = plugins.get(params.slug)
             if plugin is None:
                 raise ValueError(f"plugin {params.slug} is not installed")
+            if dry and plugin.get("update") != "available":
+                notes.append(f"{params.slug} {plugin.get('version')} is up to date")
+                return "nothing to do"
+            # In both passes: the backup in between takes a while, and WordPress.org may publish another version.
+            expected = approved_expectations(ctx)
+            now = (plugin.get("version"), plugin.get("update_version") if plugin.get("update") == "available" else None)
+            if now != (expected.get("version"), expected.get("update_version")):
+                raise ValueError(f"{params.slug} is now {now[0]}" + (f" with {now[1]} available" if now[1] else " with no update")
+                                 + f", but the approval names {expected.get('version')} → {expected.get('update_version')}; nothing was "
+                                 "changed; request the update again")
             if dry:
-                if plugin.get("update") != "available":
-                    notes.append(f"{params.slug} {plugin.get('version')} is up to date")
-                    return "nothing to do"
                 notes.append(f"{params.slug} {plugin.get('version')} → {plugin.get('update_version')}")
                 return "change"
             await gate.run("wp_plugin_update", site=key, slug=params.slug)
@@ -499,7 +649,8 @@ class ServerSideCapabilities:
                 raise RuntimeError(f"{params.slug} is no longer installed after the update")
             if after.get("version") == plugin.get("version") or after.get("update") == "available":
                 raise RuntimeError(f"{params.slug} is still version {after.get('version')} after the update")
-            notes.append(f"now version {after.get('version')}")
+            notes.append(f"now version {after.get('version')}" + ("" if after.get("version") == expected.get("update_version") else
+                         f" (approved: {expected.get('update_version')}; WordPress.org published a newer one at that moment)"))
             return "done"
 
         return await self._repair(ctx, params.site_id, f"update plugin {params.slug}", steps)
@@ -508,10 +659,15 @@ class ServerSideCapabilities:
                 "Database backup first.", params=PluginParams, timeout_seconds=REPAIR_TIMEOUT)
     async def repair_reinstall_plugin(self, ctx: AgentContext, params: PluginParams) -> AgentResult:
         async def steps(gate, key, notes, dry):
+            # In both passes: the reinstall takes whichever version is installed when it runs.
+            plugins = {p["name"]: p for p in (await gate.run("wp_plugin_list", site=key)).get("plugins", [])}
+            if params.slug not in plugins:
+                raise ValueError(f"plugin {params.slug} is not installed")
+            version, approved = plugins[params.slug].get("version"), approved_expectations(ctx).get("version")
+            if version != approved:
+                raise ValueError(f"{params.slug} is now version {version}, but the approval names {approved}; nothing was changed; "
+                                 "request the reinstall again")
             if dry:
-                plugins = {p["name"]: p for p in (await gate.run("wp_plugin_list", site=key)).get("plugins", [])}
-                if params.slug not in plugins:
-                    raise ValueError(f"plugin {params.slug} is not installed")
                 return "change"
             result = await gate.run("wp_plugin_reinstall", site=key, slug=params.slug)
             notes.append(f"reinstalled {params.slug} {result.get('version')}")
@@ -524,6 +680,11 @@ class ServerSideCapabilities:
                 timeout_seconds=REPAIR_TIMEOUT)
     async def repair_reinstall_core(self, ctx: AgentContext, params: SiteParams) -> AgentResult:
         async def steps(gate, key, notes, dry):
+            # In both passes: the reinstall takes whichever version is installed when it runs.
+            version, approved = (await gate.run("wp_core_version", site=key)).get("version"), approved_expectations(ctx).get("core_version")
+            if version != approved:
+                raise ValueError(f"WordPress is now version {version}, but the approval names {approved}; nothing was changed; "
+                                 "request the reinstall again")
             if dry:
                 return "change"
             result = await gate.run("wp_core_reinstall", site=key)

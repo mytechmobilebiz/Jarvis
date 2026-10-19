@@ -11,9 +11,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import audit, licensing, uptime
+from .. import audit, events, licensing, uptime
 from .. import tasks as task_service
 from ..agents.monitoring.agent import normalize_url
+from ..agents.wp_server import gate_link_problem
 from ..config import Settings, get_settings
 from ..models import Server, Site, SiteCheck
 from .deps import Principal, client_ip, get_db, require_operator, require_user, to_dict
@@ -51,6 +52,8 @@ class SitePatch(BaseModel):
     server_id: int | None = None
     server_site_key: str | None = Field(None, pattern=SITE_KEY_PATTERN, description="The site's key in the server's cc-gate configuration")
     unlink_server: bool = False
+    # The site's current name, typed by an admin, when the change takes it out of production.
+    confirm: str | None = Field(None, max_length=200)
 
 
 class CheckBody(BaseModel):
@@ -130,24 +133,54 @@ async def get_site(site_id: int, _: Principal = Depends(require_user), session: 
     return {"site": view}
 
 
+def _production(site_environment: str, server: Server | None) -> bool:
+    """Whether repairs on the site count as production (an admin types its name): its own environment, or its server's."""
+    return site_environment == "production" or (server is not None and server.environment == "production")
+
+
 @router.patch("/{site_id}")
 async def patch_site(
     site_id: int, body: SitePatch, request: Request,
     principal: Principal = Depends(require_operator), session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> dict:
-    site = await _site(session, site_id)
-    changes = body.model_dump(exclude_none=True, exclude={"unlink_server"})
+    site = await session.get(Site, site_id, with_for_update=True)
+    if site is None:
+        raise HTTPException(404, "no such site")
+    changes = body.model_dump(exclude_none=True, exclude={"unlink_server", "confirm"})
     admin_fields = {"environment", "server_id", "server_site_key"} & set(changes) or body.unlink_server
     if admin_fields and principal.role != "admin":
         raise HTTPException(403, "only an admin can change a site's environment or server link")
     if body.unlink_server:
         changes.update(server_id=None, server_site_key="")
-    elif "server_id" in changes and await session.get(Server, changes["server_id"]) is None:
+    old_server = await session.get(Server, site.server_id) if site.server_id else None
+    server_id = changes.get("server_id", site.server_id)
+    new_server = await session.get(Server, server_id) if server_id else None
+    if server_id and new_server is None:
         raise HTTPException(400, "no such server")
-    for key, value in changes.items():
-        setattr(site, key, value)
+    key = changes.get("server_site_key", site.server_site_key)
+    if new_server is not None and key and (server_id != site.server_id or key != site.server_site_key):
+        # The key must be this site's on the server: cc-gate acts on whatever install its configuration gives the key.
+        problem = gate_link_problem(new_server, key, site.url)
+        if problem:
+            raise HTTPException(400, problem)
+    environment = changes.get("environment", site.environment)
+    was_production, production = _production(site.environment, old_server), _production(environment, new_server)
+    if was_production and not production:
+        # Out of production, its repairs no longer need an admin who types its name: as deliberate as that confirmation.
+        if (body.confirm or "").strip() != site.name:
+            raise HTTPException(400, f"confirm: this takes {site.name} out of production (its repairs would no longer need an "
+                                     f"admin's typed confirmation); type the site's name, {site.name}, to confirm")
+    for name, value in changes.items():
+        setattr(site, name, value)
     site.updated_at = datetime.now(UTC)
     await audit.record(session, principal.name, "site.updated", "site", site.id, changes, ip=client_ip(request))
+    if was_production and not production:
+        await events.emit(session, settings, kind="site.production_removed", severity="warning", source="dashboard",
+                          title=f"{site.name} is no longer production (now {environment}"
+                                + (f" on server {new_server.name}" if new_server else ", not linked to a server")
+                                + f"), changed by {principal.name}: its repairs no longer need an admin's typed confirmation",
+                          detail={"site_id": site.id, "environment": environment, "server_id": server_id, "by": principal.name})
     await session.commit()
     return {"site": await _site_view(session, site)}
 

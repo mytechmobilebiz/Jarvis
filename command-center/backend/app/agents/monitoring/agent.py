@@ -16,6 +16,7 @@ from ... import events, uptime
 from ...models import Site, SiteCheck
 from ..base import AgentContext, AgentResult, ArtifactSpec, BaseAgent, EventSpec, Finding, Intent, NoParams, Params, Risk, capability
 from ..http import BlockedTarget, open_public_connection
+from . import connectivity, findings as open_issues
 from .checks import SiteChecker, SiteReport
 
 _LATEST_CACHE: dict[str, tuple[float, str | None]] = {}
@@ -102,7 +103,8 @@ class MonitoringAgent(BaseAgent):
     description = (
         "Read-only monitoring of client websites and their servers: uptime and uptime history, response time, TLS "
         "certificate validity and expiry, suspicious redirects, WordPress version and publicly exposed risks, and "
-        "network reachability of servers (DNS, ports, TLS). Never logs in and never changes a site or server."
+        "network reachability of servers (DNS, ports, TLS). Never logs in and never changes a site or server. A site that "
+        "does not answer at all is recorded as down only after a control check shows the Command Center itself is online."
     )
 
     def intents(self) -> list[Intent]:
@@ -230,6 +232,17 @@ class MonitoringAgent(BaseAgent):
             await asyncio.wait_for(make_checker(ctx, latest).check(params.url, deep=params.deep, report=report), deadline)
         except TimeoutError:
             _cut_short(report, deadline)
+        if connectivity.is_network_failure(report):
+            guard = connectivity.ConnectivityGuard(ctx.http, ctx.settings)
+            if not await guard.online(failed_at=time.monotonic()):
+                ctx.log(f"{params.url}: {_first(report)}; {connectivity.OFFLINE_REASON}", "warning")
+                return AgentResult(
+                    summary=f"{params.url} was not checked: the Command Center could not reach the internet "
+                            "(its control check of well-known hosts failed too).",
+                    data={"report": _report_data(report), "offline": True, "control_error": guard.error},
+                    findings=[Finding(code="command_center_offline", severity="warning",
+                                      title="The Command Center could not reach the internet; the site was not checked")],
+                )
         ctx.log(report.summary())
         return AgentResult(
             summary=report.summary() + " (not a monitored site; result not stored in site history)",
@@ -255,17 +268,30 @@ class MonitoringAgent(BaseAgent):
         ]
         rows += [{"site_id": site.id, "name": site.name, "url": site.url, "status": "not checked", "summary": error}
                  for site, error in failed]
+        offline = [site for site, error in failed if error == connectivity.OFFLINE_REASON]
+        failed = [(site, error) for site, error in failed if error != connectivity.OFFLINE_REASON]
         counts = {s: sum(1 for _, r in checked if r.status == s) for s in ("up", "degraded", "down")}
         summary = f"Checked {len(sites)} site(s): {counts['up']} up, {counts['degraded']} degraded, {counts['down']} down."
+        if offline:
+            summary = (f"The Command Center could not reach the internet: {len(offline)} of {len(sites)} site(s) were not checked "
+                       "(not recorded as down).")
+            if checked:
+                summary += f" Checked {len(checked)}: {counts['up']} up, {counts['degraded']} degraded, {counts['down']} down."
         if failed:
             summary += f" {len(failed)} could not be checked."
-        problems = [r for r in rows if r["status"] != "up"]
+        problems = [r for r in rows if r["status"] != "up" and r["summary"] != connectivity.OFFLINE_REASON]
         if problems:
             summary += " Problems: " + "; ".join(f"{r['name']} ({r['status']})" for r in problems[:5])
         findings = [f for _, r in checked for f in r.findings if f.severity != "info"]
         findings += [Finding(code="check_failed", severity="warning", title=f"{site.name} could not be checked: {error}"[:300])
                      for site, error in failed]
-        return AgentResult(summary=summary, data={"counts": counts, "sites": rows}, findings=findings)
+        if offline:
+            findings.append(Finding(code="command_center_offline", severity="warning",
+                                    title=f"The Command Center could not reach the internet; {len(offline)} site(s) not checked",
+                                    detail="Its control check of well-known hosts failed too, so these failures were not "
+                                           "recorded as website downtime."))
+        return AgentResult(summary=summary, data={"counts": {**counts, "not_checked": len(offline) + len(failed)}, "sites": rows,
+                                                  "offline": bool(offline)}, findings=findings)
 
     @capability(
         risk=Risk.READ,
@@ -275,10 +301,13 @@ class MonitoringAgent(BaseAgent):
     )
     async def sites_overview(self, ctx: AgentContext, params: NoParams) -> AgentResult:
         sites = (await ctx.session.scalars(select(Site).order_by(Site.id))).all()
+        if not sites:
+            return AgentResult(summary="No sites are being monitored yet.")
+        # Open issues from the latest quick and the latest deep check (findings.py), not the latest check alone.
+        found = await open_issues.open_findings(ctx.session, [s.id for s in sites])
         rows = []
         for site in sites:
             check = await ctx.session.get(SiteCheck, site.last_check_id) if site.last_check_id else None
-            issues = [f for f in (check.findings if check else []) if f.get("severity") != "info"]
             rows.append(
                 {
                     "site_id": site.id,
@@ -288,13 +317,20 @@ class MonitoringAgent(BaseAgent):
                     "status": site.last_status,
                     "last_checked_at": site.last_checked_at.isoformat() if site.last_checked_at else None,
                     "wp_version": check.wp_version if check else "",
-                    "issues": [i["title"] for i in issues],
+                    "issues": [f["title"] for f in found[site.id]["open_findings"]],
+                    "issues_sources": found[site.id]["open_findings_sources"],
                 }
             )
-        if not rows:
-            return AgentResult(summary="No sites are being monitored yet.")
-        lines = [f"{r['name']}: {r['status']}" + (f" ({len(r['issues'])} issue(s))" if r["issues"] else "") for r in rows]
-        return AgentResult(summary=f"{len(rows)} monitored site(s). " + "; ".join(lines[:10]), data={"sites": rows})
+        monitored = [r for r in rows if r["enabled"]]
+        paused = len(rows) - len(monitored)
+
+        def line(r: dict[str, Any]) -> str:
+            status = r["status"] if r["last_checked_at"] else "not checked yet"
+            return f"{r['name']}: {status}" + (f" ({len(r['issues'])} issue(s))" if r["issues"] else "")
+
+        summary = f"{len(monitored)} monitored site(s)" + (f", {paused} paused" if paused else "") + ". "
+        summary += "; ".join(line(r) for r in monitored[:10])
+        return AgentResult(summary=summary.strip(), data={"sites": rows, "monitored": len(monitored), "paused": paused})
 
 
     @capability(
@@ -311,25 +347,36 @@ class MonitoringAgent(BaseAgent):
         if not sites:
             return AgentResult(summary="No matching sites.")
         stats = await uptime.uptime_stats(ctx.session)
-        lines = ["# Uptime report", "", "_Based on the stored checks (normally every 15 minutes); a degraded site counts as up._", "",
+        lines = ["# Uptime report", "",
+                 "_Based on the checks that ran (normally every 15 minutes); a degraded site counts as up. Time the Command "
+                 "Center was off, asleep or without internet is not checked, so it counts neither as up nor as down: "
+                 "each figure says how many checks and clock hours it covers._", "",
                  "| Site | 24 h | 7 days | 30 days | Avg response (24 h) | Incidents (30 days) |", "|---|---|---|---|---|---|"]
         rows = []
         for site in sites:
             s = stats.get(site.id) or {}
             incidents = await uptime.incidents(ctx.session, site.id)
             rows.append({"site_id": site.id, "name": site.name, **s, "incidents": incidents})
-            pct = [("n/a" if s.get(k) is None else f"{s[k]:g}%") for k in ("24h", "7d", "30d")]
+            pct = [_uptime_cell(s, k, hours) for k, hours in (("24h", 24), ("7d", 168), ("30d", 720))]
             avg = f"{s['avg_response_ms_24h']} ms" if s.get("avg_response_ms_24h") is not None else "n/a"
-            lines.append(f"| {site.name} | {pct[0]} | {pct[1]} | {pct[2]} | {avg} | {len(incidents)} |")
+            lines.append(f"| {site.name}{'' if site.enabled else ' (paused)'} | {pct[0]} | {pct[1]} | {pct[2]} | {avg} | {len(incidents)} |")
         for row in rows:
             if row["incidents"]:
                 lines += ["", f"## {row['name']}: downtime", ""]
-                lines += [f"- {i['start'][:16].replace('T', ' ')} UTC, {i['minutes']} min: {i['reason']}" for i in row["incidents"][-10:]]
+                lines += [f"- {i['start'][:16].replace('T', ' ')} UTC, " + (
+                    f"at least {i['minutes']} min (not checked after {i['end'][11:16]} UTC)" if i.get("end_reason") == "not_checked"
+                    else f"{i['minutes']} min") + f": {i['reason']}" for i in row["incidents"][-10:]]
         worst = min(rows, key=lambda r: r.get("30d") if r.get("30d") is not None else 101)
         summary = f"Uptime for {len(rows)} site(s); lowest 30-day uptime: {worst['name']} " + (
             f"{worst['30d']:g}%" if worst.get("30d") is not None else "(no checks yet)")
         return AgentResult(summary=summary, data={"sites": rows},
                            artifacts=[ArtifactSpec(kind="uptime_report", title="Uptime report", content="\n".join(lines))])
+
+
+def _uptime_cell(stats: dict[str, Any], window: str, hours: int) -> str:
+    if stats.get(window) is None:
+        return "n/a"
+    return f"{stats[window]:g}% ({stats[f'n_{window}']} checks, {stats[f'hours_checked_{window}']} of {hours} h)"
 
 
 # Findings that change a site's status (down or degraded); an alert headline names one of these first.
@@ -425,6 +472,11 @@ async def record_check(ctx: AgentContext, site: Site, deep: bool, report: SiteRe
     previous = await previous_check(ctx, site.id, deep)
     _compare_scripts(report, previous)
     seen = [*(previous.findings if previous else []), *await _reported_since(ctx, site.id, deep, previous)]
+    # A quick check (or a deep one cut short before it got there) does not compare what search visitors get: the
+    # cloaking the latest deep check found stays until a deep check that made the comparison clears it.
+    ran_cloaking = "variants" in (report.details.get("redirect_check") or {})
+    carried = [] if ran_cloaking else open_issues.carried_causes(await open_issues.latest_deep_check(ctx.session, site.id))
+    status = open_issues.effective_status(report.status, carried)
     check = SiteCheck(
         site_id=site.id,
         task_id=ctx.task_id,
@@ -441,10 +493,10 @@ async def record_check(ctx: AgentContext, site: Site, deep: bool, report: SiteRe
     )
     ctx.session.add(check)
     await ctx.session.flush()
-    site.last_status = report.status
+    site.last_status = status  # the check row keeps what this check itself saw
     site.last_checked_at = check.checked_at
     site.last_check_id = check.id
-    return change_events(site, previous_status, seen, report)
+    return change_events(site, previous_status, seen, report, carried=carried)
 
 
 def _cut_short(report: SiteReport, seconds: float) -> None:
@@ -467,12 +519,19 @@ async def check_sites(
     cannot discard it; the events are therefore not returned. Returns the
     checked sites with their reports, and the sites whose check failed with an
     error (nothing is recorded for those), both in the order given.
+
+    With record, a site whose home page never answered is recorded only after
+    a control check shows the Command Center itself is online (see
+    connectivity.py); otherwise it fails with connectivity.OFFLINE_REASON and
+    nothing is recorded for it.
     """
     latest = await latest_wordpress_version(ctx) if deep else None
     checker = make_checker(ctx, latest)
     deadline = ctx.settings.monitor_timeout_seconds * SITE_DEADLINE_FACTOR[deep]
     sem, db_lock = asyncio.Semaphore(4), asyncio.Lock()
     results: dict[int, SiteReport | str] = {}
+    guard = connectivity.ConnectivityGuard(ctx.http, ctx.settings)
+    source = ctx.agent_name or "monitoring"
 
     async def run(i: int, site: Site) -> None:
         async with sem:
@@ -485,6 +544,17 @@ async def check_sites(
                 results[i] = f"{exc.__class__.__name__}: {exc}"
                 ctx.log(f"{site.name}: check failed: {results[i]}", "error")
                 return
+        if record and connectivity.is_network_failure(report):
+            if not await guard.online(failed_at=time.monotonic()):
+                results[i] = connectivity.OFFLINE_REASON
+                ctx.log(f"{site.name}: {_first(report)}; {connectivity.OFFLINE_REASON}", "warning")
+                async with db_lock:
+                    await connectivity.record_state(ctx.session, ctx.settings, online=False, error=guard.error,
+                                                    source=source, task_id=ctx.task_id)
+                    await ctx.session.commit()
+                return
+        elif report.http_status is not None:
+            guard.saw_answer()
         if record:
             async with db_lock:  # one session, so one site at a time
                 specs = await record_check(ctx, site, deep, report)
@@ -493,7 +563,7 @@ async def check_sites(
                     return
                 for spec in specs:
                     await events.emit(ctx.session, ctx.settings, kind=spec.kind, severity=spec.severity, title=spec.title,
-                                      source=ctx.agent_name or "monitoring", detail=spec.detail, task_id=ctx.task_id)
+                                      source=source, detail=spec.detail, task_id=ctx.task_id)
                 await ctx.session.commit()
         results[i] = report
         ctx.log(report.summary())
@@ -508,20 +578,31 @@ async def check_sites(
                 group.create_task(run(i, sites[i]))
     except ExceptionGroup as exc:
         raise exc.exceptions[0] from None
+    if record and guard.state is not None:
+        # The latest evidence of the sweep: back online (one event if it was offline), or still offline.
+        await connectivity.record_state(ctx.session, ctx.settings, online=guard.state == "online", error=guard.error,
+                                        source=source, task_id=ctx.task_id)
+        await ctx.session.commit()
     checked = [(site, r) for i, site in enumerate(sites) if isinstance(r := results.get(i), SiteReport)]
     failed = [(site, r) for i, site in enumerate(sites) if isinstance(r := results.get(i), str)]
     return checked, failed
 
 
-def change_events(site: Site, previous_status: str, seen: list[dict[str, Any]], report: SiteReport) -> list[EventSpec]:
-    """Status-change events, and one event for the findings whose code is not among the findings seen before."""
+def change_events(site: Site, previous_status: str, seen: list[dict[str, Any]], report: SiteReport,
+                  carried: list[dict[str, Any]] | None = None) -> list[EventSpec]:
+    """Status-change events, and one event for the findings whose code is not among the findings seen before.
+
+    carried: the latest deep check's cloaking findings, which keep a quick check's site status degraded.
+    """
     out: list[EventSpec] = []
-    detail = {"site_id": site.id, "site": site.name, "url": site.url, "status": report.status}
-    if report.status != previous_status:
-        if report.status == "down":
+    status = open_issues.effective_status(report.status, carried or [])
+    detail = {"site_id": site.id, "site": site.name, "url": site.url, "status": status}
+    if status != previous_status:
+        if status == "down":
             out.append(EventSpec(kind="site.down", severity="critical", title=f"{site.name} is DOWN: {_first(report)}", detail=detail))
-        elif report.status == "degraded":
-            out.append(EventSpec(kind="site.degraded", severity="warning", title=f"{site.name} is degraded: {_first(report)}", detail=detail))
+        elif status == "degraded":
+            headline = _first(report) if report.status == "degraded" else (carried or [{}])[0].get("title", "degraded")
+            out.append(EventSpec(kind="site.degraded", severity="warning", title=f"{site.name} is degraded: {headline}", detail=detail))
         elif previous_status in ("down", "degraded"):
             out.append(EventSpec(kind="site.recovered", severity="info", title=f"{site.name} has recovered", detail=detail))
     old_codes = {f.get("code") for f in seen}

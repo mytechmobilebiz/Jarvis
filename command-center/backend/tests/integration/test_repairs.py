@@ -15,8 +15,26 @@ from .test_agents import run_task
 from .test_ssh import add_server, ssh_key
 
 
+async def gate_hello(admin, web: FakeWeb, server_id: int) -> None:
+    """Test connection, as an admin does before linking a site: the server's cc-gate reports its site keys and their addresses."""
+    from app.config import get_settings
+    from app.llm import NullProvider
+    from app.worker.runner import Worker
+    from app.workflow import N8nEngine
+
+    from ..fakes import FakeN8n
+
+    r = await admin.post("/api/agents/server_management/tasks", json={"capability": "test_connection", "params": {"server_id": server_id}})
+    assert r.status_code == 201, r.text
+    settings = get_settings()
+    await Worker(settings, llm=NullProvider(), engine=N8nEngine(settings, transport=FakeN8n().transport), http_transport=web.transport,
+                 worker_id="test-worker").run_until_idle()
+    assert (await admin.get(f"/api/tasks/{r.json()['task']['id']}")).json()["task"]["status"] == "succeeded"
+
+
 async def linked_site(admin, srv: FakeGateServer, web: FakeWeb, *, environment: str = "test", server_env: str = "test") -> tuple[dict, dict]:
     server = await add_server(admin, srv, environment=server_env)
+    await gate_hello(admin, web, server["id"])
     web.add("site.test", wordpress_site("http://site.test", exposed=False))
     site = (await admin.post("/api/sites", json={"name": "Site One", "url": "http://site.test", "environment": environment})).json()["site"]
     r = await admin.patch(f"/api/sites/{site['id']}", json={"server_id": server["id"], "server_site_key": "site-one"})
@@ -70,21 +88,23 @@ async def test_diagnosis_finds_the_redirect_hack_and_the_repair_fixes_it(admin, 
 
         task = await run_task(admin, make_worker, "wordpress_security", "repair_restore_site_url", {"site_id": site["id"]})
         approval = next(a for a in (await admin.get("/api/approvals")).json()["approvals"] if a["task_id"] == task["id"])
-        assert approval["details"]["target"] == "site Site One (http://site.test) on server srv1" and not approval["details"]["production"]
+        assert approval["details"]["target"] == (f"site Site One (http://site.test) on server srv1 (ccagent@127.0.0.1:{srv.port}), "
+                                                 "cc-gate site key site-one (http://site.test)") and not approval["details"]["production"]
+        assert approval["details"]["expected"]["home"] == "http://site.test"  # the exact address the repair writes
         done = await approve(admin, make_worker, task)
         assert done["status"] == "succeeded", done["error"]
         assert done["result"]["data"]["changed"] is True
         assert "database backup:" in done["summary"] and "was home http://evil.example" in done["summary"]
         assert (srv.dir / "option-home").read_text() == "http://site.test"
         # Check, back up, re-check just before changing, change, verify.
-        assert await ops_for(done["id"]) == [("wp_site_urls", "read"), ("wp_db_export", "change"), ("wp_site_urls", "read"),
+        assert await ops_for(done["id"]) == [("hello", "read"), ("wp_site_urls", "read"), ("wp_db_export", "change"), ("wp_site_urls", "read"),
                                               ("wp_set_site_urls", "change"), ("wp_site_urls", "read")]
         assert any(e["kind"] == "repair.completed" for e in (await admin.get("/api/events")).json()["events"])
 
         again = await approve(admin, make_worker, await run_task(admin, make_worker, "wordpress_security", "repair_restore_site_url",
                                                                  {"site_id": site["id"]}))
         assert again["result"]["data"]["changed"] is False and "nothing was changed" in again["summary"]
-        assert await ops_for(again["id"]) == [("wp_site_urls", "read")]  # no backup, no change when nothing is wrong
+        assert await ops_for(again["id"]) == [("hello", "read"), ("wp_site_urls", "read")]  # no backup, no change when nothing is wrong
 
 
 async def test_deactivating_a_plugin_and_noticing_the_site_went_down(admin, web, make_worker):
@@ -171,6 +191,7 @@ async def test_a_repair_that_fails_part_way_is_checked_and_reported_loudly(admin
     key = await ssh_key(admin)
     async with FakeGateServer(key["openssh"]) as srv:
         site, _ = await linked_site(admin, srv, web)
+        await make_worker().run_until_idle()  # the baseline scan: the server-side check the approval takes the versions from
         put(srv.dir / "update-fails", "1")
         task = await run_task(admin, make_worker, "wordpress_security", "repair_update_plugin", {"site_id": site["id"], "slug": "akismet"})
         done = await approve(admin, make_worker, task)
@@ -184,6 +205,7 @@ async def test_a_plugin_update_is_confirmed_and_a_refused_reinstall_changes_noth
     key = await ssh_key(admin)
     async with FakeGateServer(key["openssh"]) as srv:
         site, _ = await linked_site(admin, srv, web)
+        await make_worker().run_until_idle()  # the baseline scan: the server-side check the approval takes the versions from
         done = await approve(admin, make_worker, await run_task(admin, make_worker, "wordpress_security", "repair_update_plugin",
                                                                 {"site_id": site["id"], "slug": "akismet"}))
         assert done["status"] == "succeeded" and "now version 5.4" in done["summary"]
@@ -497,7 +519,7 @@ async def test_failures_before_anything_reached_the_site_are_plain_failures(admi
                                                                 {"site_id": site["id"]}))
         assert done["status"] == "succeeded" and done["result"]["data"]["changed"] is False
         assert "debug.log is a symlink, not a file" in done["summary"]
-        assert await ops_for(done["id"]) == [("wp_debug_log_status", "read")]
+        assert await ops_for(done["id"]) == [("hello", "read"), ("wp_debug_log_status", "read")]
 
         # Not enough time left for the change: it is never sent.
         slow = make_worker(settings=settings.model_copy(update={"ssh_command_timeout_seconds": 4000}))
@@ -507,7 +529,7 @@ async def test_failures_before_anything_reached_the_site_are_plain_failures(admi
         await slow.run_until_idle()
         done = (await admin.get(f"/api/tasks/{task['id']}")).json()["task"]
         assert done["status"] == "failed" and "nothing was sent" in done["error"]
-        assert await ops_for(done["id"]) == []
+        assert await ops_for(done["id"]) == [("hello", "read")]  # only the read that checks the gate's address for the key
 
         # Backed up, then a read fails before the change: the backup alone changed nothing on the site.
         real, lists = GateSession.run, []
@@ -523,7 +545,7 @@ async def test_failures_before_anything_reached_the_site_are_plain_failures(admi
         done = await approve(admin, make_worker, await run_task(admin, make_worker, "wordpress_security", "repair_deactivate_plugin",
                                                                 {"site_id": site["id"], "slug": "evil-cloak"}))
         assert done["status"] == "failed" and "database connection" in done["error"]
-        assert await ops_for(done["id"]) == [("wp_plugin_list", "read"), ("wp_db_export", "change")]
+        assert await ops_for(done["id"]) == [("hello", "read"), ("wp_plugin_list", "read"), ("wp_db_export", "change")]
     assert not any(e["kind"] == "repair.failed" for e in (await admin.get("/api/events")).json()["events"])
 
 
@@ -539,7 +561,7 @@ async def test_wordpress_in_its_own_folder_is_a_warning_and_its_siteurl_is_left_
         done = await approve(admin, make_worker, await run_task(admin, make_worker, "wordpress_security", "repair_restore_site_url",
                                                                 {"site_id": site["id"]}))
         assert done["status"] == "failed" and 'set "siteurl" for this site' in done["error"]
-        assert await ops_for(done["id"]) == [("wp_site_urls", "read")]  # no backup, no change
+        assert await ops_for(done["id"]) == [("hello", "read"), ("wp_site_urls", "read")]  # no backup, no change
         assert (srv.dir / "option-siteurl").read_text() == "http://site.test/wp"
         await run_task(admin, make_worker, "wordpress_security", "security_report", {"site_id": site["id"]})
     async with session_scope() as s:

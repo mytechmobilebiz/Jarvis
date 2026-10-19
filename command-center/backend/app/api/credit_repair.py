@@ -146,12 +146,13 @@ async def get_client(client_id: int, principal: Principal = Depends(sensitive_us
         items = (await s.scalars(select(store.CRItem).where(store.CRItem.client_id == client_id).order_by(store.CRItem.id))).all()
         letters = (await s.scalars(select(store.CRLetter).where(store.CRLetter.client_id == client_id).order_by(store.CRLetter.id))).all()
         await store.log_access(s, principal.name, "view_client", client_id)
+        modes = store.item_mail_modes(list(letters))
         return {
             "client": store.client_view(client, cipher, full=True),
             "items": [{"id": i.id, "bureau": i.bureau, "creditor": cipher.dec(i.creditor_enc), "account_last4": cipher.dec(i.account_last4_enc),
-                       "reason": i.reason, "detail": cipher.dec(i.detail_enc), "status": i.status} for i in items],
-            "letters": [{"id": l.id, "bureau": l.bureau, "status": l.status, "item_ids": l.item_ids,
-                         "created_at": l.created_at.isoformat(), "mailed_at": l.mailed_at.isoformat() if l.mailed_at else None} for l in letters],
+                       "reason": i.reason, "detail": cipher.dec(i.detail_enc), "status": i.status, "mail_mode": modes.get(i.id)}
+                      for i in items],
+            "letters": [store.letter_view(l) for l in letters],
         }
 
 
@@ -194,6 +195,7 @@ async def get_letter(letter_id: int, principal: Principal = Depends(sensitive_us
             raise HTTPException(404, "no such letter")
         await store.log_access(s, principal.name, "view_letter", letter.client_id, letter_id=letter_id)
         return {"letter": {"id": letter.id, "client_id": letter.client_id, "bureau": letter.bureau, "status": letter.status,
+                           "mail_mode": store.mail_mode(letter), "mailed_at": letter.mailed_at.isoformat() if letter.mailed_at else None,
                            "content": cipher.dec(letter.content_enc)}}
 
 

@@ -13,7 +13,7 @@ decided here from its capability's declared risk, never by the caller.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 from sqlalchemy import and_, not_, select
@@ -23,7 +23,10 @@ from . import events, licensing
 from .agents.base import Capability
 from .agents.registry import get_agent
 from .config import Settings
-from .models import AgentState, Approval, SupervisorRequest, Task
+from .models import AgentState, Approval, Schedule, SupervisorRequest, Task
+
+if TYPE_CHECKING:
+    from .agents.base import AgentContext, BaseAgent
 
 TERMINAL = frozenset({"succeeded", "failed", "rejected", "cancelled"})
 # Supervisor bookkeeping tasks: they plan and summarise a request rather than
@@ -54,9 +57,38 @@ async def agent_enabled(session: AsyncSession, agent_name: str) -> bool:
     return True if state is None else state.enabled
 
 
+async def agent_unavailable(session: AsyncSession, settings: Settings, agent_name: str) -> str:
+    """Why this agent may not take on or run work now (switched off, or not in this edition); "" if it may."""
+    if not await agent_enabled(session, agent_name):
+        return f"the {agent_name} agent is switched off"
+    entitlements = await licensing.current_entitlements(session, settings)
+    if not entitlements.allows_agent(agent_name):
+        return f"the {agent_name} agent is not included in the {entitlements.edition.title} edition"
+    return ""
+
+
 def describe_action(agent: str, capability: str, params: dict[str, Any]) -> str:
     shown = ", ".join(f"{k}={v!r}" for k, v in list(params.items())[:4])
     return f"{agent}.{capability}({shown})"
+
+
+async def requested_details(
+    session: AsyncSession, *, source: str, created_by: str, request_id: int | None, schedule_id: int | None, retry_of: int | None,
+) -> dict[str, Any]:
+    """Who or what asked for a change, for the approval card: a person, the AI Supervisor for a request (and where that
+    request came from), a schedule, or a retry of an earlier task."""
+    request = await session.get(SupervisorRequest, request_id) if request_id is not None else None
+    schedule = await session.get(Schedule, schedule_id) if schedule_id is not None else None
+    return {
+        "source": source,
+        "by": created_by,
+        "request_id": request_id,
+        "request_source": request.source if request else None,
+        "requested_by": request.requested_by if request else None,
+        "message": request.message[:200] if request else None,
+        "schedule": schedule.name if schedule else None,
+        "retry_of": retry_of,
+    }
 
 
 async def create_task(
@@ -72,17 +104,16 @@ async def create_task(
     schedule_id: int | None = None,
     priority: int = 100,
     summary: str = "",
+    retry_of: int | None = None,
 ) -> Task:
     cap = resolve_capability(agent, capability)
     try:
         validated = cap.params_model.model_validate(params or {})
     except ValidationError as exc:
         raise TaskError(f"invalid parameters for {agent}.{capability}: {exc.errors(include_url=False)}") from exc
-    if not await agent_enabled(session, agent):
-        raise TaskError(f"agent '{agent}' is disabled")
-    entitlements = await licensing.current_entitlements(session, settings)
-    if not entitlements.allows_agent(agent):
-        raise TaskError(f"the {agent} agent is not included in the {entitlements.edition.title} edition")
+    unavailable = await agent_unavailable(session, settings, agent)
+    if unavailable:
+        raise TaskError(unavailable)
 
     clean = validated.model_dump(mode="json")
     needs_approval = cap.risk.requires_approval
@@ -110,8 +141,13 @@ async def create_task(
     await session.flush()
     if needs_approval:
         action = summary or describe_action(agent, capability, clean)
+        expected = extra.get("expected")
+        if isinstance(expected, dict) and expected.get("summary"):
+            action += f" ({expected['summary']})"
         if extra.get("target"):
             action += f" on {extra['target']}" + (" (PRODUCTION)" if extra.get("production") else "")
+        requested = await requested_details(session, source=source, created_by=created_by, request_id=request_id,
+                                            schedule_id=schedule_id, retry_of=retry_of)
         session.add(
             Approval(
                 task_id=task.id,
@@ -119,7 +155,7 @@ async def create_task(
                 capability=capability,
                 risk=cap.risk.value,
                 summary=action,
-                details={"params": clean, "capability_description": cap.description, **extra},
+                details={"params": clean, "capability_description": cap.description, **extra, "requested": requested},
             )
         )
         await events.emit(
@@ -149,8 +185,21 @@ async def current_target(session: AsyncSession, approval: Approval, params: dict
     try:
         fresh = await agent.approval_context(session, approval.capability, params, lock=lock) if agent else {}
     except ValueError as exc:
-        raise TargetChanged(f"{exc}; the approval no longer applies") from exc
+        raise TargetChanged(f"the target changed since this was requested: {exc}; reject it and request the change again") from exc
     check_target(approval.details or {}, fresh)
+    return fresh
+
+
+async def recheck_target(agent: BaseAgent, ctx: AgentContext, capability: str, params: dict[str, Any]) -> dict[str, Any]:
+    """In the task's own session, right before the action is sent: the target still matches the approval.
+
+    lock=True keeps the target's rows locked until the task's transaction ends, so they cannot change in between.
+    """
+    try:
+        fresh = await agent.approval_context(ctx.session, capability, params, lock=True)
+    except ValueError as exc:
+        raise TargetChanged(f"the target changed since this was requested: {exc}; reject it and request the change again") from exc
+    check_target(ctx.approved_target or {}, fresh)
     return fresh
 
 
@@ -176,6 +225,9 @@ async def decide_approval(
         raise TaskError(f"approval {approval.id} was already {approval.status}")
     details = approval.details or {}
     if approve:
+        unavailable = await agent_unavailable(session, settings, approval.agent)
+        if unavailable:
+            raise TaskError(f"{unavailable}; switch it on again before approving its changes, or reject this one")
         task = await session.get(Task, approval.task_id)
         assert task is not None
         # Computed again now: the site or server may have moved to production, been
@@ -206,7 +258,7 @@ async def decide_approval(
     return task
 
 
-async def cancel_task(session: AsyncSession, settings: Settings, task: Task, actor: str) -> Task:
+async def cancel_task(session: AsyncSession, settings: Settings, task: Task, actor: str, *, reason: str = "") -> Task:
     if task.status in TERMINAL or task.status == "running":
         raise TaskError(f"task {task.id} is {task.status} and cannot be cancelled")
     if task.status == "awaiting_approval":
@@ -215,13 +267,27 @@ async def cancel_task(session: AsyncSession, settings: Settings, task: Task, act
             approval.status = "rejected"
             approval.decided_by = actor
             approval.decided_at = now()
-            approval.decision_note = "task cancelled"
+            approval.decision_note = f"task cancelled: {reason}" if reason else "task cancelled"
     task.status = "cancelled"
     task.finished_at = now()
     task.updated_at = now()
-    task.error = f"cancelled by {actor}"
+    task.error = f"cancelled by {actor}" + (f": {reason}" if reason else "")
     await on_task_terminal(session, settings, task)
     return task
+
+
+async def cancel_pending_changes(session: AsyncSession, settings: Settings, agent: str, actor: str, reason: str) -> list[int]:
+    """Cancels the agent's tasks that need an approval and have not started: waiting for one, or approved and queued.
+
+    Used when the agent is switched off, so that neither a pending nor an already given approval still runs.
+    """
+    rows = (await session.scalars(
+        select(Task).where(Task.agent == agent, Task.status.in_(("queued", "awaiting_approval")),
+                           Task.risk.not_in(("read", "draft"))).order_by(Task.id).with_for_update()
+    )).all()
+    for task in rows:
+        await cancel_task(session, settings, task, actor, reason=reason)
+    return [task.id for task in rows]
 
 
 async def retry_task(session: AsyncSession, settings: Settings, task: Task, actor: str) -> Task:
@@ -238,6 +304,7 @@ async def retry_task(session: AsyncSession, settings: Settings, task: Task, acto
         request_id=None,
         priority=task.priority,
         summary=task.summary,
+        retry_of=task.id,
     )
 
 

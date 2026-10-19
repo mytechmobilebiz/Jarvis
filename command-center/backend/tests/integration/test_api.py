@@ -109,7 +109,7 @@ async def test_agents_listing_and_toggle(admin):
     assert all(c["risk"] == "read" and not c["requires_approval"] for c in wp["capabilities"])
     assert (await admin.patch("/api/agents/monitoring", json={"enabled": False})).json()["enabled"] is False
     r = await admin.post("/api/agents/monitoring/tasks", json={"capability": "check_url", "params": {"url": "a.test"}})
-    assert r.status_code == 400 and "disabled" in r.json()["detail"]
+    assert r.status_code == 400 and "switched off" in r.json()["detail"]
     assert (await admin.patch("/api/agents/supervisor", json={"enabled": False})).status_code == 400
 
 

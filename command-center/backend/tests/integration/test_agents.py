@@ -91,9 +91,13 @@ async def test_content_drafts_and_mock_publishing(admin, make_worker):
     site = (await admin.post("/api/sites", json={"name": "Client", "url": "client.example.test"})).json()["site"]
     async with session_scope() as s:
         draft = await s.scalar(select(Artifact).where(Artifact.kind == "blog_draft"))
+    assert (await admin.patch(f"/api/artifacts/{draft.id}", json={"status": "approved"})).status_code == 200  # reviewed first
     pub = await run_task(admin, make_worker, "seo_content", "publish_draft", {"artifact_id": draft.id, "destination": "wordpress", "site_id": site["id"]})
     assert pub["status"] == "awaiting_approval" and pub["risk"] == "external"
-    await approve_all(admin)
+    approval = (await admin.get("/api/approvals")).json()["approvals"][0]
+    assert approval["details"]["production"] is True  # a production client site: an admin types its name, as for repairs
+    r = await admin.post(f"/api/approvals/{approval['id']}/decision", json={"approve": True, "confirm": "Client"})
+    assert r.status_code == 200, r.text
     await make_worker().run_until_idle()
     entry = (await admin.get("/api/outbox")).json()["entries"][0]
     assert entry["integration"] == "wordpress_publish" and entry["recipient"] == "https://client.example.test"

@@ -112,7 +112,7 @@ async def test_changes_need_approval_and_the_gate_can_still_say_no(admin, make_w
         task = await run_task(admin, make_worker, "server_management", "restart_service", {"server_id": server["id"], "service": "httpd"})
         assert task["status"] == "awaiting_approval" and task["risk"] == "change"
         approval = (await admin.get("/api/approvals")).json()["approvals"][0]
-        assert approval["summary"].endswith("on server srv1") and approval["details"]["environment"] == "test"
+        assert approval["summary"].endswith(f"on server srv1 (ccagent@127.0.0.1:{srv.port})") and approval["details"]["environment"] == "test"
         assert (await admin.post(f"/api/approvals/{approval['id']}/decision", json={"approve": True})).status_code == 200
         await make_worker().run_until_idle()
         task = (await admin.get(f"/api/tasks/{task['id']}")).json()["task"]
@@ -168,8 +168,9 @@ async def test_a_target_that_became_production_or_changed_is_not_approved_on_sta
     await admin.patch(f"/api/servers/{server['id']}", json={"environment": "production"})
     r = await admin.post(f"/api/approvals/{approval['id']}/decision", json={"approve": True})
     assert r.status_code == 400 and "became a production target" in r.text
-    # Renamed since the request: the approval no longer describes the target.
-    await admin.patch(f"/api/servers/{server['id']}", json={"environment": "staging", "name": "srv2-renamed"})
+    # Renamed since the request: the approval no longer describes the target. (Out of production again: the name is typed.)
+    r = await admin.patch(f"/api/servers/{server['id']}", json={"environment": "staging", "name": "srv2-renamed", "confirm": "srv2"})
+    assert r.status_code == 200, r.text
     r = await admin.post(f"/api/approvals/{approval['id']}/decision", json={"approve": True})
     assert r.status_code == 400 and "target changed" in r.text
     assert (await admin.post(f"/api/approvals/{approval['id']}/decision", json={"approve": False})).status_code == 200

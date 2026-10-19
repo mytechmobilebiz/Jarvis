@@ -203,8 +203,9 @@ class Worker:
                 approval = await session.scalar(select(Approval).where(Approval.task_id == task_id))
                 approved_by = approval.decided_by if approval and approval.status == "approved" else ""
                 approved_target = dict(approval.details or {}) if approved_by else None
-                refused = ""
-                if approved_by:
+                # Switched off (or out of the edition) after the task was created or approved: it does not run.
+                refused = await task_service.agent_unavailable(session, self.settings, agent_name)
+                if approved_by and not refused:
                     # The approval covers the target as it was then; refuse if it was re-linked or changed since.
                     try:
                         await task_service.current_target(session, approval, params)

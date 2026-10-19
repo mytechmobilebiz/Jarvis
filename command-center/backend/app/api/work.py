@@ -98,21 +98,31 @@ async def patch_agent(
     request: Request,
     principal: Principal = Depends(require_operator),
     session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> dict:
     if get_agent(name) is None:
         raise HTTPException(404, "unknown agent")
     if name == "supervisor" and not body.enabled:
         raise HTTPException(400, "the supervisor cannot be disabled")
-    state = await session.get(AgentState, name)
+    state = await session.get(AgentState, name, with_for_update=True)
     if state is None:
         state = AgentState(name=name)
         session.add(state)
     state.enabled = body.enabled
     state.updated_by = principal.name
     state.updated_at = datetime.now(UTC)
-    await audit.record(session, principal.name, "agent.enabled" if body.enabled else "agent.disabled", "agent", name, ip=client_ip(request))
+    cancelled: list[int] = []
+    if not body.enabled:
+        # Switching an agent off also withdraws its changes that have not started, approved or not (tasks already
+        # running finish; Servers -> Disable stops every SSH session at once).
+        cancelled = await task_service.cancel_pending_changes(session, settings, name, principal.name, "the agent was switched off")
+        for task_id in cancelled:
+            await audit.record(session, principal.name, "task.cancelled", "task", task_id, {"reason": "agent switched off"},
+                               ip=client_ip(request))
+    await audit.record(session, principal.name, "agent.enabled" if body.enabled else "agent.disabled", "agent", name,
+                       {"cancelled_tasks": cancelled} if cancelled else None, ip=client_ip(request))
     await session.commit()
-    return {"name": name, "enabled": body.enabled}
+    return {"name": name, "enabled": body.enabled, "cancelled_tasks": cancelled}
 
 
 @router.post("/agents/{name}/tasks", status_code=201)

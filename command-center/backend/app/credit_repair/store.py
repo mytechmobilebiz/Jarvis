@@ -184,6 +184,34 @@ def client_view(c: CRClient, cipher: Cipher, full: bool = False) -> dict[str, An
     return view
 
 
+# A letter's status after the mailing capability ran, and what it says about the mail: the mock adapter
+# records the request only ("mailed_mock": nothing was mailed); "mailed" is for a live certified-mail
+# provider, which does not exist in this build.
+MAIL_MODES = {"mailed_mock": "mock", "mailed": "live"}
+
+
+def mail_mode(letter: CRLetter) -> str | None:
+    """'mock' (recorded, not mailed), 'live' (mailed by a provider) or None (not sent for mailing)."""
+    return MAIL_MODES.get(letter.status)
+
+
+def letter_view(letter: CRLetter) -> dict[str, Any]:
+    """A letter without its content. mailed_at is when the mailing was recorded; with mail_mode 'mock' nothing was mailed."""
+    return {"id": letter.id, "bureau": letter.bureau, "status": letter.status, "item_ids": letter.item_ids,
+            "created_at": letter.created_at.isoformat() if letter.created_at else None,
+            "mailed_at": letter.mailed_at.isoformat() if letter.mailed_at else None, "mail_mode": mail_mode(letter)}
+
+
+def item_mail_modes(letters: list[CRLetter]) -> dict[int, str]:
+    """{item id: mail_mode of the latest letter sent for mailing that holds it}: an item 'disputed' by a mock run was never mailed."""
+    out: dict[int, str] = {}
+    for letter in sorted(letters, key=lambda l: l.id):
+        mode = mail_mode(letter)
+        if mode is not None:
+            out.update({item_id: mode for item_id in letter.item_ids or []})
+    return out
+
+
 async def next_reference(s: AsyncSession) -> str:
     count = await s.scalar(select(func.count()).select_from(CRClient))
     return f"CR-{(count or 0) + 1:04d}"

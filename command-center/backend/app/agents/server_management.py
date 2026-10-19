@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import tasks as task_service
 from ..models import Server
 from .base import AgentContext, AgentResult, BaseAgent, Finding, Params, Risk, capability
-from .wp_server import server_binding
+from .wp_server import server_binding, server_label
 
 
 MIN_GATE_VERSION = (1, 1, 0)  # runs WP-CLI through cc-wp
@@ -55,7 +55,8 @@ async def server_approval_context(session: AsyncSession, server_id: int | None, 
     server = await session.get(Server, server_id, with_for_update=lock)
     if server is None:
         raise ValueError(f"no server with id {server_id}")
-    return {"target": f"server {server.name}", "environment": server.environment,
+    # The binding includes the pinned host key: after a re-pin another machine may answer, so earlier approvals stop applying.
+    return {"target": f"server {server_label(server)}", "environment": server.environment,
             "production": server.environment == "production", "confirm": server.name,
             "binding": {"server": server_binding(server)}}
 

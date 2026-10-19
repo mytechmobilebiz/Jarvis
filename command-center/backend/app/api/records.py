@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -10,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import audit
 from .. import tasks as task_service
 from ..config import Settings, get_settings
-from ..models import Lead, OutboxEntry, SupportTicket
+from ..models import Lead, OutboxEntry, SupportTicket, Task
 from .deps import Principal, client_ip, get_db, require_operator, require_service, require_user, to_dict
 
 router = APIRouter(prefix="/api", tags=["records"])
@@ -56,10 +58,40 @@ async def intake_ticket(session: AsyncSession, settings: Settings, body: TicketB
     return ticket, ids
 
 
+# The email capability behind each record's "sent" status, and the task parameter naming the record.
+LEAD_EMAIL = ("send_proposal", "lead_id")
+TICKET_EMAIL = ("send_reply", "ticket_id")
+
+
+async def delivery_modes(session: AsyncSession, email: tuple[str, str], ids: list[int]) -> dict[int, OutboxEntry]:
+    """{record id: its latest email in the outbox}, found through the approved task that recorded it.
+
+    The record's status says what was approved ("proposal_sent", "replied"); the outbox entry's mode says
+    whether anything left the machine ("mock": recorded, not sent). Nothing stored is changed.
+    """
+    if not ids:
+        return {}
+    capability, key = email
+    ref = Task.params[key].astext
+    rows = await session.execute(
+        select(ref, OutboxEntry).join(Task, Task.id == OutboxEntry.task_id)
+        .where(Task.capability == capability, OutboxEntry.integration == "email", ref.in_([str(i) for i in ids]))
+        .order_by(OutboxEntry.id)
+    )
+    return {int(record_id): entry for record_id, entry in rows.all()}  # the latest entry wins
+
+
+def with_delivery(record: Lead | SupportTicket, entries: dict[int, OutboxEntry]) -> dict[str, Any]:
+    """The record plus delivery_mode ('mock' or 'live'; None if no email was recorded) and delivery_outbox_id."""
+    entry = entries.get(record.id)
+    return {**to_dict(record), "delivery_mode": entry.mode if entry else None, "delivery_outbox_id": entry.id if entry else None}
+
+
 @router.get("/leads")
 async def list_leads(_: Principal = Depends(require_user), session: AsyncSession = Depends(get_db), limit: int = Query(100, ge=1, le=500)) -> dict:
     rows = (await session.scalars(select(Lead).order_by(Lead.id.desc()).limit(limit))).all()
-    return {"leads": [to_dict(r) for r in rows]}
+    entries = await delivery_modes(session, LEAD_EMAIL, [r.id for r in rows])
+    return {"leads": [with_delivery(r, entries) for r in rows]}
 
 
 @router.post("/leads", status_code=201)
@@ -68,13 +100,14 @@ async def create_lead(body: LeadBody, request: Request, principal: Principal = D
     lead, task_ids = await intake_lead(session, settings, body, "dashboard", principal.name)
     await audit.record(session, principal.name, "lead.created", "lead", lead.id, ip=client_ip(request))
     await session.commit()
-    return {"lead": to_dict(lead), "task_ids": task_ids}
+    return {"lead": with_delivery(lead, {}), "task_ids": task_ids}
 
 
 @router.get("/support/tickets")
 async def list_tickets(_: Principal = Depends(require_user), session: AsyncSession = Depends(get_db), limit: int = Query(100, ge=1, le=500)) -> dict:
     rows = (await session.scalars(select(SupportTicket).order_by(SupportTicket.id.desc()).limit(limit))).all()
-    return {"tickets": [to_dict(r) for r in rows]}
+    entries = await delivery_modes(session, TICKET_EMAIL, [r.id for r in rows])
+    return {"tickets": [with_delivery(r, entries) for r in rows]}
 
 
 @router.post("/support/tickets", status_code=201)
@@ -83,7 +116,7 @@ async def create_ticket(body: TicketBody, request: Request, principal: Principal
     ticket, task_ids = await intake_ticket(session, settings, body, "dashboard", principal.name)
     await audit.record(session, principal.name, "support.ticket_created", "support_ticket", ticket.id, ip=client_ip(request))
     await session.commit()
-    return {"ticket": to_dict(ticket), "task_ids": task_ids}
+    return {"ticket": with_delivery(ticket, {}), "task_ids": task_ids}
 
 
 @router.get("/outbox")
@@ -115,4 +148,4 @@ async def get_lead(lead_id: int, _: Principal = Depends(require_user), session: 
     lead = await session.get(Lead, lead_id)
     if lead is None:
         raise HTTPException(404, "no such lead")
-    return {"lead": to_dict(lead)}
+    return {"lead": with_delivery(lead, await delivery_modes(session, LEAD_EMAIL, [lead.id]))}

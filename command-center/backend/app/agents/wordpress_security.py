@@ -20,7 +20,7 @@ from ..models import Site, SiteCheck
 from .base import AgentContext, AgentResult, ArtifactSpec, BaseAgent, EventSpec, Finding, Intent, NoParams, Params, Risk, capability
 from .monitoring.agent import SWEEP_TIMEOUT_SECONDS, check_sites
 from .monitoring.checks import SiteReport
-from .wp_server import REPAIR_TIMEOUT, ServerSideCapabilities, site_approval_context
+from .wp_server import REPAIR_TIMEOUT, ServerSideCapabilities, repair_expectations, site_approval_context
 
 # What to do about each finding, and which approval-based repair (if any) applies.
 REMEDIATION: dict[str, tuple[str, str | None]] = {
@@ -56,6 +56,8 @@ REMEDIATION: dict[str, tuple[str, str | None]] = {
     "http_error": ("Check the server and PHP error logs.", None),
     # From the server-side (WP-CLI) diagnosis:
     "site_url_mismatch": ("Set home/siteurl back to the site's address.", "repair_restore_site_url"),
+    "gate_url_mismatch": ("The site is linked to a cc-gate site key whose address is another site: link it to the key for its own "
+                          "address (Websites page), or correct that key's \"url\" in the server's cc-gate configuration.", None),
     "subdirectory_install_suspected": ("WordPress seems to live in its own folder: set \"siteurl\" for this site in the server's cc-gate "
                                        "configuration, then run the server-side check again.", None),
     "core_modified": ("Replace the modified core files with the official ones.", "repair_reinstall_core"),
@@ -133,7 +135,11 @@ class WordPressSecurityAgent(ServerSideCapabilities, BaseAgent):
     ]
 
     async def approval_context(self, session: Any, capability: str, params: dict[str, Any], *, lock: bool = False) -> dict[str, Any]:
-        return await site_approval_context(session, params.get("site_id"), lock=lock)
+        context = await site_approval_context(session, params.get("site_id"), lock=lock)
+        site = await session.get(Site, params["site_id"]) if context else None  # already loaded (and locked) above
+        expected = repair_expectations(capability, params, site) if site is not None else None
+        # Not part of the binding: the repair's dry run compares these with what the server is about to apply.
+        return {**context, "expected": expected} if expected else context
 
     def intents(self) -> list[Intent]:
         return [

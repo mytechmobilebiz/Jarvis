@@ -10,6 +10,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import __version__, audit, customer_settings, licensing
+from ..agents.monitoring import connectivity
 from ..config import Settings, get_settings
 from ..models import (
     Approval,
@@ -52,6 +53,10 @@ async def system_status(
     now = datetime.now(UTC)
     workers = (await session.scalars(select(WorkerHeartbeat).order_by(WorkerHeartbeat.last_seen_at.desc()))).all()
     site_counts = dict((await session.execute(select(Site.last_status, func.count()).group_by(Site.last_status))).all())
+    # The same by status for the sites being monitored, and paused ones apart: a paused site's last status is not current.
+    enabled_counts = dict((await session.execute(
+        select(Site.last_status, func.count()).where(Site.enabled.is_(True)).group_by(Site.last_status))).all())
+    paused = await session.scalar(select(func.count()).select_from(Site).where(Site.enabled.is_(False)))
     task_counts = dict(
         (
             await session.execute(
@@ -77,7 +82,8 @@ async def system_status(
     llm_last_error = (
         await session.execute(select(LLMUsage.at, LLMUsage.error).where(LLMUsage.ok.is_(False)).order_by(LLMUsage.at.desc()).limit(1))
     ).first()
-    integrations = {r.name: to_dict(r) for r in (await session.scalars(select(IntegrationStatus))).all()}
+    statuses = {r.name: r for r in (await session.scalars(select(IntegrationStatus))).all()}
+    integrations = {name: to_dict(r) for name, r in statuses.items()}
     ai, _key = await customer_settings.resolve_ai(session, settings)
     ent = await licensing.current_entitlements(session, settings)
     return {
@@ -106,8 +112,12 @@ async def system_status(
         "n8n_editor_url": settings.n8n_editor_url
         if settings.workflow_engine == "n8n" and settings.n8n_editor_url.startswith(("http://", "https://"))
         else None,
+        # This PC's own internet connection, as the website monitoring last found it (agents/monitoring/connectivity.py).
+        "connectivity": connectivity.connectivity_view(statuses.get(connectivity.CONNECTIVITY_ROW)),
         "counts": {
             "sites": site_counts,
+            "sites_enabled": enabled_counts,
+            "sites_paused": paused or 0,
             "tasks_24h": task_counts,
             "tasks_queued": queued,
             "tasks_running": running,
