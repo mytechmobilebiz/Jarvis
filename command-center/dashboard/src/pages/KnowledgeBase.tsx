@@ -37,9 +37,9 @@ const AREAS: Area[] = [
   { group: "Command", to: "/workflows", label: "Workflows", icon: "workflows", text: "Scheduled automations, the n8n workflow engine and recent AI Supervisor requests." },
   { group: "Command", to: "/websites", label: "Websites", icon: "globe", text: "Monitored sites: uptime, checks and findings; WP-CLI checks and repairs for sites linked to a server." },
   { group: "Command", to: "/seo", label: "SEO & Marketing", icon: "trending", text: "SEO audits, keyword briefs, blog drafts and ad reports. Publishing and budget changes wait for approval." },
-  { group: "Command", to: "/servers", label: "CWP / Servers", icon: "server", text: "Servers reached through the restricted cc-gate account: host keys, connection tests, every command sent." },
+  { group: "Command", to: "/servers", label: "CWP / Servers", icon: "server", text: "Servers reached over SSH through cc-gate, as a restricted non-root account (ccagent by default): host keys, connection tests and, for operators and admins, every command sent." },
   { group: "Command", to: "/email", label: "Email", icon: "mail", text: "Client messages, leads and outgoing email. Replies and proposals are sent only after approval." },
-  { group: "Command", to: "/credit-repair", label: "Credit Repair", icon: "shield", text: "The isolated Credit Repair module, for admins and users with the sensitive-data permission.", sensitive: true },
+  { group: "Command", to: "/credit-repair", label: "Credit Repair", icon: "shield", text: "The isolated Credit Repair module. Admins see the page so they can switch it on; client data needs the sensitive-data permission, admins included.", sensitive: true },
   { group: "Command", to: "/social", label: "Social Media / Postonomous", icon: "megaphone", text: "Social post drafts for review. Publishing through Postonomous needs approval." },
   { group: "Command", to: "/logs", label: "Automation Logs", icon: "logs", text: "Every alert, task result, approval request and monitoring finding, and whether it reached the workflow engine." },
   { group: "Command", to: "/kb", label: "Knowledge Base", icon: "book", text: "These guides." },
@@ -75,7 +75,7 @@ const ARTICLES: Article[] = [
     link: { to: "/", label: "Dashboard" },
     blocks: [
       {
-        p: "Infinite AI Command Center is your private automation platform. The **AI Supervisor** turns plain-language requests into tasks for seven specialist agents: they monitor websites, scan and repair WordPress, check servers, draft content and handle client communication. Anything that would publish, send, spend money or change a site waits for a person to approve it.",
+        p: "Infinite AI Command Center is your private automation platform. The **AI Supervisor** turns plain-language requests into tasks for the specialist agents that are switched on: they monitor websites, scan and repair WordPress, check servers, draft content and handle client communication. It never routes work to Credit Repair, which handles protected personal data. Anything that would publish, send, spend money or change a site waits for a person to approve it.",
       },
       {
         p: "Everything runs in Docker on one machine and listens only on that machine (`127.0.0.1`) until a TLS proxy is deliberately put in front of it. The dashboard is normally at `http://localhost:8090`.",
@@ -87,10 +87,10 @@ const ARTICLES: Article[] = [
       { h: "Roles" },
       {
         dl: [
-          ["Viewer", "Can read every page except Settings and the Activity log. Cannot send requests, run, approve or change anything."],
+          ["Viewer", "Can read every page except Settings, the Activity log and a server's command audit trail; Credit Repair also needs the sensitive-data permission. Cannot send requests, run, approve or change anything."],
           [
             "Operator",
-            "Everything a viewer can, plus: send requests to the AI Supervisor, run agent capabilities, approve or reject (except production changes), switch agents and schedules on or off, add production websites, leads and support tickets.",
+            "Everything a viewer can, plus: send requests to the AI Supervisor, run agent capabilities, approve or reject (an operator can reject a production change, but only an admin can approve one), switch agents and schedules on or off, add production websites, leads and support tickets.",
           ],
           [
             "Admin",
@@ -119,7 +119,7 @@ const ARTICLES: Article[] = [
       {
         ol: [
           "It creates an AI Supervisor request under your name, exactly like a request typed on the [AI Supervisor](/supervisor) page. Viewers cannot send requests.",
-          "The supervisor plans the work: with Claude when an Anthropic API key is set on the Settings page, otherwise with built-in keyword rules. Either way it can only choose real agent capabilities, at most eight per request.",
+          "The supervisor plans the work with Claude when an Anthropic API key is set (on the Settings page, or as `ANTHROPIC_API_KEY` in `.env`) and the AI provider setting is not rule-based; otherwise it uses built-in keyword rules. A request also falls back to the rules if Claude fails, refuses or returns only invalid steps, or once the day's AI request limit (200 by default) is used up. Either way it can only choose real agent capabilities, at most eight per request.",
           "The planned tasks are queued for the agents. Tasks that need approval wait on the [Approvals](/approvals) page instead of running.",
           "The answer appears under the input, with links to the full request and to any approvals it is waiting for. Every request stays on the [AI Supervisor](/supervisor) page.",
         ],
@@ -131,7 +131,7 @@ const ARTICLES: Article[] = [
           "`Run a security scan on every site`",
           "`Give me the daily briefing`",
           "`Is the system healthy?`",
-          "`help` lists what each agent can do, with example requests.",
+          "`help` lists what each agent can do, with example requests, when the built-in rules are planning; with Claude planning you usually get a short answer instead.",
         ],
       },
       { h: "Voice dictation" },
@@ -170,7 +170,7 @@ const ARTICLES: Article[] = [
       },
       { h: "Production sites and servers" },
       {
-        p: "A change to a site or server marked **production** can only be approved by an admin, who types the site or server name to confirm. New sites are production unless an admin registers them as staging or test.",
+        p: "A change to a site or server marked **production**, or to any site linked to a production server, can only be approved by an admin, who types the site's name (for a site change) or the server's name (for a server change) to confirm. New sites are production unless an admin registers them as staging or test.",
       },
       { h: "Checked again before it runs" },
       {
@@ -178,7 +178,7 @@ const ARTICLES: Article[] = [
       },
       { h: "Where to decide" },
       {
-        p: "Open [Approvals](/approvals); the badge in the sidebar and the bell in the top bar show how many are waiting. Admins and operators approve or reject, with an optional note. Approving runs exactly the parameters shown. Viewers can only look. Every decision is recorded in the audit log.",
+        p: "Open [Approvals](/approvals); the badge in the sidebar shows how many are waiting (the number on the bell in the top bar also counts unread warnings and alerts). Admins and operators approve or reject, with an optional note; only an admin can approve a production change, and deciding a Credit Repair action also needs the sensitive-data permission. Approving runs exactly the parameters shown. Viewers can only look. Every decision is recorded in the audit log.",
       },
     ],
   },
@@ -208,7 +208,7 @@ const ARTICLES: Article[] = [
       {
         ol: [
           "Open [Websites](/websites) and enter the site's name and address. A bare domain such as `example.com` becomes `https://example.com`.",
-          "Choose the environment. **Production** is the default; only an admin can register a staging or test site. The environment decides whether repairs need an admin's typed confirmation.",
+          "Choose the environment. **Production** is the default; only an admin can register a staging or test site. The environment decides whether repairs need an admin's typed confirmation; a site linked to a production server counts as production whatever its own environment.",
           "A first, deep scan is queued straight away. Later scans compare against it.",
         ],
       },
@@ -216,9 +216,9 @@ const ARTICLES: Article[] = [
       {
         ul: [
           "**Uptime**, every 15 minutes: the home page answers, how fast, and whether it shows a problem page such as Account Suspended, a database error or domain for sale.",
-          "**SSL / TLS**: certificate validity and days left (a warning under 21 days, critical under 7), old protocols, and whether HTTP redirects to HTTPS.",
+          "**SSL / TLS**, on every check: certificate validity and days left (a warning at 21 days or fewer, critical at 7 or fewer; an expired certificate marks the site down) and old protocols. Whether plain HTTP redirects to HTTPS is checked in deep scans: the nightly security scan, a new site's first scan and the **Security scan** button.",
           "**Redirects**: each hop is recorded. Redirects to a foreign domain, down to plain HTTP or in long chains are flagged; foreign domains are never visited.",
-          "**Security**, nightly at 03:17 UTC: an exposed `debug.log`, directory listings, user lists in the REST API, XML-RPC, version disclosure, cloaking (different content for phones, desktops and search crawlers), hidden iframes, injected scripts and spam.",
+          "**Security**, nightly at 03:17 UTC: an exposed `debug.log`, directory listings, user lists in the REST API, XML-RPC, version disclosure and cloaking (different content for phones, desktops and search crawlers). Hidden iframes, injected scripts and spam on the home page are looked for on every check, the 15-minute sweep included.",
         ],
       },
       {
@@ -230,7 +230,7 @@ const ARTICLES: Article[] = [
       },
       { h: "Alerts" },
       {
-        p: "A site going **down** raises a critical event, **degraded** a warning, and a recovery an info event. New findings raise one event per check. Events appear on the Dashboard, under the bell in the top bar and in [Automation Logs](/logs); warnings and above, and every recovery, are also forwarded to n8n. A security report for every site is written each Monday morning and kept in [Drafts & reports](/drafts).",
+        p: "A site going **down** raises a critical event, **degraded** a warning, and a recovery an info event. New findings raise one event per check. Events appear on the Dashboard and in [Automation Logs](/logs), and warnings and critical events also under the bell in the top bar; warnings and above, and every recovery, are also forwarded to n8n. One security report covering every monitored site is written each Monday at 06:43 UTC and kept in [Drafts & reports](/drafts).",
       },
     ],
   },
@@ -243,12 +243,12 @@ const ARTICLES: Article[] = [
     link: { to: "/servers", label: "CWP / Servers" },
     blocks: [
       {
-        p: "The VPS & Server Management and WordPress Security & Repair agents reach a server over SSH only through **cc-gate**: the forced command of a dedicated, non-root account (by default `ccagent`). The key can run nothing else: no shell, no file transfer, no port forwarding. cc-gate performs a short allowlist of operations with checked arguments. Root is never used.",
+        p: "The VPS & Server Management and WordPress Security & Repair agents reach a server over SSH only through **cc-gate**: the forced command of a dedicated, non-root account (by default `ccagent`). The key can run nothing else: no shell, no file transfer, no port forwarding. cc-gate performs a short allowlist of operations with checked arguments. The Command Center never logs in as root and cc-gate refuses to run as root; the only thing done as root is restarting a service the server's configuration lists as restartable (none by default), and only after approval.",
       },
       { h: "Connecting a server (admins)" },
       {
         ol: [
-          "On [CWP / Servers](/servers), create the SSH key and copy the `ssh-ed25519` line. The private half stays encrypted in the Command Center and is never shown, logged or sent to an AI model.",
+          "On [CWP / Servers](/servers), press **Create SSH key** and copy the key from the line shown, starting at `ssh-ed25519` (leave out the `command=…,restrict` part in front; `install-gate.sh` adds it). The private half stays encrypted in the Command Center and is never shown, logged or sent to an AI model.",
           "On the server, as root, run `install-gate.sh` from the package's `server` folder with that public key. It prints the server's host-key fingerprints: note them.",
           "List each WordPress site in `/etc/cc-gate/config.json`, keep `\"allow_changes\": false` for now, and run `install-gate.sh --sync-sites`.",
           "Add the server in the dashboard, press **Scan host key**, compare the fingerprint with the one the installer printed and trust it only if they match. From then on the key is pinned and a different one is refused.",
@@ -262,15 +262,15 @@ const ARTICLES: Article[] = [
       },
       {
         ol: [
-          "checks the current state and changes nothing if nothing is wrong;",
-          "backs up the database into the server's backup folder first, or stops;",
+          "checks the current state first and changes nothing if nothing is wrong (reinstalling core or a plugin and flushing caches always run);",
+          "backs up the database into the server's backup folder first, or stops (maintenance mode, cache flushing and the `debug.log` quarantine need no backup);",
           "makes the one change that was approved, running WP-CLI as the site's own user in a clean environment;",
-          "confirms the result on the server and over HTTP. If it fails part-way, a critical `repair.failed` event names what was done and the backup file.",
+          "confirms the result over HTTP and, for most repairs, on the server. If it fails part-way, a critical `repair.failed` event names what was done and the backup file.",
         ],
       },
       { p: "A service can be restarted only if the server's configuration lists it as restartable, and only after approval." },
       {
-        note: "Test on a disposable WordPress install or a non-production server first. So far the repairs have been tested only on disposable installs, not on a CWP server. While the server's own `allow_changes` is false, every change is refused, whatever was approved.",
+        note: "Test on a disposable WordPress install or a non-production server first. So far the repairs have been tested only on a disposable WordPress install, not on a CWP server, and updating or reinstalling a plugin or core has not yet been seen to succeed (the test sandbox could not reach WordPress.org). While the server's own `allow_changes` is false, every change is refused, whatever was approved.",
         tone: "warn",
       },
       {
@@ -305,11 +305,11 @@ const ARTICLES: Article[] = [
         ],
       },
       {
-        p: "n8n calls back with a service token. That token can submit requests and acknowledge events; it cannot read dashboard data or approve anything.",
+        p: "n8n calls back with a service token. That token can submit AI Supervisor requests, hand in leads and support messages, and acknowledge events; it cannot read dashboard data or approve anything.",
       },
       { h: "Events forwarded to n8n" },
       {
-        p: "Events of warning severity and above (the threshold is a deployment setting), plus every site recovery, are queued for n8n. The worker delivers them and retries a failed delivery with growing delays, up to 8 attempts. The connection state is on [Integrations](/integrations) and [Workflows](/workflows).",
+        p: "Events of warning severity and above, plus every site recovery, are queued for n8n. The worker delivers them and retries a failed delivery with growing delays, up to 8 attempts. The connection state is on [Integrations](/integrations) and [Workflows](/workflows).",
       },
     ],
   },
@@ -369,10 +369,10 @@ const ARTICLES: Article[] = [
             "The worker is not running: check the Worker line at the bottom of the sidebar. On Windows, run `.\\scripts\\status.ps1`. Server-side tasks also wait while another one runs on the same WordPress install.",
           ],
           ["n8n shows a problem", "n8n takes about a minute on first start. Look at `docker compose logs --tail=100 n8n`; event deliveries are retried automatically."],
-          ["Planning is rule-based", "No Anthropic API key is set, or today's AI limit is used up. An admin can add the key on the Settings page."],
+          ["Planning is rule-based", "No Anthropic API key is set, the AI provider on the Settings page is set to rule-based, or this edition has no AI models. A single request also falls back to the rules when today's AI limit is used up or the model call fails; its notes on the AI Supervisor page say so. An admin can add the key or change the provider on the Settings page."],
           [
             "An approved repair was refused",
-            "The site or server changed since the request (re-linked, renamed or moved to production), or the server's `allow_changes` is false. Reject it and request the change again.",
+            "If Approve is refused, or the approved task fails as refused, the site or server changed since the request (re-linked, renamed or moved to production): request the change again. If the server's `allow_changes` is false, every change is refused: set `\"allow_changes\": true` in `/etc/cc-gate/config.json` on the server first, then request it again.",
           ],
           ["No microphone button", "See [The AI command bar](#command-bar)."],
           ["Port already in use", "Set `DASHBOARD_PORT` or `N8N_PORT` in `.env`, then run `start.ps1`."],
@@ -709,7 +709,7 @@ function Channels({ integrations, error }: { integrations: Integration[] | null;
         ))}
       </ul>
       <p className="muted small kb-foot">
-        Read live from <Link to="/integrations">Integrations</Link>. Whatever the mode, each one needs an approved task before it runs.
+        Read live from <Link to="/integrations">Integrations</Link>. Whatever the mode, anything a channel would send, publish or spend needs an approved task first; reading data, such as the ad platforms' sample figures, does not.
       </p>
     </>
   );
