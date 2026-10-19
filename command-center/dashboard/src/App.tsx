@@ -185,16 +185,48 @@ export function InternetLost({ status, meta }: { status: SystemStatus | null; me
   );
 }
 
-/** Shown when the API answering this dashboard reports a different version. Up to 0.5.0, a new release could be built from out-of-date
- * copies of the files that hold the version numbers (Docker kept them from an earlier build; see scripts/prepare-build.ps1). */
+/** Shown when the API answering this dashboard reports a different version. The usual cause is a page left open during an update: it
+ * keeps running the previous dashboard's code, so the dashboard the server serves now (/version.json) decides which message applies.
+ * Up to 0.5.0 an install could also build an image from out-of-date copies of the files that hold the version numbers (Docker kept
+ * them from an earlier build; see scripts/prepare-build.ps1). */
 function VersionMismatch({ status }: { status: SystemStatus | null }) {
-  if (!status || status.version === __APP_VERSION__) return null;
+  const apiVersion = status?.version ?? null;
+  const differs = apiVersion !== null && apiVersion !== __APP_VERSION__;
+  const [served, setServed] = useState<string | null>(null);
+  useEffect(() => {
+    if (!differs) return;
+    let current = true;
+    fetch("/version.json", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body: { version?: unknown } | null) => {
+        if (current) setServed(typeof body?.version === "string" ? body.version : null);
+      })
+      .catch(() => undefined);
+    return () => {
+      current = false;
+    };
+  }, [differs, apiVersion]);
+  if (!differs) return null;
+  if (served && served !== __APP_VERSION__) {
+    return (
+      <div className="version-banner">
+        <div className="alert alert-warn" role="status">
+          <strong>This page is out of date.</strong> The Command Center now runs dashboard version {served}, but this page is still version{" "}
+          {__APP_VERSION__} from before the update. Reload the page.{" "}
+          <button type="button" className="btn small" onClick={() => window.location.reload()}>
+            Reload
+          </button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="version-banner">
       <div className="alert alert-warn" role="status">
-        <strong>Version mismatch.</strong> This dashboard reports version {__APP_VERSION__}, but the API it talks to reports version {status.version}: at
-        least one of them was not built from the files of the version you installed. Run <code>scripts\install.ps1</code> again from that version's
-        folder, then <code>scripts\smoke.ps1</code>; see <Link to="/kb#troubleshooting">Knowledge Base › Troubleshooting</Link>.
+        <strong>Version mismatch.</strong> This dashboard reports version {__APP_VERSION__}, but the API it talks to reports version {apiVersion}. If the
+        Command Center was updated while this page was open, reload the page first. If the warning stays, at least one of them was not built from the
+        files of the version you installed: run <code>scripts\install.ps1</code> again from that version's folder, then <code>scripts\smoke.ps1</code>; see{" "}
+        <Link to="/kb#troubleshooting">Knowledge Base › Troubleshooting</Link>.
       </div>
     </div>
   );

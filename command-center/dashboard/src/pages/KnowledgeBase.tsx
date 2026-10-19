@@ -170,7 +170,7 @@ const ARTICLES: Article[] = [
       },
       { h: "Versions" },
       {
-        p: "The bottom of the sidebar shows the dashboard's and the API's versions. If the API reports a different version from the dashboard, a warning banner says so: at least one of them was not built from the files of the version you installed. `scripts\\smoke.ps1` also checks both against the `VERSION` file of the folder it runs from, and `scripts\\status.ps1` prints that version, the versions the API and the dashboard report and the folder the API container was created from.",
+        p: "The bottom of the sidebar shows the dashboard's and the API's versions. If the API reports a different version from the dashboard, a warning banner says so. Usually the page was open during an update and still runs the previous dashboard: the banner then says the page is out of date and offers to reload it. If the warning stays after a reload, at least one of them was not built from the files of the version you installed. `scripts\\smoke.ps1` also checks both against the `VERSION` file of the folder it runs from, and `scripts\\status.ps1` prints that version, the versions the API and the dashboard report and the folder the API container was created from.",
       },
     ],
   },
@@ -475,7 +475,7 @@ const ARTICLES: Article[] = [
           ["No microphone button", "See [The AI command bar](#command-bar)."],
           [
             "Version mismatch banner",
-            "The API or the dashboard was not built from the files of the version you installed. Up to 0.5.0, a new release could be built with out-of-date copies of the files that hold the version numbers, because Docker kept its copies from an earlier build (whether the release was extracted over the old folder or into a new one). From 0.5.1, `install.ps1` and `start.ps1` refresh the files before every build and the build stops if the copied code is the wrong version, so running `install.ps1` again from the new version's folder fixes it. `status.ps1` shows the folder's version, the versions the API and the dashboard report and the folder the API container was created from; `smoke.ps1` fails until both match the folder.",
+            "First reload the page: a page left open during an update keeps running the previous dashboard (the banner then says the page is out of date). If the warning stays, the API or the dashboard was not built from the files of the version you installed. Up to 0.5.0, a new release could be built with out-of-date copies of the files that hold the version numbers, because Docker kept its copies from an earlier build (whether the release was extracted over the old folder or into a new one). From 0.5.1, `install.ps1` and `start.ps1` refresh the files before every build and the build stops if the copied code is the wrong version, so running `install.ps1` again from the new version's folder fixes it. `status.ps1` shows the folder's version, the versions the API and the dashboard report and the folder the API container was created from; `smoke.ps1` fails until both match the folder.",
           ],
           ["Port already in use", "Set `DASHBOARD_PORT` or `N8N_PORT` in `.env`, then run `start.ps1`."],
           ["Images fail to download", "Check that Docker Desktop is signed in or that Docker Hub is reachable."],

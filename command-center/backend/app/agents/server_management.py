@@ -21,7 +21,7 @@ from .base import AgentContext, AgentResult, BaseAgent, Finding, Params, Risk, c
 from .wp_server import server_binding, server_label
 
 
-MIN_GATE_VERSION = (1, 1, 0)  # runs WP-CLI through cc-wp
+MIN_GATE_VERSION = (1, 2, 0)  # runs WP-CLI through cc-wp (1.1.0); installs exactly the approved plugin version (1.2.0)
 
 
 def _version(value: Any) -> tuple[int, ...]:

@@ -273,13 +273,31 @@ describe("sidebar", () => {
     expect(__APP_VERSION__).toBe(releaseFile.trim());
   });
 
-  it("warns on every page when the API reports another version, without claiming which side is current", async () => {
-    await renderShell({ "GET /api/system/status": { ...status, version: "0.2.0" } });
-    const banner = await screen.findByText(/Version mismatch\./);
-    expect(banner.closest(".alert")).toHaveTextContent(
-      `This dashboard reports version ${__APP_VERSION__}, but the API it talks to reports version 0.2.0: at least one of them was not built from the files of the version you installed.`,
-    );
-    expect(banner.closest(".alert")).toHaveTextContent("Run scripts\\install.ps1 again from that version's folder");
+  it("says a page left open during an update is out of date, offers a reload, and gives no reinstall advice", async () => {
+    await renderShell({ "GET /api/system/status": { ...status, version: "9.9.9" }, "GET /version.json": { version: "9.9.9" } });
+    const banner = (await screen.findByText(/This page is out of date\./)).closest(".alert") as HTMLElement;
+    expect(banner).toHaveTextContent(`The Command Center now runs dashboard version 9.9.9, but this page is still version ${__APP_VERSION__} from before the update.`);
+    expect(within(banner).getByRole("button", { name: "Reload" })).toBeInTheDocument();
+    expect(banner).not.toHaveTextContent("install.ps1");
+    expect(screen.queryByText(/Version mismatch\./)).toBeNull();
+  });
+
+  it("when this page is current and the API is not, says to reload first and then reinstall", async () => {
+    const { calls } = await renderShell({ "GET /api/system/status": { ...status, version: "0.2.0" }, "GET /version.json": { version: __APP_VERSION__ } });
+    const banner = (await screen.findByText(/Version mismatch\./)).closest(".alert") as HTMLElement;
+    await waitFor(() => expect(calls.some((c) => c.path === "/version.json")).toBe(true));
+    expect(banner).toHaveTextContent(`This dashboard reports version ${__APP_VERSION__}, but the API it talks to reports version 0.2.0.`);
+    expect(banner).toHaveTextContent("If the Command Center was updated while this page was open, reload the page first.");
+    expect(banner).toHaveTextContent("If the warning stays, at least one of them was not built from the files of the version you installed");
+    expect(banner).toHaveTextContent("run scripts\\install.ps1 again from that version's folder");
+    expect(screen.queryByText(/This page is out of date\./)).toBeNull();
+  });
+
+  it("falls back to the mismatch message when the served dashboard version cannot be read", async () => {
+    await renderShell({ "GET /api/system/status": { ...status, version: "0.2.0" } }); // no /version.json: 404
+    expect(await screen.findByText(/Version mismatch\./)).toBeInTheDocument();
+    const nav = await screen.findByRole("complementary", { name: "Main navigation" });
+    expect(within(nav).getByText("Versions differ")).toBeInTheDocument();
   });
 
   it("shows no mismatch banner when the API reports this dashboard's version", async () => {

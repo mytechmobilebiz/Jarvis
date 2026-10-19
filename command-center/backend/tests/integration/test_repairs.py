@@ -208,13 +208,44 @@ async def test_a_plugin_update_is_confirmed_and_a_refused_reinstall_changes_noth
         await make_worker().run_until_idle()  # the baseline scan: the server-side check the approval takes the versions from
         done = await approve(admin, make_worker, await run_task(admin, make_worker, "wordpress_security", "repair_update_plugin",
                                                                 {"site_id": site["id"], "slug": "akismet"}))
-        assert done["status"] == "succeeded" and "now version 5.4" in done["summary"]
+        assert done["status"] == "succeeded" and "now version 5.4, as approved" in done["summary"]
+        # The server was asked for exactly the approved version, not "the latest".
+        updates = [c for c in srv.calls("wp") if "plugin update" in c]
+        assert len(updates) == 1 and updates[0].endswith("plugin update akismet --version=5.4"), updates
         put(srv.dir / "update-uri-evil-cloak", "https://updates.example.com/evil-cloak")
         done = await approve(admin, make_worker, await run_task(admin, make_worker, "wordpress_security", "repair_reinstall_plugin",
                                                                 {"site_id": site["id"], "slug": "evil-cloak"}))
         assert done["status"] == "failed" and "not a WordPress.org plugin" in done["error"]
         assert not any(e["kind"] == "repair.failed" for e in (await admin.get("/api/events")).json()["events"])
         assert not any("plugin install" in c for c in srv.calls("wp"))
+
+
+async def test_a_plugin_update_that_delivers_another_version_fails_loudly(admin, web, make_worker):
+    """The gate installs the approved version only; if the plugin is any other version afterwards it says so (cc-gate 1.2.0)."""
+    key = await ssh_key(admin)
+    async with FakeGateServer(key["openssh"]) as srv:
+        site, _ = await linked_site(admin, srv, web)
+        await make_worker().run_until_idle()  # the baseline scan: the server-side check the approval takes the versions from
+        put(srv.dir / "update-installs", "5.5")
+        done = await approve(admin, make_worker, await run_task(admin, make_worker, "wordpress_security", "repair_update_plugin",
+                                                                {"site_id": site["id"], "slug": "akismet"}))
+        assert done["status"] == "failed" and "is version 5.5 after the update, not the approved 5.4" in done["error"]
+        failed = next(e for e in (await admin.get("/api/events")).json()["events"] if e["kind"] == "repair.failed")
+        assert failed["severity"] == "critical"
+
+
+async def test_a_gate_that_cannot_pin_the_version_gets_no_plugin_update(admin, web, make_worker):
+    key = await ssh_key(admin)
+    async with FakeGateServer(key["openssh"]) as srv:
+        gate = srv.dir / "cc-gate"
+        gate.write_text(gate.read_text().replace('GATE_VERSION = "1.2.0"', 'GATE_VERSION = "1.1.0"'))
+        site, _ = await linked_site(admin, srv, web)
+        await make_worker().run_until_idle()
+        done = await approve(admin, make_worker, await run_task(admin, make_worker, "wordpress_security", "repair_update_plugin",
+                                                                {"site_id": site["id"], "slug": "akismet"}))
+        assert done["status"] == "failed" and "cc-gate 1.1.0" in done["error"] and "install cc-gate 1.2.0 or later" in done["error"]
+        assert await ops_for(done["id"]) == [("hello", "read")]  # refused before the backup and before any change
+        assert not any("plugin update" in c for c in srv.calls("wp"))
 
 
 async def test_a_diagnosis_keeps_what_it_could_read_and_notices_new_must_use_plugins(admin, web, make_worker):

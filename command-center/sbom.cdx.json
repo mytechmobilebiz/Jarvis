@@ -1,14 +1,14 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:ce17c829-f1b5-4110-bd0d-a82c5d8a6fa2",
+  "serialNumber": "urn:uuid:bb1a620e-237c-4165-a8f7-ce0d163bfa3a",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-19T08:57:07+00:00",
+    "timestamp": "2026-10-19T14:16:10+00:00",
     "component": {
       "type": "application",
       "name": "Infinite AI Command Center",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "licenses": [
         {
           "license": {
@@ -162,7 +162,7 @@
     {
       "type": "library",
       "name": "certifi",
-      "version": "2026.7.22",
+      "version": "2026.10.18",
       "licenses": [
         {
           "license": {
@@ -170,7 +170,7 @@
           }
         }
       ],
-      "purl": "pkg:pypi/certifi@2026.7.22",
+      "purl": "pkg:pypi/certifi@2026.10.18",
       "scope": "required",
       "properties": [
         {
@@ -362,7 +362,7 @@
     {
       "type": "library",
       "name": "httpcore2",
-      "version": "2.13.1",
+      "version": "2.14.0",
       "licenses": [
         {
           "license": {
@@ -370,7 +370,7 @@
           }
         }
       ],
-      "purl": "pkg:pypi/httpcore2@2.13.1",
+      "purl": "pkg:pypi/httpcore2@2.14.0",
       "scope": "required",
       "properties": [
         {
@@ -422,7 +422,7 @@
     {
       "type": "library",
       "name": "httpx2",
-      "version": "2.13.1",
+      "version": "2.14.0",
       "licenses": [
         {
           "license": {
@@ -430,7 +430,7 @@
           }
         }
       ],
-      "purl": "pkg:pypi/httpx2@2.13.1",
+      "purl": "pkg:pypi/httpx2@2.14.0",
       "scope": "required",
       "properties": [
         {
@@ -722,7 +722,7 @@
     {
       "type": "library",
       "name": "starlette",
-      "version": "1.8.0",
+      "version": "1.9.0",
       "licenses": [
         {
           "license": {
@@ -730,7 +730,7 @@
           }
         }
       ],
-      "purl": "pkg:pypi/starlette@1.8.0",
+      "purl": "pkg:pypi/starlette@1.9.0",
       "scope": "required",
       "properties": [
         {

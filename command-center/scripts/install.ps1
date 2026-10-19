@@ -43,9 +43,14 @@ if ($LASTEXITCODE -ne 0) { Fail "docker compose rejected the configuration (see 
 Step "3/5 Building and validating the application image"
 $global:LASTEXITCODE = 1
 & (Join-Path $scripts "prepare-build.ps1")
-if ($LASTEXITCODE -ne 0) { Fail "could not prepare the build folders (see the message above)" }
+if ($LASTEXITCODE -ne 0 -or -not $env:CC_RELEASE_VERSION) { Fail "could not prepare the build folders (see the message above); nothing was built or changed" }
 docker compose build
-if ($LASTEXITCODE -ne 0) { Fail "the image build failed; check the internet connection and Docker Desktop" }
+$built = $LASTEXITCODE
+Remove-Item Env:CC_RELEASE_VERSION -ErrorAction SilentlyContinue
+if ($built -ne 0) {
+  Fail ("the image build failed (see the messages above); the running system and its data were not changed. If a message says " +
+        "'out-of-date copy', run install.ps1 again; otherwise check the internet connection and Docker Desktop")
+}
 docker compose run --rm --no-deps api python -m app.cli check-config
 if ($LASTEXITCODE -ne 0) { Fail "configuration validation failed; correct .env and re-run" }
 
@@ -67,3 +72,4 @@ if ($SkipSmokeTest) {
 
 Write-Host "`nInstalled. Sign-in details are in $(Join-Path $root ".env") (ADMIN_EMAIL / ADMIN_PASSWORD)." -ForegroundColor Green
 Write-Host "Keep .env private and back up N8N_ENCRYPTION_KEY."
+Write-Host "If the dashboard was open in a browser during the update, reload the page: it still runs the previous version's code." -ForegroundColor Yellow

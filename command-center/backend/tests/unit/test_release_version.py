@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+import yaml
 
 import app
 
@@ -45,7 +46,7 @@ def test_every_version_constant_matches_the_version_file():
 
 
 def test_the_packager_refuses_a_release_whose_version_constants_disagree(tmp_path):
-    for name in ("VERSION", "backend/app/__init__.py", "dashboard/package.json", "dashboard/package-lock.json"):
+    for name in ("VERSION", "backend/app/__init__.py", "dashboard/package.json", "dashboard/package-lock.json", "sbom.cdx.json", "SBOM.md"):
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(ROOT / name, tmp_path / name)
     bp = packager()
@@ -83,8 +84,9 @@ def test_the_built_package_carries_this_builds_timestamp_on_every_file(tmp_path)
 
 
 def test_both_image_builds_check_the_copied_code_against_the_release_version():
-    compose = (ROOT / "docker-compose.yml").read_text()
-    assert compose.count("APP_VERSION: ${CC_RELEASE_VERSION:-}") == 2  # backend and dashboard
+    services = yaml.safe_load((ROOT / "docker-compose.yml").read_text())["services"]
+    for name in ("api", "dashboard"):
+        assert services[name]["build"]["args"]["APP_VERSION"] == "${CC_RELEASE_VERSION:-}", name
     backend = (ROOT / "backend" / "Dockerfile").read_text()
     assert backend.index("COPY app ./app") < backend.index("ARG APP_VERSION") < backend.index("app.__version__")
     dashboard = (ROOT / "dashboard" / "Dockerfile").read_text()
@@ -106,12 +108,21 @@ def test_the_backend_build_check_fails_on_stale_code_and_passes_on_current(tmp_p
 
 def test_the_scripts_refresh_the_build_folders_and_pass_the_version_before_every_build():
     prepare = (ROOT / "scripts" / "prepare-build.ps1").read_text()
-    assert "LastWriteTimeUtc" in prepare and '$env:CC_RELEASE_VERSION = $version' in prepare
+    assert "LastWriteTimeUtc" in prepare and "$env:CC_RELEASE_VERSION = $version" in prepare
     assert '@("backend", "dashboard")' in prepare
+    assert "this folder mixes releases" in prepare  # VERSION and the code must name one release
+    assert "$_.FullName.Substring($base.Length)" in prepare  # skip list judged inside the build folder only
+    assert "if ($count -eq 0)" in prepare  # refreshing nothing is a failure, not a pass
+    # In-process (&), so the variable reaches docker compose; a child "powershell -File" would lose it.
     install = (ROOT / "scripts" / "install.ps1").read_text()
-    assert install.index('"prepare-build.ps1"') < install.index("docker compose build")
+    call = install.index('& (Join-Path $scripts "prepare-build.ps1")')
+    assert call < install.index("-not $env:CC_RELEASE_VERSION") < install.index("docker compose build")
+    assert install.index("docker compose build") < install.index("Remove-Item Env:CC_RELEASE_VERSION")
     start = (ROOT / "scripts" / "start.ps1").read_text()
-    assert start.index('"prepare-build.ps1"') < start.index('@("compose", "up", "-d")')
+    line = next(x for x in start.splitlines() if "prepare-build.ps1" in x and not x.lstrip().startswith("#"))
+    assert line == '& (Join-Path $PSScriptRoot "prepare-build.ps1")'  # top level: also before builds with -NoBuild
+    assert start.index(line) < start.index("-not $env:CC_RELEASE_VERSION") < start.index('@("compose", "up", "-d")')
+    assert start.index("& docker @composeArgs") < start.index("Remove-Item Env:CC_RELEASE_VERSION")
     # The smoke test stays strict: both the API and the dashboard must report this folder's version.
     smoke = (ROOT / "scripts" / "smoke.ps1").read_text()
     assert "$apiVersion -ne $expected -or $dashboardVersion -ne $expected" in smoke

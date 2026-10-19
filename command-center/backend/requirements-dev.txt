@@ -2,3 +2,4 @@
 pytest==9.1.1
 pytest-asyncio==1.4.0
 trustme==1.2.1
+PyYAML==6.0.3  # tests/unit/test_release_version.py reads docker-compose.yml (uvicorn[standard] also pulls it in)

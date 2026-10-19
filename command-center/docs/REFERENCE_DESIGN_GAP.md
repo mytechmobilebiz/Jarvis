@@ -19,9 +19,9 @@ target; preserve the database, Docker volumes, agents, approval rules and
 APIs (additive read-only API changes only).
 
 **Status after 0.5.0** (2026-10-19): the items marked "0.5.0" below are in
-0.5.0 (see [RELEASE_NOTES_0.5.0.md](RELEASE_NOTES_0.5.0.md)), with one
-exception: C3-07 shows the plugin version a diagnosis found, but cc-gate
-does not yet pin that version when it updates. Items marked "deferred" or
+0.5.0 (see [RELEASE_NOTES_0.5.0.md](RELEASE_NOTES_0.5.0.md)). C3-07 was
+completed in 0.5.1: cc-gate 1.2.0 installs exactly the approved plugin
+version and refuses an update without one. Items marked "deferred" or
 "owner decision" are unchanged.
 
 ## Summary

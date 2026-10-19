@@ -118,8 +118,8 @@ function SystemFooter({ status, statusMeta }: { status: SystemStatus | null; sta
         ) : null}
       </div>
       {status && status.version !== __APP_VERSION__ ? (
-        <div className="health-line" title={`The API reports version ${status.version}; this dashboard is ${__APP_VERSION__}`}>
-          <span className="dot dot-warn" /> <span className="nav-label text-warn">API v{status.version}: not updated</span>
+        <div className="health-line" title={`The API reports version ${status.version}; this page is dashboard version ${__APP_VERSION__}. See the message at the top of the page.`}>
+          <span className="dot dot-warn" /> <span className="nav-label text-warn">Versions differ</span>
         </div>
       ) : null}
     </div>

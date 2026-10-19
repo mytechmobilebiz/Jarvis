@@ -1,4 +1,4 @@
-# Software bill of materials: Infinite AI Command Center 0.5.0
+# Software bill of materials: Infinite AI Command Center 0.5.1
 
 Generated 2026-10-19 by `scripts/generate-sbom.py`; machine-readable copy: `sbom.cdx.json` (CycloneDX 1.5).
 
@@ -28,7 +28,7 @@ No third-party component is vendored into this repository: each is fetched from 
 | asyncpg | 0.32.0 | Apache-2.0 | yes | runtime |
 | asyncssh | 2.24.1 | EPL-2.0 OR GPL-2.0-or-later | yes | runtime |
 | bcrypt | 5.0.0 | Apache-2.0 | yes | runtime |
-| certifi | 2026.7.22 | MPL-2.0 |  | runtime |
+| certifi | 2026.10.18 | MPL-2.0 |  | runtime |
 | cffi | 2.1.1 | MIT-0 |  | runtime |
 | click | 8.5.0 | BSD-3-Clause |  | runtime |
 | croniter | 6.2.4 | MIT | yes | runtime |
@@ -38,10 +38,10 @@ No third-party component is vendored into this repository: each is fetched from 
 | greenlet | 3.5.6 | MIT AND PSF-2.0 |  | runtime |
 | h11 | 0.16.0 | MIT |  | runtime |
 | httpcore | 1.0.9 | BSD-3-Clause |  | runtime |
-| httpcore2 | 2.13.1 | BSD-3-Clause |  | runtime |
+| httpcore2 | 2.14.0 | BSD-3-Clause |  | runtime |
 | httptools | 0.9.0 | MIT |  | runtime |
 | httpx | 0.28.1 | BSD-3-Clause | yes | runtime |
-| httpx2 | 2.13.1 | BSD-3-Clause |  | runtime |
+| httpx2 | 2.14.0 | BSD-3-Clause |  | runtime |
 | idna | 3.20 | BSD-3-Clause |  | runtime |
 | jiter | 0.17.0 | MIT |  | runtime |
 | opentelemetry-api | 1.45.1 | Apache-2.0 |  | runtime |
@@ -56,7 +56,7 @@ No third-party component is vendored into this repository: each is fetched from 
 | six | 1.17.0 | MIT |  | runtime |
 | sniffio | 1.3.1 | MIT OR Apache-2.0 |  | runtime |
 | SQLAlchemy | 2.1.5 | MIT | yes | runtime |
-| starlette | 1.8.0 | BSD-3-Clause |  | runtime |
+| starlette | 1.9.0 | BSD-3-Clause |  | runtime |
 | truststore | 0.10.5 | MIT |  | runtime |
 | typing-inspection | 0.4.4 | MIT |  | runtime |
 | typing_extensions | 4.16.0 | PSF-2.0 |  | runtime |

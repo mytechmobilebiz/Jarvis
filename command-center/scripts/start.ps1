@@ -28,13 +28,16 @@ if ($envValues["COMPOSE_FILE"] -match 'docker-compose\.tunnel\.yml') {
 # Also with -NoBuild: compose builds an image that is missing, and that build must be checked too.
 $global:LASTEXITCODE = 1
 & (Join-Path $PSScriptRoot "prepare-build.ps1")
-if ($LASTEXITCODE -ne 0) { exit 1 }
+if ($LASTEXITCODE -ne 0 -or -not $env:CC_RELEASE_VERSION) { Write-Host "Nothing was started (see the message above)." -ForegroundColor Red; exit 1 }
 
 $composeArgs = @("compose", "up", "-d")
 if (-not $NoBuild) { $composeArgs += "--build" }
 Write-Host "docker $($composeArgs -join ' ')"
 & docker @composeArgs
-if ($LASTEXITCODE -ne 0) { Write-Host "docker compose up failed (exit $LASTEXITCODE). See: docker compose logs --tail=100" -ForegroundColor Red; exit 1 }
+$upCode = $LASTEXITCODE
+# Only for this build: a version left in an interactive window would be checked against another folder's build.
+Remove-Item Env:CC_RELEASE_VERSION -ErrorAction SilentlyContinue
+if ($upCode -ne 0) { Write-Host "docker compose up failed (exit $upCode). See: docker compose logs --tail=100" -ForegroundColor Red; exit 1 }
 
 function Wait-Url($url, $label, $seconds) {
   $deadline = (Get-Date).AddSeconds($seconds)

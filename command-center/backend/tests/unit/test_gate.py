@@ -57,6 +57,8 @@ def test_allowlists_match():
     ("cc-gate v1 eval 'phpinfo();'", "unknown operation"),
     ("cc-gate v1 hello extra", "takes 0 argument"),
     ("cc-gate v1 wp_plugin_list site-one; id", "takes 1 argument"),
+    # 1.2.0: a plugin update names the exact version to install; "the latest" is never accepted.
+    ("cc-gate v1 wp_plugin_update site-one akismet", "takes 3 argument"),
     ("cc-gate v1 wp_plugin_list 'site-one", "could not be parsed"),
     ("cc-gate v1 " + "x" * 3000, "too long"),
 ])
@@ -71,7 +73,9 @@ def test_requests_that_are_refused(raw, message):
     ("wp_core_version", {"site": "../etc"}, {}, "not configured"),
     ("wp_plugin_deactivate", {"site": "site-one", "slug": "akismet --skip-plugins"}, {}, "invalid plugin name"),
     ("wp_plugin_deactivate", {"site": "site-one", "slug": "../../wp-config"}, {}, "invalid plugin name"),
-    ("wp_plugin_update", {"site": "site-one", "slug": "Akismet"}, {}, "invalid plugin name"),
+    ("wp_plugin_update", {"site": "site-one", "slug": "Akismet", "version": "5.4"}, {}, "invalid plugin name"),
+    ("wp_plugin_update", {"site": "site-one", "slug": "akismet", "version": "latest"}, {}, "invalid plugin version"),
+    ("wp_plugin_update", {"site": "site-one", "slug": "akismet", "version": "5.4 --force"}, {}, "invalid plugin version"),
     ("service_status", {"service": "sshd"}, {}, "not allowed"),
     ("service_restart", {"service": "php-fpm"}, {}, "may not be restarted"),
     ("wp_maintenance", {"site": "site-one", "onoff": "maybe"}, {}, "on or off"),
@@ -298,6 +302,41 @@ def test_reinstall_only_replaces_plugins_from_wordpress_org(site, monkeypatch):
     header["found"] = False
     with pytest.raises(gate.Failed, match="not found"):
         gate.op_wp_plugin_reinstall({"slug": "acme-forms"})
+
+
+def test_a_plugin_update_installs_exactly_the_approved_version(site, monkeypatch):
+    header = {"found": True, "update_uri": ""}
+    monkeypatch.setattr(gate, "helper", lambda *a: header)
+    calls = []
+    answers = site
+    monkeypatch.setattr(gate, "run", lambda argv, config: (calls.append(argv), answers.pop(0))[1])
+    # installed 5.3, checksums known, update to 5.4, then the plugin reports 5.4
+    site.extend([(0, "5.3", ""), (0, "Success: Verified 1 of 1 plugins.", ""), (0, "Success: Updated 1 of 1 plugins.", ""), (0, "5.4", "")])
+    result = gate.op_wp_plugin_update({"slug": "akismet", "version": "5.4"})
+    assert result["before"] == "5.3" and result["version"] == "5.4"
+    update = next(argv for argv in calls if "update" in argv)
+    assert update[-3:] == ["update", "akismet", "--version=5.4"]
+    # WordPress.org delivered another version: the gate says so instead of reporting success.
+    site.extend([(0, "5.3", ""), (0, "Success: Verified 1 of 1 plugins.", ""), (0, "Success: Updated 1 of 1 plugins.", ""), (0, "5.5", "")])
+    with pytest.raises(gate.Failed, match="is version 5.5 after the update, not the approved 5.4"):
+        gate.op_wp_plugin_update({"slug": "akismet", "version": "5.4"})
+    # Already there: nothing to install.
+    site.extend([(0, "5.4", ""), (0, "Success: Verified 1 of 1 plugins.", "")])
+    with pytest.raises(gate.Refused, match="already version 5.4"):
+        gate.op_wp_plugin_update({"slug": "akismet", "version": "5.4"})
+
+
+def test_a_plugin_update_only_replaces_plugins_from_wordpress_org(site, monkeypatch):
+    header = {"found": True, "update_uri": "https://updates.example.com/acme-forms"}
+    monkeypatch.setattr(gate, "helper", lambda *a: header)
+    with pytest.raises(gate.Refused, match="not a WordPress.org plugin; it is not updated from there"):
+        gate.op_wp_plugin_update({"slug": "acme-forms", "version": "2.0"})
+    header["update_uri"] = ""
+    site.extend([(0, "1.0", ""), (0, "Success: Verified 0 of 1 plugins (1 skipped).",
+                                  "Warning: Could not retrieve the checksums for version 1.0 of plugin acme-forms, skipping.")])
+    with pytest.raises(gate.Failed, match="no checksums for acme-forms 1.0.*not updating"):
+        gate.op_wp_plugin_update({"slug": "acme-forms", "version": "2.0"})
+    assert site == []  # nothing was installed
 
 
 def test_a_separate_wordpress_folder_can_be_configured(site, monkeypatch):

@@ -86,12 +86,17 @@ def version_constants(root: Path = ROOT) -> dict[str, str]:
     match = re.search(r'^__version__ = "([^"]+)"$', init, re.MULTILINE)
     package = json.loads((root / "dashboard/package.json").read_text())
     lock = json.loads((root / "dashboard/package-lock.json").read_text())
+    sbom = json.loads((root / "sbom.cdx.json").read_text())
+    sbom_title = re.match(r"^# Software bill of materials: Infinite AI Command Center (\S+)$", (root / "SBOM.md").read_text().splitlines()[0])
     return {
         "VERSION": (root / "VERSION").read_text().strip(),
         "backend/app/__init__.py": match.group(1) if match else "(no __version__ line)",
         "dashboard/package.json": package.get("version", "(none)"),
         "dashboard/package-lock.json": lock.get("version", "(none)"),
         'dashboard/package-lock.json packages[""]': lock.get("packages", {}).get("", {}).get("version", "(none)"),
+        # Regenerated with scripts/generate-sbom.py; a stale one names another release.
+        "sbom.cdx.json": sbom.get("metadata", {}).get("component", {}).get("version", "(none)"),
+        "SBOM.md": sbom_title.group(1) if sbom_title else "(no title line)",
     }
 
 

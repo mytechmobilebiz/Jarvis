@@ -7,7 +7,7 @@ network and volumes, so it does not touch XAMPP or other Docker projects
 
 | What | Where |
 |---|---|
-| Installation package | `InfiniteAI-CommandCenter-0.5.0-windows.zip` (in the GitHub repo at `command-center/releases/`, with a `.sha256` file) |
+| Installation package | `InfiniteAI-CommandCenter-0.5.1-windows.zip` (in the GitHub repo at `command-center/releases/`, with a `.sha256` file) |
 | Source | GitHub `mytechmobilebiz/Jarvis`, branch `ccr-eb27a2af-8u7i39`, folder `command-center/` |
 | Install location on the PC | `C:\InfiniteAI\InfiniteAI-CommandCenter` (outside `C:\xampp`) |
 | Dashboard | http://localhost:8090 (bound to 127.0.0.1 only) |
@@ -31,9 +31,9 @@ The scripts are run with `-ExecutionPolicy Bypass` for that one process only;
 the machine-wide execution policy is not changed. `preflight.ps1` and
 `status.ps1` are read-only; read any script first if you wish.
 
-1. Download `InfiniteAI-CommandCenter-0.5.0-windows.zip` and, optionally,
+1. Download `InfiniteAI-CommandCenter-0.5.1-windows.zip` and, optionally,
    check it against the `.sha256` file:
-   `Get-FileHash .\InfiniteAI-CommandCenter-0.5.0-windows.zip -Algorithm SHA256`
+   `Get-FileHash .\InfiniteAI-CommandCenter-0.5.1-windows.zip -Algorithm SHA256`
 2. Extract it to `C:\InfiniteAI` (you get `C:\InfiniteAI\InfiniteAI-CommandCenter`).
 3. Open PowerShell and run:
 
@@ -72,6 +72,18 @@ and run the same command from `Jarvis\command-center`.
 | `N8N_OWNER_PASSWORD` | n8n editor sign-in |
 | `ANTHROPIC_API_KEY` (optional) | Deployment default for Claude; normally leave empty and enter your key on the dashboard's Settings page instead (stored encrypted) |
 | `DASHBOARD_PORT`, `N8N_PORT`, `TZ` | Local ports and time zone |
+
+Upgrading from 0.5.0 to 0.5.1 needs no new keys and changes no data: there
+are no migrations, `.env` stays as it is, and the agents, approval rules,
+PostgreSQL and n8n volumes are not touched. 0.5.1 fixes the wrong version
+numbers after an upgrade (on the owner's PC the 0.5.0 smoke test failed with
+"the API reports 0.2.0 but this folder is 0.5.0", and the dashboard showed
+v0.4.0): only the files holding the version numbers had been built from old
+copies Docker kept; all other code was current. **Do not follow the 0.5.0
+banner's advice to run install.ps1 from an older folder**; install 0.5.1 as
+in "Updating" below, then reload the dashboard page. Exact steps, and what
+0.5.1 changes on servers (cc-gate 1.2.0 for plugin updates):
+[RELEASE_NOTES_0.5.1.md](RELEASE_NOTES_0.5.1.md).
 
 Upgrading from 0.4.0 to 0.5.0 needs no new keys and changes no
 data: there are no new migrations, and the agents, their on/off states and the
@@ -207,6 +219,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1   # re
 If remote access is switched on, the copied `.env` keeps it on; its token stays
 in `C:\InfiniteAI\secrets`, outside the installation folder.
 
+From 0.5.1, `install.ps1` gives the files Docker builds from a fresh
+timestamp and the build checks that the copied code is this folder's
+version, so extracting into a new folder (as above) or over the old one both
+give current images. If the dashboard was open in a browser during the
+update, reload the page afterwards: an open page keeps the previous version's
+code until it is reloaded.
+
 (With Git instead: `git pull`, then `install.ps1`.) Once the new folder is
 verified, the old one can be deleted; keep its `backups\` folder.
 
@@ -225,7 +244,10 @@ followed by `docker volume rm infinite-command-center_wp_test_html`.
 
 ## Troubleshooting
 
-- **Version mismatch banner, or the smoke test's "versions match this folder" fails**: the API container still runs an older version. Run `install.ps1` again from the new version's folder (with the `.env` copied there), then `smoke.ps1`. `.\scripts\status.ps1` prints the folder's version, the running API's version and the folder the API container was created from: if that folder is the old one, the install was run from there.
+- **"This page is out of date" banner**: the page was open during an update and still runs the previous dashboard. Reload the page.
+- **Version mismatch banner, or the smoke test's "versions match this folder" fails**: first reload the dashboard page. If it stays, the API or the dashboard was not built from the files of the version you installed. Up to 0.5.0, Docker could build a new release with out-of-date copies of the files that hold the version numbers (it kept them from an earlier build, whether the zip was extracted over the old folder or into a new one; `--no-cache` did not help). From 0.5.1, `install.ps1` and `start.ps1` refresh those files before every build and the build stops if the copied code is the wrong version, so run `install.ps1` again from the new version's folder (with the `.env` copied there), then `smoke.ps1`. `.\scripts\status.ps1` prints the folder's version, the versions the API and the dashboard report, and the folder the API container was created from.
+- **The build stops with "... in this build says X, but this release is Y: Docker used an out-of-date copy ..."**: the check above caught an image about to be built from old files; nothing was changed. Run `install.ps1` again (it refreshes the files first). If it stops again, send the message and the output of `status.ps1`.
+- **"Could not prepare the build folders: this folder mixes releases"**: the folder's `VERSION` file and its code name different versions (an extraction that was interrupted, or files skipped when extracting over an older folder). Extract the zip again into a new, empty folder, copy `.env` there and run `install.ps1` from it. Nothing was built or changed.
 - **"No internet on this PC" banner**: the monitor could not reach api.wordpress.org, www.cloudflare.com or www.google.com, so websites are marked "not checked" instead of down. If your network blocks those hosts on purpose, set `MONITOR_CONTROL_URLS` in `.env` to addresses that answer (see `.env.example`), then `start.ps1 -NoBuild`.
 - **Scan host key says the worker is not running**: `.\scripts\status.ps1`, then `start.ps1 -NoBuild`.
 - **No microphone button**: open the dashboard as `http://localhost:8090` (not the PC's IP address) in Chrome or Edge, and sign in as an admin or operator; viewers cannot send commands. If the browser blocked the microphone, allow it from the padlock/site icon in the address bar.

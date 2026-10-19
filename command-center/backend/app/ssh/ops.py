@@ -17,7 +17,8 @@ Kind = Literal["read", "change"]
 SITE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,99}$")
 SERVICE_RE = re.compile(r"^[a-z0-9][a-z0-9@._-]{0,63}$")
-ARG_PATTERNS = {"site": SITE_RE, "slug": SLUG_RE, "service": SERVICE_RE, "onoff": re.compile(r"^(on|off)$")}
+VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z.\-]{0,40}$")
+ARG_PATTERNS = {"site": SITE_RE, "slug": SLUG_RE, "service": SERVICE_RE, "onoff": re.compile(r"^(on|off)$"), "version": VERSION_RE}
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,7 @@ OPS: dict[str, Op] = {
     "wp_set_site_urls": Op("change", ("site",), "Set home and siteurl back to the URL configured on the server"),
     "wp_plugin_deactivate": Op("change", ("site", "slug"), "Deactivate a plugin"),
     "wp_plugin_activate": Op("change", ("site", "slug"), "Activate a plugin"),
-    "wp_plugin_update": Op("change", ("site", "slug"), "Update a plugin from WordPress.org", slow=True),
+    "wp_plugin_update": Op("change", ("site", "slug", "version"), "Update a plugin from WordPress.org to exactly the approved version", slow=True),
     "wp_plugin_reinstall": Op("change", ("site", "slug"), "Reinstall a plugin's current version from WordPress.org", slow=True),
     "wp_core_reinstall": Op("change", ("site",), "Reinstall the current WordPress version's core files", slow=True),
     "wp_maintenance": Op("change", ("site", "onoff"), "Switch maintenance mode on or off"),

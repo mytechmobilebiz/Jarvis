@@ -15,6 +15,8 @@
 #
 #   testing/stale-build-check.sh OLD-RELEASE.zip NEW-PACKAGE.zip
 #
+# Exit status: 0 all checks passed, 1 a check failed, 2 inconclusive (the stale copy could not be made here).
+#
 # It rebuilds the infinite-command-center/backend:local and dashboard:local images (run it where nothing
 # depends on them). Set REGISTRY / EXTRA_CA_BUNDLE as for docker compose if the network needs them.
 set -euo pipefail
@@ -104,10 +106,13 @@ build "$G" || { tail -30 "$WORK/build.log"; exit 1; }
 for f in "${FILES[@]}"; do cp "$WORK/$(basename "$f").real" "$G/$f"; touch -d "$STAMP" "$G/$f"; done
 build "$G" || { tail -30 "$WORK/build.log"; exit 1; }
 got=$(image_versions)
+REPRODUCED=1
 if [ "$got" != "$MARK $MARK" ]; then
-  echo "note: this Docker does not keep same-size, same-time files (images report $got); checks 2 and 3 are not meaningful here"
-  exit $FAILED
+  # Not a pass: without a stale copy, check 2 proves nothing. Check 3 still runs.
+  echo "INCONCLUSIVE  this Docker did not keep the same-size, same-time files (images report $got); check 2 skipped"
+  REPRODUCED=0; [ "$FAILED" = 0 ] && FAILED=2
 fi
+if [ "$REPRODUCED" = 1 ]; then
 echo "== reproduced: the folder says $NEW, a plain build still reports $got"
 for service in api dashboard; do
   if build_one "$G" "$service" CC_RELEASE_VERSION="$NEW"; then
@@ -118,12 +123,22 @@ for service in api dashboard; do
     tail -20 "$WORK/build.log"; fail "$service: the build failed, but not with the build check's message"
   fi
 done
-# prepare-build.ps1 runs in PowerShell; the build then runs from this shell, the same Docker client as the
-# stale builds above (buildx keys its copy of a folder by the folder and the client's ID in ~/.docker).
-got_env=$(docker run --rm -v "$WORK:$WORK" -w "$G" "$PWSH_IMAGE" pwsh -NoProfile -Command \
-  '& ./scripts/prepare-build.ps1 | Out-Host; if ($LASTEXITCODE -ne 0) { exit 1 }; "CC_RELEASE_VERSION=$env:CC_RELEASE_VERSION"' | tail -1) || true
-[ "$got_env" = "CC_RELEASE_VERSION=$NEW" ] && pass "prepare-build.ps1 sets $got_env for the build" \
-                                         || fail "prepare-build.ps1: expected CC_RELEASE_VERSION=$NEW, got '$got_env'"
+fi
+# 3a. As install.ps1 does: prepare-build.ps1, then docker compose build, in one PowerShell process. The image history
+#     must show the release version reaching both builds (an empty APP_VERSION would silently skip the check).
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$(command -v docker)":/usr/bin/docker:ro \
+  -v /usr/libexec/docker/cli-plugins:/usr/libexec/docker/cli-plugins:ro -v "$WORK:$WORK" ${EXTRA_CA_BUNDLE:+-v "$EXTRA_CA_BUNDLE:$EXTRA_CA_BUNDLE:ro"} \
+  -w "$G" "$PWSH_IMAGE" pwsh -NoProfile -Command \
+  '& ./scripts/prepare-build.ps1; if ($LASTEXITCODE -ne 0 -or -not $env:CC_RELEASE_VERSION) { exit 1 }; docker compose build api dashboard; exit $LASTEXITCODE' \
+  > "$WORK/build.log" 2>&1 || { tail -30 "$WORK/build.log"; fail "prepare-build.ps1 then docker compose build (one PowerShell process) failed"; }
+for image in backend dashboard; do
+  if docker history --no-trunc --format '{{.CreatedBy}}' "infinite-command-center/$image:local" | grep -q "APP_VERSION=$NEW"; then
+    pass "$image: prepare-build.ps1 passed APP_VERSION=$NEW to the build"
+  else
+    fail "$image: the build did not receive APP_VERSION=$NEW from prepare-build.ps1"
+  fi
+done
+# 3b. The refresh prepare-build.ps1 just made also cures the stale copy of this shell's Docker client (the one above).
 if build "$G" CC_RELEASE_VERSION="$NEW"; then
   got=$(image_versions)
   [ "$got" = "$NEW $NEW" ] && pass "after prepare-build.ps1 the checked build is current: API and dashboard report $NEW" \

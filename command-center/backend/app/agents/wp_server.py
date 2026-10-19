@@ -269,8 +269,22 @@ def approved_expectations(ctx: AgentContext) -> dict[str, Any]:
     return expected
 
 
-async def check_gate_site(gate: Any, site: Site, approved: dict[str, Any] | None) -> None:
-    """The server's own answer, right before a change: its cc-gate gives the site key this site's address, and the one approved."""
+# The first cc-gate that installs exactly the approved plugin version (and refuses an update without one).
+PINNED_UPDATE_GATE = (1, 2, 0)
+
+
+def gate_version(hello: dict[str, Any]) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in str(hello.get("gate_version", "")).split("."))
+    except ValueError:
+        return (0,)
+
+
+async def check_gate_site(gate: Any, site: Site, approved: dict[str, Any] | None) -> dict[str, Any]:
+    """The server's own answer, right before a change: its cc-gate gives the site key this site's address, and the one approved.
+
+    Returns the gate's hello.
+    """
     hello = await gate.run("hello")
     key = site.server_site_key
     url = gate_site_url(hello, key)
@@ -283,6 +297,7 @@ async def check_gate_site(gate: Any, site: Site, approved: dict[str, Any] | None
     if url != approved_url:
         raise ValueError(f"the cc-gate on {gate.server.name} now gives site key '{key}' the address {url} (approved: {approved_url}); "
                          "nothing was changed; request the repair again")
+    return hello
 
 
 # Lists the site's own code can fill with anything (WP-CLI loads it): each entry must be an object with this text field.
@@ -492,7 +507,7 @@ class ServerSideCapabilities:
         return AgentResult(summary=summary, data={"site_id": site.id, "diagnosis": diag}, findings=findings, events=events)
 
     async def _repair(self, ctx: AgentContext, site_id: int, title: str, steps, *, backup: bool = True,
-                      may_degrade: bool = False) -> AgentResult:
+                      may_degrade: bool = False, min_gate: tuple[int, ...] | None = None) -> AgentResult:
         """Common shape: check, backup, change (steps), confirm, HTTP verification, report.
 
         steps(gate, key, notes, dry) returns "nothing to do" or "change" when dry,
@@ -507,7 +522,11 @@ class ServerSideCapabilities:
         gate_session = ctx.ssh.open(ctx, server)
         try:
             async with gate_session as gate:
-                await check_gate_site(gate, site, ctx.approved_target)
+                hello = await check_gate_site(gate, site, ctx.approved_target)
+                if min_gate and gate_version(hello) < min_gate:
+                    raise ValueError(f"cc-gate {hello.get('gate_version')} on {server.name} cannot {title} safely; install cc-gate "
+                                     f"{'.'.join(map(str, min_gate))} or later on the server (install-gate.sh from this version's server "
+                                     "folder, see docs/SERVER_SETUP.md); nothing was changed")
                 outcome = await steps(gate, key, notes, dry=True)
                 if outcome == "nothing to do":
                     return AgentResult(summary=f"{site.name}: {title} not needed ({'; '.join(notes) or 'already correct'}); nothing was changed.",
@@ -641,8 +660,8 @@ class ServerSideCapabilities:
 
         return await self._repair(ctx, params.site_id, f"activate plugin {params.slug}", steps)
 
-    @capability(risk=Risk.CHANGE, description="Update one plugin from WordPress.org. Database backup first.", params=PluginParams,
-                timeout_seconds=REPAIR_TIMEOUT)
+    @capability(risk=Risk.CHANGE, description="Update one WordPress.org plugin to exactly the version named in the approval (the server's "
+                "cc-gate refuses any other). Database backup first.", params=PluginParams, timeout_seconds=REPAIR_TIMEOUT)
     async def repair_update_plugin(self, ctx: AgentContext, params: PluginParams) -> AgentResult:
         async def steps(gate, key, notes, dry):
             plugins = {p["name"]: p for p in (await gate.run("wp_plugin_list", site=key)).get("plugins", [])}
@@ -662,17 +681,18 @@ class ServerSideCapabilities:
             if dry:
                 notes.append(f"{params.slug} {plugin.get('version')} → {plugin.get('update_version')}")
                 return "change"
-            await gate.run("wp_plugin_update", site=key, slug=params.slug)
+            # The gate installs exactly this version and fails if the plugin is any other version afterwards.
+            await gate.run("wp_plugin_update", site=key, slug=params.slug, version=str(expected.get("update_version")))
             after = {p["name"]: p for p in (await gate.run("wp_plugin_list", site=key)).get("plugins", [])}.get(params.slug)
             if after is None:
                 raise RuntimeError(f"{params.slug} is no longer installed after the update")
-            if after.get("version") == plugin.get("version") or after.get("update") == "available":
-                raise RuntimeError(f"{params.slug} is still version {after.get('version')} after the update")
-            notes.append(f"now version {after.get('version')}" + ("" if after.get("version") == expected.get("update_version") else
-                         f" (approved: {expected.get('update_version')}; WordPress.org published a newer one at that moment)"))
+            if after.get("version") != expected.get("update_version"):
+                raise RuntimeError(f"{params.slug} is version {after.get('version')} after the update, not the approved "
+                                   f"{expected.get('update_version')}")
+            notes.append(f"now version {after.get('version')}, as approved")
             return "done"
 
-        return await self._repair(ctx, params.site_id, f"update plugin {params.slug}", steps)
+        return await self._repair(ctx, params.site_id, f"update plugin {params.slug}", steps, min_gate=PINNED_UPDATE_GATE)
 
     @capability(risk=Risk.CHANGE, description="Reinstall one plugin's current version from WordPress.org (replaces tampered plugin files). "
                 "Database backup first.", params=PluginParams, timeout_seconds=REPAIR_TIMEOUT)

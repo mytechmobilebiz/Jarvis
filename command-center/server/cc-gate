@@ -42,7 +42,7 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-GATE_VERSION = "1.1.0"
+GATE_VERSION = "1.2.0"
 CONFIG_PATH = "/etc/cc-gate/config.json"
 # The configuration decides what the gate may do, so only root may be able to change it.
 REQUIRE_ROOT_OWNED_CONFIG = True
@@ -51,6 +51,7 @@ SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 SITE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,99}$")
 SERVICE_RE = re.compile(r"^[a-z0-9][a-z0-9@._-]{0,63}$")
+VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z.\-]{0,40}$")
 ONOFF = ("on", "off")
 
 # operation -> (kind, argument names). kind "read" never changes anything;
@@ -72,7 +73,7 @@ OPS = {
     "wp_set_site_urls": ("change", ["site"]),
     "wp_plugin_deactivate": ("change", ["site", "slug"]),
     "wp_plugin_activate": ("change", ["site", "slug"]),
-    "wp_plugin_update": ("change", ["site", "slug"]),
+    "wp_plugin_update": ("change", ["site", "slug", "version"]),
     "wp_plugin_reinstall": ("change", ["site", "slug"]),
     "wp_core_reinstall": ("change", ["site"]),
     "wp_maintenance": ("change", ["site", "onoff"]),
@@ -171,6 +172,8 @@ def validate(op, args, config):
             raise Refused("site %r must run as its own unprivileged user, not as root or the gate account" % args["site"])
     if "slug" in args and not SLUG_RE.match(args["slug"]):
         raise Refused("invalid plugin name")
+    if "version" in args and not VERSION_RE.match(args["version"]):
+        raise Refused("invalid plugin version")
     if "service" in args:
         if not SERVICE_RE.match(args["service"]) or args["service"] not in config["services"]:
             raise Refused("service %r is not allowed" % args["service"])
@@ -524,28 +527,45 @@ def op_wp_plugin_activate(args):
     return {"output": wp_ok(SITE, "plugin", "activate", args["slug"], skip_code=False)}
 
 
-def op_wp_plugin_update(args):
-    return {"output": wp_ok(SITE, "plugin", "update", args["slug"])}
+def wordpress_org_plugin(slug, done, doing):
+    """The installed version of a plugin that really comes from WordPress.org; refused or failed otherwise.
 
-
-def op_wp_plugin_reinstall(args):
-    slug = args["slug"]
-    # Only plugins that really come from WordPress.org: a custom or premium plugin
-    # with the same folder name must never be replaced by WordPress.org's code.
+    A custom or premium plugin with the same folder name must never be replaced by WordPress.org's code.
+    """
     header = helper(SITE, "plugin_update_uri", ARGS["site"], slug)
     if not header.get("found"):
         raise Failed("plugin %s was not found in wp-content/plugins" % slug)
     uri = (header.get("update_uri") or "").strip()
     if uri and not WPORG_UPDATE_URI.match(uri):
-        raise Refused("plugin %s declares Update URI %r, so it is not a WordPress.org plugin; it is not reinstalled from there" % (slug, uri))
+        raise Refused("plugin %s declares Update URI %r, so it is not a WordPress.org plugin; it is not %s from there" % (slug, uri, done))
     version = wp_ok(SITE, "plugin", "get", slug, "--field=version")
-    if not re.match(r"^[0-9][0-9A-Za-z.\-]{0,40}$", version):
+    if not VERSION_RE.match(version):
         raise Failed("unexpected plugin version %r" % version)
     code, out, err = run(wp(SITE, "plugin", "verify-checksums", slug, "--version=" + version), CONFIG)
     # WP-CLI skips (exit 0) a plugin it has no checksums for.
     if "could not retrieve the checksums" in (out + err).lower():
         raise Failed("WordPress.org has no checksums for %s %s (not a WordPress.org plugin, or WordPress.org could not be "
-                     "reached); not reinstalling" % (slug, version))
+                     "reached); not %s" % (slug, version, doing))
+    return version
+
+
+def op_wp_plugin_update(args):
+    # Exactly the version the administrator approved, never "the latest": WordPress.org may publish another one
+    # between the approval and the update, and only the approved one may be installed.
+    slug, version = args["slug"], args["version"]
+    before = wordpress_org_plugin(slug, "updated", "updating")
+    if before == version:
+        raise Refused("plugin %s is already version %s" % (slug, version))
+    out = wp_ok(SITE, "plugin", "update", slug, "--version=" + version)
+    after = wp_ok(SITE, "plugin", "get", slug, "--field=version")
+    if after != version:
+        raise Failed("plugin %s is version %s after the update, not the approved %s" % (slug, after, version))
+    return {"before": before, "version": after, "output": out}
+
+
+def op_wp_plugin_reinstall(args):
+    slug = args["slug"]
+    version = wordpress_org_plugin(slug, "reinstalled", "reinstalling")
     out = wp_ok(SITE, "plugin", "install", slug, "--force", "--version=" + version)
     return {"version": version, "output": out}
 

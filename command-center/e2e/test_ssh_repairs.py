@@ -110,6 +110,8 @@ def test_the_key_can_do_nothing_but_run_cc_gate(cc_key):
             found["shell"] = (await conn.run(check=False)).stdout
             found["sudo"] = (await conn.run("sudo -n -l", check=False)).stdout
             found["eval"] = (await conn.run("cc-gate v1 wp_plugin_deactivate wp-repair 'akismet --exec=phpinfo();'", check=False)).stdout
+            # 1.2.0: an update must name the approved version; "the latest" is not an option.
+            found["unpinned"] = (await conn.run("cc-gate v1 wp_plugin_update wp-repair akismet", check=False)).stdout
             try:
                 await conn.open_connection("wp-repair-db", 3306)
                 found["tunnel"] = "opened"
@@ -141,6 +143,7 @@ def test_the_key_can_do_nothing_but_run_cc_gate(cc_key):
     assert "only 'cc-gate v1" in found["sudo"]
     assert "takes 2 argument" in found["eval"] or "invalid plugin name" in found["eval"]
     assert found["tunnel"] == "refused" and found["sftp"] == "refused"
+    assert "takes 3 argument" in found["unpinned"]
     assert found["login_root"] == "refused" and found["login_ccagent"] == "refused"
 
 

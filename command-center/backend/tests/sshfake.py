@@ -53,8 +53,10 @@ case "$1 $2" in
     m=""; [ -f "$D/mu-plugin" ] && m=",{\"name\":\"$(cat "$D/mu-plugin")\",\"status\":\"must-use\",\"version\":\"\",\"update\":\"none\",\"update_version\":\"\"}"
     echo "[{\"name\":\"akismet\",\"status\":\"$a\",\"version\":\"$v\",\"update\":\"$u\",\"update_version\":\"5.4\"},{\"name\":\"evil-cloak\",\"status\":\"$e\",\"version\":\"1.0\",\"update\":\"none\",\"update_version\":\"\"}$m]" ;;
   "plugin update")
-    [ -f "$(dirname "$0")/update-fails" ] && { echo "Error: Download failed." >&2; exit 1; }
-    echo 5.4 > "$(dirname "$0")/version-$3"; echo "Success: Updated 1 of 1 plugins." ;;
+    D="$(dirname "$0")"; [ -f "$D/update-fails" ] && { echo "Error: Download failed." >&2; exit 1; }
+    # The version asked for (--version=X), or what an update-installs file says WordPress.org delivered instead.
+    v=$(printf '%s\n' "$@" | sed -n 's/^--version=//p'); [ -f "$D/update-installs" ] && v=$(cat "$D/update-installs")
+    echo "${v:-5.4}" > "$D/version-$3"; echo "Success: Updated 1 of 1 plugins." ;;
   "super-admin list")
     # A multisite network when a super-admins file (one login per line) exists; printed the way WP-CLI 2.12 does.
     D="$(dirname "$0")"; [ -f "$D/super-admins" ] || { echo "Error: This is not a multisite installation." >&2; exit 1; }
@@ -70,7 +72,7 @@ case "$1 $2" in
   "option get") cat "$(dirname "$0")/option-$3" 2>/dev/null || echo "http://site.test" ;;
   "option update") printf '%s' "$4" > "$(dirname "$0")/option-$3"; echo "Success: Updated '$3' option." ;;
   "maintenance-mode is-active") exit 1 ;;
-  "plugin get") echo "1.0" ;;
+  "plugin get") cat "$(dirname "$0")/version-$3" 2>/dev/null || { [ "$3" = akismet ] && echo 5.3 || echo 1.0; } ;;
   *) echo "Success: $*" ;;
 esac
 """
