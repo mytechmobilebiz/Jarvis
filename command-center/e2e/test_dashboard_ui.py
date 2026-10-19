@@ -26,7 +26,9 @@ def signed_in(page: Page, base_url, env, test_site):
 
 def nav(page: Page, label: str) -> None:
     """Open a page from the sidebar menu (pages can contain links with the same name; a link may carry a count badge)."""
-    page.locator(".sidebar nav").get_by_role("link", name=re.compile(rf"^{re.escape(label)}(\s|$)")).click()
+    # Escape "/" too: Playwright passes the pattern to the browser as a /.../ literal.
+    pattern = re.escape(label).replace("\\ ", " ").replace("/", "\\/")
+    page.locator(".sidebar nav").get_by_role("link", name=re.compile(rf"^{pattern}(\s|$)")).click()
 
 
 def shot(page: Page, name: str) -> None:
@@ -129,7 +131,8 @@ def test_agents_and_approvals_pages(signed_in: Page):
 
 def test_sign_out(signed_in: Page):
     page = signed_in
-    page.get_by_role("button", name="Sign out").click()
+    page.get_by_role("button", name="Account menu").click()
+    page.get_by_role("menuitem", name="Sign out").click()
     expect(page.get_by_role("button", name="Sign in")).to_be_visible()
 
 
