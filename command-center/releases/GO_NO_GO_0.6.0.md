@@ -2,7 +2,7 @@
 
 Date: 2026-10-20 · package `InfiniteAI-CommandCenter-0.6.0-windows.zip`,
 SHA-256 `PKG_SHA` · branch `jarvis-migration` · details in
-[RELEASE_NOTES_0.6.0.md](RELEASE_NOTES_0.6.0.md)
+[docs/RELEASE_NOTES_0.6.0.md](../docs/RELEASE_NOTES_0.6.0.md)
 
 ## Verdict
 
@@ -20,11 +20,11 @@ installed 0.5.0, JARVIS and your live database are untouched.
 
 | Test | Result |
 |---|---|
-| Backend (pytest, real PostgreSQL 18) on the final merged branch | **852 passed, 0 failed** (306 JARVIS Brain tests) |
+| Backend (pytest, real PostgreSQL 18) on the final merged branch | **853 passed, 0 failed** (307 JARVIS Brain tests) |
 | Dashboard (Vitest), type check, production build | **218 passed**, type check clean, build succeeded |
 | End-to-end: test copy, staged import, verify, rollback, restart (`testing/brain-check.sh`) | **98 passed, 0 failed, 0 skipped**; live-installation stand-in unchanged after every step |
 | JARVIS Brain page in a browser (admin, operator, viewer) | **19 of 19 passed**: search, provenance, approve and edit with versions, restricted data hidden per role, no planted value on any page |
-| Your upgrade path from the package (0.5.0 → 0.6.0; 0.5.0 → 0.5.1 → 0.6.0; back to 0.5.0; restore) | **passed** (73 checks); data fingerprint identical at every step |
+| Your upgrade path from the package (0.5.0 → 0.6.0; 0.5.0 → 0.5.1 → 0.6.0; back to 0.5.0; restore) | **passed** (73 checks); data fingerprint identical at every step. Ran on the release candidate just before the last change (decisions carry-over), which the backend and end-to-end runs cover |
 | Live-import path in the upgrade test (typed confirmation, dump, import, verify, rollback) | **passed**; no planted value in the database; rollback left none of the run's rows |
 | Approval-bypass instructions from JARVIS | **cannot override** the Command Center's approvals (tested): quarantined, admin only, never in a prompt; no setting, agent, schedule or approval changed by an import; a proposal still waits for a person |
 | Imported workflows | **stay disabled** (tested): drafts never run; a converted schedule is created disabled; watched sites start paused |

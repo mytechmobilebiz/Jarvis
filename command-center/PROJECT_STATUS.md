@@ -57,7 +57,8 @@ through cc-gate, only after approval, and only if the server's own
 ## JARVIS migration and the JARVIS Brain (0.6.0, waiting for approval)
 
 **Nothing has been installed or imported.** 0.6.0 is built and tested in the
-sandbox with synthetic data only. Installing it, importing the real JARVIS
+sandbox with synthetic data only. The GO/NO-GO report is
+[releases/GO_NO_GO_0.6.0.md](releases/GO_NO_GO_0.6.0.md). Installing it, importing the real JARVIS
 backup into a test copy and importing into the live installation are three
 separate approvals (docs/RELEASE_NOTES_0.6.0.md section 8). JARVIS stays
 installed and running; nothing here changes it.
@@ -276,7 +277,7 @@ Known limits that remain (by design or not yet done):
 
 | Suite | Result | What it covers |
 |---|---|---|
-| Backend unit + integration (pytest, real PostgreSQL 18), final 0.6.0 code | **852 passed, 0 failed** (0.6.0), 306 of them JARVIS Brain tests | cleaning (secrets in text, JSON, tables and 15 command-line forms; restricted data withholds; contact details masked; reasoning removed); the importer (plan, staged runs, a re-run that adds nothing, duplicates, every conflict kind, resume after failures and a lost lock, verify, rollback newest first); withheld stays withheld through re-import, rollback and rescan; access by role and sensitivity; JARVIS's approval-bypass rules quarantined and never in a prompt, a proposal still waits for a person; drafts never run, converted schedules disabled; everything from 0.5.1 |
+| Backend unit + integration (pytest, real PostgreSQL 18), final 0.6.0 code | **853 passed, 0 failed** (0.6.0), 307 of them JARVIS Brain tests | cleaning (secrets in text, JSON, tables and 15 command-line forms; restricted data withholds; contact details masked; reasoning removed); the importer (plan, staged runs, a re-run that adds nothing, duplicates, every conflict kind, resume after failures and a lost lock, verify, rollback newest first); withheld stays withheld through re-import, rollback and rescan; access by role and sensitivity; JARVIS's approval-bypass rules quarantined and never in a prompt, a proposal still waits for a person; drafts never run, converted schedules disabled; everything from 0.5.1 |
 | Dashboard (Vitest), type check, production build | **218 passed** (0.6.0); type check clean; build succeeded | the JARVIS Brain page per role (search, conversations, provenance, review, conflicts, memory editing with versions, the rotation list), plus everything from 0.5.1 |
 | End-to-end, JARVIS Brain operations (testing/brain-check.sh, PowerShell 7.4, Docker) | **98 passed, 0 failed, 0 skipped**, including 19 checks of the Brain page in a browser | the pre-check of the live installation (read-only, unchanged at every step), the test copy (separate project, port 8190, worker without internet, no n8n), the hardened importer container, the staged import of a synthetic JARVIS with planted secrets and personal data, verify, rollback, restart persistence, refusals; the Brain page in Chromium as admin, operator and viewer |
 | Upgrade from the owner's 0.5.0 to 0.6.0 from the package (nested Docker, PowerShell 7.4) | **passed** (73 checks) | the owner's history reproduced (0.5.0 with "the API reports 0.2.0"); RELEASE_NOTES_0.6.0.md section 4 step by step, all seven smoke checks; the live-import path, verify and rollback; going back to 0.5.0, forward again, `restore.ps1`; 0.5.0 → 0.5.1 → 0.6.0; data, encrypted secrets, n8n and its encryption key, agents, volumes and an unrelated Docker project unchanged throughout |
