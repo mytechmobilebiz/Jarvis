@@ -59,16 +59,19 @@ OPERATOR_ONLY_RESULT_DATA = ("answer", "memory_notes")
 
 # What a viewer reads instead of the text of a Supervisor request that asked for, planned or dropped a web search.
 WEB_SEARCH_VIEWER_TEXT = "Request with a web search (visible to operators and admins)"
+# What a viewer reads instead of the reply in a planning task's result (supervisor.plan_request), for every request:
+# the request itself (request_view) shows the reply, or WEB_SEARCH_VIEWER_TEXT when it searched the web.
+PLAN_REPLY_VIEWER_TEXT = "The reply is shown on the Supervisor request"
 
 
-def viewer_plan(plan: Any, searched: bool) -> Any:
+def viewer_plan(plan: Any, searched: bool, reply_text: str = WEB_SEARCH_VIEWER_TEXT) -> Any:
     """A Supervisor plan as a viewer sees it: no web-search step's parameters or rationale, no planner notes (they say
     what was dropped and why), and no reply when the request asked for or searched the web (Claude's reply may repeat
-    the query)."""
+    the query): reply_text instead."""
     plan = task_service.hide_research_steps(plan)
     if not isinstance(plan, dict):
         return plan
-    return {**plan, "notes": [], **({"reply": WEB_SEARCH_VIEWER_TEXT} if searched and "reply" in plan else {})}
+    return {**plan, "notes": [], **({"reply": reply_text} if searched and "reply" in plan else {})}
 
 
 def task_view(task: Task, principal: Principal | None = None) -> dict[str, Any]:
@@ -89,8 +92,9 @@ def task_view(task: Task, principal: Principal | None = None) -> dict[str, Any]:
             out["result"] = {**result, "data": data}
         if isinstance(data, dict) and "plan" in data:  # supervisor.plan_request
             # Never the reply here: only the request's message tells whether it asked for a web search (a plan made
-            # while web search was hidden has no search step), and a viewer reads the reply through request_view.
-            plan = viewer_plan(data["plan"], True)
+            # while web search was hidden has no search step), and a viewer reads the reply through request_view. A
+            # neutral text stands in, so a request that never searched is not labelled as one.
+            plan = viewer_plan(data["plan"], True, PLAN_REPLY_VIEWER_TEXT)
             out["result"] = {**out["result"], "data": {**data, "plan": plan}}
     return out
 

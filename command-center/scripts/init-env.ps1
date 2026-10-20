@@ -17,8 +17,10 @@ function New-Secret([int]$bytes) {
 
 if ($AddMissing) {
   if (-not (Test-Path $envFile)) { Write-Host "No .env to upgrade; run init-env.ps1 without -AddMissing." -ForegroundColor Yellow; exit 1 }
-  # Only keys that can safely start with a fresh value. Existing lines are never changed.
-  $upgradeKeys = [ordered]@{ "CC_SECRETS_KEY" = 32; "CREDIT_REPAIR_DB_PASSWORD" = 24; "CREDIT_REPAIR_DATA_KEY" = 32; "SEARXNG_SECRET" = 32 }
+  # Only keys that can safely start with a fresh value. Existing lines are never changed. A .env from 0.2.0 or later
+  # has them all, so it is left exactly as it is. SEARXNG_SECRET is not added here: web research stays off after an
+  # upgrade, and scripts\research.ps1 -Enable creates the secret when web research is switched on.
+  $upgradeKeys = [ordered]@{ "CC_SECRETS_KEY" = 32; "CREDIT_REPAIR_DB_PASSWORD" = 24; "CREDIT_REPAIR_DATA_KEY" = 32 }
   $present = @{}
   foreach ($line in Get-Content $envFile) {
     if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$' -and $Matches[2].Trim()) { $present[$Matches[1]] = $true }

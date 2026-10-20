@@ -43,7 +43,7 @@ function Test-ResearchEntry([string]$entry) {
 
 function Use-ComposeEnv([string]$root) {
   # Decides which Compose files this process uses. Returns Listed (the research file is in COMPOSE_FILE) and Active
-  # (it is used): Listed but not Active means the secret is missing. Prints a warning, never the secret.
+  # (it is used): Listed but not Active means the secret is missing or too short. Prints a warning, never the secret.
   if ($env:COMPOSE_FILE -and $env:CC_COMPOSE_FILE_SET -and $env:COMPOSE_FILE -ceq $env:CC_COMPOSE_FILE_SET) {
     # Set by an earlier script in this same window: decide again from .env.
     Remove-Item Env:COMPOSE_FILE, Env:CC_COMPOSE_FILE_SET -ErrorAction SilentlyContinue
@@ -60,9 +60,16 @@ function Use-ComposeEnv([string]$root) {
     if ($kept.Count -eq 0) { $kept = @("docker-compose.yml") }
     $env:COMPOSE_FILE = $kept -join ";"
     $env:CC_COMPOSE_FILE_SET = $env:COMPOSE_FILE
-    Write-Host ("Web research is switched on in .env (COMPOSE_FILE), but SEARXNG_SECRET is missing or shorter than " +
-      "$ResearchSecretMin characters: this script runs without the research search service (SearXNG). To fix it, run " +
-      ".\scripts\init-env.ps1 -AddMissing and then .\scripts\start.ps1; .env was not changed.") -ForegroundColor Yellow
+    # -Enable adds a missing secret but refuses a short one; -RotateSecret replaces it, and -Enable then reconnects the
+    # worker (started without the research network while the secret was unusable).
+    $problem = "missing"
+    $fix = ".\scripts\research.ps1 -Enable (it adds the secret)"
+    if ($secret.Length -gt 0) {
+      $problem = "shorter than $ResearchSecretMin characters"
+      $fix = ".\scripts\research.ps1 -RotateSecret, then .\scripts\research.ps1 -Enable"
+    }
+    Write-Host ("Web research is switched on in .env (COMPOSE_FILE), but SEARXNG_SECRET is $($problem): this script " +
+      "runs without the research search service (SearXNG). To fix it, run $fix; .env was not changed.") -ForegroundColor Yellow
   }
   return New-Object PSObject -Property @{ Listed = $listed; Active = $active }
 }

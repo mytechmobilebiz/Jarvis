@@ -9,7 +9,8 @@
 # The Compose project "infinite-command-center" on this machine plays the owner's live installation: this check never
 # stops, recreates, rebuilds, retags or changes it, and fails if its fingerprint (images, containers with their start
 # times, volumes, networks) changes at any point. cc-test-pg and decoy-* containers are watched the same way. The
-# test copy is the project cc-brain-test; everything it creates is removed at the end (also after a failure).
+# test copy is the project cc-brain-test; everything it creates is removed at the end (also after a failure). An
+# anonymous volume (no project label) that appeared during the run and is still there counts as left behind.
 #
 # Now: every .ps1 parses (ASCII only); brain-precheck.ps1; refusals before anything runs; brain-test.ps1 Start (build
 # with the test copy's own image names, health, versions against VERSION, instance_label and the cookie name); the
@@ -48,10 +49,13 @@ skip() { if [ "$REQUIRE_IMPORTER" = 1 ]; then fail "$* (needs brain-import; --re
 # ------------------------------------------------------------------------------------------------ cleanup (always)
 cleanup() {
   local code=$?
-  # Only what carries the cc-brain-test project label, and the test copy's own images.
-  local ids
+  # Only what carries the cc-brain-test project label, the anonymous volumes its containers mounted, and the test
+  # copy's own images.
+  local ids anon
   ids=$(docker ps -aq --filter "label=com.docker.compose.project=$TEST_PROJECT")
+  anon=$(anon_of "$ids" 2> /dev/null || true)
   [ -n "$ids" ] && docker rm -f $ids > /dev/null 2>&1 || true
+  [ -n "$anon" ] && docker volume rm $anon > /dev/null 2>&1 || true
   ids=$(docker volume ls -q --filter "label=com.docker.compose.project=$TEST_PROJECT")
   [ -n "$ids" ] && docker volume rm $ids > /dev/null 2>&1 || true
   ids=$(docker network ls -q --filter "label=com.docker.compose.project=$TEST_PROJECT")
@@ -67,6 +71,13 @@ cleanup() {
   exit $code
 }
 trap cleanup EXIT
+anonymous() { docker volume ls -q --filter label=com.docker.volume.anonymous | LC_ALL=C sort; }
+anon_of() {  # the anonymous volumes mounted by these containers
+  [ -n "$1" ] || return 0
+  docker inspect --format '{{range .Mounts}}{{.Type}} {{.Name}}{{println}}{{end}}' $1 | awk '$1 == "volume" {print $2}' \
+    | LC_ALL=C sort -u | LC_ALL=C comm -12 - <(anonymous)
+}
+ANON0=$(anonymous)
 
 # ------------------------------------------------------------------------------------------------ the live installation
 fingerprint() {  # the scripts' fingerprint (6.4) plus networks, and the containers other engineers use
@@ -162,9 +173,10 @@ wait_health() {
   done
   return 1
 }
-test_left() {  # containers, volumes, networks and images of the test copy still present
+test_left() {  # containers, volumes (also anonymous ones new since the start), networks and images of the test copy
   echo "$(docker ps -aq --filter "label=com.docker.compose.project=$TEST_PROJECT" | wc -l)" \
-       "$(docker volume ls -q --filter "label=com.docker.compose.project=$TEST_PROJECT" | wc -l)" \
+       "$(( $(docker volume ls -q --filter "label=com.docker.compose.project=$TEST_PROJECT" | wc -l) + \
+            $(LC_ALL=C comm -13 <(echo "$ANON0") <(anonymous) | grep -c . || true) ))" \
        "$(docker network ls -q --filter "label=com.docker.compose.project=$TEST_PROJECT" | wc -l)" \
        "$(docker images -q --filter 'reference=infinite-command-center-brain-test/*' | wc -l)"
 }
@@ -832,4 +844,6 @@ step_seed
 step_remove
 step_precheck_again
 [ "$(fingerprint)" = "$FP0" ] && pass "live installation (and cc-test-pg, decoy-*) unchanged from start to end" || fail "LIVE INSTALLATION CHANGED"
+new_anon=$(LC_ALL=C comm -13 <(echo "$ANON0") <(anonymous))
+[ -z "$new_anon" ] && pass "no anonymous volume left behind" || fail "anonymous volumes left behind: $(echo $new_anon)"
 exit $FAILED

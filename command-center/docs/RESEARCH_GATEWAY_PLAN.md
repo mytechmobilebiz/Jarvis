@@ -216,6 +216,7 @@ All of these are proposed; none exist yet.
   - It splits and joins `COMPOSE_FILE` on `;` (the Windows separator). It keeps the order and any tunnel entry, and adds or removes only its own entry.
   - It handles `.env` files that mix LF and CRLF lines or lack a final line break. It writes UTF-8 without BOM. The script itself is plain ASCII (`build-package.py` refuses other `.ps1` files).
   - `-Enable` refuses unless `SEARXNG_SECRET` exists with at least 32 characters, and unless `research\searxng\settings.yml` is present.
+    - *0.7.0 replaced this:* `-Enable` creates a missing `SEARXNG_SECRET` itself, in the same `.env` write as `COMPOSE_FILE`, after the `.env` copy; it still refuses a value shorter than 32 characters (see [RESEARCH_GATEWAY.md](RESEARCH_GATEWAY.md), section 2).
   - It refuses to run while the JARVIS test copy (`cc-brain-test`) or a JARVIS import container (`cc.brain-import`) is running. Enabling and disabling recreate the live worker and create or remove networks, so those runs would report "LIVE INSTALLATION CHANGED".
   - It warns if any existing Docker network overlaps the tunnel's fixed subnet `172.29.37.0/28`. The two new networks take addresses from Docker's default pools, so switching research on before the tunnel could later cause "Pool overlaps".
   - It finishes by calling `start.ps1 -NoBuild`.
@@ -262,7 +263,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       # Keep ':?' : an empty value would be accepted as an empty key.
-      SEARXNG_SECRET: ${SEARXNG_SECRET:?run scripts/init-env.ps1 -AddMissing}
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?run scripts/init-env.ps1 -AddMissing}  # 0.7.0: "run scripts/research.ps1 -Enable"
       FORCE_OWNERSHIP: "false"
       # The image listens on "::" (IPv6) by default and crashed at start without IPv6.
       GRANIAN_HOST: "0.0.0.0"
@@ -432,6 +433,7 @@ Labels in the last column:
 ### 2.5 `SEARXNG_SECRET`: how it is made and stored
 - **Generated** by `scripts\init-env.ps1`, like every other secret: `New-Secret 32`, which is 32 random bytes from the system's CSPRNG in base64url (43 characters). `init-env.sh` gets the same with `secrets.token_urlsafe(32)`.
 - **Added on upgrade.** It goes into the fresh `.env` template and into the `-AddMissing` upgrade list (`$upgradeKeys`), so an upgrade adds it without touching existing lines. `preflight.ps1` lists it as an "addable" key.
+  - *0.7.0 replaced this:* an upgrade never adds it (`.env` stays byte for byte while research is off), and preflight neither requires nor adds it; `research.ps1 -Enable` creates it when the search service is switched on (see [RESEARCH_GATEWAY.md](RESEARCH_GATEWAY.md)).
 - **Stored only in `.env`.** That file is private and already part of the backup instructions. It is passed only to the `searxng` service, never to `x-api-env`, so the API and worker never see it.
 - **Not in the settings file.** `build-package.py` refuses any packaged file that contains a `.env` secret value [O].
 - **What it protects.** It is the only key to SearXNG's image-proxy route, which is still served. It also keys SearXNG's small engine-data cache [R].
@@ -456,7 +458,7 @@ SearXNG is a rolling release with several tags a day. Its engines can break when
 
 | File | Change |
 |---|---|
-| `init-env.ps1/.sh`, `preflight.ps1` | Add `SEARXNG_SECRET`. Update preflight's disk note: the 383 MB image plus database growth (section 6). |
+| `init-env.ps1/.sh`, `preflight.ps1` | Add `SEARXNG_SECRET`. Update preflight's disk note: the 383 MB image plus database growth (section 6). *0.7.0 replaced this:* only a new `.env` gets it; `research.ps1 -Enable` creates it on an upgraded one (see [RESEARCH_GATEWAY.md](RESEARCH_GATEWAY.md)). |
 | New `compose-env.ps1` | Shared helper (section 2.1). Used by `install.ps1`, `start.ps1`, `stop.ps1`, `backup.ps1`, `restore.ps1`, `status.ps1`, `uninstall.ps1`. |
 | `start.ps1` | Pull only when the digest is missing; start the other services first, then `searxng` on its own; a warning, never a failure. |
 | `status.ps1` | Shows the SearXNG container's state and health from `docker inspect --format '{{.State.Health.Status}}'`, filtered by the label `cc.research`. No sign-in needed. (`status.ps1` does not sign in, and `/api/system/status` needs a signed-in user.) |

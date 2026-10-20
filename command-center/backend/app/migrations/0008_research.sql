@@ -170,7 +170,7 @@ CREATE TABLE IF NOT EXISTS research_policy (
     updated_by        TEXT NOT NULL DEFAULT '',
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
--- The approved defaults (plan section 10); an existing row is never overwritten.
+-- The proposed defaults (plan section 10; owner decision 4 open); an existing row is never overwritten.
 INSERT INTO research_policy (agent, search_enabled, search_daily_cap, data_classes, updated_by) VALUES
     ('supervisor', TRUE, 20, '["G", "S", "O"]', 'default'),
     ('seo_content', TRUE, 20, '["G", "O"]', 'default'),

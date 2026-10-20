@@ -5,6 +5,7 @@ research task; summarised from the fixed line only, with the citations kept apar
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -25,6 +26,7 @@ from ..research_fakes import (
     add_people,
     as_,
     forbid_real_http,
+    person_lock_held,
     research_on,
 )
 
@@ -258,7 +260,7 @@ async def test_viewers_see_no_research_step_parameters_or_rationale(client, make
     assert tasks["web_search"]["params"] == {} and tasks["web_search"]["result"]["data"] == {}
     planned = tasks["plan_request"]["result"]["data"]["plan"]
     assert planned["steps"][0]["params"] == {} and planned["steps"][0]["rationale"] == ""
-    assert planned["reply"] == hidden
+    assert planned["reply"] == "The reply is shown on the Supervisor request"  # never the query, never a label
     listing = (await client.get("/api/supervisor/requests")).json()["requests"][0]
     assert listing["plan"]["steps"][0]["params"] == {} and listing["message"] == hidden
     page = (await client.get(f"/api/supervisor/requests/{request_id}")).text
@@ -285,10 +287,15 @@ async def test_viewers_read_nothing_of_a_refused_planned_search(client, make_wor
     await as_(client, "operator")
     assert [e["message"] for e in (await client.get(f"/api/tasks/{plan_task['id']}")).json()["logs"]] == [
         "dropped supervisor.web_search: blocked"]
-    # Other requests read as before.
+    # Other requests read as before, and their planning task is not labelled as a web search.
     other = await submit(client, "is the system healthy", who="operator")
     await run(make_worker, settings)
-    assert (await detail(client, other, "viewer"))["request"]["message"] == "is the system healthy"
+    found = await detail(client, other, "viewer")
+    assert found["request"]["message"] == "is the system healthy"
+    (plan_task,) = [t for t in found["tasks"] if t["capability"] == "plan_request"]
+    for task in (plan_task, (await client.get(f"/api/tasks/{plan_task['id']}")).json()["task"]):
+        assert task["result"]["data"]["plan"]["reply"] == "The reply is shown on the Supervisor request"
+    assert "web search" not in json.dumps(found).lower()
 
 
 async def test_purging_clears_the_query_from_stored_plans(client, make_worker, settings):
@@ -376,6 +383,27 @@ async def test_a_planned_search_whose_screen_fails_is_dropped(client, make_worke
     assert "marketing" not in " ".join(logs) and "marketing" not in json.dumps(plan_task.result["data"]["plan"])
     assert (row.status, row.reason_code, row.query_text, row.request_id) == ("blocked", "screen_error", None,
                                                                              request_id)
+
+
+async def test_a_planned_search_refused_as_busy_is_dropped_and_the_planning_goes_on(client, make_worker, settings,
+                                                                                   monkeypatch):
+    """The person's screening lock held elsewhere for longer than LOCK_WAIT_SECONDS: the step is dropped unscreened,
+    and the planning transaction stays usable (a try-lock that fails is not an error, as a lock timeout would be), so
+    the plan is stored and the request completes."""
+    await research_on("mock")
+    monkeypatch.setattr(intake, "LOCK_WAIT_SECONDS", 0.2)
+    request_id = await submit(client, "search the web for marketing ideas", who="operator")
+    async with person_lock_held(OPERATOR):
+        provider = await asyncio.wait_for(run(make_worker, settings), 30)
+    async with session_scope() as s:
+        planned = (await s.scalars(select(Task).where(Task.capability == "web_search"))).all()
+        plan_task = await s.scalar(select(Task).where(Task.capability == "plan_request"))
+        request = await s.get(SupervisorRequest, request_id)
+        rows = (await s.scalars(select(ResearchQuery))).all()
+    assert planned == [] and provider.calls == [] and rows == []
+    assert plan_task.status == "succeeded" and request.status == "completed"
+    assert request.plan["notes"] == ["dropped supervisor.web_search: refused_budget"]
+    assert "marketing" not in json.dumps(request.plan)
 
 
 async def test_a_planned_search_refused_when_it_runs_leaves_no_query_in_its_task_or_plan(client, make_worker,

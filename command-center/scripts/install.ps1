@@ -32,7 +32,7 @@ if ($LASTEXITCODE -ne 0) { Fail "fix the preflight problems above, then run inst
 
 Step "2/5 Configuration"
 if (Test-Path (Join-Path $root ".env")) {
-  Write-Host "Keeping the existing .env (adding any keys this version needs; existing values are not changed)."
+  Write-Host "Keeping the existing .env (keys are added only to a .env from before 0.2.0; existing values are never changed)."
   $global:LASTEXITCODE = 1
   & (Join-Path $scripts "init-env.ps1") -AddMissing
   if ($LASTEXITCODE -ne 0) { Fail "could not update .env" }

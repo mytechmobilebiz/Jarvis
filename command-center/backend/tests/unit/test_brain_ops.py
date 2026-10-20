@@ -132,6 +132,22 @@ def test_refusals_come_before_anything_and_say_nothing_changed():
         assert text.index("Assert-SameFingerprint $before $after") > max(changes), name
 
 
+def test_db_init_gets_no_anonymous_volume_and_remove_clears_one_handed_on():
+    """postgres:18.6-alpine declares VOLUME /var/lib/postgresql: without a mount there, each new db-init container got
+    an anonymous volume, which Compose hands on to the recreated one (Start always recreates), so "down --volumes" left
+    it behind. The test copy takes db-init from docker-compose.yml; a copy started before 0.7.0 still has the volume."""
+    assert compose("docker-compose.yml")["services"]["db-init"]["tmpfs"] == ["/var/lib/postgresql"]
+    assert set(compose("docker-compose.brain-test.yml")["services"]["db-init"]) == {"restart"}
+    text = script("brain-test.ps1")
+    remove = text[text.index('"Remove" {'):]
+    assert remove.index("$anonymous = @(Get-AnonymousVolumes $BrainTestProject)") < remove.index('"down", "--volumes"')
+    assert remove.index('Invoke-Docker @("volume", "rm", $volume)') < remove.index("$leftVolumes += @($anonymous")
+    assert remove.index("$leftVolumes += @($anonymous") < remove.index('"Test copy removed."')
+    common = script("brain-common.ps1")
+    helper = common[common.index("function Get-AnonymousVolumes"):common.index("function Get-ContainerInfo")]
+    assert "label=com.docker.volume.anonymous" in helper and "{{range .Mounts}}{{.Type}} {{.Name}}{{println}}{{end}}" in helper
+
+
 def test_typed_confirmations():
     assert 'Confirm-Typed "REMOVE TEST COPY"' in script("brain-test.ps1")
     jarvis = script("jarvis-import.ps1")

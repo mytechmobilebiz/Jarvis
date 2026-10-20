@@ -38,8 +38,29 @@ if ($DeleteData -and -not $SkipBackup) {
   if ($LASTEXITCODE -ne 0) { Write-Host "Backup failed; not deleting data. Re-run with -SkipBackup to override." -ForegroundColor Red; exit 1 }
 }
 
+# With -DeleteData, the anonymous volumes this project's containers use go too. "down --volumes" misses one that
+# Compose handed on to a recreated container (db-init's empty one, on installations from before 0.7.0) and it carries
+# no project label, so they are named here, before the containers go.
+$anonymous = @()
+if ($DeleteData) {
+  $unnamed = @(docker volume ls -q --filter "label=com.docker.volume.anonymous" | Where-Object { $_ })
+  foreach ($id in @(docker ps -aq --filter "label=com.docker.compose.project=$project" | Where-Object { $_ })) {
+    foreach ($mount in @(docker inspect --format '{{range .Mounts}}{{.Type}} {{.Name}}{{println}}{{end}}' $id)) {
+      $parts = @("$mount".Trim().Split(" ") | Where-Object { $_ })
+      if ($parts.Count -eq 2 -and $parts[0] -eq "volume" -and $unnamed -contains $parts[1] -and $anonymous -notcontains $parts[1]) {
+        $anonymous += $parts[1]
+      }
+    }
+  }
+}
+
 if ($DeleteData) { docker compose down --volumes --remove-orphans } else { docker compose down --remove-orphans }
 if ($LASTEXITCODE -ne 0) { Write-Host "docker compose down failed" -ForegroundColor Red; exit 1 }
+$present = @(docker volume ls -q | Where-Object { $_ })
+foreach ($volume in @($anonymous | Where-Object { $present -contains $_ })) {
+  docker volume rm $volume | Out-Null
+  if ($LASTEXITCODE -eq 0) { Write-Host "removed volume $volume (anonymous, of this project's containers)" }
+}
 
 # Web research: "down" removes only what the files in use declare, so these go by their labels.
 foreach ($key in @("research", "research_egress")) {
@@ -64,6 +85,8 @@ foreach ($image in @("infinite-command-center/backend:local", "infinite-command-
   if ($LASTEXITCODE -eq 0) { docker image rm $image | Out-Null; Write-Host "removed image $image" }
 }
 
-$left = docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}'
-if ($left) { Write-Host "Data volumes kept: $($left -join ', ')" } else { Write-Host "No data volumes remain." }
+$left = @(docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' | Where-Object { $_ })
+$present = @(docker volume ls -q | Where-Object { $_ })
+$left += @($anonymous | Where-Object { $present -contains $_ })
+if ($left.Count -gt 0) { Write-Host "Data volumes kept: $($left -join ', ')" } else { Write-Host "No data volumes remain." }
 Write-Host "Uninstalled. The folder $root (including .env with its secrets) is still on disk; delete it yourself when you no longer need it."

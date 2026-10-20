@@ -421,9 +421,10 @@ def test_a_persons_name_is_also_kept_as_pairs_of_its_words_and_a_leads_phone_as_
 def test_marks_are_made_from_two_word_names_and_business_domains_only():
     assert name_mark(PERSONAL_RECORD, "lead:1", person="Jane") is None
     assert name_mark(PERSONAL_RECORD, "lead:1", "", domains=("someone@outlook.com",)) is None
-    assert set(name_mark(PERSONAL_RECORD, "lead:1", person="Ana van der Berg").phrases) >= {
-        ("ana", "berg"), ("berg", "ana"), ("van", "berg"), ("ana", "van", "der", "berg")}
-    assert ("van", "der") not in name_mark(PERSONAL_RECORD, "lead:1", person="Ana van der Berg").phrases
+    berg = name_mark(PERSONAL_RECORD, "lead:1", person="Ana van der Berg")
+    assert set(berg.phrases) >= {("ana", "berg"), ("berg", "ana"), ("ana", "van", "der", "berg")}
+    assert not {("van", "der"), ("van", "berg"), ("ana", "der")} & set(berg.phrases)  # two other words name her
+    assert set(berg.people) == {frozenset({"ana", "berg"})}
     assert domain_mark("x", "", "https://www.Example-Shop.co.uk/a") == Mark("x", "", phrases=(("example", "shop"),),
                                                                             domains=("example-shop.co.uk",),
                                                                             labels=("exampleshop",))
@@ -434,12 +435,14 @@ def test_marks_are_made_from_two_word_names_and_business_domains_only():
 
 
 NAMES = ["Sacha Coe", "Dana Q. Whitfield", "Mary-Jane O'Neil", "Dr. Ana van der Berg", "Dana Global Whitfield",
-         "Lee D'Angelo Jr."]
+         "Lee D'Angelo Jr.", "Maria de la Cruz", "Al Smith", "Le Van Nguyen"]
 NAME_QUERIES = ["Sacha Coe", "Coe, Sacha", "Coe reviews Sacha", "Sacha Marie Ann Coe", "SachaCoe", "coesacha",
                 "s a c h a coe", "Sa cha Coe", "Sacha", "Dana Whitfield", "Whitfield reviews in Atlanta Dana",
                 "Dana Global", "global whitfield partners", "Mary ONeil", "Mary O'Neil", "Jane Oneil", "MaryJane",
                 "neil armstrong", "van der Waals", "Ana Berg", "Berg van", "dr ana", "Lee DAngelo", "angelo lee",
-                "Lee Jr", "Dana Q", "dana-whitfield", "Whitfield, Dana Q."]
+                "Lee Jr", "Dana Q", "dana-whitfield", "Whitfield, Dana Q.", "Santa Cruz de Tenerife weather",
+                "precio de la gasolina Maria", "Cruz, Maria", "MariaCruz", "Smith, Al", "al smith tax", "Nguyen Le",
+                "van Nguyen", "Le Van"]
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -453,3 +456,41 @@ def test_the_screen_and_the_credit_repair_index_read_a_name_alike(name):
         by_lead = screen_query(canonical(query), classes=EVERYTHING, stores=lead).code == PERSONAL_RECORD
         by_index = bool(client & blind_index.query_candidates(query))
         assert by_lead == by_index, (name, query, by_lead)
+
+
+@pytest.mark.parametrize("name, query, refused", [
+    ("Maria de la Cruz", "Santa Cruz de Tenerife weather", False),  # a particle and one name word: no name
+    ("Maria de la Cruz", "precio de la gasolina Maria", False),
+    ("Maria de la Cruz", "Cruz, Maria", True),
+    ("Maria de la Cruz", "maria de la cruz", True),
+    ("Ana van der Berg", "van Berg", False),
+    ("Al Smith", "Smith, Al", True),  # a name with one other word keeps its particle-like word
+    ("Le Van Nguyen", "Nguyen Le", True),
+    ("Le Van Nguyen", "Le Van", False),  # two particles name nobody
+])
+def test_a_name_particle_matches_with_another_word_only_when_the_name_has_no_two_other_words(name, query, refused):
+    from app.credit_repair import blind_index
+
+    lead = Stores(leads=[name_mark(PERSONAL_RECORD, "lead:1", person=name)])
+    assert (screen_query(canonical(query), classes=EVERYTHING, stores=lead).code == PERSONAL_RECORD) is refused
+    assert bool(blind_index.client_values(name, "", "") & blind_index.query_candidates(query)) is refused
+
+
+@pytest.mark.parametrize("query, code", [
+    ("CVE-2024-5550199 wordpress plugin", ""),  # a CVE id's digits are no phone number, on either side
+    ("cve-2024-5550199 cve-2025-1234 patch", ""),
+    ("CVE-2024-1234 and 5550199", PERSONAL_RECORD),
+    ("5550199", PERSONAL_RECORD),
+    ("call 555 0199", "contact_detail"),
+])
+def test_the_screen_and_the_credit_repair_index_read_a_number_alike(query, code):
+    """A lead's and a client's phone number give the same answer for every query, CVE ids included."""
+    from app.credit_repair import blind_index
+
+    lead = Stores(leads=[name_mark(PERSONAL_RECORD, "lead:1", phones=("(404) 555-0199",))])
+    client = blind_index.client_values("", "", "(404) 555-0199")
+    c = canonical(query)
+    by_lead = screen_query(c, classes=EVERYTHING, stores=lead).code
+    by_client = screen_query(c, classes=EVERYTHING,
+                             credit_repair_match=bool(client & blind_index.query_candidates(c.text))).code
+    assert by_lead == by_client == code

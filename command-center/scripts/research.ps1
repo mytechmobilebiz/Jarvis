@@ -9,11 +9,15 @@
 #
 # -Enable adds docker-compose.research.yml to COMPOSE_FILE in .env, -Disable removes it again (entries separated by
 # ';'). Every other entry (such as the remote-access tunnel) and every other line of .env stay as they are; .env is
-# copied to .env.before-research-<time> first. Both then run start.ps1 -NoBuild: the worker is recreated once (it
-# joins or leaves the private "research" network), PostgreSQL, n8n, the API and the dashboard keep running.
+# copied to .env.before-research-<time> first. When .env has no SEARXNG_SECRET (an upgraded installation: install and
+# upgrade never add it), -Enable creates it (32 random bytes, as init-env.ps1 does for a new .env) in that same write.
+# Both then run start.ps1 -NoBuild: the worker is recreated once (it joins or leaves the private "research" network),
+# PostgreSQL, n8n, the API and the dashboard keep running.
 # -Disable also removes the SearXNG container, its cache volume and its two networks (the image is kept).
 # -RotateSecret gives SEARXNG_SECRET a new random value and recreates only the SearXNG container.
-# None of them runs while the JARVIS Brain test copy or a JARVIS import is running. No secret is ever printed.
+# None of them runs while the JARVIS Brain test copy or a JARVIS import is running, or changes a read-only .env. .env
+# is replaced in one step (written next to it, then swapped in): a write that fails leaves it as it was and stops the
+# script before anything else runs. No secret is ever printed.
 # Exit codes: 0 done; 1 failed; 2 not run (a check refused; nothing was changed).
 param([switch]$Enable, [switch]$Disable, [switch]$Status, [switch]$RotateSecret)
 
@@ -47,42 +51,86 @@ function Get-ComposeFileLines {
   return @(Get-Content -LiteralPath $envFile | Where-Object { $_ -match '^\s*(export\s+)?COMPOSE_FILE\s*=' })
 }
 
-function Write-EnvLines([scriptblock]$change, [string]$append = "") {
-  # Copies .env to .env.before-research-<time>, then rewrites it in one write: $change gets each line and returns the
-  # line to keep, or $null to drop it; $append, if given, becomes the last line. Other lines stay as they are; LF line
-  # endings, UTF-8 without BOM.
+function Get-SecretLines {
+  # The lines of .env that set SEARXNG_SECRET.
+  return @(Get-Content -LiteralPath $envFile | Where-Object { $_ -match '^\s*(export\s+)?SEARXNG_SECRET\s*=' })
+}
+
+function Assert-EnvWritable {
+  # Before anything changes: a read-only .env (its attribute on Windows, its permissions elsewhere) is not replaced.
+  if ((Get-Item -LiteralPath $envFile -Force).IsReadOnly) { Stop-Research ".env is read-only; make it writable (or run this as its owner) and try again" }
+}
+
+function Write-EnvLines([scriptblock]$change, [string[]]$append = @()) {
+  # Copies .env to .env.before-research-<time>, then replaces it in one step: the new text is written to
+  # .env.research-tmp and swapped in, so .env is never left half-written. $change gets each line and returns the line
+  # to keep, or $null to drop it; the lines of $append, if any, come last. Other lines stay as they are; LF line
+  # endings, UTF-8 without BOM. If anything fails (a file locked by antivirus or sync software, a full disk, no
+  # permission), .env is as it was and the script stops here (exit 1): start.ps1 never runs on a .env it did not write.
   $stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
   $copy = Join-Path $root ".env.before-research-$stamp"
-  Copy-Item -LiteralPath $envFile -Destination $copy -Force
-  $text = [IO.File]::ReadAllText($envFile)
-  $lines = New-Object System.Collections.Generic.List[string]
-  foreach ($line in ($text -split "`r?`n")) { $lines.Add($line) }
-  # A final line break leaves one empty piece at the end: not a line of its own.
-  if ($text.EndsWith("`n") -and $lines.Count -gt 0) { $lines.RemoveAt($lines.Count - 1) }
-  $out = New-Object System.Collections.Generic.List[string]
-  foreach ($line in $lines) {
-    $kept = & $change $line
-    if ($null -ne $kept) { $out.Add([string]$kept) }
+  $tmp = "$envFile.research-tmp"
+  $written = ""
+  try {
+    Copy-Item -LiteralPath $envFile -Destination $copy -Force -ErrorAction Stop
+    $text = [IO.File]::ReadAllText($envFile)
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($line in ($text -split "`r?`n")) { $lines.Add($line) }
+    # A final line break leaves one empty piece at the end: not a line of its own.
+    if ($text.EndsWith("`n") -and $lines.Count -gt 0) { $lines.RemoveAt($lines.Count - 1) }
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $lines) {
+      $kept = & $change $line
+      if ($null -ne $kept) { $out.Add([string]$kept) }
+    }
+    foreach ($extra in $append) { if ($extra) { $out.Add($extra) } }
+    $written = ($out -join "`n") + "`n"
+    [IO.File]::WriteAllText($tmp, $written, (New-Object System.Text.UTF8Encoding $false))
+    # No backup file (the copy above is the backup). PowerShell would pass $null as "", which File.Replace refuses.
+    [IO.File]::Replace($tmp, $envFile, [System.Management.Automation.Language.NullString]::Value)
+  } catch {
+    $why = $_.Exception
+    if ($why.InnerException) { $why = $why.InnerException }
+    if (Test-Path -LiteralPath $tmp -PathType Leaf) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    Write-Host "FAILED: .env could not be written ($($why.GetType().Name)); it is unchanged and nothing else was done." -ForegroundColor Red
+    Write-Host "Close any program that holds .env open, check the free disk space and the file's permissions, then run this again."
+    exit 1
   }
-  if ($append) { $out.Add($append) }
-  [IO.File]::WriteAllText($envFile, (($out -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding $false))
+  if ([IO.File]::ReadAllText($envFile) -cne $written) {
+    Write-Host "FAILED: .env does not hold what was just written; nothing else was done. The previous copy is $copy." -ForegroundColor Red
+    exit 1
+  }
   Write-Host "Updated .env (the previous copy is $copy)."
 }
 
-function Set-ComposeFile([string[]]$entries) {
-  # COMPOSE_FILE becomes these entries; only docker-compose.yml (Compose's default) removes the line.
+function Set-ComposeFile([string[]]$entries, [string]$newSecret = "") {
+  # COMPOSE_FILE becomes these entries; only docker-compose.yml (Compose's default) removes the line. With $newSecret,
+  # the same write also sets SEARXNG_SECRET: on its (empty) line, or as a new last line.
   $value = ($entries -join ";")
   $dropLine = ($entries.Count -eq 0) -or ($entries.Count -eq 1 -and $entries[0] -eq "docker-compose.yml")
-  if ((Get-ComposeFileLines).Count -eq 0) {
-    if (-not $dropLine) { Write-EnvLines { param($line) $line } "COMPOSE_FILE=$value" }
-    return
-  }
+  $hasLine = (Get-ComposeFileLines).Count -gt 0
+  $append = @()
+  if (-not $hasLine -and -not $dropLine) { $append += "COMPOSE_FILE=$value" }
+  if ($newSecret -and (Get-SecretLines).Count -eq 0) { $append += "SEARXNG_SECRET=$newSecret" }
+  if (-not $hasLine -and -not $newSecret -and $append.Count -eq 0) { return }
   Write-EnvLines ({
     param($line)
+    if ($newSecret -and $line -match '^\s*(export\s+)?SEARXNG_SECRET\s*=') { return "SEARXNG_SECRET=$newSecret" }
     if ($line -notmatch '^\s*(export\s+)?COMPOSE_FILE\s*=') { return $line }
     if ($dropLine) { return $null }
     return "COMPOSE_FILE=$value"
-  }.GetNewClosure())
+  }.GetNewClosure()) $append
+}
+
+function Set-Secret([string]$newSecret) {
+  # SEARXNG_SECRET gets this value in one write: on its line, or as a new last line. Nothing else changes.
+  $append = @()
+  if ((Get-SecretLines).Count -eq 0) { $append += "SEARXNG_SECRET=$newSecret" }
+  Write-EnvLines ({
+    param($line)
+    if ($line -match '^\s*(export\s+)?SEARXNG_SECRET\s*=') { return "SEARXNG_SECRET=$newSecret" }
+    return $line
+  }.GetNewClosure()) $append
 }
 
 function Get-SearxngContainers([string]$project) {
@@ -168,8 +216,9 @@ function Show-Status {
   if ($listed) { Write-Host "Switched on in .env: COMPOSE_FILE=$($entries -join ';')" -ForegroundColor Green }
   else { Write-Host "Not switched on (docker-compose.research.yml is not in COMPOSE_FILE in .env)." }
   if ($secret.Length -ge $ResearchSecretMin) { Write-Host "SEARXNG_SECRET: set ($($secret.Length) characters)" }
-  elseif ($secret) { Write-Host "SEARXNG_SECRET: too short ($($secret.Length) characters, at least $ResearchSecretMin)" -ForegroundColor Yellow }
-  else { Write-Host "SEARXNG_SECRET: missing (run .\scripts\init-env.ps1 -AddMissing)" -ForegroundColor Yellow }
+  elseif ($secret) { Write-Host "SEARXNG_SECRET: too short ($($secret.Length) characters, at least $ResearchSecretMin): run .\scripts\research.ps1 -RotateSecret, then -Enable" -ForegroundColor Yellow }
+  elseif ($listed) { Write-Host "SEARXNG_SECRET: missing: run .\scripts\research.ps1 -Enable" -ForegroundColor Yellow }
+  else { Write-Host "SEARXNG_SECRET: not set yet (research.ps1 -Enable creates it)" }
   foreach ($file in @($ResearchComposeFile, "research\searxng\settings.yml", "research\searxng\limiter.toml")) {
     if (Test-Path -LiteralPath (Join-Path $root $file) -PathType Leaf) { Write-Host "$($file): present" } else { Write-Host "$($file): MISSING" -ForegroundColor Yellow }
   }
@@ -210,15 +259,13 @@ if ($env:COMPOSE_FILE -and -not ($env:CC_COMPOSE_FILE_SET -and $env:COMPOSE_FILE
 }
 
 if ($RotateSecret) {
-  if ((@(Get-Content -LiteralPath $envFile | Where-Object { $_ -match '^\s*SEARXNG_SECRET\s*=' })).Count -ne 1) {
-    Stop-Research ".env needs exactly one SEARXNG_SECRET line; run .\scripts\init-env.ps1 -AddMissing first"
-  }
+  $secretLines = (Get-SecretLines).Count
+  if ($secretLines -eq 0) { Stop-Research "SEARXNG_SECRET is not set: research.ps1 -Enable creates it" }
+  if ($secretLines -gt 1) { Stop-Research ".env sets SEARXNG_SECRET more than once; keep one line and run this again" }
+  Assert-EnvWritable
+  $wasShort = $secret.Length -lt $ResearchSecretMin  # the scripts then ran without the research file
   $new = New-Secret 32
-  Write-EnvLines ({
-    param($line)
-    if ($line -match '^\s*SEARXNG_SECRET\s*=') { return "SEARXNG_SECRET=$new" }
-    return $line
-  }.GetNewClosure())
+  Set-Secret $new
   Remove-Variable new
   Write-Host "SEARXNG_SECRET has a new value (not shown)."
   $research = Use-ComposeEnv $root
@@ -226,6 +273,7 @@ if ($RotateSecret) {
   docker compose up -d --no-deps searxng
   if ($LASTEXITCODE -ne 0) { Write-Host "SearXNG could not be recreated with the new value; see the message above." -ForegroundColor Red; exit 1 }
   Write-Host "SearXNG was recreated with the new value." -ForegroundColor Green
+  if ($wasShort) { Write-Host "The previous value was too short, so the worker may run without the search network: run .\scripts\research.ps1 -Enable to reconnect it." -ForegroundColor Yellow }
   exit 0
 }
 
@@ -233,24 +281,35 @@ if ($Enable) {
   foreach ($needed in @($ResearchComposeFile, "research\searxng\settings.yml")) {
     if (-not (Test-Path -LiteralPath (Join-Path $root $needed) -PathType Leaf)) { Stop-Research "$needed is missing; extract the whole package again" }
   }
-  if ($secret.Length -lt $ResearchSecretMin) {
-    Stop-Research "SEARXNG_SECRET is missing or shorter than $ResearchSecretMin characters; run .\scripts\init-env.ps1 -AddMissing first"
+  if ((Get-SecretLines).Count -gt 1) { Stop-Research ".env sets SEARXNG_SECRET more than once; keep one line and run this again" }
+  if ($secret -and $secret.Length -lt $ResearchSecretMin) {
+    Stop-Research "SEARXNG_SECRET in .env is shorter than $ResearchSecretMin characters; give it a new value with .\scripts\research.ps1 -RotateSecret, then run -Enable again"
   }
+  # Missing (an upgraded .env): created here, 32 random bytes as init-env.ps1 makes it, and written in the same write
+  # as COMPOSE_FILE (after the same copy of .env). No stored data depends on it.
+  $new = if ($secret) { "" } else { New-Secret 32 }
+  if ($new -or -not $listed) { Assert-EnvWritable }
   if ($listed) {
     Write-Host "docker-compose.research.yml is already in COMPOSE_FILE; starting what is missing."
+    if ($new) { Set-Secret $new }
   } else {
     if ($entries.Count -eq 0) { $entries = @("docker-compose.yml") }
     $wanted = @($entries) + @($ResearchComposeFile)
-    # Checked before .env changes: Compose must accept the files together and list the search service.
+    # Checked before .env changes: Compose must accept the files together and list the search service. A secret
+    # created above is given to this check only (a value set in this window wins over .env) and removed right after.
     $env:COMPOSE_FILE = $wanted -join ";"
+    if ($new) { $env:SEARXNG_SECRET = $new }
     $services = @(docker compose config --services 2>$null)
     $checked = $LASTEXITCODE
-    Remove-Item Env:COMPOSE_FILE -ErrorAction SilentlyContinue
+    Remove-Item Env:COMPOSE_FILE, Env:SEARXNG_SECRET -ErrorAction SilentlyContinue
     if ($checked -ne 0 -or $services -notcontains "searxng" -or $services -notcontains "worker") {
       Stop-Research "docker compose did not accept COMPOSE_FILE=$($wanted -join ';'); run docker compose config to see why"
     }
-    Set-ComposeFile $wanted
+    Set-ComposeFile $wanted $new
   }
+  if ($new) { Write-Host "Added SEARXNG_SECRET to .env (not shown); no stored data depends on it." }
+  Remove-Variable new
+  Remove-Item Env:SEARXNG_SECRET -ErrorAction SilentlyContinue  # from here .env is the only source
   $global:LASTEXITCODE = 1  # stays 1 if the script cannot run at all
   & (Join-Path $PSScriptRoot "start.ps1") -NoBuild
   $started = $LASTEXITCODE -eq 0
@@ -262,6 +321,7 @@ if ($Enable) {
 }
 
 if ($Disable) {
+  if ($listed) { Assert-EnvWritable }  # before the container goes
   $null = Use-ComposeEnv $root  # so Compose can read its files even without the secret
   $project = Get-ComposeProjectName
   $ids = Get-SearxngContainers $project

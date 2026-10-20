@@ -5,9 +5,31 @@ Compose project, **`infinite-command-center`**, with its own containers,
 network and volumes, so it does not touch XAMPP or other Docker projects
 (including the Foundation Starter, project `infinite-ai-command-center`).
 
+> **Security notice, 2026-10-20: 0.7.0, 0.6.1 and 0.6.0 are NO-GO, for
+> installation and for any JARVIS import.** A verification of the published
+> 0.6.1 found a high-severity defect, reproduced three times independently on
+> the exact published code. The text of a JARVIS message that an admin
+> withheld comes back when a **later** JARVIS backup is imported. JARVIS's
+> compaction stores copies of messages under new identifiers, and the
+> importer withholds only the identifier that was withheld, so a copy is
+> imported with its text. Operators, admins, the Supervisor's history and
+> recall, and newly promoted memory items can then read it (viewers cannot),
+> and the verification commands still report success. 0.6.0 has the same
+> defect, and 0.7.0 (web research, built on 0.6.1) carries 0.6.1's importer
+> unchanged.
+>
+> - Do not install 0.7.0, 0.6.1 or 0.6.0, and do not import JARVIS data
+>   with 0.7.0 or any 0.6.x release.
+> - If you are still on 0.5.0, stay there. A corrected 0.6.2 is being
+>   prepared, with a direct 0.5.0 -> 0.6.2 guide. It will be published only
+>   after its security reviews pass; web research follows in a 0.7 release
+>   that contains its fix.
+> - An installation of 0.6.0 or 0.6.1 that has imported nothing holds no
+>   JARVIS data and is not exposed: leave it as it is and import nothing.
+
 | What | Where |
 |---|---|
-| Installation package | `InfiniteAI-CommandCenter-0.6.1-windows.zip` (in the GitHub repo at `command-center/releases/` on the branch `jarvis-migration`, with a `.sha256` file) |
+| Installation package | **None is GO at the moment** (security notice above): stay on 0.5.0. The newest package, `InfiniteAI-CommandCenter-0.7.0-windows.zip` (in the GitHub repo at `command-center/releases/`, with a `.sha256` file), is NO-GO. |
 | Source | GitHub `mytechmobilebiz/Jarvis`, branch `jarvis-migration` (0.6.1 and 0.6.0; 0.5.1 and earlier on `ccr-eb27a2af-8u7i39`), folder `command-center/` |
 | Install location on the PC | `C:\InfiniteAI\InfiniteAI-CommandCenter` (outside `C:\xampp`) |
 | Dashboard | http://localhost:8090 (bound to 127.0.0.1 only) |
@@ -27,13 +49,17 @@ No database port is published, so XAMPP's MySQL/MariaDB is never involved.
 
 ## Install (PowerShell, as your normal user, no administrator needed)
 
+**Not now:** no package after 0.5.0 is GO (security notice at the top). The
+steps below are for a package once it is GO; they name 0.7.0's file because
+it is the package these documents came with.
+
 The scripts are run with `-ExecutionPolicy Bypass` for that one process only;
 the machine-wide execution policy is not changed. `preflight.ps1` and
 `status.ps1` are read-only; read any script first if you wish.
 
-1. Download `InfiniteAI-CommandCenter-0.6.1-windows.zip` and, optionally,
+1. Download `InfiniteAI-CommandCenter-0.7.0-windows.zip` and, optionally,
    check it against the `.sha256` file:
-   `Get-FileHash .\InfiniteAI-CommandCenter-0.6.1-windows.zip -Algorithm SHA256`
+   `Get-FileHash .\InfiniteAI-CommandCenter-0.7.0-windows.zip -Algorithm SHA256`
 2. Extract it to `C:\InfiniteAI` (you get `C:\InfiniteAI\InfiniteAI-CommandCenter`).
 3. Open PowerShell and run:
 
@@ -58,7 +84,7 @@ and run the same command from `Jarvis\command-center`.
 
 ## Environment variables
 
-`init-env.ps1` writes all of these; see `.env.example` for the full list.
+`init-env.ps1` writes all of these except `COMPOSE_FILE`; see `.env.example` for the full list.
 
 | Variable | Purpose |
 |---|---|
@@ -70,10 +96,33 @@ and run the same command from `Jarvis\command-center`.
 | `N8N_WEBHOOK_SECRET` | Command Center calling n8n's event webhook |
 | `N8N_ENCRYPTION_KEY` | Encrypts n8n's stored credentials. **Back it up.** |
 | `N8N_OWNER_PASSWORD` | n8n editor sign-in |
+| `SEARXNG_SECRET` | Only for web research's search service (SearXNG). A new `.env` has it; on an upgraded `.env`, `scripts\research.ps1 -Enable` creates it when the search service is switched on. Not needed while web research is off. |
+| `COMPOSE_FILE` (optional) | Extra Compose files, separated by `;`. Written only by `scripts\research.ps1 -Enable`/`-Disable` and the remote-access steps; absent while both are off. |
 | `ANTHROPIC_API_KEY` (optional) | Deployment default for Claude; normally leave empty and enter your key on the dashboard's Settings page instead (stored encrypted) |
 | `DASHBOARD_PORT`, `N8N_PORT`, `TZ` | Local ports and time zone |
 
-Upgrading to 0.6.1 (from 0.6.0, or from 0.5.0 directly) needs no new keys
+**Upgrading to 0.7.0 is NO-GO** (security notice at the top): there is no
+0.7.0 guide, and the way to web research will be 0.5.0 -> 0.6.2 -> a 0.7
+release that contains 0.6.2's fix (or 0.5.0 straight to that release). For
+reference, installing the 0.7.0 package needs no new keys and does not change
+`.env`: `install.ps1` leaves it byte for byte, and `SEARXNG_SECRET` is not
+added. Two migrations add tables: `0008_research` in the Command Center's
+database (empty apart from the default research permissions of the agents)
+and `0002_research_index` in the Credit Repair database (the match index,
+filled at every start, below). Web research stays off:
+nothing of SearXNG is downloaded or started, and `status.ps1` shows "Web
+research search service (SearXNG): switched off". At every start the API and
+the worker rebuild the Credit Repair match index (they decrypt each client's
+name, e-mail and phone number inside the Command Center; the Credit Repair
+access log shows it). What changed, how web research is switched on later,
+going back (to 0.5.0, never to 0.6.x) and the tests:
+[RELEASE_NOTES_0.7.0.md](RELEASE_NOTES_0.7.0.md) and
+[RESEARCH_GATEWAY.md](RESEARCH_GATEWAY.md); the verdict:
+[releases/GO_NO_GO_0.7.0.md](../releases/GO_NO_GO_0.7.0.md) (on GitHub, in
+`command-center/releases/` next to the zip; it is not inside the zip).
+
+**Upgrading to 0.6.1 is NO-GO** (security notice at the top). For reference:
+upgrading to 0.6.1 (from 0.6.0, or from 0.5.0 directly) needs no new keys
 and changes no existing data. Its migration `0007_brain_withhold` replaces one
 check on a JARVIS Brain table (it allows one more value) and adds two
 indexes; `db-init` sets short PostgreSQL error messages for the Command
@@ -85,11 +134,12 @@ from the import records. Step by step from 0.6.0:
 (on GitHub, in `command-center/releases/` on the branch `jarvis-migration`,
 next to the zip; it is not inside the zip);
 what changed, going back and the tests:
-[RELEASE_NOTES_0.6.1.md](RELEASE_NOTES_0.6.1.md). Install 0.6.1 on the live
-installation, and use 0.6.1 for the test copy, before the JARVIS import
-below.
+[RELEASE_NOTES_0.6.1.md](RELEASE_NOTES_0.6.1.md). Do not install 0.6.1, and
+do not use it (or 0.6.0 or 0.7.0) for the test copy or any JARVIS import
+below: security notice at the top.
 
-Upgrading to 0.6.0 (from 0.5.0 directly, or from 0.5.1) needs no new keys
+**Upgrading to 0.6.0 is NO-GO** (security notice at the top). For reference:
+upgrading to 0.6.0 (from 0.5.0 directly, or from 0.5.1) needs no new keys
 and changes no existing data: one migration adds the nine empty JARVIS Brain
 tables; `.env`, the agents, approval rules, PostgreSQL and n8n volumes stay as
 they are, and memory in AI prompts is off. **Installing 0.5.1 first is not
@@ -263,6 +313,10 @@ code until it is reloaded.
 verified, the old one can be deleted; keep its `backups\` folder.
 
 ## JARVIS Brain: test copy and import
+
+> **NO-GO now:** do not run any step of this section with 0.6.0, 0.6.1 or
+> 0.7.0, on the test copy or on the live installation (security notice at
+> the top). It describes the procedure for the corrected release.
 
 JARVIS's knowledge and history come into the Command Center's memory in
 stages: first into a **test copy** on this PC, where you review everything,

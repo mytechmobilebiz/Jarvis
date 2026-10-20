@@ -1,15 +1,16 @@
 """The Credit Repair match index: lets the Research Gateway refuse a web search that names a client, without the
 gateway ever seeing a client's data.
 
-For each client the index (cr_research_index, in the Credit Repair database) holds HMAC-SHA256 values of: every pair
-of words of the full name and the full name itself, also written as one word ("SachaCoe"), each also with an
-apostrophe inside a word dropped ("O'Brien" as "brien" and "obrien"), the e-mail address and the phone number's digits
-(also its last seven, the local number). The words are read as the research screen reads a lead's name (the same
-common words left out), and a query's pairs are any two of its words however far apart, so a Credit Repair name and a
-lead's are refused alike. The CR-0001 reference is not indexed: the screen refuses every reference shape, whether or
-not the client exists. The key is derived from CREDIT_REPAIR_DATA_KEY with HKDF (label "research-index"), so it is
-neither the field-encryption key nor stored anywhere. The gateway hands over the same HMAC values of the parts of its
-query, and matches() answers True or False: nothing is decrypted for it and nothing else leaves this module.
+For each client the index (cr_research_index, in the Credit Repair database) holds HMAC-SHA256 values of: the pairs
+of words of the full name that name the person (canon.name_pairs, as for a lead) and the full name itself, also written
+as one word ("SachaCoe"), each also with an apostrophe inside a word dropped ("O'Brien" as "brien" and "obrien"), the
+e-mail address and the phone number's digits (also its last seven, the local number). The words are read as the
+research screen reads a lead's name (the same common words left out), a query's pairs are any two of its words however
+far apart, and its numbers are read without CVE ids, so a Credit Repair name and a lead's are refused alike. The CR-0001
+reference is not indexed: the screen refuses every reference shape, whether or not the client exists. The key is
+derived from CREDIT_REPAIR_DATA_KEY with HKDF (label "research-index"), so it is neither the field-encryption key nor
+stored anywhere. The gateway hands over the same HMAC values of the parts of its query, and matches() answers True or
+False: nothing is decrypted for it and nothing else leaves this module.
 
 The index is filled when a client is created or changed (app/api/credit_repair.py), and rebuilt as a whole for every
 client at every start (rebuild(), run by store.migrate()): rows left by a restore of an older backup or by an older
@@ -28,7 +29,6 @@ import hashlib
 import hmac
 import logging
 import re
-from itertools import permutations
 
 from cryptography.fernet import InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -39,12 +39,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings
 from ..research.canon import (
-    NAME_PARTICLES,
     STOP_WORDS,
-    digit_runs,
     fold,
     join_spelled,
+    name_pairs,
     phone_numbers,
+    query_runs,
     spelled_out,
     tokens,
     unapostrophe,
@@ -56,8 +56,9 @@ log = logging.getLogger(__name__)
 HKDF_LABEL = b"research-index"
 KINDS = ("name_pair", "name_joined", "full_name", "email", "phone", "reference")  # "reference": no rows since version 2
 # The rows' version: a change in what they hold (a new kind, another normal form) makes matches() refuse until the
-# next start has rebuilt them. 2: apostrophe forms, the screen's common words left out, no reference rows.
-INDEX_VERSION = 2
+# next start has rebuilt them. 2: apostrophe forms, the screen's common words left out, no reference rows. 3: no pair of
+# a name particle with another word when the name has two other words (canon.name_pairs).
+INDEX_VERSION = 3
 LOCK_ID = 7_314_002_213  # pg_advisory_xact_lock: one rebuild at a time (the API and the worker both start one)
 MAX_NAME_WORDS = 6
 MIN_JOINED = 6  # a name written as one word is compared from this length ("sachacoe"), as in the research screen
@@ -105,7 +106,7 @@ def client_values(full_name: str, email: str, phone: str) -> set[tuple[str, str]
         words = list(dict.fromkeys(form))[:MAX_NAME_WORDS]
         if len(words) >= 2:
             values.add(("full_name", " ".join(words)))
-            pairs = [pair for pair in permutations(words, 2) if not set(pair) <= NAME_PARTICLES]  # "van der" is no name
+            pairs = name_pairs(words)  # "van der", or "de" with "cruz" in "Maria de la Cruz", is no name
             values.update(("name_pair", " ".join(sorted(pair))) for pair in pairs)
             joined = {"".join(words), *("".join(pair) for pair in pairs)}
             values.update(("name_joined", j) for j in joined if len(j) >= MIN_JOINED)
@@ -117,7 +118,7 @@ def client_values(full_name: str, email: str, phone: str) -> set[tuple[str, str]
 
 def query_candidates(text: str) -> set[tuple[str, str]]:
     """(kind, normalized value) for the parts of a query that could name a client: its words as typed and spelled
-    together ("d a n a"), with and without inner apostrophes."""
+    together ("d a n a"), with and without inner apostrophes, and its numbers without CVE ids."""
     skel = fold(text)
     values: set[tuple[str, str]] = set()
     for words in name_forms(skel) + name_forms(join_spelled(skel)):
@@ -131,7 +132,7 @@ def query_candidates(text: str) -> set[tuple[str, str]]:
         values.update(("name_joined", w) for w in words if len(w) >= MIN_JOINED)  # "SachaCoe"
     for view in (skel, spelled_out(skel)):
         values.update(("email", m.group(0)) for m in EMAIL.finditer(view))
-    for run in digit_runs(skel):
+    for run in query_runs(text):  # CVE ids aside, as the screen reads a lead's number
         values.update(("phone", n) for n in phone_numbers(run))
     return values
 

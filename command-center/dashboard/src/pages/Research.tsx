@@ -137,6 +137,7 @@ export const REASONS: Record<string, string> = {
   contact_detail: "it contains an e-mail address or a phone number",
   personal_record: "it names a person or business from this business's own records",
   too_many_blocked: "too many of this person's searches were refused today (as many as their daily search cap, or 5 naming this business's own records)",
+  busy: "another search by the same person was being checked; not screened, try again",
   credit_repair_index_incomplete: "the Credit Repair check is not ready",
   matches_private_text: "it repeats private text from the JARVIS archive or memory",
   internal_host: "it names an internal address, host or server",

@@ -1,7 +1,8 @@
 # Research Gateway: the SearXNG files have moved
 
 The proposed files that were reviewed here are now in their real places
-(0.7.0-dev, unchanged from the reviewed copies):
+(0.7.0, unchanged from the reviewed copies except the compose file's
+missing-secret hint, which now names `scripts/research.ps1 -Enable`):
 
 - [`../../docker-compose.research.yml`](../../docker-compose.research.yml): the
   optional overlay, switched on by `scripts\research.ps1 -Enable`.
@@ -9,6 +10,6 @@ The proposed files that were reviewed here are now in their real places
   and [`limiter.toml`](../../research/searxng/limiter.toml): the read-only
   SearXNG configuration.
 
-What the development build contains and how it is switched on:
+What 0.7.0 contains and how it is switched on:
 [../RESEARCH_GATEWAY.md](../RESEARCH_GATEWAY.md). The design:
 [../RESEARCH_GATEWAY_PLAN.md](../RESEARCH_GATEWAY_PLAN.md).

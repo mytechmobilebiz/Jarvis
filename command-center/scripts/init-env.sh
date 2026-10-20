@@ -11,11 +11,13 @@ cd "$(dirname "$0")/.."
 
 secret() { python3 -c "import secrets; print(secrets.token_urlsafe($1))"; }
 
-# Upgrade: append keys added since 0.1.0 to an existing .env; never changes existing values.
+# Upgrade: append keys added since 0.1.0 to an existing .env; never changes existing values. A .env from 0.2.0 or
+# later has them all and is left as it is. SEARXNG_SECRET is not added here: scripts/research.ps1 -Enable creates it
+# when web research is switched on.
 if [[ "${1:-}" == "--add-missing" ]]; then
   [[ -e .env ]] || { echo "No .env to upgrade." >&2; exit 1; }
   added=()
-  for spec in CC_SECRETS_KEY:32 CREDIT_REPAIR_DB_PASSWORD:24 CREDIT_REPAIR_DATA_KEY:32 SEARXNG_SECRET:32; do
+  for spec in CC_SECRETS_KEY:32 CREDIT_REPAIR_DB_PASSWORD:24 CREDIT_REPAIR_DATA_KEY:32; do
     key="${spec%%:*}"
     if ! grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*[^[:space:]]" .env; then
       sed -i -E "/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*$/d" .env

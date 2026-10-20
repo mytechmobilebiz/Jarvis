@@ -127,6 +127,24 @@ function Get-ProjectContainers([string]$project, [string]$service, [switch]$Runn
   return @($r.Out | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 }
 
+function Get-AnonymousVolumes([string]$project) {
+  # The anonymous volumes (label com.docker.volume.anonymous) that the project's containers have mounted.
+  $r = Invoke-Docker @("volume", "ls", "-q", "--filter", "label=com.docker.volume.anonymous")
+  if ($r.Code -ne 0) { throw "docker volume ls failed" }
+  $unnamed = @($r.Out | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+  $found = @()
+  foreach ($id in @(Get-ProjectContainers $project "")) {
+    $r = Invoke-Docker @("inspect", "--format", "{{range .Mounts}}{{.Type}} {{.Name}}{{println}}{{end}}", $id)
+    foreach ($line in $r.Out) {
+      $parts = @("$line".Trim().Split(" ") | Where-Object { $_ })
+      if ($parts.Count -eq 2 -and $parts[0] -eq "volume" -and $unnamed -contains $parts[1] -and $found -notcontains $parts[1]) {
+        $found += $parts[1]
+      }
+    }
+  }
+  return $found
+}
+
 function Get-ContainerInfo([string]$id) {
   # Name, image ID, the image name it was created from, labels, state and health of one container, or $null.
   $r = Invoke-Docker @("inspect", "--format", "{{json .}}", $id)

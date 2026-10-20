@@ -10,9 +10,11 @@ exception, so a capability can report it and the task's log stays intact.
     run on the dashboard, a Supervisor request a person typed on the dashboard, a person's retry, or an admin's
     connectivity test. Schedules, n8n and the service token are refused, and so is anyone but an admin or operator.
  2. Not for a person who reached today's limit of personal_record refusals (app/research/intake.py); then the
-    canonical form and the screen (app/research/screen.py). A blocked query keeps only its reason code, and its text
-    is removed from the task's parameters and from the stored plan of the Supervisor request behind it (a lead, a
-    client or archive text added after the task was queued).
+    canonical form and the screen (app/research/screen.py), under the person's screening lock (intake.lock_person)
+    until a refusal is recorded (a lock that is not free within intake.LOCK_WAIT_SECONDS refuses: busy). A blocked
+    query keeps only its reason code, and its text is removed from the task's parameters and from the stored plan of
+    the Supervisor request behind it (a lead, a client or archive text added after the task was queued). A blocked
+    query whose row could not be recorded answers screen_error, never its own code.
  3. The cache: a hit is answered from it (not for the admin's connectivity test, which always asks the provider);
     an identical search in flight is waited for.
  4. Engines that are cooling down are left out (all of them: provider_down, nothing sent); then a budget and
@@ -111,6 +113,14 @@ def check_options(count: object, language: object, time_range: object, page: obj
     return {"count": count, "language": language, "time_range": time_range, "page": page}
 
 
+async def _abandon(session: AsyncSession) -> None:
+    """Ends a transaction that a failed statement may have left unusable (its locks go with it)."""
+    try:
+        await session.rollback()
+    except Exception as exc:  # noqa: BLE001 - the refusal stands
+        log.warning("research screening transaction not rolled back (%s)", exc.__class__.__name__)
+
+
 class _Stop(Exception):
     """Ends the pipeline with this answer (already recorded)."""
 
@@ -149,7 +159,8 @@ class Gateway:
     async def _refuse(self, attempt: store.Attempt, status: str, reason: str, *, mode: str, provider: str = "",
                       ref: str = "", query_text: str | None = None, options: dict[str, Any] | None = None,
                       retry_after: int | None = None) -> ResearchResponse:
-        """Records a refused or failed attempt (codes only) and answers with it. Recording failures are logged."""
+        """Records a refused or failed attempt (codes only) and answers with it. Recording failures are logged; a
+        blocked attempt that could not be recorded answers screen_error."""
         log.info("research %s for %s: %s", status, attempt.agent, reason)
         query_id = None
         try:
@@ -157,6 +168,9 @@ class Gateway:
                                                ref=ref, query_text=query_text, options=options, at=self.clock())
         except Exception as exc:  # noqa: BLE001 - the refusal stands without its row
             log.warning("research attempt not recorded (%s)", exc.__class__.__name__)
+            if status == "blocked":
+                # Not counted by intake.refused_today(), so it never answers with its code (see intake._refuse).
+                reason = "screen_error"
         return ResearchResponse(status=status, reason=reason, query_id=query_id, provider=provider,
                                 query=query_text or "", options=(options or {}) if query_text else {},
                                 retry_after=retry_after)
@@ -234,32 +248,20 @@ class Gateway:
             except ValueError:
                 return await self._refuse(attempt, "bad_request", "invalid_options", mode=mode, provider=provider)
 
-            # 2. The person's personal_record refusals today, the canonical form and the screen.
-            if attempt.requested_by:
-                try:
-                    async with session_scope() as session:
-                        _, named = await intake.refused_today(session, attempt.requested_by)
-                except Exception as exc:  # noqa: BLE001 - a count that cannot be read refuses
-                    log.warning("research refusal count failed (%s)", exc.__class__.__name__)
-                    return await self._refuse(attempt, "refused_policy", "policy_error", mode=mode)
-                if named >= intake.PERSONAL_RECORD_DAILY:
-                    await intake.note_limit(attempt.requested_by, named)
-                    return await self._refuse(attempt, "refused_budget", "too_many_blocked", mode=mode)
+            # 2. The person's personal_record refusals today, the canonical form and the screen, under the person's
+            # screening lock: a refusal is recorded (in its own transaction) before the lock is released.
+            screened = None
             try:
-                c = canon.canonical(query)
                 async with session_scope() as session:
-                    verdict = await screen.screen(session, self.settings, c, classes=rules.classes,
-                                                  blocked_domains=rules.blocked_domains,
-                                                  owner_terms=values.owner_terms)
-            except canon.QueryRefused as exc:
-                return await self._blocked(attempt, exc.code, mode=mode, provider=provider)
-            except blind_index.IndexIncomplete:
-                return await self._blocked(attempt, "credit_repair_index_incomplete", mode=mode, provider=provider)
-            except Exception as exc:  # noqa: BLE001 - a screen that fails refuses
-                log.warning("research screen failed (%s)", exc.__class__.__name__)
-                return await self._blocked(attempt, "screen_error", mode=mode, provider=provider)
-            if verdict.blocked:
-                return await self._blocked(attempt, verdict.code, mode=mode, provider=provider, ref=verdict.ref)
+                    screened = await self._screen(session, attempt, query, values, rules, mode=mode,
+                                                  provider=provider)
+            except Exception as exc:  # noqa: BLE001 - a screening transaction that fails refuses
+                log.warning("research screening failed (%s)", exc.__class__.__name__)
+                if not isinstance(screened, ResearchResponse):
+                    return await self._refuse(attempt, "refused_policy", "policy_error", mode=mode)
+            if isinstance(screened, ResearchResponse):
+                return screened
+            c, verdict = screened
 
             # 3. The cache, with identical searches merged. Mock answers are kept apart from real ones.
             key = cache.cache_key("search" if mode == "live" else "search:mock", c.text, language=language,
@@ -278,6 +280,42 @@ class Gateway:
                                           query_text=c.text, options=options)
         except _Stop as stop:
             return stop.response
+
+    async def _screen(self, session: AsyncSession, attempt: store.Attempt, query: object,
+                      values: policy.ResearchSettings, rules: policy.AgentPolicy, *, mode: str,
+                      provider: str) -> ResearchResponse | tuple[canon.Canonical, screen.Verdict]:
+        """Step 2 in the caller's transaction, which holds the person's screening lock until it ends: the canonical
+        query and the screen's verdict, or the refusal (already recorded)."""
+        if attempt.requested_by:
+            try:
+                await intake.lock_person(session, attempt.requested_by)
+                _, named = await intake.refused_today(session, attempt.requested_by)
+            except intake.PersonBusy:
+                # Nothing screened; the connection goes back to the pool before the refusal's own row is written.
+                await _abandon(session)
+                return await self._refuse(attempt, "refused_budget", "busy", mode=mode)
+            except Exception as exc:  # noqa: BLE001 - a count that cannot be read refuses
+                log.warning("research refusal count failed (%s)", exc.__class__.__name__)
+                await _abandon(session)
+                return await self._refuse(attempt, "refused_policy", "policy_error", mode=mode)
+            if named >= intake.PERSONAL_RECORD_DAILY:
+                await intake.note_limit(attempt.requested_by, named)
+                return await self._refuse(attempt, "refused_budget", "too_many_blocked", mode=mode)
+        try:
+            c = canon.canonical(query)
+            verdict = await screen.screen(session, self.settings, c, classes=rules.classes,
+                                          blocked_domains=rules.blocked_domains, owner_terms=values.owner_terms)
+        except canon.QueryRefused as exc:
+            return await self._blocked(attempt, exc.code, mode=mode, provider=provider)
+        except blind_index.IndexIncomplete:
+            return await self._blocked(attempt, "credit_repair_index_incomplete", mode=mode, provider=provider)
+        except Exception as exc:  # noqa: BLE001 - a screen that fails refuses
+            log.warning("research screen failed (%s)", exc.__class__.__name__)
+            await _abandon(session)
+            return await self._blocked(attempt, "screen_error", mode=mode, provider=provider)
+        if verdict.blocked:
+            return await self._blocked(attempt, verdict.code, mode=mode, provider=provider, ref=verdict.ref)
+        return c, verdict
 
     async def _from_cache(self, attempt: store.Attempt, c: canon.Canonical, verdict: screen.Verdict,
                           hit: dict[str, Any], key: str, options: dict[str, Any], mode: str,

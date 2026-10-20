@@ -69,8 +69,9 @@ def _policy(agent: str, enabled: bool, cap: int, classes: str) -> AgentPolicy:
     return AgentPolicy(agent, enabled, cap, frozenset(classes))
 
 
-# Plan section 10, as approved (decision 4): SEO & Content without class C; Monitoring and Communications without
-# research; Credit Repair none. The agent caps add up to more than the global cap of 50, which binds first.
+# Plan section 10 proposed defaults (owner decision 4 still open): SEO & Content without class C; Monitoring and
+# Communications without research; Credit Repair none. The agent caps add up to more than the global cap of 50, which
+# binds first.
 DEFAULT_POLICIES: dict[str, AgentPolicy] = {p.agent: p for p in (
     _policy("supervisor", True, 20, "GSO"),
     _policy("seo_content", True, 20, "GO"),

@@ -6,18 +6,22 @@ refusals for such names are limited and audited."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 
 import pytest
 from pydantic import SecretStr
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 
 from app import bootstrap as startup
 from app.credit_repair import blind_index, store
-from app.db import session_scope
-from app.models import AuditLog, Lead, ResearchQuery, Site, User
+from app.db import get_engine, session_scope
+from app.models import AuditLog, Lead, ResearchQuery, Site, Task, User
 from app.research import intake
+from app.research import store as research_store
 from app.research.gateway import Gateway
 
 from ..research_fakes import (
@@ -26,6 +30,7 @@ from ..research_fakes import (
     add_people,
     as_,
     forbid_real_http,
+    person_lock_held,
     research_on,
     running_task,
 )
@@ -316,6 +321,161 @@ async def test_a_persons_personal_record_refusals_are_limited_whatever_the_searc
     # Anyone else is screened as before.
     client = await as_(app_client, "admin")
     assert (await run("small business ideas")).status_code == 201
+
+
+async def test_a_persons_requests_sent_at_the_same_moment_get_no_more_than_the_limit_of_answers(app_client,
+                                                                                               monkeypatch):
+    """Ten searches for a lead's name at once: one person's queries are counted and screened one at a time, so no more
+    than PERSONAL_RECORD_DAILY of them are screened (each could tell a Credit Repair name from an unknown one)."""
+    monkeypatch.setattr(intake, "LOCK_WAIT_SECONDS", 60.0)  # the order only: none is refused as busy on a slow machine
+    await add_people()
+    async with session_scope() as s:
+        s.add(Lead(name="Sacha Coe"))
+    await research_on("mock", settings_values={"person_daily_cap": 1000})
+    client = await as_(app_client, "operator")
+    answers = await asyncio.gather(*(client.post("/api/agents/supervisor/tasks", json={
+        "capability": "web_search", "params": {"query": f"Sacha Coe reviews {n}"}}) for n in range(10)))
+    assert {r.status_code for r in answers} == {400}
+    codes = sorted(r.json()["detail"].split("(", 1)[1].split(")", 1)[0] for r in answers)
+    assert codes == ["personal_record"] * intake.PERSONAL_RECORD_DAILY + ["too_many_blocked"] * (
+        10 - intake.PERSONAL_RECORD_DAILY)
+    async with session_scope() as s:
+        named = await s.scalar(select(func.count()).select_from(ResearchQuery).where(
+            ResearchQuery.requested_by == OPERATOR, ResearchQuery.reason_code == "personal_record"))
+    assert named == intake.PERSONAL_RECORD_DAILY
+
+
+async def test_a_persons_queued_searches_running_at_the_same_moment_get_no_more_than_the_limit(settings, monkeypatch):
+    monkeypatch.setattr(intake, "LOCK_WAIT_SECONDS", 60.0)
+    await add_people()
+    async with session_scope() as s:
+        s.add(Lead(name="Sacha Coe"))
+    await research_on("mock", settings_values={"person_daily_cap": 1000})
+    tasks = [await running_task(created_by=OPERATOR) for _ in range(10)]
+    mock = RecordingMockProvider()
+    gateway = Gateway(settings, providers={"mock": mock})
+    answers = await asyncio.gather(*(gateway.search(agent="seo_content", task_id=t, query="Sacha Coe reviews")
+                                     for t in tasks))
+    assert sorted(a.reason for a in answers) == ["personal_record"] * intake.PERSONAL_RECORD_DAILY + [
+        "too_many_blocked"] * (10 - intake.PERSONAL_RECORD_DAILY)
+    assert mock.calls == []
+
+
+def answer_code(response) -> str:
+    return response.json()["detail"].split("(", 1)[1].split(")", 1)[0]
+
+
+async def test_a_burst_larger_than_the_connection_pool_stays_within_the_limit_and_never_waits_for_the_pool(
+        app_client, caplog):
+    """More requests at once than the API's connection pool holds (pool_size + max_overflow). Each one waiting for the
+    person's screening lock holds a connection, and the one holding the lock needs another to record its refusal: a
+    request that cannot have the lock within LOCK_WAIT_SECONDS is refused unscreened (busy) and gives its connection
+    back, so every personal_record answer is recorded and counted, and nothing waits for the pool's 30 s timeout."""
+    pool = get_engine().pool
+    burst = pool.size() + pool._max_overflow + 5  # 25 with the defaults (10 + 10)
+    await add_people()
+    async with session_scope() as s:
+        s.add(Lead(name="Sacha Coe"))
+    await research_on("mock", settings_values={"person_daily_cap": 1000})
+    client = await as_(app_client, "operator")
+    caplog.set_level(logging.WARNING)
+    started = time.monotonic()
+    answers = await asyncio.gather(*(client.post("/api/agents/supervisor/tasks", json={
+        "capability": "web_search", "params": {"query": f"Sacha Coe reviews {n}"}}) for n in range(burst)),
+        return_exceptions=True)
+    took = time.monotonic() - started
+    assert [a for a in answers if isinstance(a, BaseException)] == []
+    assert {r.status_code for r in answers} == {400}
+    codes = [answer_code(r) for r in answers]
+    assert set(codes) <= {"personal_record", "too_many_blocked", "busy"}
+    async with session_scope() as s:
+        named = await s.scalar(select(func.count()).select_from(ResearchQuery).where(
+            ResearchQuery.requested_by == OPERATOR, ResearchQuery.reason_code == "personal_record"))
+    assert 1 <= codes.count("personal_record") == named <= intake.PERSONAL_RECORD_DAILY
+    assert "not recorded" not in caplog.text
+    assert took < 4 * intake.LOCK_WAIT_SECONDS, took  # the pool's own timeout is 30 s
+
+
+async def test_a_request_that_cannot_have_the_persons_lock_in_time_is_refused_unscreened(app_client, settings,
+                                                                                       monkeypatch):
+    await add_people()
+    await research_on("mock")
+    monkeypatch.setattr(intake, "LOCK_WAIT_SECONDS", 0.3)
+    task_id = await running_task(created_by=OPERATOR)
+    mock = RecordingMockProvider()
+
+    async def run(who: str = "operator"):
+        client = await as_(app_client, who)
+        return await asyncio.wait_for(client.post("/api/agents/seo_content/tasks", json={
+            "capability": "research_topic", "params": {"query": "small business ideas"}}), 10)
+
+    async with person_lock_held(OPERATOR):
+        started = time.monotonic()
+        r = await run()
+        res = await asyncio.wait_for(Gateway(settings, providers={"mock": mock}).search(
+            agent="seo_content", task_id=task_id, query="small business ideas"), 10)
+        took = time.monotonic() - started
+        other = await run("admin")  # another person's lock: screened as usual
+    assert r.status_code == 400 and r.json()["detail"] == (
+        "The search was refused (busy): another search of yours is being checked; try again in a moment. Nothing was "
+        "searched or stored.")
+    assert (res.status, res.reason, mock.calls) == ("refused_budget", "busy", [])
+    assert took < 3 and other.status_code == 201, other.text
+    async with session_scope() as s:
+        rows = [(q.status, q.reason_code, q.query_text, q.task_id)
+                for q in (await s.scalars(select(ResearchQuery))).all()]
+        queued = (await s.scalars(select(Task.created_by).where(Task.status == "queued"))).all()
+    # Intake records nothing (its own connection is held while it would write); the gateway records the code only,
+    # after its connection went back to the pool.
+    assert rows == [("refused_budget", "busy", None, task_id)] and queued == ["admin@test.local"]
+
+    # A lock that comes free within the wait is waited for.
+    monkeypatch.setattr(intake, "LOCK_WAIT_SECONDS", 5.0)
+    held = asyncio.Event()
+
+    async def hold_briefly():
+        async with person_lock_held(OPERATOR):
+            held.set()
+            await asyncio.sleep(0.5)
+
+    holder = asyncio.create_task(hold_briefly())
+    await held.wait()
+    r = await run()
+    await holder
+    assert r.status_code == 201, r.text
+
+
+async def test_a_screen_refusal_that_cannot_be_recorded_never_answers_with_its_code(app_client, settings,
+                                                                                  monkeypatch):
+    """refused_today() counts recorded refusals only: an unrecorded personal_record answer would not count towards
+    PERSONAL_RECORD_DAILY, so a refusal whose row cannot be written answers screen_error, at intake and in the
+    gateway."""
+    await add_people()
+    async with session_scope() as s:
+        s.add(Lead(name="Sacha Coe"))
+    await research_on("mock", settings_values={"person_daily_cap": 1000})
+    real_log_attempt = research_store.log_attempt
+
+    async def pool_used_up(attempt, *, status, **kwargs):
+        if status == "blocked":
+            raise PoolTimeout("QueuePool limit of size 10 overflow 10 reached")
+        return await real_log_attempt(attempt, status=status, **kwargs)
+
+    monkeypatch.setattr(research_store, "log_attempt", pool_used_up)
+    client = await as_(app_client, "operator")
+    for _ in range(intake.PERSONAL_RECORD_DAILY + 2):
+        r = await client.post("/api/agents/seo_content/tasks", json={
+            "capability": "research_topic", "params": {"query": "Sacha Coe reviews"}})
+        assert r.status_code == 400 and answer_code(r) == "screen_error", r.text
+    mock = RecordingMockProvider()
+    res = await Gateway(settings, providers={"mock": mock}).search(
+        agent="seo_content", task_id=await running_task(created_by=OPERATOR), query="Sacha Coe reviews")
+    assert (res.status, res.reason, res.query_id, mock.calls) == ("blocked", "screen_error", None, [])
+    # Recorded again, the same query answers with its code.
+    monkeypatch.setattr(research_store, "log_attempt", real_log_attempt)
+    r = await client.post("/api/agents/seo_content/tasks", json={
+        "capability": "research_topic", "params": {"query": "Sacha Coe reviews"}})
+    assert answer_code(r) == "personal_record"
 
 
 async def test_a_failing_rebuild_never_stops_the_start_and_refuses_every_search(admin, settings, monkeypatch,

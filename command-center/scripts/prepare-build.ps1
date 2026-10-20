@@ -16,7 +16,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 try {
   $version = (Get-Content -LiteralPath (Join-Path $root "VERSION") -TotalCount 1).Trim()
-  # A release (0.6.0) or a development build (0.7.0-dev, which install.ps1 refuses outside the sandbox's tests).
+  # A release (0.7.0) or a development build (0.8.0-dev, which install.ps1 refuses outside the sandbox's tests).
   if ($version -notmatch '^\d+\.\d+\.\d+(-dev)?$') { throw "the VERSION file says '$version'" }
   $init = Select-String -LiteralPath (Join-Path $root "backend\app\__init__.py") -Pattern '^__version__ = "([^"]+)"' | Select-Object -First 1
   $backendVersion = if ($init) { $init.Matches[0].Groups[1].Value } else { "(none)" }

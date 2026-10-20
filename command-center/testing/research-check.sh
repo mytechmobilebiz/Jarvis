@@ -136,7 +136,7 @@ field() { python3 -c "import json, sys; d = json.loads(sys.argv[1]); print($2)" 
 
 echo "== 1. The real files, project $P (image $(grep -o 'searxng/searxng:[^ ]*' "$CC/docker-compose.research.yml"))"
 refusal=$(unset SEARXNG_SECRET; compose "$P" "$CC" config --quiet 2>&1)
-if grep -q "required variable SEARXNG_SECRET is missing a value: run scripts/init-env.ps1 -AddMissing" <<<"$refusal"; then
+if grep -q "required variable SEARXNG_SECRET is missing a value: run scripts/research.ps1 -Enable" <<<"$refusal"; then
   pass "compose refuses to run without SEARXNG_SECRET"
 else fail "compose accepted a missing SEARXNG_SECRET"; fi
 compose "$P" "$CC" up -d --quiet-pull > "$WORK/up.log" 2>&1 || { fail "up: $(tail -3 "$WORK/up.log")"; exit 1; }

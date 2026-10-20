@@ -4,13 +4,15 @@ a fake SearXNG served through httpx.MockTransport. Nothing here opens a network 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
-from sqlalchemy import delete
+from sqlalchemy import delete, text
 
 from app.config import get_settings
-from app.db import session_scope
+from app.db import get_engine, session_scope
 from app.models import AppSetting, ResearchPolicy, Task, User
 from app.research import policy
 from app.research.providers import MockProvider, SearchRequest
@@ -84,6 +86,18 @@ async def running_task(agent: str = "seo_content", capability: str = "research_t
         s.add(task)
         await s.flush()
         return task.id
+
+
+@asynccontextmanager
+async def person_lock_held(person: str) -> AsyncIterator[None]:
+    """Another transaction holds this person's screening lock (app/research/intake.py lock_person) for the block."""
+    from app.research import intake
+
+    async with get_engine().connect() as conn:
+        async with conn.begin():
+            await conn.execute(text("SELECT pg_advisory_xact_lock(:ns, hashtext(:person))"),
+                               {"ns": intake.LOCK_NAMESPACE, "person": person})
+            yield
 
 
 class RealConnectionAttempted(BaseException):

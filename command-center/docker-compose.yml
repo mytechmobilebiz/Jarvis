@@ -73,6 +73,11 @@ services:
       CREDIT_REPAIR_DB_PASSWORD: ${CREDIT_REPAIR_DB_PASSWORD:?run scripts/init-env}
     volumes:
       - ./postgres/provision.sh:/provision.sh:ro
+    # The image declares VOLUME /var/lib/postgresql. db-init writes nothing there (provision.sh runs psql against
+    # postgres), and without this Docker would give each new container an anonymous volume, which Compose then hands
+    # on to every recreated one, so "down --volumes" never removes it.
+    tmpfs:
+      - /var/lib/postgresql
     depends_on:
       postgres:
         condition: service_healthy

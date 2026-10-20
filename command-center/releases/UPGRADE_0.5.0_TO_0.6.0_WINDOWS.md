@@ -5,6 +5,25 @@ Date: 2026-10-20 · for the installation in
 run in the cloud sandbox (PowerShell 7.4, against a running Command Center), except the
 download itself and the Windows-only commands (`Get-PSDrive C`, `Expand-Archive`).
 
+> **Security notice, 2026-10-20: 0.6.1 is NO-GO, for installation and for any
+> JARVIS import.** A verification of the published 0.6.1 found a high-severity
+> defect, reproduced three times independently on the exact published code.
+> The text of a JARVIS message that an admin withheld comes back when a
+> **later** JARVIS backup is imported. JARVIS's compaction stores copies of
+> messages under new identifiers, and the importer withholds only the
+> identifier that was withheld, so a copy is imported with its text.
+> Operators, admins, the Supervisor's history and recall, and newly promoted
+> memory items can then read it (viewers cannot), and the verification
+> commands still report success. 0.6.0 has the same defect.
+>
+> - Do not install 0.6.1, and do not import JARVIS data with any 0.6.x
+>   release.
+> - If you are still on 0.5.0, stay there. A corrected 0.6.2 is being
+>   prepared, with a direct 0.5.0 -> 0.6.2 guide. It will be published only
+>   after its security reviews pass.
+> - An installation of 0.6.0 or 0.6.1 that has imported nothing holds no
+>   JARVIS data and is not exposed: leave it as it is and import nothing.
+
 **What this upgrade does:** it replaces the program files and rebuilds the
 API, worker and dashboard images. It then recreates the API, worker,
 dashboard and n8n containers from a new folder, so n8n restarts once.

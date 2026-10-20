@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import permutations
 
 MAX_QUERY = 128
 
@@ -81,6 +83,9 @@ _FULL_STOPS = {"\u3002", "\uff61", "\ufe12"}  # ideographic full stops: a dot in
 _AT = re.compile(r"\s*[(\[{<]\s*(?:at|@)\s*[)\]}>]\s*|\s*\(\s*a\s*\)\s*|\s+at\s+|\s*@\s*")
 _DOT = re.compile(r"\s*[(\[{<]\s*(?:dot|d0t|\.)\s*[)\]}>]\s*|\s+(?:dot|d0t|period)\s+|\s+\.\s*"
                   r"|\s*\.\s+(?=[a-z]{2,24}\b)")
+# A CVE id ("CVE-2026-12345"): its digits are no phone number or SSN. The research screen and the Credit Repair match
+# index read a query's numbers without them (query_runs), so a number reads alike on both sides.
+CVE = re.compile(r"(?i)\bcve-[0-9]{4}-[0-9]{4,}\b")
 # Particles of a person's name ("Jane van der Berg"): two of them together name nobody ("van der Waals").
 NAME_PARTICLES = frozenset({"van", "der", "den", "de", "la", "le", "von", "del", "della", "da", "di", "du", "des",
                             "dos", "das", "ten", "ter", "el", "al", "bin", "ibn"})
@@ -175,6 +180,17 @@ def unapostrophe(skel: str) -> str:
     return _INNER_APOSTROPHE.sub("", skel)
 
 
+def name_pairs(words: Sequence[str]) -> list[tuple[str, str]]:
+    """The ordered pairs of a person's name words that match the name wherever they are in a query; the research screen
+    and the Credit Repair match index use the same ones. Two particles together name nobody ("van der"). When the name
+    has two words or more besides its particles, a particle with another word names nobody either: "Maria de la Cruz"
+    is matched by "maria" and "cruz", not by "de" and "cruz" ("Santa Cruz de Tenerife"). A name with one other word
+    keeps them, since a particle may be its given name or surname ("Al Smith", "Le Nguyen")."""
+    plain = {w for w in words if w not in NAME_PARTICLES}
+    return [pair for pair in permutations(words, 2)
+            if not set(pair) <= NAME_PARTICLES and (len(plain) < 2 or set(pair) <= plain)]
+
+
 def phone_numbers(digits: str) -> tuple[str, ...]:
     """The forms a phone number is compared in: its last ten digits and the local number (the last seven), or a
     number of 7-9 digits as it is; none for a shorter one."""
@@ -223,6 +239,11 @@ def digit_runs(skel: str) -> tuple[str, ...]:
     if current:
         runs.append("".join(current) + ("0" if tens else ""))
     return tuple(runs)
+
+
+def query_runs(text: str) -> tuple[str, ...]:
+    """A query's numbers seen whole (digit_runs of its skeleton), CVE ids aside."""
+    return digit_runs(skeleton(CVE.sub(" ", text)))
 
 
 def canonical(raw: object) -> Canonical:

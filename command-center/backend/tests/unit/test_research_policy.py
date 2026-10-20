@@ -96,7 +96,9 @@ async def test_settings_that_cannot_be_read_refuse(mode, values):
 
 def test_the_feature_is_in_the_owners_edition_only_among_the_defaults():
     assert EDITIONS["developer"].features >= {"web_research"}
-    assert "web_research" not in EDITIONS["personal"].features
+    # Not in any sellable edition until owner decision 18 and the legal review (COMMERCIALIZATION.md, B9).
+    assert [code for code, edition in EDITIONS.items() if "web_research" in edition.features] == ["developer"]
+    assert not EDITIONS["developer"].sellable
 
 
 # --- Health ---------------------------------------------------------------------------------------------------------

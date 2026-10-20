@@ -54,7 +54,6 @@ import re
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from itertools import permutations
 from urllib.parse import unquote, urlsplit
 
 from sqlalchemy import func, literal, or_, select, text
@@ -66,13 +65,13 @@ from ..brain import text as brain_text
 from ..config import Settings
 from ..models import ArchiveMessage, Lead, MemoryItem, SecretValue, Server, Site, SupportTicket
 from .canon import (
-    NAME_PARTICLES,
+    CVE,
     STOP_WORDS,
     Canonical,
-    digit_runs,
     fold,
+    name_pairs,
     phone_numbers,
-    skeleton,
+    query_runs,
     spelled_out,
     tokens,
     unapostrophe,
@@ -144,7 +143,6 @@ FILE_PATH = re.compile(
 # A dotted number (a price or a percentage aside) or a v-number: "WordPress 6.9", "PHP 8.2.1", "v3".
 VERSION = re.compile(r"(?i)(?<![\w.$\u20ac\u00a3])(?:v[0-9]+|[0-9]+(?:\.[0-9]+){1,3})(?:[-.]?(?:alpha|beta|rc|p)[0-9]*)?"
                      r"(?![\w.%])")
-CVE = re.compile(r"(?i)\bcve-[0-9]{4}-[0-9]{4,}\b")
 # Steps 7 and 8: a lead's, a ticket's or a Credit Repair client's name or address.
 PERSONAL_RECORD = "personal_record"
 MIN_LABEL = 6  # a domain's first label stands for its business on its own from this length ("acmeplumbing")
@@ -273,17 +271,18 @@ def name_mark(code: str, ref: str, *names: str, domains: Iterable[str] = (), per
 
     A person's name also matches as any two of its words, in either order and wherever they are in the query ("Sacha
     Coe", "Coe, Sacha", "Sacha M Coe" for "Sacha Marie Coe", and "Sacha Marie Coe" or "Coe reviews Sacha" for "Sacha
-    Coe"; two name particles such as "van der" are no name). A name of three words or more also matches as its first
-    word with any other ("Acme Plumbing", "Acme Heating" for "Acme Plumbing & Heating LLC"), not as two common words
-    from its middle. Each also matches written as one word ("SachaCoe": _View.has_phrase), and with an apostrophe
-    inside a word dropped ("ONeil" for "O'Neil")."""
+    Coe"; two name particles such as "van der" are no name, nor is a particle with another word when the name has two
+    other words: "de" and "cruz" for "Maria de la Cruz", canon.name_pairs). A name of three words or more also matches
+    as its first word with any other ("Acme Plumbing", "Acme Heating" for "Acme Plumbing & Heating LLC"), not as two
+    common words from its middle. Each also matches written as one word ("SachaCoe": _View.has_phrase), and with an
+    apostrophe inside a word dropped ("ONeil" for "O'Neil")."""
     found_names = {words for n in (*names, person) if n for words in phrases_of(n)}
     for words in [words for n in names if n for words in phrases_of(n)]:
         if len(words) >= 3:
             found_names.update((words[0], w) for w in words[1:])
     people: set[frozenset[str]] = set()
     for own in (phrases_of(person) if person else ()):
-        pairs = [pair for pair in permutations(own[:MAX_NAME_WORDS], 2) if not set(pair) <= NAME_PARTICLES]
+        pairs = name_pairs(own[:MAX_NAME_WORDS])
         found_names.update(pairs)
         people.update(frozenset(pair) for pair in pairs if pair[0] != pair[1])
     phrases = tuple(sorted(p for p in found_names if len(p) >= 2))
@@ -369,7 +368,7 @@ def _encoded(c: Canonical) -> bool:
 
 def _runs(c: Canonical) -> tuple[str, ...]:
     """The query's numbers seen whole, CVE ids aside ("CVE-2026-12345" is no 9-digit SSN)."""
-    return digit_runs(skeleton(CVE.sub(" ", c.text))) if CVE.search(c.text) else c.digit_runs
+    return query_runs(c.text) if CVE.search(c.text) else c.digit_runs
 
 
 def _digits_restricted(c: Canonical) -> bool:

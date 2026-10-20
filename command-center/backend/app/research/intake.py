@@ -16,18 +16,24 @@ small and visible: after PERSONAL_RECORD_DAILY personal_record refusals in one d
 person's is screened that day (refused_budget, too_many_blocked), here and in the gateway, whatever their search cap,
 and the first time each day an audit entry (research.personal_record_limit: the person and the count) shows it to the
 admins. Apart from that, after as many refusals as their daily search cap, nothing more of theirs is screened that day.
+One person's queries are counted and screened one at a time (lock_person), here and in the gateway: requests sent at the
+same moment cannot all read a count below the limit. A request that cannot have the lock within LOCK_WAIT_SECONDS is
+refused unscreened (refused_budget, busy), so a burst of one person's requests never holds the connection pool. A screen
+refusal whose row could not be recorded answers screen_error, never its own code: it would not be counted.
 
 Any error refuses (screen_error, policy_error): nothing that could not be checked is queued.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit, licensing
@@ -48,6 +54,14 @@ FEATURE = "web_research"
 # is in the Credit Repair records (see above), so the number is fixed and not tied to the search caps.
 PERSONAL_RECORD_DAILY = 5
 LIMIT_ACTION = "research.personal_record_limit"
+# pg_try_advisory_xact_lock(namespace, hashtext(person)): one person's screening at a time (budget.py uses 7316,
+# cache.py 7315).
+LOCK_NAMESPACE = 7_317
+# How long a request waits for that lock. Each waiting request holds a pooled connection, and the holder needs one more
+# to record its refusal: waiting longer than this would let a burst use up the pool (10 + 10 overflow) until its 30 s
+# timeout, when the holder's refusal is answered without its row.
+LOCK_WAIT_SECONDS = 3.0
+LOCK_POLL_SECONDS = 0.05
 
 # What each code means, for the person who typed the query (fixed texts: never the query itself).
 EXPLANATIONS = {
@@ -72,6 +86,7 @@ EXPLANATIONS = {
     "contact_detail": "it contains an e-mail address or a phone number",
     "personal_record": "it names a person or business from this business's own records",
     "too_many_blocked": "too many of your searches were refused today; try again tomorrow",
+    "busy": "another search of yours is being checked; try again in a moment",
     "credit_repair_index_incomplete": "the Credit Repair check is not ready",
     "matches_private_text": "it repeats private text from the JARVIS archive or memory",
     "internal_host": "it names an internal address, host or server",
@@ -83,6 +98,10 @@ EXPLANATIONS = {
     "blocked_domain": "it names a domain this agent's policy blocks",
     "screen_error": "the query could not be checked",
 }
+
+
+class PersonBusy(Exception):
+    """The person's screening lock did not come free within LOCK_WAIT_SECONDS."""
 
 
 @dataclass(frozen=True)
@@ -121,11 +140,17 @@ async def admit(session: AsyncSession, settings: Settings, *, agent: str, capabi
         if not (await licensing.current_entitlements(session, settings)).has(FEATURE):
             raise policy.PolicyRefused("not_entitled")
         rules = await policy.search_policy(session, agent)
+        await lock_person(session, person)  # held until the caller's transaction ends, after a refusal's own row
         blocked, named = await refused_today(session, person)
     except policy.PolicyRefused as exc:
         return await _refuse(attempt, "refused_policy", exc.code, mode)
     except policy.SettingsUnreadable:
         return await _refuse(attempt, "refused_policy", "settings_unreadable", "off")
+    except PersonBusy:
+        # Nothing was screened. Not recorded: the row would take a second pooled connection while this request holds
+        # its own, which is the wait lock_person bounds.
+        log.info("research refused_budget before queueing for %s: busy", attempt.agent)
+        return Admission(status="refused_budget", code="busy")
     except Exception as exc:  # noqa: BLE001 - a policy that cannot be read refuses
         log.warning("research intake policy check failed (%s)", exc.__class__.__name__)
         return await _refuse(attempt, "refused_policy", "policy_error", mode)
@@ -152,6 +177,21 @@ async def admit(session: AsyncSession, settings: Settings, *, agent: str, capabi
 
 def _today() -> datetime:
     return datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+async def lock_person(session: AsyncSession, person: str) -> None:
+    """Takes this person's screening lock and holds it until the session's transaction ends, waiting at most
+    LOCK_WAIT_SECONDS (then PersonBusy). Taken before refused_today(): one person's queries are then counted and
+    screened one after the other, and each count sees the refusals before it (a refusal's row is committed in its own
+    transaction while the lock is still held). Tried again every LOCK_POLL_SECONDS rather than waited for with a
+    lock_timeout: a lock timeout is an error that leaves the caller's transaction unusable, and the Supervisor's
+    planning goes on in that transaction after a refused step."""
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    while not await session.scalar(text("SELECT pg_try_advisory_xact_lock(:ns, hashtext(:person))"),
+                                   {"ns": LOCK_NAMESPACE, "person": person}):
+        if time.monotonic() >= deadline:
+            raise PersonBusy
+        await asyncio.sleep(LOCK_POLL_SECONDS)
 
 
 async def refused_today(session: AsyncSession, person: str) -> tuple[int, int]:
@@ -187,4 +227,8 @@ async def _refuse(attempt: store.Attempt, status: str, code: str, mode: str, *, 
         await store.log_attempt(attempt, status=status, reason=code, mode=mode, provider=provider, ref=ref)
     except Exception as exc:  # noqa: BLE001 - the refusal stands without its row
         log.warning("research attempt not recorded (%s)", exc.__class__.__name__)
+        if status == "blocked":
+            # Not counted by refused_today(), so it never answers with its code: a personal_record answer that was not
+            # recorded would get past PERSONAL_RECORD_DAILY.
+            return Admission(status=status, code="screen_error")
     return Admission(status=status, code=code, ref=ref)

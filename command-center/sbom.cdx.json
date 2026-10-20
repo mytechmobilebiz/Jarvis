@@ -1,14 +1,14 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:dbee3eab-3362-4271-b284-41f976d6452c",
+  "serialNumber": "urn:uuid:12705bee-19c6-4ec5-9e58-e3da78fbd9c3",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-20T06:31:12+00:00",
+    "timestamp": "2026-10-20T13:51:07+00:00",
     "component": {
       "type": "application",
       "name": "Infinite AI Command Center",
-      "version": "0.7.0-dev",
+      "version": "0.7.0",
       "licenses": [
         {
           "license": {
@@ -162,7 +162,7 @@
     {
       "type": "library",
       "name": "certifi",
-      "version": "2026.10.18",
+      "version": "2026.10.19",
       "licenses": [
         {
           "license": {
@@ -170,7 +170,7 @@
           }
         }
       ],
-      "purl": "pkg:pypi/certifi@2026.10.18",
+      "purl": "pkg:pypi/certifi@2026.10.19",
       "scope": "required",
       "properties": [
         {

@@ -285,8 +285,16 @@ try {
     }
     "Remove" {
       Confirm-Typed "REMOVE TEST COPY" "This deletes the test copy: its containers, its database (imports and review decisions included) and its images. The live installation is not touched."
+      # "down --volumes" misses an anonymous volume that Compose handed on to a recreated container (db-init's empty
+      # one, in a copy started before 0.7.0; Start always recreates), and it carries no project label: named first.
+      $anonymous = @(Get-AnonymousVolumes $BrainTestProject)
       $code = Invoke-DockerLive ($compose + @("down", "--volumes", "--remove-orphans"))
       if ($code -eq 0) {
+        $present = @((Invoke-Docker @("volume", "ls", "-q")).Out | ForEach-Object { $_.Trim() })
+        foreach ($volume in @($anonymous | Where-Object { $present -contains $_ })) {
+          $r = Invoke-Docker @("volume", "rm", $volume)
+          if ($r.Code -eq 0) { Write-Host "removed volume $volume (anonymous, of the test copy's containers)" }
+        }
         foreach ($image in $BrainTestImages) {
           $r = Invoke-Docker @("image", "inspect", $image)
           if ($r.Code -eq 0) {
@@ -297,6 +305,8 @@ try {
         $left = @(Get-ProjectContainers $BrainTestProject "")
         $volumes = Invoke-Docker @("volume", "ls", "-q", "--filter", "label=com.docker.compose.project=$BrainTestProject")
         $leftVolumes = @($volumes.Out | Where-Object { $_.Trim() })
+        $present = @((Invoke-Docker @("volume", "ls", "-q")).Out | ForEach-Object { $_.Trim() })
+        $leftVolumes += @($anonymous | Where-Object { $present -contains $_ })
         if ($left.Count -gt 0 -or $leftVolumes.Count -gt 0) {
           Write-Host "Left behind: $($left.Count) container(s), $($leftVolumes.Count) volume(s) of $BrainTestProject" -ForegroundColor Yellow
           $code = 1

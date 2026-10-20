@@ -4,12 +4,31 @@ Date: 2026-10-20 · package `InfiniteAI-CommandCenter-0.6.0-windows.zip`,
 SHA-256 `a687f737de043ae6a69c4dcc3f15ae71d71a5c3688bebef62b53122e4036a8a1` · branch `jarvis-migration` · details in
 [docs/RELEASE_NOTES_0.6.0.md](../docs/RELEASE_NOTES_0.6.0.md)
 
+> **Security notice, 2026-10-20: 0.6.1 is NO-GO, for installation and for any
+> JARVIS import.** A verification of the published 0.6.1 found a high-severity
+> defect, reproduced three times independently on the exact published code.
+> The text of a JARVIS message that an admin withheld comes back when a
+> **later** JARVIS backup is imported. JARVIS's compaction stores copies of
+> messages under new identifiers, and the importer withholds only the
+> identifier that was withheld, so a copy is imported with its text.
+> Operators, admins, the Supervisor's history and recall, and newly promoted
+> memory items can then read it (viewers cannot), and the verification
+> commands still report success. 0.6.0 has the same defect.
+>
+> - Do not install 0.6.1, and do not import JARVIS data with any 0.6.x
+>   release.
+> - If you are still on 0.5.0, stay there. A corrected 0.6.2 is being
+>   prepared, with a direct 0.5.0 -> 0.6.2 guide. It will be published only
+>   after its security reviews pass.
+> - An installation of 0.6.0 or 0.6.1 that has imported nothing holds no
+>   JARVIS data and is not exposed: leave it as it is and import nothing.
+
 ## Verdict
 
 | Step | Verdict | Why |
 |---|---|---|
-| 1. Install 0.6.0 on your PC (upgrade from 0.5.0) | **GO, with your approval** | Tested step by step on a copy of your history: all seven smoke checks passed, and data, keys, n8n, agents and unrelated Docker projects were unchanged. Going back to 0.5.0 was also tested. It changes no existing data and imports nothing. |
-| 2. Test copy plus import of the real JARVIS backup into it | **GO after the 0.6.1 patch**, with your approval | Separate Docker project with its own database, no n8n and a worker without internet; your live installation was unchanged after every step of the end-to-end check. It reads only the backup copy. The 0.6.1 patch fixes the withhold defect in section 3 (item 12), which you would meet while reviewing. |
+| 1. Install 0.6.0 on your PC (upgrade from 0.5.0) | **Wait for 0.6.2** (security notice above; was: GO, with your approval) | Tested step by step on a copy of your history: all seven smoke checks passed, and data, keys, n8n, agents and unrelated Docker projects were unchanged. Going back to 0.5.0 was also tested. It changes no existing data and imports nothing. |
+| 2. Test copy plus import of the real JARVIS backup into it | **NO-GO until 0.6.2** (security notice above; was: GO after the 0.6.1 patch) | Separate Docker project with its own database, no n8n and a worker without internet; your live installation was unchanged after every step of the end-to-end check. It reads only the backup copy. The 0.6.1 patch fixes the withhold defect in section 3 (item 12), which you would meet while reviewing. |
 | 3. Import into the live installation | **NO-GO for now** | The real backup has not been read by any 0.6.0 code. Secret and personal-data detection is pattern-based (names and street addresses are not detected). Your review of the real data in the test copy (step 2) must come first. After that review, this needs a separate approval. |
 | 4. Memory in AI prompts, converted schedules switched on | **Not now** | Optional, later. Both are off by default and stay off until an admin changes them. |
 

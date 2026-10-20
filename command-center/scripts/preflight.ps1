@@ -74,15 +74,25 @@ if ($freeGb -ge 10) { Ok "$freeGb GB free on $($drive.Name):" } else { Warn "onl
 
 Write-Host "`nConfiguration"
 if (Test-Path (Join-Path $root ".env")) {
-  $required = "ADMIN_EMAIL","ADMIN_PASSWORD","POSTGRES_PASSWORD","CC_DB_PASSWORD","N8N_DB_PASSWORD","CC_SERVICE_TOKEN","CC_SECRETS_KEY","CREDIT_REPAIR_DB_PASSWORD","CREDIT_REPAIR_DATA_KEY","N8N_WEBHOOK_SECRET","N8N_ENCRYPTION_KEY","N8N_OWNER_PASSWORD","SEARXNG_SECRET"
+  $required = "ADMIN_EMAIL","ADMIN_PASSWORD","POSTGRES_PASSWORD","CC_DB_PASSWORD","N8N_DB_PASSWORD","CC_SERVICE_TOKEN","CC_SECRETS_KEY","CREDIT_REPAIR_DB_PASSWORD","CREDIT_REPAIR_DATA_KEY","N8N_WEBHOOK_SECRET","N8N_ENCRYPTION_KEY","N8N_OWNER_PASSWORD"
   # Keys introduced after 0.1.0; install.ps1 adds them to an older .env (existing values are never changed).
-  $addable = "CC_SECRETS_KEY","CREDIT_REPAIR_DB_PASSWORD","CREDIT_REPAIR_DATA_KEY","SEARXNG_SECRET"
+  $addable = "CC_SECRETS_KEY","CREDIT_REPAIR_DB_PASSWORD","CREDIT_REPAIR_DATA_KEY"
   $missing = @($required | Where-Object { -not $envValues[$_] })
   $toAdd = @($missing | Where-Object { $addable -contains $_ })
   $blocking = @($missing | Where-Object { $addable -notcontains $_ })
   if ($blocking.Count -gt 0) { Bad ".env is missing: $($blocking -join ', ')" }
   if ($toAdd.Count -gt 0) { Warn ".env is from an older version; install.ps1 will add: $($toAdd -join ', ')" }
   if ($missing.Count -eq 0) { Ok ".env has every required secret" }
+  # Web research needs SEARXNG_SECRET only once its search service is switched on: scripts\research.ps1 -Enable
+  # creates it then. Install and upgrade never add it, and never fail without it.
+  if ($envValues["COMPOSE_FILE"] -match 'docker-compose\.research\.yml') {
+    $searxngSecret = [string]$envValues["SEARXNG_SECRET"]
+    if (-not $searxngSecret) { Warn "web research is switched on but SEARXNG_SECRET is missing: run .\scripts\research.ps1 -Enable (it adds the secret)" }
+    elseif ($searxngSecret.Length -lt 32) { Warn "web research is switched on but SEARXNG_SECRET is shorter than 32 characters: run .\scripts\research.ps1 -RotateSecret, then .\scripts\research.ps1 -Enable" }
+    else { Ok "web research search service (SearXNG): switched on" }
+  } else {
+    Write-Host "  [info] web research search service (SearXNG): switched off"
+  }
   if ($envValues["ANTHROPIC_API_KEY"]) { Ok "ANTHROPIC_API_KEY set: the supervisor will use Claude (metered)" } else { Write-Host "  [info] ANTHROPIC_API_KEY empty: the supervisor plans with deterministic rules" }
 } else {
   Warn ".env not found yet: run .\scripts\init-env.ps1"

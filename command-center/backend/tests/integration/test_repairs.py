@@ -33,6 +33,9 @@ async def gate_hello(admin, web: FakeWeb, server_id: int) -> None:
 
 
 async def linked_site(admin, srv: FakeGateServer, web: FakeWeb, *, environment: str = "test", server_env: str = "test") -> tuple[dict, dict]:
+    """A site registered and linked to the server. Registering queues its baseline scan, whose server-side part takes the site lock:
+    run it (make_worker().run_until_idle()) before the test's own server-side check, which otherwise goes back to the queue
+    whenever the scan takes the lock first."""
     server = await add_server(admin, srv, environment=server_env)
     await gate_hello(admin, web, server["id"])
     web.add("site.test", wordpress_site("http://site.test", exposed=False))

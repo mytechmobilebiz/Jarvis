@@ -1,6 +1,27 @@
 # Project status: Infinite AI Command Center
 
-Last updated: 2026-10-20 (UTC) · released: 0.6.1 on branch `jarvis-migration` · in development: 0.7.0-dev (the Research Gateway, branch `ccr-eb27a2af-8u7i39`; not a release)
+Last updated: 2026-10-20 (UTC) · released: 0.6.1 on branch `jarvis-migration` (NO-GO since: security notice below) · packaged: 0.7.0 (the Research Gateway; web research off by default; **NO-GO for installation and for any JARVIS import**; not installed)
+
+> **Security notice, 2026-10-20: 0.7.0, 0.6.1 and 0.6.0 are NO-GO, for
+> installation and for any JARVIS import.** A verification of the published
+> 0.6.1 found a high-severity defect, reproduced three times independently on
+> the exact published code. The text of a JARVIS message that an admin
+> withheld comes back when a **later** JARVIS backup is imported. JARVIS's
+> compaction stores copies of messages under new identifiers, and the
+> importer withholds only the identifier that was withheld, so a copy is
+> imported with its text. Operators, admins, the Supervisor's history and
+> recall, and newly promoted memory items can then read it (viewers cannot),
+> and the verification commands still report success. 0.6.0 has the same
+> defect, and 0.7.0 (built on 0.6.1) carries 0.6.1's importer unchanged.
+>
+> - Do not install 0.7.0, 0.6.1 or 0.6.0, and do not import JARVIS data
+>   with 0.7.0 or any 0.6.x release.
+> - If you are still on 0.5.0, stay there. A corrected 0.6.2 is being
+>   prepared, with a direct 0.5.0 -> 0.6.2 guide. It will be published only
+>   after its security reviews pass; web research follows in a 0.7 release
+>   that contains its fix.
+> - An installation of 0.6.0 or 0.6.1 that has imported nothing holds no
+>   JARVIS data and is not exposed: leave it as it is and import nothing.
 
 ## Where it is being built
 
@@ -13,8 +34,13 @@ reports 0.2.0"). The cause was found and fixed in **0.5.1** (see "Completed in
 is finished and tested in the sandbox and **waits for the owner's approval**:
 it has not been installed, and none of JARVIS's real data has been imported
 anywhere. **0.6.1** (a JARVIS Brain patch: withholding a message that has a
-promoted memory copy) is finished and tested in the sandbox; it is needed
-before the JARVIS test-copy import. **Nothing has been run on a real CWP server**; see "Cloud sandbox vs
+promoted memory copy) is finished and tested in the sandbox, but both 0.6.0
+and 0.6.1 are now **NO-GO** (security notice above). **0.7.0** (web research
+through a private SearXNG search service, **switched off by default**) is
+packaged, has not been installed and is **NO-GO** too: it is built on 0.6.1
+and carries its importer. An upgrade to it leaves research off and `.env`
+unchanged.
+**Nothing has been run on a real CWP server**; see "Cloud sandbox vs
 Windows and servers" below.
 
 ## Milestones
@@ -29,9 +55,9 @@ Windows and servers" below.
 | UI (0.4.0): official dashboard redesign: dark command-center interface, AI command input, new sidebar sections | Done; installed on the owner's PC (six smoke tests passed) |
 | 0.5.0: dashboard to the reference with real data only; approvals name the exact action and target; host-key scan fixed | Done; installed on the owner's PC (version check failed: stale build copies, fixed in 0.5.1). Remaining differences and owner decisions: docs/REFERENCE_DESIGN_GAP.md |
 | 0.5.1: images can no longer be built from stale files without the build stopping; plugin updates only to the approved, current, newer WordPress.org release | **Done in the sandbox**; not yet run on the PC |
-| 0.6.0: the JARVIS Brain: memory with review and versions, JARVIS's conversation archive, the importer with a test copy, agents reading approved memory as reference | **Done in the sandbox**; waits for the owner's approval to install; no real JARVIS data imported |
-| 0.6.1: withholding a message that has promoted memory copies works and removes its text from every promoted copy, the history answers quoting them and the import records; database errors never log row values | **Done in the sandbox**; to install after 0.6.0 is verified on the PC; needed before the test-copy import |
-| 0.7.0-dev: the Research Gateway (private SearXNG search for agents, off by default; no DeepSeek, no page fetching) | **Built in the sandbox only** ([docs/RESEARCH_GATEWAY.md](docs/RESEARCH_GATEWAY.md)); not installed anywhere; `install.ps1` refuses a `-dev` build |
+| 0.6.0: the JARVIS Brain: memory with review and versions, JARVIS's conversation archive, the importer with a test copy, agents reading approved memory as reference | **Done in the sandbox; NO-GO** (security notice); not installed; no real JARVIS data imported |
+| 0.6.1: withholding a message that has promoted memory copies works and removes its text from every promoted copy, the history answers quoting them and the import records; database errors never log row values | **Done in the sandbox; NO-GO** (security notice: a withheld message comes back with a later import); 0.6.2 is being prepared |
+| 0.7.0: the Research Gateway (private SearXNG search for agents, off by default; no DeepSeek, no page fetching) | **Packaged; NO-GO** for installation and any JARVIS import (it carries 0.6.1's importer; [releases/GO_NO_GO_0.7.0.md](releases/GO_NO_GO_0.7.0.md), [docs/RELEASE_NOTES_0.7.0.md](docs/RELEASE_NOTES_0.7.0.md), [docs/RESEARCH_GATEWAY.md](docs/RESEARCH_GATEWAY.md)); not installed anywhere; research stays off after install or upgrade; web research will be offered in a 0.7 release with 0.6.2's fix |
 | M5: real integrations (email, publishing, ads, notifications) | Needs owner approval and credentials |
 
 Estimated MVP completion: **about 85%**. This is an estimate, weighted by the
@@ -360,19 +386,30 @@ Known limits that remain (by design or not yet done):
   the exact action and target. Read-only monitoring may run automatically
   within the approved scope.
 
-## Research Gateway 0.7.0-dev (built in the sandbox, not installed)
+## Research Gateway 0.7.0 (packaged, research off, not installed, NO-GO)
+
+**NO-GO for installation and for any JARVIS import** (security notice at the top): 0.7.0 is built on 0.6.1 and
+carries its JARVIS importer unchanged. Web research will be offered in a 0.7 release that also contains 0.6.2's fix,
+after its upgrade tests from 0.5.0 and from 0.6.2.
 
 The owner approved the SearXNG-first direction on 2026-10-20 (DeepSeek, page fetching, paid search APIs and recurring
-searches excluded) and asked for it to be prepared in an isolated environment only. The development build is done
-and tested in the sandbox: [docs/RESEARCH_GATEWAY.md](docs/RESEARCH_GATEWAY.md) says what it contains, every
-outbound data flow, the fail-closed rules and the rollback; the design is
-[docs/RESEARCH_GATEWAY_PLAN.md](docs/RESEARCH_GATEWAY_PLAN.md).
+searches excluded) and then approved packaging release 0.7.0. [docs/RELEASE_NOTES_0.7.0.md](docs/RELEASE_NOTES_0.7.0.md)
+says what the upgrade changes and does not change; [docs/RESEARCH_GATEWAY.md](docs/RESEARCH_GATEWAY.md) says what web
+research contains, how it is switched on step by step, every outbound data flow, the fail-closed rules and the
+rollback; the design is [docs/RESEARCH_GATEWAY_PLAN.md](docs/RESEARCH_GATEWAY_PLAN.md).
 
-- Off by default; admins switch it to mock or live (live needs a typed confirmation); admins and operators only.
+- **Off after install and upgrade.** `.env` is not changed (`SEARXNG_SECRET` is not added), nothing of SearXNG is
+  downloaded or started, and there is no research mode setting until an admin sets one.
+- Admins switch it to mock or live (live needs a typed confirmation); admins and operators only, never viewers.
 - 50 searches a day at first (30 per person); query privacy screening; citations kept apart from AI text; search
   log and cache; fail-closed at every step.
-- The private SearXNG container is an optional overlay switched on with `scripts\research.ps1 -Enable`.
-- **Not on the owner's PC.** The real connectivity test (plan 7.7) has not been run and needs its own approval.
+- The private SearXNG container is an optional overlay switched on with `scripts\research.ps1 -Enable`, which also
+  creates `SEARXNG_SECRET` on an upgraded `.env`.
+- The owner's open decisions (plan section 11: client names, credit topics, software names, private-text check,
+  retention, engines, editions) are built with the proposed, closed defaults: RESEARCH_GATEWAY.md section 5.
+- **Not on the owner's PC.** `research.ps1 -Enable` and the real connectivity test (plan 7.7) have not been run; each
+  needs the owner's approval.
+- Package, SHA-256, upgrade tests and test results: TODO (lead, after packaging).
 
 ## Planned 0.8.0: Messaging & Channels (after 0.6.0 is verified; moved from 0.7.0)
 
@@ -450,6 +487,8 @@ owner's approval; the dashboard and the n8n editor stay bound to localhost.
 
 ## Next steps
 
+0. **Now: stay on 0.5.0.** 0.6.0, 0.6.1 and 0.7.0 are NO-GO (security notice
+   at the top); steps 1 to 4 wait for the corrected 0.6.2 and its own guide.
 1. Owner: read docs/RELEASE_NOTES_0.6.0.md and decide on the approvals in its
    section 8. Nothing is installed or imported before that. Then 0.6.1
    (docs/RELEASE_NOTES_0.6.1.md), after 0.6.0 is verified on the PC.

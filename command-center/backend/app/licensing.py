@@ -64,7 +64,9 @@ EDITIONS: dict[str, Edition] = {
         "professional", "Professional", True, 50, 5, PROFESSIONAL_AGENTS,
         frozenset({"ai_llm", "multi_user", "api_access", "client_reports"}),
     ),
-    "agency": Edition("agency", "Agency", True, None, None, None, frozenset(FEATURES)),
+    # Web research stays out of every sellable edition until the owner decides which editions get it (decision 18)
+    # and the search engines' terms are reviewed (COMMERCIALIZATION.md, B9).
+    "agency": Edition("agency", "Agency", True, None, None, None, frozenset(FEATURES) - {"web_research"}),
     "developer": Edition("developer", "Developer (internal, not for sale)", False, None, None, None, frozenset(FEATURES)),
 }
 

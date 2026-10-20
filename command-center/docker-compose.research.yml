@@ -29,7 +29,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       # Keep ':?' : an empty value would be accepted as an empty key.
-      SEARXNG_SECRET: ${SEARXNG_SECRET:?run scripts/init-env.ps1 -AddMissing}
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?run scripts/research.ps1 -Enable}
       FORCE_OWNERSHIP: "false"
       # The image listens on "::" (IPv6) by default and crashed at start without IPv6.
       GRANIAN_HOST: "0.0.0.0"
