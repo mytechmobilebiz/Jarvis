@@ -2,7 +2,8 @@
 
 Date: 2026-10-20 · for the installation in
 `C:\InfiniteAI\v0.5.0\InfiniteAI-CommandCenter` · every command below was
-checked against the scripts in the 0.6.0 package.
+run in the cloud sandbox (PowerShell 7.4, against a running Command Center), except the
+download itself and the Windows-only commands (`Get-PSDrive C`, `Expand-Archive`).
 
 **What this upgrade does:** it replaces the program files and rebuilds the
 API, worker and dashboard containers from a new folder. One database
@@ -82,44 +83,107 @@ imported JARVIS data, and nothing is imported by this upgrade.
 `77f9351ea634e03dcdc47585f19506b3f981c9711127bf31e040b68e16d77bca`). This
 upgrade does not use it.
 
-## 1. Preflight (read-only: changes nothing)
+## How to use this guide
 
-Open **Windows PowerShell** as your normal user (not as administrator). Keep
-this one window open for every step: the names you set here are needed later.
+Do it at a quiet time: nobody using the dashboard, n8n or the agents. The
+upgrade restarts n8n as well, so a workflow that is running at that moment is
+interrupted. The whole upgrade takes about 30 to 45 minutes, and the Command
+Center is unavailable for about 5 to 15 of them.
+
+Open **Windows PowerShell** as your normal user (not as administrator) and
+keep **this one window** open from start to end: later steps use the names
+set in step A.
+
+Run this first. It allows scripts in **this window only**, and closing the
+window undoes it; nothing changes for the rest of Windows. Without it, Windows'
+default policy can block even `Get-FileHash`:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+```
+
+Each step ends with a **STOP rule**. If what you see does not match, stop
+there and send me the output. Nothing has been changed until step G (install),
+apart from the backup files and the copies in step F.
+
+The guide writes everything you need to send me into
+`C:\InfiniteAI\upgrade-0.6.0` (no passwords or keys).
+
+## Before installation
+
+### A. Names and the current installation (your item 1: version and containers)
 
 ```powershell
 $old  = "C:\InfiniteAI\v0.5.0\InfiniteAI-CommandCenter"
 $new  = "C:\InfiniteAI\v0.6.0\InfiniteAI-CommandCenter"
 $work = "C:\InfiniteAI\upgrade-0.6.0"
 New-Item -ItemType Directory -Force -Path $work | Out-Null
-Test-Path "$old\.env"          # must print True
-Test-Path "C:\InfiniteAI\v0.6.0" # must print False (the new folder must not exist yet)
-docker version --format "{{.Server.Version}}"   # Docker Desktop must answer
-docker compose version
-Get-PSDrive C | Select-Object @{n="FreeGB";e={[math]::Round($_.Free/1GB,1)}}   # at least 10 GB free
+Test-Path "$old\.env"
+Test-Path "C:\InfiniteAI\v0.6.0"
 Set-Location $old
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\status.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\status.ps1 2>&1 | Tee-Object "$work\status-before.txt"
+docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" | Tee-Object "$work\containers-before.txt"
 ```
 
-Expected:
-- `True`, then `False`.
-- A Docker version and a Compose version.
-- At least 10 GB free.
-- `status.ps1` shows the `infinite-command-center` containers running, and
-  `Dashboard/API: HTTP 200` and `n8n: HTTP 200`. Your 0.5.0 may report the
-  API as 0.2.0: that is the known 0.5.0 problem that 0.6.0 fixes.
+- **What you should see:**
+  - `Test-Path` prints `True`, then `False`.
+  - `status.ps1` lists the five `infinite-command-center` containers
+    (postgres, api, worker, dashboard, n8n) as running or healthy.
+  - `status.ps1` shows `Dashboard/API: HTTP 200` and `n8n: HTTP 200`.
+  - Your 0.5.0 may report the API as 0.2.0: that is the known 0.5.0 problem
+    that 0.6.0 fixes.
+- **STOP if:**
+  - the first `Test-Path` prints `False`: set `$old` to the folder that holds
+    your `.env`;
+  - a container is missing or restarting;
+  - a probe is not HTTP 200.
+- **If the second `Test-Path` prints `True`:** you extracted 0.6.0 before.
+  - If you already ran `install.ps1` from it, stop and send me `status.ps1`.
+  - Otherwise move it aside (nothing is deleted) and continue:
+    `Rename-Item "C:\InfiniteAI\v0.6.0" "v0.6.0-old-extract"`.
 
-If `Test-Path "$old\.env"` prints `False`, stop: set `$old` to the folder
-that holds your `.env`.
+### B. Prerequisites and disk space (your items 5 and 7)
 
-If `Test-Path "C:\InfiniteAI\v0.6.0"` prints `True`, you extracted 0.6.0
-before. If you have already run `install.ps1` from it, stop here and send me
-the output of `status.ps1`. Otherwise rename it out of the way (nothing is
-deleted) and continue:
-`Rename-Item "C:\InfiniteAI\v0.6.0" "v0.6.0-old-extract"`.
+```powershell
+Set-Location $old
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\preflight.ps1 2>&1 | Tee-Object "$work\preflight.txt"
+docker system df | Tee-Object "$work\docker-df.txt"
+Get-PSDrive C | Select-Object @{n="FreeGB_C";e={[math]::Round($_.Free/1GB,1)}}
+```
 
-**Record the state before the upgrade.** This prints no passwords or keys,
-only counts, names and fingerprints (hashes).
+`preflight.ps1` only reads (it is the same in 0.5.0 and 0.6.0). It checks:
+- Docker Desktop is running, Compose is available, Linux containers on WSL 2;
+- the two ports (used by this Command Center is fine);
+- your other Docker projects, which are left untouched;
+- the free disk space;
+- that `.env` has every required secret.
+
+Docker Desktop keeps its images and volumes on drive C: by default, so the C:
+figure covers Docker storage too.
+
+- **STOP if:**
+  - any line says `[FAIL]`;
+  - it says `.env is from an older version; install.ps1 will add ...`. The
+    installer would then append keys to your `.env`, so send me the output
+    first;
+  - there are fewer than 10 GB free on C:.
+
+### C. The volumes that hold your data (your item 6)
+
+```powershell
+foreach ($c in "infinite-command-center-postgres-1", "infinite-command-center-n8n-1") {
+  docker inspect $c --format '{{.Name}}: {{range .Mounts}}[{{.Type}} {{.Name}} {{.Destination}}] {{end}}'
+}
+docker volume ls --filter name=infinite-command-center | Tee-Object "$work\volumes-before.txt"
+```
+
+- **What you should see:**
+  - postgres uses the volume `infinite-command-center_pgdata` (at
+    `/var/lib/postgresql`);
+  - n8n uses `infinite-command-center_n8n_data` (at `/home/node/.n8n`).
+- **STOP if:** the names differ. The checks below assume these names.
+
+### D. A fingerprint of your data (no passwords or keys are shown)
 
 ```powershell
 $sql = @'
@@ -132,7 +196,7 @@ UNION ALL SELECT 'leads', md5(string_agg(concat_ws(',',id,company,email,score,st
 UNION ALL SELECT 'schedules', md5(string_agg(concat_ws(',',id,name,agent,capability,cron,enabled),'|' ORDER BY id)) FROM schedules
 UNION ALL SELECT 'schedules_enabled', count(*)::text FROM schedules WHERE enabled;
 '@
-$n8nSql = "SELECT 'n8n_workflows', count(*)::text FROM workflow_entity UNION ALL SELECT 'n8n_credentials', coalesce(md5(string_agg(id||data,'|' ORDER BY id)),'none') FROM credentials_entity;"
+$n8nSql = "SELECT 'n8n_workflows', count(*)::text || ' ' || coalesce(md5(string_agg(id||':'||name,'|' ORDER BY id)),'none') FROM workflow_entity UNION ALL SELECT 'n8n_credentials_yours', coalesce(md5(string_agg(id||data,'|' ORDER BY id)),'none') FROM credentials_entity WHERE id NOT IN ('ccApiToken000001','ccWebhookSecret1') UNION ALL SELECT 'n8n_credentials_cc', coalesce(string_agg(id||':'||type,',' ORDER BY id),'none') FROM credentials_entity WHERE id IN ('ccApiToken000001','ccWebhookSecret1');"
 function Save-State($folder, $file) {
   Set-Location $folder
   & {
@@ -141,109 +205,152 @@ function Save-State($folder, $file) {
     "n8n_encryption_config " + (docker compose exec -T n8n sh -c "sha256sum < /home/node/.n8n/config | cut -c1-16")
     docker volume inspect infinite-command-center_pgdata infinite-command-center_n8n_data --format "{{.Name}} {{.CreatedAt}}"
     "env " + (Get-FileHash "$folder\.env" -Algorithm SHA256).Hash
-  } | Set-Content -Encoding ASCII $file
-  docker ps -a --format "{{.Names}} {{.ID}} {{.CreatedAt}}" | Where-Object { $_ -notmatch '^infinite-command-center-' } | Sort-Object | Set-Content -Encoding ASCII ($file -replace '\.txt$', '-other-containers.txt')
+  } 2>&1 | Set-Content -Encoding ASCII $file
+  $others = @(docker ps -a --format "{{.Names}} {{.ID}} {{.CreatedAt}}" | Where-Object { $_ -notmatch '^infinite-command-center-' } | Sort-Object)
+  if ($others.Count -eq 0) { $others = @("(no other containers)") }
+  $others | Set-Content -Encoding ASCII ($file -replace '\.txt$', '-other-containers.txt')
 }
 Save-State $old "$work\before.txt"
 Get-Content "$work\before.txt"
 ```
 
-Expected: 14 lines:
-- the 8 database lines (`users`, `secret_values`, `app_settings`,
-  `agent_state` with each agent `=true`/`=false`, `sites`, `leads`,
-  `schedules`, `schedules_enabled`);
-- `n8n_workflows`, `n8n_credentials` and `n8n_encryption_config`;
-- the two volume lines;
-- the `env` line.
+- **What you should see:** 15 lines:
+  - 8 database lines: `users`, `secret_values`, `app_settings`,
+    `agent_state`, `sites`, `leads`, `schedules`, `schedules_enabled`;
+  - `n8n_workflows` (your number of n8n workflows and a fingerprint of their
+    IDs and names);
+  - `n8n_credentials_yours` (the credentials you created in n8n, or `none`);
+  - `n8n_credentials_cc` (the Command Center's two credentials);
+  - `n8n_encryption_config`;
+  - 2 volume lines with their creation time;
+  - the `env` line.
 
-If a line shows `ERROR` or is missing, stop and send the output.
+  `agent_state` lists only the agents whose on/off setting was ever changed
+  (for example `seo_content=false`). A line can be empty after the `|` when
+  that table is empty (`app_settings|`): that is fine.
+- **STOP if:** any line says `ERROR`, or one of the 15 lines is missing.
 
-**JARVIS (read-only):** note how JARVIS runs now, so you can see afterwards
-that the upgrade did not restart it:
+**JARVIS (read-only):** note how it runs now.
 
 ```powershell
-Get-Process | Where-Object { $_.ProcessName -match 'hermes|jarvis' } | Select-Object ProcessName, Id, StartTime | Tee-Object "$work\jarvis-before.txt"
+$j = Get-Process | Where-Object { $_.ProcessName -match 'hermes|jarvis' } | Select-Object ProcessName, Id, StartTime | Out-String
+if (-not $j.Trim()) { $j = "(no process named hermes or jarvis)" }
+$j | Tee-Object "$work\jarvis-before.txt"
 ```
 
-(If this prints nothing, JARVIS runs under another name; compare it your
-usual way.)
+If this prints nothing, JARVIS runs under another name; note it your usual way
+(for example send it a test message now and again at the end).
 
-## 2. Back up, and check the backup
+### E. Full backup, and proof that it restores (your item 3)
 
 ```powershell
 Set-Location $old
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\backup.ps1
+if ($LASTEXITCODE -ne 0) { Write-Host "BACKUP FAILED (exit $LASTEXITCODE): stop here and send me the output" -ForegroundColor Red }
 $bk = Get-ChildItem "$old\backups" -Directory | Sort-Object Name | Select-Object -Last 1
-$bk.FullName
-Copy-Item "$old\.env" "C:\InfiniteAI\env-backup-0.5.0.txt"
-```
-
-`backup.ps1` must end with `Backup written to ...`. It lists
-`command_center.dump`, `n8n.dump` and `credit_repair.dump`, each larger than
-0 bytes. Keep `env-backup-0.5.0.txt` private: it holds your passwords and
-encryption keys, and without them the backup cannot be decrypted.
-
-Check that each dump can be read (lists its contents, changes nothing):
-
-```powershell
+"backup folder: " + $bk.FullName | Tee-Object "$work\backup.txt"
 foreach ($db in "command_center", "n8n", "credit_repair") {
   $f = Join-Path $bk.FullName "$db.dump"
-  if (-not (Test-Path $f)) { Write-Host "MISSING $db.dump" -ForegroundColor Red; continue }
-  docker compose cp $f "postgres:/tmp/verify-$db.dump" | Out-Null
-  $entries = (docker compose exec -T postgres pg_restore -l "/tmp/verify-$db.dump" | Measure-Object -Line).Lines
-  docker compose exec -T postgres rm -f "/tmp/verify-$db.dump"
-  Write-Host ("{0}: {1} entries, {2:N0} bytes, SHA-256 {3}" -f $db, $entries, (Get-Item $f).Length, (Get-FileHash $f).Hash.Substring(0,16))
+  if (-not (Test-Path $f)) { "MISSING $db.dump" | Tee-Object -Append "$work\backup.txt"; continue }
+  $tmp = "restore_check_$db"
+  docker compose cp $f "postgres:/tmp/restore-check-$db.dump" | Out-Null
+  docker compose exec -T postgres dropdb -U postgres --if-exists $tmp
+  docker compose exec -T postgres createdb -U postgres $tmp
+  docker compose exec -T postgres pg_restore -U postgres --no-owner --no-privileges --exit-on-error -d $tmp "/tmp/restore-check-$db.dump"
+  $rc = $LASTEXITCODE
+  $tables = (docker compose exec -T postgres psql -U postgres -d $tmp -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'" | Out-String).Trim()
+  docker compose exec -T postgres dropdb -U postgres $tmp
+  docker compose exec -T postgres rm -f "/tmp/restore-check-$db.dump"
+  $line = "{0}: {1:N0} bytes, SHA-256 {2}, trial restore exit {3}, {4} tables" -f $db, (Get-Item $f).Length, (Get-FileHash $f).Hash, $rc, $tables
+  $line | Tee-Object -Append "$work\backup.txt"
 }
+docker compose exec -T postgres psql -U postgres -Atc "SELECT 'temporary databases left: ' || count(*) FROM pg_database WHERE datname LIKE 'restore_check_%'"
 ```
 
-Each database must show more than 0 entries. If one shows `MISSING` or 0
-entries, stop. (`credit_repair` is missing only if that database never
-existed.)
+What the trial restore does: it copies each dump into the PostgreSQL
+container and restores it into a **new, temporary database**
+(`restore_check_...`). It then counts that database's tables and **deletes
+it** again. Your real databases are not touched; this proves that each backup
+file restores completely.
 
-## 3. Download and check the package
+- **What you should see:**
+  - `backup.ps1` ends with `Backup written to ...`;
+  - each of the three databases shows `trial restore exit 0` and more than 0
+    tables;
+  - the last line says `temporary databases left: 0`.
+- **STOP if:**
+  - it printed `BACKUP FAILED`;
+  - any of the three dumps is `MISSING` (your installation has had all three
+    databases since 0.2.0);
+  - an exit code is not 0, or a table count is 0.
+
+The `NOTICE: database ... does not exist, skipping` lines are normal.
+
+### F. Keep `.env` and the encryption keys safe (your item 4)
+
+```powershell
+New-Item -ItemType Directory -Force -Path "C:\InfiniteAI\keys-backup-0.5.0" | Out-Null
+Copy-Item "$old\.env" "C:\InfiniteAI\keys-backup-0.5.0\env-0.5.0.txt"
+Copy-Item "$old\.env" (Join-Path $bk.FullName "env-at-backup.txt")
+(Get-FileHash "$old\.env").Hash -eq (Get-FileHash "C:\InfiniteAI\keys-backup-0.5.0\env-0.5.0.txt").Hash
+```
+
+Prints `True`. `.env` holds all your passwords and the encryption keys
+(`CC_SECRETS_KEY`, `N8N_ENCRYPTION_KEY`, `CREDIT_REPAIR_DATA_KEY`): without
+it, the backup's stored secrets cannot be decrypted. Keep these copies private.
+Also copy `C:\InfiniteAI\keys-backup-0.5.0` to a USB stick or your password
+manager. Never send or paste it anywhere. Your original `.env` stays where it
+is, untouched.
+
+### G-1. Download and check the package (your item 2)
 
 Download (it saves to your Downloads folder):
 https://github.com/mytechmobilebiz/Jarvis/raw/jarvis-migration/command-center/releases/InfiniteAI-CommandCenter-0.6.0-windows.zip
 
 ```powershell
 $zip = "$env:USERPROFILE\Downloads\InfiniteAI-CommandCenter-0.6.0-windows.zip"
-(Get-FileHash $zip -Algorithm SHA256).Hash
+$hash = (Get-FileHash $zip -Algorithm SHA256).Hash
+$hash | Tee-Object "$work\zip-sha256.txt"
+$hash -eq "A687F737DE043AE6A69C4DCC3F15AE71D71A5C3688BEBEF62B53122E4036A8A1"
 ```
 
-It must print exactly
-`A687F737DE043AE6A69C4DCC3F15AE71D71A5C3688BEBEF62B53122E4036A8A1`.
-If it does not, delete the file, download it again, and do not go on until
-it matches.
+- **What you should see:** the hash, then `True`.
+- **STOP if:** it prints `False`. Delete the file, download it again, and do
+  not go on until it matches.
 
-## 4. Extract into the new folder
+## Installation
+
+### G-2. Extract into the new folder and copy `.env` (a copy; the original stays)
 
 ```powershell
 Expand-Archive -Path $zip -DestinationPath "C:\InfiniteAI\v0.6.0"
-Get-Content "$new\VERSION"     # must print 0.6.0
-Test-Path "$new\.env"          # must print False
-```
-
-(Explorer's right-click, Extract All, into `C:\InfiniteAI\v0.6.0` does the
-same.)
-
-## 5. Copy your `.env` into the new folder (the original stays where it is)
-
-```powershell
+Get-Content "$new\VERSION"
+Test-Path "$new\.env"
 Copy-Item "$old\.env" "$new\.env"
 if (Test-Path "$old\templates\proposal-template.html") { Copy-Item "$old\templates\proposal-template.html" "$new\templates\" }
-(Get-FileHash "$old\.env").Hash -eq (Get-FileHash "$new\.env").Hash   # must print True
+(Get-FileHash "$old\.env").Hash -eq (Get-FileHash "$new\.env").Hash
 ```
 
-## 6. Install 0.6.0 from the new folder
+- **What you should see:** `0.6.0`, then `False` (no `.env` in the new folder
+  yet), then `True`.
+
+Explorer's right-click, Extract All, into `C:\InfiniteAI\v0.6.0` gives the
+same folder.
+
+### G-3. Install 0.6.0 from the new folder
 
 ```powershell
 Set-Location $new
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 2>&1 | Tee-Object "$work\install.txt"
 ```
 
-This takes 5 to 15 minutes; it builds the new images and recreates the
-API, worker and dashboard containers. Your data stays in the same volumes.
-It must end with these **seven** lines and `SMOKE TEST PASSED`:
+This takes 5 to 15 minutes: it builds the new images and recreates the API,
+worker and dashboard containers. PostgreSQL and n8n keep their volumes, and
+the database migration `0006_brain` adds the empty JARVIS Brain tables.
+
+Near the end it must show these **seven** checks and `SMOKE TEST PASSED`,
+followed by three short lines: where the sign-in details are, keeping `.env`
+private, and reloading an open dashboard page.
 
 ```
 PASS  API health  ok
@@ -256,81 +363,148 @@ PASS  supervisor request  request ... completed (...)
 SMOKE TEST PASSED
 ```
 
-If it stops with `this folder has no .env`, step 5 was missed: nothing was
-changed; copy `.env` and run it again. If the build fails with
-`toomanyrequests` (Docker Hub's download limit), wait an hour, or sign in
-with `docker login`, and run `install.ps1` again. Any other failure: stop
-and send the whole output.
+- **If it stops with `this folder has no .env`:** step G-2 was missed and
+  nothing was changed. Copy `.env` and run it again.
+- **If the build fails with `toomanyrequests`:** that is Docker Hub's
+  download limit, and the running system is unchanged. Wait an hour, or sign
+  in with `docker login`, and run it again.
+- **Any other FAIL:** stop and send me `$work\install.txt`.
+  - If the failure came before `4/5`, the running system is unchanged.
+  - If it came at `4/5 Starting` or later, the containers may already be
+    half-replaced. To get 0.5.0 running again straight away, use the quick
+    rollback in section H. It rebuilds 0.5.0 and needs internet access.
 
-## 7. Health checks after the upgrade
+## After installation
 
-1-7. The seven smoke checks above (API, n8n, sign-in, versions, worker,
-   n8n round trip, Supervisor).
+### 1. Dashboard and API report 0.6.0
 
-8. **Versions and folder:**
+```powershell
+Set-Location $new
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\status.ps1 2>&1 | Tee-Object "$work\status-after.txt"
+```
 
-   ```powershell
-   Set-Location $new
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\status.ps1
-   ```
+It must show all of these:
+- `This folder: version 0.6.0`;
+- `Running API container: version 0.6.0`;
+- `Running dashboard: version 0.6.0`;
+- `Running API container was created from: C:\InfiniteAI\v0.6.0\InfiniteAI-CommandCenter`;
+- `Dashboard/API: HTTP 200`;
+- `n8n: HTTP 200`.
 
-   It must show:
-   - `This folder: version 0.6.0`;
-   - `Running API container: version 0.6.0` and
-     `Running dashboard: version 0.6.0`;
-   - `Running API container was created from: C:\InfiniteAI\v0.6.0\InfiniteAI-CommandCenter`;
-   - `Dashboard/API: HTTP 200` and `n8n: HTTP 200`.
+Then reload http://localhost:8090: the sidebar shows
+`Dashboard v0.6.0 · API v0.6.0`.
 
-9. **Your data is unchanged** (the same fingerprints as before):
+### 2. All seven agents and the Supervisor
 
-   ```powershell
-   Save-State $new "$work\after.txt"
-   Compare-Object (Get-Content "$work\before.txt") (Get-Content "$work\after.txt")
-   ```
+```powershell
+docker compose exec -T api python -c "from app.agents.registry import all_agents; a = all_agents(); print(len(a), 'agents:', ', '.join(sorted(a)))" | Tee-Object "$work\agents-after.txt"
+```
 
-   It must print **nothing**: users, encrypted secrets, settings, agents
-   (on/off), sites, leads, schedules, n8n workflows, credentials and
-   encryption key, both volumes (same creation time) and `.env` are
-   identical.
+It must print
+`8 agents: communications, credit_repair, monitoring, seo_content, server_management, social_marketing, supervisor, wordpress_security`
+(the seven agents and the Supervisor). On the AI Agents page, the same agents
+are switched on and off as before (step 3 checks this in the data too).
 
-10. **Other Docker projects untouched:**
+### 3 and 4. Your data, n8n workflows, keys and configuration are unchanged
 
-    ```powershell
-    Compare-Object (Get-Content "$work\before-other-containers.txt") (Get-Content "$work\after-other-containers.txt")
-    ```
+```powershell
+Save-State $new "$work\after.txt"
+Compare-Object (Get-Content "$work\before.txt") (Get-Content "$work\after.txt")
+Compare-Object (Get-Content "$work\before-other-containers.txt") (Get-Content "$work\after-other-containers.txt")
+```
 
-    It must print nothing (the same containers, the same IDs and creation
-    times).
+Both `Compare-Object` lines must print **nothing**. That means these are
+identical before and after:
+- users, the encrypted stored secrets, the settings;
+- the agents' on/off states;
+- sites, leads and schedules (and how many are enabled);
+- the n8n workflows, the n8n credentials you created, and n8n's
+  encryption key file.
 
-11. **The new database migration, and nothing imported:**
+  n8n re-imports the Command Center's own two credentials from your `.env`
+  at every start, by design, so their stored form changes while their
+  values stay the same. They are therefore compared by name and type only.
+- both volumes, with the same creation time;
+- your `.env`, byte for byte;
+- every container of your other Docker projects.
 
-    ```powershell
-    "SELECT string_agg(version, ' ' ORDER BY version) FROM schema_migrations; SELECT 'memory items ' || count(*) FROM memory_items; SELECT 'archived messages ' || count(*) FROM archive_messages; SELECT 'import runs ' || count(*) FROM import_runs;" | docker compose exec -T postgres psql -U postgres -d command_center -At
-    ```
+**If a line differs:** send me both files and do not roll back yet.
+- Leads, sites or schedules can change with normal use between the two
+  readings (for example a lead arriving through n8n). That is not data loss.
+- `users`, `secret_values`, `n8n_credentials_yours`, `n8n_encryption_config`,
+  the volume lines and `env` must never differ.
 
-    It must show `0006_brain` at the end of the first line, and `memory items 0`,
-    `archived messages 0`, `import runs 0`.
+### 5. The JARVIS Brain dashboard is there, and nothing was imported
 
-12. **Dashboard:** reload http://localhost:8090. The sidebar shows
-    `Dashboard v0.6.0 · API v0.6.0` and a **JARVIS Brain** entry with
-    "No JARVIS import yet". Check the AI Agents page: the same agents
-    switched on and off as before. Check Settings: "JARVIS Brain in AI
-    prompts" is off.
+```powershell
+"SELECT string_agg(version, ' ' ORDER BY version) FROM schema_migrations; SELECT 'memory items ' || count(*) FROM memory_items; SELECT 'archived messages ' || count(*) FROM archive_messages; SELECT 'import runs ' || count(*) FROM import_runs; SELECT 'schedules enabled ' || count(*) FROM schedules WHERE enabled;" | docker compose exec -T postgres psql -U postgres -d command_center -At | Tee-Object "$work\brain-after.txt"
+```
 
-13. **JARVIS untouched:**
+- **The database:**
+  - the first line ends with `0006_brain`;
+  - `memory items 0`, `archived messages 0`, `import runs 0`;
+  - `schedules enabled` has the same number as `schedules_enabled` in step D.
+- **The dashboard:** the sidebar has a **JARVIS Brain** entry that opens with
+  "No JARVIS import yet".
+- **Settings:** "JARVIS Brain in AI prompts" is off.
 
-    ```powershell
-    Get-Process | Where-Object { $_.ProcessName -match 'hermes|jarvis' } | Select-Object ProcessName, Id, StartTime
-    Get-Content "$work\jarvis-before.txt"
-    ```
+### 6. Smoke tests and health checks
 
-    The same process IDs and start times.
+The seven smoke checks ran at the end of G-3. Run them once more on their own:
 
-From now on, run the day-to-day scripts from
-`C:\InfiniteAI\v0.6.0\InfiniteAI-CommandCenter`. Keep the old folder and
-its `backups` folder until 0.6.0 has run well for a while.
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke.ps1 2>&1 | Tee-Object "$work\smoke-after.txt"
+docker ps --filter "label=com.docker.compose.project=infinite-command-center" --format "table {{.Names}}\t{{.Status}}"
+```
 
-## 8. Rollback
+- **smoke.ps1:** all seven `PASS`, then `SMOKE TEST PASSED`.
+- **Containers:** postgres, api, dashboard and n8n show `(healthy)`, and the
+  worker shows `Up`.
+
+### 7. JARVIS is still running
+
+```powershell
+Get-Process | Where-Object { $_.ProcessName -match 'hermes|jarvis' } | Select-Object ProcessName, Id, StartTime
+Get-Content "$work\jarvis-before.txt"
+```
+
+The same process IDs and start times as in step D, so the upgrade did not
+restart it. Then use JARVIS as you normally do (send it one message) to see it
+answer. The upgrade never touches JARVIS's folders or processes.
+
+### 8. Upgrade report and rollback checkpoint
+
+```powershell
+$report = "$work\upgrade-report.txt"
+& {
+  "Upgrade 0.5.0 -> 0.6.0, finished " + (Get-Date -Format "yyyy-MM-dd HH:mm")
+  "old folder (rollback): $old"
+  "new folder (live now): $new"
+  "zip SHA-256: " + (Get-Content "$work\zip-sha256.txt")
+  Get-Content "$work\backup.txt"
+  "keys copy: C:\InfiniteAI\keys-backup-0.5.0\env-0.5.0.txt (private)"
+  "data unchanged: " + $(if (-not (Compare-Object (Get-Content "$work\before.txt") (Get-Content "$work\after.txt"))) { "yes" } else { "NO - see before.txt / after.txt" })
+  "other Docker projects unchanged: " + $(if (-not (Compare-Object (Get-Content "$work\before-other-containers.txt") (Get-Content "$work\after-other-containers.txt"))) { "yes" } else { "NO" })
+  "smoke test: " + $(if (Select-String -Quiet "SMOKE TEST PASSED" "$work\smoke-after.txt") { "passed" } else { "NOT passed" })
+  Get-Content "$work\agents-after.txt"
+  Get-Content "$work\brain-after.txt"
+  Select-String -Path "$work\status-after.txt" -Pattern "version|created from|HTTP" | ForEach-Object { $_.Line }
+} | Set-Content -Encoding ASCII $report
+Get-Content $report
+```
+
+Send me the content of `upgrade-report.txt`. It contains no passwords or keys.
+It is also your **rollback checkpoint**:
+- the old folder;
+- the backup folder, with its trial-restore results;
+- the keys copy;
+- the data fingerprint you can compare against later.
+
+Keep the old folder, its `backups` folder and `C:\InfiniteAI\keys-backup-0.5.0`
+until 0.6.0 has run well for a while. From now on, run the day-to-day scripts
+from `C:\InfiniteAI\v0.6.0\InfiniteAI-CommandCenter`.
+
+## H. Rollback
 
 **Quick, data kept (if 0.6.0 misbehaves):**
 
@@ -340,10 +514,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
 - **What it does:** it rebuilds the 0.5.0 containers from the old folder.
+  - This needs internet access (Docker Hub, PyPI, npm). Docker's build cache
+    usually still holds the 0.5.0 layers, so it is quick.
+  - On `toomanyrequests`, wait or `docker login`, then run it again.
 - **Your data:** it stays, including anything done in 0.6.0. The nine new
   JARVIS Brain tables stay in the database, unused and empty; 0.5.0 ignores
   them.
 - **Going forward again:** installing 0.6.0 later finds them as they were.
+- **After a rollback,** run the day-to-day scripts from the 0.5.0 folder
+  again. The 0.6.0 folder's `start.ps1` would rebuild 0.6.0.
 
 This was tested.
 
@@ -352,31 +531,34 @@ This was tested.
 
 ```powershell
 Set-Location "C:\InfiniteAI\v0.5.0\InfiniteAI-CommandCenter"
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\restore.ps1 -BackupFolder "<the backup folder printed in step 2>"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\restore.ps1 -BackupFolder "<the backup folder in upgrade-report.txt>"
 ```
 
 - **The prompt:** it asks you to type `RESTORE`. Anything else cancels and
   changes nothing.
 - **What it does:** it first backs up the current state. Then it puts the
   Command Center, n8n and Credit Repair databases back to the moment of step
-  2, losing everything done since.
+  E, losing everything done since.
 - **It needs the original `.env`:** the same `.env` the backup was taken
-  with (your `env-backup-0.5.0.txt` holds it).
+  with (`C:\InfiniteAI\keys-backup-0.5.0\env-0.5.0.txt` holds it).
 
 This was tested with `-Yes`, which skips the typed confirmation.
 
-**Never** run `docker compose down -v`, `uninstall.ps1 -DeleteData`, or
-delete the `infinite-command-center_pgdata` or `infinite-command-center_n8n_data`
-volumes: they hold your data.
+**Never** run any of these, because they destroy your data:
+- `docker compose down -v`;
+- `uninstall.ps1 -DeleteData`;
+- deleting the `infinite-command-center_pgdata` or
+  `infinite-command-center_n8n_data` volumes.
 
-## 9. What comes later (each needs its own approval)
+## What this upgrade does not do (each later step needs its own approval)
 
-- The test copy and the import of your real JARVIS backup into it
-  (`docs/DEPLOY_WINDOWS.md`, "JARVIS Brain: test copy and import").
-- The live JARVIS import, after your review.
-- The Research Gateway (SearXNG/DeepSeek web research): planned for a later
-  release, not in 0.6.0.
-
-**What to send me after the upgrade:** the last part of the `install.ps1`
-output (from the seven checks), the `status.ps1` output, and whether steps
-9 to 13 printed what they should. Do not paste anything from `.env`.
+- **The JARVIS Brain:**
+  - it imports no JARVIS messages;
+  - it activates no imported workflow or schedule;
+  - memory in AI prompts stays off.
+- **External systems:** it changes nothing on your websites, CWP servers, DNS
+  or payment systems.
+- **Web research:** it installs no DeepSeek or other web-research feature.
+  The Research Gateway is planned for a later release.
+- **Before the test-copy import:** the 0.6.1 patch for the withhold defect
+  (section 0).
