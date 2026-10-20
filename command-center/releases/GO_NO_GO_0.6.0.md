@@ -1,7 +1,7 @@
 # 0.6.0 (JARVIS Brain): GO/NO-GO report
 
 Date: 2026-10-20 · package `InfiniteAI-CommandCenter-0.6.0-windows.zip`,
-SHA-256 `PKG_SHA` · branch `jarvis-migration` · details in
+SHA-256 `a687f737de043ae6a69c4dcc3f15ae71d71a5c3688bebef62b53122e4036a8a1` · branch `jarvis-migration` · details in
 [docs/RELEASE_NOTES_0.6.0.md](../docs/RELEASE_NOTES_0.6.0.md)
 
 ## Verdict
