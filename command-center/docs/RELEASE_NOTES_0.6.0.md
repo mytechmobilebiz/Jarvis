@@ -221,7 +221,45 @@ TEST_TABLE
 
 ## 10. Performance (synthetic data the size of your JARVIS)
 
-PERF_SECTION
+A synthetic JARVIS backup built to match yours: 2,355 sessions, 49,618
+messages and a 1,660 MB file (yours: 2,355 sessions, 50,114 messages,
+1,679 MB). It has about 1 GB of message text, with most tool results between
+60 and 250 KB, plus planted contact details and one planted SSN in a file. It
+was measured in the cloud sandbox (4 CPUs, 15 GB of memory), each step as its
+own process, on the final 0.6.0 code:
+
+| Step | Time | Peak memory of the importer | Database afterwards |
+|---|---|---|---|
+| Plan (writes nothing) | 10 min 18 s | 105 MB | unchanged |
+| Import everything | 9 min 58 s | 110 MB | 143 MB |
+| Verify | 2 min 16 s | 120 MB | 143 MB |
+| Roll back that run | 2 s | 104 MB | all of the run's rows removed |
+
+Verify passed every check: each of the 52,122 records once, all 49,618
+messages, no secret or restricted value found, no reasoning column read, and
+search found all 40 sampled texts. The rollback deleted the 2,355 sessions,
+49,618 messages, 41 items, 4 drafts and 6 conflicts of the run.
+
+What this tells you, and what it does not:
+
+- **Memory stays flat** at about 110 to 120 MB: the importer reads one session
+  at a time and never loads the whole backup.
+- **Time**: about 10 minutes each for the plan and the import, mostly cleaning
+  text on one processor core. Expect the same order of magnitude on your PC.
+  Docker Desktop reading the backup from a Windows folder can be slower than
+  this sandbox. The staged runs (5 sessions, then about 10 %) take a fraction
+  of that.
+- **Disk**: synthetic text compresses unusually well (1 GB of text became a
+  103 MB table). Your real conversations will compress less. If nothing
+  compressed, the archive would take about as much as the message text
+  itself, about 1.2 GB if yours is like the synthetic backup. Keep at least
+  3 GB free on the drive Docker Desktop uses: room for the test copy and for
+  the live installation.
+- **Not a real-data result.** It says nothing about how many of your
+  conversations will be withheld or redacted, how many conflicts you will need
+  to decide, or whether your data holds formats the cleaner misses. Those come
+  from the plan and the import into the test copy (section 7, steps 3 to 5),
+  which is the next thing to approve.
 
 ## 11. Known limitations
 
