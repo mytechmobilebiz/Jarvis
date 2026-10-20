@@ -24,7 +24,8 @@ installed 0.5.0, JARVIS and your live database are untouched.
 | Dashboard (Vitest), type check, production build | **218 passed**, type check clean, build succeeded |
 | End-to-end: test copy, staged import, verify, rollback, restart (`testing/brain-check.sh`) | **98 passed, 0 failed, 0 skipped**; live-installation stand-in unchanged after every step |
 | JARVIS Brain page in a browser (admin, operator, viewer) | **19 of 19 passed**: search, provenance, approve and edit with versions, restricted data hidden per role, no planted value on any page |
-| Your upgrade path from the package (0.5.0 → 0.6.0; 0.5.0 → 0.5.1 → 0.6.0; back to 0.5.0; restore) | **passed** (73 checks); data fingerprint identical at every step. Ran on the release candidate just before the last change (decisions carry-over), which the backend and end-to-end runs cover |
+| Your upgrade path from the package (0.5.0 → 0.6.0; 0.5.0 → 0.5.1 → 0.6.0; back to 0.5.0; restore) | **passed** (73 checks, run 6 on the final package, 2026-10-20); data fingerprint identical at every step, including the n8n workflows and an n8n credential created like yours. An earlier run's n8n comparison was faulty (a query error on both sides); fixed and run again |
+| The Windows upgrade guide (`releases/UPGRADE_0.5.0_TO_0.6.0_WINDOWS.md`) run end to end in PowerShell 7.4 on a running installation | **passed**: preflight, backup with trial restores of all three databases, checksum, install, seven smoke checks, agents, data fingerprint identical, report; reviewed by three independent reviewers |
 | Live-import path in the upgrade test (typed confirmation, dump, import, verify, rollback) | **passed**; no planted value in the database; rollback left none of the run's rows |
 | Approval-bypass instructions from JARVIS | **cannot override** the Command Center's approvals (tested): quarantined, admin only, never in a prompt; no setting, agent, schedule or approval changed by an import; a proposal still waits for a person |
 | Imported workflows | **stay disabled** (tested): drafts never run; a converted schedule is created disabled; watched sites start paused |
@@ -102,14 +103,27 @@ installed 0.5.0, JARVIS and your live database are untouched.
 
 ## 4. Data preservation (upgrade test on a copy of your history)
 
-Compared before and after every step: users, encrypted secrets (and that
-the stored API key still decrypts), settings, agents and their on/off states,
-sites, leads, schedules, n8n workflows, credentials and **encryption key**,
-and the Docker volumes. **Identical at every step**: after 0.5.0 → 0.6.0,
+Run 6 of the upgrade test, on the final package, compared these before and
+after every step:
+- users and encrypted secrets, and that the stored API key still decrypts;
+- settings, agents and their on/off states, sites, leads and schedules;
+- the n8n workflows (IDs and names), an n8n credential created like yours
+  (byte for byte), and n8n's **encryption key**;
+- the Docker volumes.
+
+The Command Center's own two n8n credentials are re-encrypted from `.env` at
+every n8n start, by design, so they were compared by ID and type.
+
+**Identical at every step**: after 0.5.0 → 0.6.0,
 after the live import and its rollback, after going back to 0.5.0, after
 forward again, after `restore.ps1`, and after 0.5.0 → 0.5.1 → 0.6.0. `.env`
 stayed byte-for-byte the same. An unrelated Docker project kept its
-container and start time. `install.ps1` without the copied `.env` stops
+container and start time.
+
+The release notes inside the zip still describe the n8n comparison in the
+earlier, overstated words ("n8n workflows, credentials ... identical"). The
+copy in the repository is corrected, and this section is the accurate
+account. `install.ps1` without the copied `.env` stops
 and changes nothing.
 
 ## 5. Your v0.5.0: do you need 0.5.1 first?

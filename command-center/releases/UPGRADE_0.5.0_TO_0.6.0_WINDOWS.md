@@ -43,12 +43,37 @@ PowerShell 7.4; synthetic data):
 - **Dashboard:** 218 passed; type check clean; production build OK.
 - **End-to-end:** 98 passed, 0 failed, including 19 browser checks of the new
   JARVIS Brain page.
-- **Upgrade from a rebuilt copy of your history:** passed.
+- **Upgrade from a rebuilt copy of your history:** passed: 73 checks, on the
+  final 0.6.0 package (run 6).
   - The rebuild covered 0.2.0, then 0.4.0 and 0.5.0 in one folder, and
     reproduced your "API reports 0.2.0".
-  - Data, encrypted secrets, n8n and its encryption key, agents and volumes
-    were identical before and after.
+  - It then went 0.5.0 → 0.6.0; through a live import and its rollback;
+    back to 0.5.0; forward again; through `restore.ps1`; and 0.5.0 → 0.5.1
+    → 0.6.0.
+  - At every step these were identical:
+    - users and encrypted secrets, and the stored API key still decrypts;
+    - settings, agents (on/off), sites, leads and schedules;
+    - the n8n workflows (IDs and names) and an n8n credential created like
+      yours, byte for byte;
+    - n8n's encryption key and the volumes;
+    - `.env`, byte for byte.
+
+    The Command Center's own two n8n credentials are re-encrypted at every
+    n8n start, by design, so they were compared by ID and type.
   - An unrelated Docker project was untouched.
+  - An earlier run compared n8n wrongly (a query error on both sides).
+    That was fixed, and the test was run again.
+- **This guide itself:** run end to end in the sandbox (PowerShell 7.4)
+  on a running Command Center, from preflight through the upgrade report.
+  - Every check printed what the guide says.
+  - The backups restored completely into temporary databases.
+  - The before/after fingerprints were identical, and the report was
+    written.
+  - Only the download and the Windows-only commands were not run.
+  - That installation ran 0.5.1, so the 0.5.0 → 0.6.0 path itself is
+    covered by the upgrade test above.
+  - Three independent reviewers (Windows PowerShell 5.1, data safety,
+    accuracy) checked the guide, and their confirmed findings are fixed.
 - **Security review:** six independent reviewers. All critical and high
   findings are fixed. None is open.
 
@@ -351,9 +376,11 @@ if ((Test-Path "$new\VERSION") -and (Get-Content "$new\VERSION" -TotalCount 1).T
 (Pasted lines keep running after an error, so the `if` makes sure the
 installer only runs from the 0.6.0 folder.)
 
-This takes 5 to 15 minutes: it builds the new images and recreates the API,
-worker and dashboard containers. PostgreSQL and n8n keep their volumes, and
-the database migration `0006_brain` adds the empty JARVIS Brain tables.
+This takes 5 to 15 minutes. It builds the new images and recreates the API,
+worker, dashboard and n8n containers; n8n is down for about a minute while it
+restarts, and keeps its workflows, credentials and data volume. PostgreSQL
+keeps running and keeps its volume. The database migration `0006_brain` adds
+the empty JARVIS Brain tables.
 
 Near the end it must show these **seven** checks and `SMOKE TEST PASSED`,
 followed by three short lines: where the sign-in details are, keeping `.env`
@@ -430,7 +457,7 @@ identical before and after:
 
   n8n re-imports the Command Center's own two credentials from your `.env`
   at every start, by design, so their stored form changes while their
-  values stay the same. They are therefore compared by name and type only.
+  values stay the same. They are therefore compared by ID and type only.
 - both volumes, with the same creation time;
 - your `.env`, byte for byte;
 - every container of your other Docker projects.
