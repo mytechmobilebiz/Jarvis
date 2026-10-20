@@ -2467,6 +2467,7 @@ async def _rescan_json(s: AsyncSession, counts: dict[str, int], apply: bool) -> 
 
 
 DECISION_STATUS = {"approved": "approve", "rejected": "reject", "archived": "archive"}
+PURGED_BY_ADMIN = "purged by an admin"  # review.purge()'s tombstone reason
 
 
 async def decisions_export(out_path: str) -> dict[str, Any]:
@@ -2475,7 +2476,8 @@ async def decisions_export(out_path: str) -> dict[str, Any]:
 
     The file holds decisions, not memory: an item's text is written only when a person edited it (production needs
     the edit), and never for a customer or Credit Repair item. Such an edit is marked edit_not_exported, and
-    decisions-apply lists it to be redone by hand."""
+    decisions-apply lists it to be redone by hand. It also lists the removals (source keys only, never text): the
+    messages an admin withheld and the items an admin purged, so production withholds and purges the same."""
     if os.path.exists(out_path):
         raise Refused("the output file already exists; nothing is overwritten")
     decisions, skipped, not_exported = [], 0, 0
@@ -2510,15 +2512,26 @@ async def decisions_export(out_path: str) -> dict[str, Any]:
                     decision.update(title=item.title, body=item.body, tags=list(item.tags or []), kind=item.kind,
                                     agent=item.agent)
             decisions.append(decision)
+        removals = [{"source_key": key, "reason": reason} for key, reason in (await s.execute(
+            select(BrainTombstone.source_key, BrainTombstone.reason)
+            .where(BrainTombstone.reason.in_((WITHHELD_BY_ADMIN, PURGED_BY_ADMIN)))
+            .order_by(BrainTombstone.source_key))).all()]
     with open(out_path, "x", encoding="utf-8") as f:
-        json.dump({"format": "jarvis-brain-decisions", "version": 2, "exported_at": now().isoformat(),
-                   "importer_version": IMPORTER_VERSION, "decisions": decisions}, f, indent=2, sort_keys=True)
-    return {"exported": len(decisions), "skipped_without_source_key": skipped, "edits_not_exported": not_exported}
+        json.dump({"format": "jarvis-brain-decisions", "version": 3, "exported_at": now().isoformat(),
+                   "importer_version": IMPORTER_VERSION, "decisions": decisions, "removals": removals}, f, indent=2,
+                  sort_keys=True)
+    return {"exported": len(decisions), "skipped_without_source_key": skipped, "edits_not_exported": not_exported,
+            "removals": len(removals)}
 
 
 async def decisions_apply(in_path: str, run_id: int, *, actor: str, apply: bool) -> dict[str, Any]:
     """Apply exported decisions to the production import run where the item is the very same (same source_key and
-    content hash, untouched since). Anything else is listed by decision number, not applied."""
+    content hash, untouched since). Anything else is listed by decision number, not applied.
+
+    The removals apply to the whole database, not only to the run: a message an admin withheld on the test copy is
+    withheld here too and an item an admin purged there is purged here, and their tombstones keep later imports from
+    bringing them back (also for what this database has not imported yet)."""
+    from . import review  # imports the task service and the scheduler: not needed by the import itself
     try:
         with open(in_path, "rb") as f:
             data = json.load(f)
@@ -2543,14 +2556,63 @@ async def decisions_apply(in_path: str, run_id: int, *, actor: str, apply: bool)
                 listed.setdefault(reason, []).append(n)
             else:
                 applied += 1
+        removed: Counter[str] = Counter()
+        removals_listed: dict[str, list[int]] = {}
+        removals = data.get("removals") or []
+        for n, r in enumerate(removals if isinstance(removals, list) else [], 1):
+            outcome = await _apply_removal(s, r, user, review)
+            if outcome in ("withheld", "purged", "already done", "kept for later imports"):
+                removed[outcome] += 1
+            else:
+                removals_listed.setdefault(outcome, []).append(n)
         if apply:
             await audit.record(s, user.email, "brain.decisions_applied", "import_run", run_id,
                                {"run": run_id, "applied": applied,
-                                "not_applied": {k: len(v) for k, v in listed.items()}})
+                                "not_applied": {k: len(v) for k, v in listed.items()},
+                                "removals": dict(removed),
+                                "removals_not_applied": {k: len(v) for k, v in removals_listed.items()}})
             await s.commit()
         else:
-            await s.rollback()
-    return {"applied" if apply else "would_apply": applied, "not_applied": listed}
+            await s.rollback()  # the removals ran to count them: nothing is kept
+    return {"applied" if apply else "would_apply": applied, "not_applied": listed, "removals": dict(removed),
+            "removals_not_applied": removals_listed}
+
+
+async def _apply_removal(s: AsyncSession, r: Any, user: User, review: Any) -> str:
+    """One removal from the test copy: the tombstone, then the message withheld or the item purged if this database
+    holds it. Returns what happened, or why it was not applied."""
+    if not isinstance(r, dict) or not isinstance(r.get("source_key"), str) or not r["source_key"] or r.get(
+            "reason") not in (WITHHELD_BY_ADMIN, PURGED_BY_ADMIN):
+        return "not a removal"
+    key, reason = r["source_key"], r["reason"]
+    try:
+        async with s.begin_nested():
+            existed = await s.get(BrainTombstone, key) is not None
+            if not existed:
+                s.add(BrainTombstone(source_key=key, purged_at=now(), purged_by=user.email[:200], reason=reason))
+                await s.flush()
+            absent = "already done" if existed else "kept for later imports"
+            if reason == WITHHELD_BY_ADMIN:
+                message = await s.scalar(select(ArchiveMessage).where(ArchiveMessage.source_key == key))
+                if message is None:
+                    return absent
+                if message.withheld:
+                    return "already done"
+                await review.withhold_message(s, message, actor=user.email)
+                return "withheld"
+            item = await s.scalar(select(MemoryItem).where(MemoryItem.source_key == key))
+            if item is None:
+                return absent
+            if SENSITIVE_AGENT == item.agent and not user.can_access_sensitive:
+                raise store.BrainError("needs the sensitive-data permission")
+            if item.deleted_at is None:
+                await store.delete_item(s, item, actor=user.email, note=DECISION_NOTE)
+            await review.purge(s, item, actor=user.email)
+            return "purged"
+    except store.BrainError as exc:
+        return "%s on the test copy, refused here: %s" % (reason, exc)
+    except (DataError, IntegrityError):
+        return "%s on the test copy, refused here by the database" % reason
 
 
 async def _apply_decision(s: AsyncSession, d: Any, run_id: int, user: User, apply: bool) -> str:

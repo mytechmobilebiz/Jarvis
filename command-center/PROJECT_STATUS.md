@@ -64,8 +64,9 @@ installed and running; nothing here changes it.
 
 - **Design and source analysis:**
   [docs/JARVIS_MIGRATION_DESIGN.md](docs/JARVIS_MIGRATION_DESIGN.md) (what
-  JARVIS is, its six memory stores, the owner's changes that bypass approval,
-  staff-to-agent mapping, risks) and the specification
+  JARVIS is and where its data lives, the owner's changes that bypass
+  approval, staff-to-agent mapping, risks; sections 5 to 10 describe what
+  0.6.0 built) and the specification
   [docs/JARVIS_BRAIN_SPEC.md](docs/JARVIS_BRAIN_SPEC.md).
 - **Read-only kit** (`migration/jarvis/`, kit 0.1.0): encrypted backup of the
   profile and content without secret files, and a counts-only inventory, in a
@@ -88,8 +89,10 @@ Full list, upgrade steps, rollback and the owner's approvals:
 - **Cleaning before anything is stored**: secrets (keys, tokens, passwords,
   webhook addresses, passwords on command lines in 15 forms) become
   `[REDACTED:<kind>]`; SSNs, card and bank numbers, dates of birth and credit
-  files withhold the whole conversation; customer e-mail addresses and phone
-  numbers are masked; reasoning is never read.
+  files withhold the whole conversation; every e-mail address and phone
+  number is masked (yours included); long messages are kept as excerpts
+  (4,000 characters of a tool result, 50,000 of other messages); reasoning is
+  never read.
 - **Imported text is data**: JARVIS's approval-bypass rules come in
   quarantined, need an admin and never reach a prompt; the Command Center's
   approvals are code and no import changes a setting, agent, schedule or
@@ -100,15 +103,20 @@ Full list, upgrade steps, rollback and the owner's approvals:
 - **The importer** (`scripts\jarvis-import.ps1`): a plan that writes nothing,
   staged runs, resume after an interruption, verify, rollback of one run, a
   re-run that adds nothing, a dump of the database before a live import, and
-  typed confirmations for the live installation. It has no network and runs
-  from the live installation's own image.
+  typed confirmations for the live installation. It runs on the private
+  network only (it reaches the database, not the internet), from the image
+  of the installation it imports into. Decisions made in the test copy,
+  including withheld messages and purged items, carry over to the live
+  import.
 - **Withheld stays withheld**: text withheld by the import, an admin or a
   rescan never returns through a re-import or a rollback, and quoted copies
   in history answers are removed.
 - **Test copy** (`scripts\brain-test.ps1`): its own Docker project on port
   8190, database and secrets, no n8n, a worker without internet.
 - **Agents** read only approved items in their scope; the AI Supervisor
-  answers questions about JARVIS's history locally, without an AI model.
+  answers questions about JARVIS's history from the archive and memory
+  locally (no AI model reads them; with Claude set up, the question itself
+  still goes to Claude for planning).
   Memory in AI prompts is off until an admin turns it on.
 
 ## Completed in 0.5.1 (no database migrations, no new keys)
@@ -235,7 +243,9 @@ Full list and upgrade notes: [docs/RELEASE_NOTES_0.5.0.md](docs/RELEASE_NOTES_0.
 addressed in the specification before building), then six independent code
 reviewers (privacy, data integrity, API and access control, agents,
 dashboard, operations) with 57 findings, each checked by a separate verifier
-against the latest code: 18 confirmed, 23 partly confirmed, 17 refuted. The
+against the latest code; the operations verifier found one more (a
+regression that stopped every import). Of these 58: 18 confirmed, 23 partly
+confirmed, 17 refuted. The
 2 critical and 4 high ones are fixed with tests and the fixes verified again;
 the medium and low ones are fixed except those listed as known limitations in
 RELEASE_NOTES_0.6.0.md section 11.
@@ -294,7 +304,7 @@ Known limits that remain (by design or not yet done):
 | 0.5.0 upgrade from 0.4.0, seven smoke checks, new dashboard | verified (PowerShell 7.4, Chromium) | **installed by the owner**: six of seven smoke checks passed; the version check failed (API 0.2.0: stale build copies, fixed in 0.5.1) |
 | 0.5.1 upgrade from the owner's 0.5.0, seven smoke checks | verified (PowerShell 7.4): the owner's history reproduced, then RELEASE_NOTES_0.5.1.md section 3 step by step | not yet |
 | 0.6.0 upgrade from the owner's 0.5.0 (and through 0.5.1), seven smoke checks, going back | verified (PowerShell 7.4, nested Docker): the owner's history reproduced, then RELEASE_NOTES_0.6.0.md section 4 step by step | not yet: waits for the owner's approval |
-| JARVIS import (test copy and live path) | verified with a synthetic JARVIS installation with planted secrets and personal data, and a synthetic backup of 49,532 messages for speed and memory | not yet: the real backup has not been read by any 0.6.0 code; waits for the owner's approval |
+| JARVIS import (test copy and live path) | verified with a synthetic JARVIS installation with planted secrets and personal data, and a synthetic backup of 2,355 sessions and 49,618 messages (1.66 GB) for speed and memory | not yet: the real backup has not been read by any 0.6.0 code; waits for the owner's approval |
 | Voice dictation | the button, consent and gating tested in Chromium with a simulated recogniser; real speech recognition **not tested** (the sandbox has no microphone and no Google/Microsoft speech service) | not yet: try it in Chrome or Edge at `http://localhost:8090` |
 | Scripts under Windows PowerShell 5.1 | static checks only (ASCII-only, no 6/7-only syntax); every script parses with PowerShell 7.4's parser | 0.5.0 scripts run by the owner (install, smoke test); 0.5.1 adds prepare-build.ps1 and changes install, start, smoke, status, restore and uninstall |
 | cc-gate on EL8/EL9 (AlmaLinux/Rocky) with CWP | tested on Alpine Linux with OpenSSH, sudo 1.9 and Python 3.12; Python 3.6 compatibility checked separately | **not yet: nothing has been run on a CWP server** |

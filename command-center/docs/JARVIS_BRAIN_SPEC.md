@@ -288,6 +288,18 @@ It reports counts and writes the audit entry `brain.rescanned`.
 - Anything else is listed, not applied.
 - Admin-only decisions keep needing admin: apply runs as an admin actor given with
   `--actor`.
+- **Removals** travel too (file format version 3), as source keys and reasons
+  only, never text: every message an admin withheld (tombstone reason `withheld
+  by an admin`) and every item an admin purged (`purged by an admin`). Apply
+  writes the same tombstones in production, withholds the message or deletes and
+  purges the item where production holds it, and keeps the tombstone for one it
+  has not imported yet, so later imports keep both out. Removals apply to the
+  whole database, not only to `--run`. A removal the memory service refuses (a
+  purge named by a conflict decision of an import not rolled back, a Credit
+  Repair item without the sensitive-data permission) is listed, not applied.
+- Not carried over (redo by hand): edits of customer and Credit Repair items,
+  conflict decisions, workflow drafts reviewed or converted, promoted messages,
+  redacted versions.
 
 **Audit actions:** `brain.import_started`, `brain.import_completed`,
 `brain.import_failed`, `brain.import_rolled_back`, `brain.rescanned`,

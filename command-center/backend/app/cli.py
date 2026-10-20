@@ -300,8 +300,9 @@ async def _brain_command(args: argparse.Namespace) -> int:
         if args.command == "decisions-export":
             out = await imp.decisions_export(args.out)
             print("decisions exported: %d (items without a source key skipped: %d; edits of customer or Credit "
-                  "Repair items not exported, to redo by hand: %d)"
-                  % (out["exported"], out["skipped_without_source_key"], out["edits_not_exported"]))
+                  "Repair items not exported, to redo by hand: %d); removals (withheld messages and purged items, "
+                  "keys only): %d"
+                  % (out["exported"], out["skipped_without_source_key"], out["edits_not_exported"], out["removals"]))
             return 0
         if args.command == "decisions-apply":
             out = await imp.decisions_apply(args.in_path, args.run, actor=args.actor, apply=args.yes)
@@ -310,6 +311,10 @@ async def _brain_command(args: argparse.Namespace) -> int:
                                           "" if out["not_applied"] else "; none left over"))
             for reason, numbers in sorted(out["not_applied"].items()):
                 print("  not applied (%s): decisions %s" % (reason, ", ".join(str(n) for n in numbers)))
+            print("removals %s: %s" % ("applied" if args.yes else "that would apply",
+                                       _counts_line(out["removals"]) if out["removals"] else "none"))
+            for reason, numbers in sorted(out["removals_not_applied"].items()):
+                print("  removal not applied (%s): removals %s" % (reason, ", ".join(str(n) for n in numbers)))
             return 0
         raise _UsageError("unknown command")
     except imp.Refused as exc:

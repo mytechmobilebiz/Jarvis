@@ -251,20 +251,32 @@ verified, the old one can be deleted; keep its `backups\` folder.
 JARVIS's knowledge and history come into the Command Center's memory in
 stages: first into a **test copy** on this PC, where you review everything,
 and only after your approval into the live installation. The live
-installation is not touched by the test: every script prints a
-*fingerprint* of it (its images, containers and volumes) before and after
-each step and stops with a large red warning if anything changed. A script
+installation is not touched by the test: `brain-test.ps1` and
+`jarvis-import.ps1` print a *fingerprint* of it (its images, containers and
+volumes) before and after each run and stop with a large red warning if
+anything changed. `brain-precheck.ps1` only reads the fingerprint and writes
+it to its report; you compare two reports yourself (step 5). A script
 that finds a problem before it starts prints `NOT RUN: ...` and
 `Nothing was changed.`
 
 You need, from the JARVIS migration kit (`migration\jarvis\README.md`):
 - the JARVIS database backup, for example
   `C:\InfiniteAI\JarvisMigration\backups\jarvis-state-<time>.db`;
-- the profile backup restored into a folder:
-  `.\jarvis-kit.ps1 -Action VerifyBackup -Archive "<the .ccjb file>" -ExtractTo C:\InfiniteAI\JarvisMigration\restored`
-  (it gets `restored\profile` and `restored\content`);
+- the profile backup restored into a new or empty folder, from the kit's
+  folder:
+  `Set-Location C:\InfiniteAI\JarvisMigration\jarvis-migration-kit`, then
+  `powershell -NoProfile -ExecutionPolicy Bypass -File .\jarvis-kit.ps1 -Action VerifyBackup -Archive "<the .ccjb file>" -ExtractTo C:\InfiniteAI\JarvisMigration\restored`
+  (it asks for the backup passphrase; it gets `restored\profile` and
+  `restored\content`);
 - optionally the kit's `discovery-summary.json` (the importer then checks that
-  the backup holds the same number of sessions and messages).
+  the backup holds the same number of sessions and messages). If you do not
+  have it, leave the `$discovery = ...` line out of step 1 and remove
+  `-Discovery $discovery` from the `Plan` and `Import` commands in steps 4
+  and 7. Do not set `$discovery` to `""`: Windows PowerShell then passes
+  `-Discovery` without a value and the command stops.
+- free space: three times the size of the JARVIS backup on C: and on the
+  drive that holds Docker's data (about 4.9 GB each for a 1.7 GB backup);
+  `jarvis-import.ps1` refuses to run with less.
 
 | Folder | What it is |
 |---|---|
@@ -289,6 +301,10 @@ $discovery = "C:\InfiniteAI\JarvisMigration\discovery-<time>\discovery-summary.j
 Set-Location $test
 ```
 
+These names last only as long as this PowerShell window. If you open a new
+window later (for example after the review, or after the upgrade in step 6),
+run these lines again before you go on.
+
 **2. Before the test: a read-only check of the live installation.** It writes
 `C:\InfiniteAI\JarvisMigration\precheck-<time>.txt` and changes nothing.
 
@@ -304,8 +320,14 @@ The first start builds the images and takes a few minutes.
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\brain-test.ps1 -Action Start
 # or, with a copy of the live data:
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\brain-test.ps1 -Action Start -SeedFromBackup "C:\InfiniteAI\InfiniteAI-CommandCenter\backups\<timestamp>"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\brain-test.ps1 -Action Start -SeedFromBackup "C:\InfiniteAI\v0.5.0\InfiniteAI-CommandCenter\backups\<timestamp>"
 ```
+
+`-SeedFromBackup` takes the folder of a `backup.ps1` run, in the `backups`
+folder of the installation you ran it from (it must contain
+`command_center.dump`): `C:\InfiniteAI\v0.5.0\InfiniteAI-CommandCenter\backups\<timestamp>`
+before the upgrade, `C:\InfiniteAI\v0.6.0\InfiniteAI-CommandCenter\backups\<timestamp>`
+after it.
 
 It prints the address and how to sign in: without a seed, the email it shows
 and the `ADMIN_PASSWORD` in `.env.brain-test`; after a seed, your usual
@@ -330,11 +352,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 
 
 Reports go to `C:\InfiniteAI\JarvisMigration\import-reports`. To undo one
 import in the test copy: `-Mode Rollback -Run <run number>` (newest first).
+If you have already reviewed, edited or deleted any item of that run, the
+rollback is refused until you add `-DiscardReviewed`; those items are then
+deleted too.
 An interrupted import continues with `-Mode Resume -Run <run number>` and the
 same `-BackupDb` and `-Restored`.
 
 **5. Your review** happens in the test copy at http://127.0.0.1:8190. When you
-are done, save your review decisions so they can be carried over:
+are done, save your decisions so they can be carried over to the live
+installation: what you decided on the imported memory items (approved,
+rejected, archived, deleted, and your edits of them), plus the messages you
+withheld and the items you purged (as their keys only, never their text).
+Not carried over, so write them down and do them again in the live
+installation after step 7: edits of customer or Credit Repair items (the
+export prints how many it left out, and step 7 lists them), conflicts you
+resolved, workflow drafts you reviewed, changed or converted, messages you
+promoted, and redacted versions.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Test -Mode ExportDecisions
@@ -344,26 +377,41 @@ It writes `import-reports\decisions-test-<time>.json`. Then run the pre-check
 of step 2 again and compare the two reports. These lines must be the same:
 the image IDs, the container IDs and names, the volume names and the applied
 migrations. Start times change after a restart of the PC or of Docker
-Desktop, and counts (tasks, approvals) change with normal use; neither means
-the test touched the live installation.
+Desktop, and the counts (agents switched off, schedules enabled, sites,
+pending approvals, users) change with normal use; neither means the test
+touched the live installation.
 
 **6. Approval.** Upgrading the live installation to 0.6.0 is a separate step
-that you approve: `backup.ps1`, install 0.6.0 from a **new** folder as in
-"Updating" above (copy `.env` there, `install.ps1`), then `smoke.ps1` must
-pass. From then on, that new folder is the live installation's folder.
+that you approve: follow RELEASE_NOTES_0.6.0.md section 4 step by step, in a
+new PowerShell window: `backup.ps1` in your current folder
+`C:\InfiniteAI\v0.5.0\InfiniteAI-CommandCenter`, check the zip's SHA-256,
+extract it into the new folder `C:\InfiniteAI\v0.6.0`, copy `.env` there,
+then `install.ps1`, which must end with `SMOKE TEST PASSED`. From then on,
+`C:\InfiniteAI\v0.6.0\InfiniteAI-CommandCenter` is the live installation's
+folder. Set `$db`, `$restored` and `$discovery` again (step 1) before step 7.
 
 **7. The import into the live installation.** From the live installation's
 folder only (the script refuses anywhere else). `Import` asks you to type
 `IMPORT INTO PRODUCTION`; before importing it writes a dump of the
 `command_center` database to `import-reports\pre-import\`, checks it and
-prints its path and SHA-256. To undo an import use `-Mode Rollback` (it asks
-you to type `ROLL BACK PRODUCTION`); restoring that dump is only for a
-disaster, because it also loses everything done since. The dump holds your
+prints its path and SHA-256. `ApplyDecisions` asks you to type
+`APPLY DECISIONS TO PRODUCTION`; run it right after the import, before anyone
+else uses the dashboard, because the messages you withheld in the test copy
+have their text until then. To undo an import use
+`-Mode Rollback -Run <run number>` (it asks you to type `ROLL BACK PRODUCTION`).
+After `ApplyDecisions`, or once you have reviewed any item of that run, also
+add `-DiscardReviewed`, or the rollback is refused; the reviewed items are
+then deleted too. Restoring the dump is only for a disaster, because it also
+loses everything done since. The dump holds your
 data unencrypted: keep it on this PC and delete it once the import is
 verified and reviewed.
 
 ```powershell
-Set-Location "<the live 0.6.0 folder>"
+$db = "C:\InfiniteAI\JarvisMigration\backups\jarvis-state-<time>.db"
+$restored = "C:\InfiniteAI\JarvisMigration\restored"
+$discovery = "C:\InfiniteAI\JarvisMigration\discovery-<time>\discovery-summary.json"
+Set-Location "C:\InfiniteAI\v0.6.0\InfiniteAI-CommandCenter"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\backup.ps1   # a full backup (Command Center, n8n, Credit Repair) before every live import
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Plan -All -BackupDb $db -Restored $restored -Discovery $discovery
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Import -All -BackupDb $db -Restored $restored -Discovery $discovery
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Verify -Run <run number> -BackupDb $db -Restored $restored
@@ -381,6 +429,7 @@ edited) and, once the live import is verified and reviewed, the pre-import
 dump (it holds your whole live database, unencrypted):
 
 ```powershell
+$test = "C:\InfiniteAI\v0.6.0-brain-test\InfiniteAI-CommandCenter"
 Set-Location $test
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\brain-test.ps1 -Action Remove
 Remove-Item -Recurse -Force C:\InfiniteAI\JarvisMigration\restored

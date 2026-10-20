@@ -1067,7 +1067,7 @@ async def test_review_decisions_carry_over_from_the_test_copy(built, tmp_path):
         edited_key, deleted_key, customer_key = plain[1].source_key, plain[3].source_key, customer.source_key
     out = tmp_path / "decisions.json"
     assert await imp.decisions_export(str(out)) == {"exported": 6, "skipped_without_source_key": 0,
-                                                    "edits_not_exported": 1}
+                                                    "edits_not_exported": 1, "removals": 0}
     exported = json.loads(out.read_text())
     assert exported["format"] == "jarvis-brain-decisions" and len(exported["decisions"]) == 6
     # Decisions, not memory: only the text a person edited travels, and never a customer item's.
@@ -1112,6 +1112,82 @@ async def test_review_decisions_carry_over_from_the_test_copy(built, tmp_path):
         assert await s.scalar(select(AuditLog).where(AuditLog.action == "brain.decisions_applied")) is not None
     again = await imp.decisions_apply(str(out), run_id, actor="admin@test.local", apply=True)
     assert again["applied"] == 0
+
+
+async def test_withheld_messages_and_purged_items_carry_over_from_the_test_copy(built, tmp_path):
+    """A message an admin withheld on the test copy, and an item an admin purged there, are withheld and purged in
+    production too (whose database has never seen either decision), and stay so for later imports."""
+    from app.brain import review
+
+    test_copy = await imp.run(bj.paths(built), ALL)
+    async with session_scope() as s:
+        message = await s.scalar(
+            select(ArchiveMessage).join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
+            .where(ArchiveSession.sensitivity == "general", ArchiveMessage.withheld.is_(False),
+                   ArchiveMessage.content != "", ArchiveMessage.source_key.is_not(None))
+            .order_by(ArchiveMessage.id).limit(1))
+        message_key, message_text = message.source_key, message.content
+        await review.withhold_message(s, message, actor="admin@test.local")
+        item = await s.scalar(select(MemoryItem).where(MemoryItem.import_run_id == test_copy["run_id"],
+                                                       MemoryItem.status == "pending_review",
+                                                       MemoryItem.sensitivity == "general",
+                                                       MemoryItem.source_key.is_not(None)).order_by(MemoryItem.id)
+                              .limit(1))
+        item_key, item_body = item.source_key, item.body
+        await store.delete_item(s, item, actor="admin@test.local")
+        await review.purge(s, item, actor="admin@test.local")
+    out = tmp_path / "decisions.json"
+    assert (await imp.decisions_export(str(out)))["removals"] == 2
+    exported = json.loads(out.read_text())
+    assert exported["version"] == 3
+    assert {(r["source_key"], r["reason"]) for r in exported["removals"]} == {
+        (message_key, "withheld by an admin"), (item_key, imp.PURGED_BY_ADMIN)}
+    flat = out.read_text()
+    assert json.dumps(message_text)[1:-1] not in flat and json.dumps(item_body)[1:-1] not in flat  # keys, no text
+    exported["removals"] += [{"source_key": "jarvis:message:never-imported:1", "reason": "withheld by an admin"},
+                             {"source_key": "", "reason": "withheld by an admin"},
+                             {"source_key": "jarvis:file:x", "reason": "something else"}]
+    out.write_text(json.dumps(exported))
+
+    # Production: a database that has neither decision (no tombstones), then the same import.
+    await imp.rollback(test_copy["run_id"], discard_reviewed=True, confirm=True)
+    async with session_scope() as s:
+        await s.execute(BrainTombstone.__table__.delete())
+    production = await imp.run(bj.paths(built), ALL)
+    async with session_scope() as s:
+        again = await s.scalar(select(ArchiveMessage).where(ArchiveMessage.source_key == message_key))
+        assert (again.withheld, again.content) == (False, message_text)
+        assert await s.scalar(select(MemoryItem).where(MemoryItem.source_key == item_key)) is not None
+    dry = await imp.decisions_apply(str(out), production["run_id"], actor="admin@test.local", apply=False)
+    assert dry["removals"] == {"withheld": 1, "purged": 1, "kept for later imports": 1}
+    assert dry["removals_not_applied"] == {"not a removal": [4, 5]}
+    async with session_scope() as s:  # the dry run changed nothing
+        assert (await s.scalar(select(ArchiveMessage).where(ArchiveMessage.source_key == message_key))).content
+        assert await s.scalar(select(func.count()).select_from(BrainTombstone)) == 0
+
+    result = await imp.decisions_apply(str(out), production["run_id"], actor="admin@test.local", apply=True)
+    assert result["removals"] == {"withheld": 1, "purged": 1, "kept for later imports": 1}
+    async with session_scope() as s:
+        withheld = await s.scalar(select(ArchiveMessage).where(ArchiveMessage.source_key == message_key))
+        assert (withheld.withheld, withheld.content) == (True, "")
+        assert "withheld_by_admin" in withheld.flags
+        assert await s.scalar(select(MemoryItem).where(MemoryItem.source_key == item_key)) is None
+        reasons = dict((await s.execute(select(BrainTombstone.source_key, BrainTombstone.reason))).all())
+        assert reasons == {message_key: "withheld by an admin", item_key: imp.PURGED_BY_ADMIN,
+                           "jarvis:message:never-imported:1": "withheld by an admin"}
+        logged = await s.scalar(select(AuditLog).where(AuditLog.action == "brain.decisions_applied"))
+        assert logged.detail["removals"] == {"withheld": 1, "purged": 1, "kept for later imports": 1}
+    repeat = await imp.decisions_apply(str(out), production["run_id"], actor="admin@test.local", apply=True)
+    assert repeat["removals"] == {"already done": 3}
+
+    # A later import into production keeps both out.
+    await imp.rollback(production["run_id"], discard_reviewed=True, confirm=True)
+    later = await imp.run(bj.paths(built), ALL)
+    async with session_scope() as s:
+        back = await s.scalar(select(ArchiveMessage).where(ArchiveMessage.source_key == message_key))
+        assert (back.withheld, back.content) == (True, "")
+        assert await s.scalar(select(MemoryItem).where(MemoryItem.source_key == item_key)) is None
+    assert later["run_id"] > production["run_id"]
 
 
 async def test_a_heartbeat_is_never_used_to_decide_liveness(built):

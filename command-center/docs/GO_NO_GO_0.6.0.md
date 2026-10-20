@@ -37,11 +37,12 @@ installed 0.5.0, JARVIS and your live database are untouched.
   building.
 - Six independent code reviewers (privacy, data integrity, API and access
   control, agents, dashboard, operations) reported 57 findings. A separate
-  verifier checked each one against the latest code:
+  verifier checked each one against the latest code, and the operations
+  verifier found one more (a script regression that stopped every import).
+  Of these 58:
   - 18 confirmed, 23 partly confirmed, 17 refuted;
   - all **2 critical and 4 high** are fixed with tests, and the fixes were
-    verified again. That second pass found one script regression, which is
-    fixed and guarded by a test.
+    verified again.
 - The critical and high findings were:
   - personal data and numeric secrets in a tool's JSON output were missed
     when only the key said what they were (for example an SSN under
@@ -51,7 +52,12 @@ installed 0.5.0, JARVIS and your live database are untouched.
   - copies of withheld text survived in history answers;
   - the live import refused to run, and a script error blocked every import.
 - Medium and low findings are fixed, except those listed in section 3.
-- RELEASE_CHECK
+- The release notes, the Windows guide and the project status were checked
+  claim by claim against the code and the test logs (248 claims, 4
+  checkers). Each problem found was challenged by a separate skeptic: 37 were
+  confirmed and corrected, 3 refuted. One of them led to a code change: the
+  messages you withhold and the items you purge in the test copy now carry
+  over to the live import (tested).
 
 ## 3. Unresolved defects and limitations (none blocks steps 1 and 2)
 
@@ -66,9 +72,22 @@ installed 0.5.0, JARVIS and your live database are untouched.
 4. Date filters on the JARVIS Brain page use whole days in UTC.
 5. Review lists show 100 items and 200 conflicts at a time.
 6. A test copy seeded from a backup cannot check its own sign-in.
-7. The database size for real data is unknown: synthetic text compresses
-   unusually well. Keep 3 GB free on Docker Desktop's drive.
-8. Still open from earlier releases (RELEASE_NOTES_0.5.1.md section 5):
+7. Restricted-data detection errs towards withholding: conversations that
+   mention credit-file topics (credit report, bureau names, late payments,
+   bankruptcy...) or "bank account" are withheld whole. Many credit-repair
+   marketing conversations will likely be kept as empty rows.
+8. Every e-mail address and phone number is masked, yours included, and makes
+   the conversation customer data (admins only, never in history answers).
+9. The archive keeps excerpts: 4,000 characters of each tool result, 50,000
+   of other messages. The full text stays in your JARVIS backup.
+10. Free space: the import needs three times the backup's size free on C:
+    and on Docker's drive (about 4.9 GB each); keep 6 GB free on each.
+11. Not carried over from the test copy to the live import (redo by hand):
+    edits of customer or Credit Repair items, conflict decisions, workflow
+    drafts reviewed or converted, promoted messages, redacted versions.
+    Approvals, edits, deletions, **withheld messages and purged items** are
+    carried over.
+12. Still open from earlier releases (RELEASE_NOTES_0.5.1.md section 5):
    - the gate cannot see an approval;
    - there has been no run on a real server;
    - remote access is not set up.
@@ -107,10 +126,14 @@ section 4.
    "JARVIS Brain: test copy and import", steps 1 to 5:
    - it reads `jarvis-state-20261019-105625.db` and the restored kit files;
    - it writes only to the test copy;
+   - it needs about 4.9 GB free on C: and on Docker's drive;
    - you review the result at http://127.0.0.1:8190 and rotate the
      credentials the import report names.
 3. **Later, separately: "Approve the live import"**, after your review
-   (step 7 there, which asks you to type `IMPORT INTO PRODUCTION`).
+   (step 7 there: `backup.ps1`, then the import, which asks you to type
+   `IMPORT INTO PRODUCTION`, then `ApplyDecisions` straight away, which
+   asks for `APPLY DECISIONS TO PRODUCTION` and carries over your decisions,
+   withheld messages and purges from the test copy).
 4. **Optional, later:** memory in AI prompts (Settings); switching on a
    converted schedule after switching the same job off in JARVIS.
 
@@ -119,7 +142,8 @@ Retiring JARVIS is not part of this release.
 ## 7. What was not done or not verified
 
 - Nothing was run on your PC, Windows PowerShell 5.1 or Docker Desktop. The
-  scripts were run in PowerShell 7.4 on Linux and parse-checked for 5.1.
+  scripts were run in PowerShell 7.4 on Linux and only parse-checked for 5.1,
+  which the `powershell` commands in the guides start.
 - The real JARVIS backup and the 50,114 real messages were not read; every
   import used synthetic data with planted secrets and personal details.
 - No schedule, email, WhatsApp message, WordPress or server action was
