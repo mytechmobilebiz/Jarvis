@@ -1,6 +1,6 @@
-# Software bill of materials: Infinite AI Command Center 0.6.0
+# Software bill of materials: Infinite AI Command Center 0.6.1
 
-Generated 2026-10-19 by `scripts/generate-sbom.py`; machine-readable copy: `sbom.cdx.json` (CycloneDX 1.5).
+Generated 2026-10-20 by `scripts/generate-sbom.py`; machine-readable copy: `sbom.cdx.json` (CycloneDX 1.5).
 
 Infinite Marketing's own code (everything under `command-center/` except the dependencies below) is proprietary.
 No third-party component is vendored into this repository: each is fetched from its publisher at build or install time.
@@ -38,10 +38,10 @@ No third-party component is vendored into this repository: each is fetched from 
 | greenlet | 3.5.6 | MIT AND PSF-2.0 |  | runtime |
 | h11 | 0.16.0 | MIT |  | runtime |
 | httpcore | 1.0.9 | BSD-3-Clause |  | runtime |
-| httpcore2 | 2.14.0 | BSD-3-Clause |  | runtime |
+| httpcore2 | 2.15.1 | BSD-3-Clause |  | runtime |
 | httptools | 0.9.0 | MIT |  | runtime |
 | httpx | 0.28.1 | BSD-3-Clause | yes | runtime |
-| httpx2 | 2.14.0 | BSD-3-Clause |  | runtime |
+| httpx2 | 2.15.1 | BSD-3-Clause |  | runtime |
 | idna | 3.20 | BSD-3-Clause |  | runtime |
 | jiter | 0.17.0 | MIT |  | runtime |
 | opentelemetry-api | 1.45.1 | Apache-2.0 |  | runtime |
@@ -63,7 +63,7 @@ No third-party component is vendored into this repository: each is fetched from 
 | uvicorn | 0.54.0 | BSD-3-Clause | yes | runtime |
 | uvloop | 0.23.0 | MIT License |  | runtime |
 | watchfiles | 1.3.0 | MIT |  | runtime |
-| websockets | 17.2 | BSD-3-Clause |  | runtime |
+| websockets | 17.3 | BSD-3-Clause |  | runtime |
 
 ## npm packages shipped in the dashboard bundle (9)
 

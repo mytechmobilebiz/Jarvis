@@ -13,11 +13,12 @@ nothing imported can approve, enable or run anything: approvals stay with app/ta
 from __future__ import annotations
 
 import urllib.parse
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import ColumnElement, and_, delete, func, or_, select, true
+from sqlalchemy import ColumnElement, and_, delete, func, not_, or_, select, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,7 +41,7 @@ from ..models import (
 from ..worker.scheduler import valid_cron
 from . import AGENTS, KINDS, store
 from . import text as brain_text
-from .archive import WITHHELD_BY_ADMIN, recompute_session, scrub_before
+from .archive import WITHHELD_BY_ADMIN, promoted_ref, recompute_session, withhold_copies
 from .quotes import scrub_quotes
 from .policy import (
     POLICIES,
@@ -52,11 +53,10 @@ from .policy import (
     person_items,
     person_messages,
     person_sessions,
+    withheld_source,
 )
-from .store import BrainError
+from .store import REDACTED_NOTE, REDACTED_TITLE, BrainError
 
-REDACTED_TITLE = "[redacted]"
-REDACTED_NOTE = "text redacted by an admin"
 ITEM_STATUSES = ("pending_review", "quarantined", "approved", "rejected", "archived")
 RESOLUTIONS = ("keep_existing", "use_incoming", "keep_both", "dismissed")
 # Conflicts only an admin may decide, whatever the resolution.
@@ -276,9 +276,13 @@ async def promote_message(session: AsyncSession, message: ArchiveMessage, sess: 
                           title: str, agent: str, actor: str) -> MemoryItem:
     """A pending memory item from an archived message (quarantined when a secret was redacted from it). It keeps the
     highest sensitivity of the message and its session, has no import run (so it survives a rollback) and names its
-    source."""
+    source. Refused for a withheld message, and for one an admin withheld whose row has not been reached yet (its
+    tombstone). The caller locks the message's row, so a withhold of it waits for the new item, or this waits for it."""
     if message.withheld or "restricted" in (message.sensitivity, sess.sensitivity):
         raise BrainError("this message is withheld: its text was never stored, so it cannot be promoted")
+    stone = await session.get(BrainTombstone, message.source_key) if message.source_key else None
+    if stone is not None and stone.reason == WITHHELD_BY_ADMIN:  # its row still has the text until the next import
+        raise BrainError("an admin withheld this message: it cannot be promoted")
     if sess.agent == SENSITIVE_AGENT and agent != SENSITIVE_AGENT:
         raise BrainError("text from a Credit Repair conversation stays in Credit Repair: promote it as a Credit Repair "
                          "item")
@@ -286,6 +290,8 @@ async def promote_message(session: AsyncSession, message: ArchiveMessage, sess: 
         raise BrainError("this message has no text to promote (it holds tool calls only)")
     sensitivity = brain_text.most_sensitive(message.sensitivity, sess.sensitivity)
     flags: dict[str, Any] = {"message_id": message.id, "archive_session_id": sess.id}
+    if message.source_key:  # names the message after a rollback and a new import too (its row id changes)
+        flags["message_source_key"] = message.source_key
     if message.redactions:  # the text held a secret: an admin reviews it, and it never reaches a prompt (RISK_FLAGS)
         flags["secrets_redacted"] = dict(message.redactions)
     return await store.create_item(
@@ -293,13 +299,26 @@ async def promote_message(session: AsyncSession, message: ArchiveMessage, sess: 
         status="quarantined" if message.redactions else "pending_review", origin="promoted", flags=flags,
         sensitivity=sensitivity,
         source_system=sess.source_system or "jarvis",
-        source_ref="JARVIS session %s · message %s" % (sess.source_session_id, message.position),
+        source_ref=promoted_ref(sess.source_session_id, message.position),
         source_at=message.at, import_run_id=None, note="promoted from an archived JARVIS message")
 
 
-async def withhold_message(session: AsyncSession, message: ArchiveMessage, *,
-                           actor: str = "admin") -> ArchiveSession | None:
-    """Removes a message's text (and tool calls and labels) for good and recomputes its session's derived fields."""
+@dataclass
+class Withheld:
+    """What withhold_message() did (ids and counts only)."""
+    session: ArchiveSession | None
+    tombstone_created: bool
+    copies: list[dict[str, Any]] = field(default_factory=list)  # store.empty_withheld_copy() of each emptied item
+    versions_blanked: int = 0
+    rollback_copies_blanked: int = 0
+    answers_scrubbed: int = 0
+
+
+async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, actor: str = "admin",
+                           cause: str = "admin", ip: str = "") -> Withheld:
+    """Removes a message's text (and tool calls and labels) for good, with everything that copied it
+    (archive.withhold_copies: its rollback copies, the memory items promoted from it, emptied, and the answers and
+    notes quoting either), and recomputes its session's derived fields. All or nothing in the caller's transaction."""
     if message.withheld:
         raise BrainError("this message is already withheld")
     message.content = ""
@@ -310,25 +329,24 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *,
     flags["withheld_by_admin"] = {"at": now().isoformat(),
                                   "note": "withheld by an admin on the JARVIS Brain page; the text was removed"}
     message.flags = flags
+    tombstone = False
     if message.source_key and await session.get(BrainTombstone, message.source_key) is None:
         session.add(BrainTombstone(source_key=message.source_key, purged_at=now(), purged_by=actor[:200],
                                    reason=WITHHELD_BY_ADMIN))  # a re-import after a rollback keeps it withheld
+        tombstone = True
     await session.flush()
-    await scrub_before(session, message_id=message.id)  # a rollback must not bring the text back
-    promoted = (await session.scalars(select(MemoryItem).where(
-        MemoryItem.origin == "promoted", MemoryItem.flags["message_id"].as_integer() == message.id))).all()
-    for item in promoted:  # copies of the text: an admin decides about each
-        await store.quarantine_item(session, item, actor=actor, flag="source_withheld",
-                                    note="the archived message it was promoted from was withheld")
-    await scrub_quotes(session, message_ids=[message.id], item_ids=[i.id for i in promoted])
-    return await recompute_session(session, message.session_id)
+    done = await withhold_copies(session, messages=[message], actor=actor, cause=cause, ip=ip)
+    return Withheld(await recompute_session(session, message.session_id), tombstone, done.copies,
+                    done.versions_blanked, done.rollback_copies_blanked, done.answers_scrubbed)
 
 
 # --- Items ------------------------------------------------------------------------------------------------------
 
 
-async def redact_version(session: AsyncSession, item: MemoryItem, version: int) -> MemoryItemVersion | None:
-    """Blanks an older version's title, body, tags and note. None when the version does not exist."""
+async def redact_version(session: AsyncSession, item: MemoryItem, version: int
+                         ) -> tuple[MemoryItemVersion, int] | None:
+    """Blanks an older version's title, body, tags and note: (the version, how many answers quoting the item were
+    changed). None when the version does not exist."""
     v = await session.scalar(select(MemoryItemVersion).where(MemoryItemVersion.item_id == item.id,
                                                              MemoryItemVersion.version == version))
     if v is None:
@@ -340,20 +358,43 @@ async def redact_version(session: AsyncSession, item: MemoryItem, version: int) 
         raise BrainError("this version is already redacted")
     v.title, v.body, v.tags, v.note = REDACTED_TITLE, "", [], REDACTED_NOTE
     await session.flush()
-    await scrub_quotes(session, item_ids=[item.id])  # a history answer may quote the old text
-    return v
+    return v, await scrub_quotes(session, item_ids=[item.id])  # a history answer may quote the old text
+
+
+def _blocks_purge(effects: dict[str, Any], item: MemoryItem, own: set[int]) -> bool:
+    """Whether a decided conflict's effects stop the purge of an item it names: purging deletes the conflict, and
+    with it what a rollback of its import run reverts. A decision that changed nothing (dismissed, keep_both) never
+    blocks; neither does one that changed only this item once its source message was withheld (a rollback leaves an
+    emptied item as it is), nor an effect on an item the conflict's own run created (`own`: keep_existing rejects the
+    incoming item; a rollback skips that effect and deletes the item anyway)."""
+    if effects.get("sites") or effects.get("drafts"):
+        return True
+    ids = {e.get("id") for e in effects.get("items") or [] if isinstance(e, dict)} - own
+    return bool(ids - {item.id}) or (item.id in ids and not (item.flags or {}).get("source_withheld"))
+
+
+def _effect_items(effects: dict[str, Any]) -> list[int]:
+    return [e["id"] for e in effects.get("items") or [] if isinstance(e, dict) and isinstance(e.get("id"), int)]
 
 
 async def purge(session: AsyncSession, item: MemoryItem, *, actor: str) -> dict[str, Any]:
     """Deletes a soft-deleted item, its versions and its conflicts, and tombstones its source key so a later import
-    does not bring it back."""
+    does not bring it back. An item promoted from a message has no source key, so no tombstone: the audit entry
+    records the purge, and the message itself is withheld separately (never by a purge)."""
     if item.deleted_at is None:
         raise BrainError("delete the item first; only deleted items can be purged")
     names = or_(MemoryConflict.incoming_item_id == item.id,
                 and_(MemoryConflict.existing_table == "memory_items", MemoryConflict.existing_id == item.id))
-    decided = (await session.scalars(select(MemoryConflict.run_id).join(ImportRun, ImportRun.id == MemoryConflict.run_id)
-                                     .where(names, MemoryConflict.effects != {}, ImportRun.status != "rolled_back")
-                                     .distinct())).all()
+    decided: set[int] = set()
+    for c in (await session.scalars(select(MemoryConflict).join(ImportRun, ImportRun.id == MemoryConflict.run_id)
+                                    .where(names, MemoryConflict.status != "open",
+                                           ImportRun.status != "rolled_back"))).all():
+        effects = c.effects or {}
+        ids = _effect_items(effects)
+        own = set((await session.scalars(select(MemoryItem.id).where(
+            MemoryItem.id.in_(ids), MemoryItem.import_run_id == c.run_id))).all()) if ids else set()
+        if _blocks_purge(effects, item, own):
+            decided.add(c.run_id)
     if decided:  # the decision's effects are what a rollback of that import reverts: they must stay
         raise BrainError("a conflict decision of import run %s names this item; roll that import back first, or keep "
                          "the item deleted" % ", ".join(str(r) for r in sorted(decided)))
@@ -376,14 +417,16 @@ async def purge(session: AsyncSession, item: MemoryItem, *, actor: str) -> dict[
                                        reason="purged by an admin"))
         tombstone = True
     await store.purge_item(session, item)
-    await scrub_quotes(session, item_ids=[item.id])
-    return {"versions_removed": versions, "conflicts_removed": int(conflicts or 0), "tombstone": tombstone}
+    answers = await scrub_quotes(session, item_ids=[item.id])
+    return {"versions_removed": versions, "conflicts_removed": int(conflicts or 0), "tombstone": tombstone,
+            "answers_scrubbed": answers}
 
 
 async def export_items(session: AsyncSession, scope: PersonScope, *, include_customer: bool) -> dict[str, Any]:
     """Approved, non-deleted items in the admin's scope: general ones only unless customer items are asked for;
-    Credit Repair items only with the sensitive-data permission."""
-    where = and_(person_items(scope), MemoryItem.status == "approved")
+    Credit Repair items only with the sensitive-data permission; never one promoted from a withheld message."""
+    where = and_(person_items(scope), MemoryItem.status == "approved",
+                 not_(MemoryItem.flags.has_key("source_withheld")), not_(withheld_source()))
     if not include_customer:
         where = and_(where, MemoryItem.sensitivity == "general")
     items = (await session.scalars(select(MemoryItem).where(where).order_by(MemoryItem.id))).all()

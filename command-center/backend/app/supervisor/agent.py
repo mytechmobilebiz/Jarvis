@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from pydantic import Field
-from sqlalchemy import and_, func, not_, select
+from sqlalchemy import and_, exists, func, not_, select
 
 from .. import licensing
 from .. import tasks as task_service
@@ -28,6 +28,7 @@ from ..agents.base import (
 )
 from ..agents.monitoring.findings import open_findings
 from ..brain import STAFF
+from ..brain.quotes import lock_quotes
 from ..llm.base import LLMError
 from ..models import (
     Approval,
@@ -223,6 +224,13 @@ class SupervisorAgent(BaseAgent):
     @capability(risk=Risk.READ, description="Summarise the results of a finished request (internal).", params=RequestParams)
     async def summarize_request(self, ctx: AgentContext, params: RequestParams) -> AgentResult:
         session = ctx.session
+        # A local-only answer (supervisor.recall) is copied into the summary as it is: the quote lock, shared until
+        # this task commits, so a withhold, purge or redaction finds the copy (app/brain/quotes.py). Taken only then
+        # (such a summary never calls an AI model), and before the request's row lock, in the order a removal takes
+        # them.
+        if await session.scalar(select(exists().where(Task.request_id == params.request_id,
+                                                      Task.result["data"].has_key("local_only")))):
+            await lock_quotes(session, shared=True)
         request = await session.get(SupervisorRequest, params.request_id, with_for_update=True)
         if request is None:
             raise ValueError(f"no supervisor request {params.request_id}")

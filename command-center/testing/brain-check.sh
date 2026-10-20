@@ -12,7 +12,8 @@
 # test copy is the project cc-brain-test; everything it creates is removed at the end (also after a failure).
 #
 # Now: every .ps1 parses (ASCII only); brain-precheck.ps1; refusals before anything runs; brain-test.ps1 Start (build
-# with the test copy's own image names, health, versions against VERSION, instance_label and the cookie name);
+# with the test copy's own image names, health, versions against VERSION, instance_label and the cookie name); the
+# app role's terse PostgreSQL error log (no DETAIL);
 # configuration and running-container assertions; the worker without internet; the hardened importer container and
 # a missing bind source; jarvis-import.ps1 refusals and its -Target Test wiring; the pre-import dump function; the
 # kit-made inputs; restart persistence and Stop/Start; COMPOSE_* in the environment; -SeedFromBackup; Remove; the
@@ -380,6 +381,45 @@ step_api_basics() {  # version against VERSION, banner field, cookie name
   code2=$(curl -sS -o /dev/null -w '%{http_code}' -H "cookie: cc_session=$token" "http://127.0.0.1:$PORT/api/auth/me")
   [ "$code2" = 401 ] && pass "a cc_session cookie is not accepted by the test copy" || fail "cc_session accepted: $code2"
   check_fp "API basics"
+}
+
+step_db_error_verbosity() {  # 0.6.1: the app role's errors reach the PostgreSQL log without the row's values
+  local pg verbosity params since logs
+  pg=$(cid postgres)
+  verbosity=$(docker exec "$pg" psql -U command_center -d command_center -X -q -t -A -c "SHOW log_error_verbosity" 2>&1 || true)
+  params=$(docker exec "$pg" psql -U command_center -d command_center -X -q -t -A -c "SHOW log_parameter_max_length_on_error" 2>&1 || true)
+  since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  # A row the CHECK on memory_item_versions.change refuses, sent as the app sends it: from the api container, as the
+  # app's role, the planted title a bind parameter (a literal in the statement would be logged with the statement).
+  docker exec -i -e PROBE=BRAINCHECK-ROW-VALUE "$(cid api)" python - > "$LOGS/db-verbosity.log" 2>&1 <<'PY' || true
+import asyncio, os
+
+import asyncpg
+
+
+async def main():
+    conn = await asyncpg.connect(os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://", 1))
+    try:
+        await conn.execute("INSERT INTO memory_item_versions (item_id, version, change, kind, title, sensitivity, "
+                           "status) VALUES (0, 0, 'brain-check-bogus', 'knowledge', $1, 'general', 'pending_review')",
+                           os.environ["PROBE"])
+        print("NOT refused")
+    except asyncpg.CheckViolationError:
+        print("refused by the CHECK")
+    finally:
+        await conn.close()
+
+
+asyncio.run(main())
+PY
+  sleep 1
+  logs=$(docker logs --since "$since" "$pg" 2>&1 || true)
+  echo "$logs" >> "$LOGS/db-verbosity.log"
+  if [[ "$verbosity" = terse && "$params" = 0 && "$logs" == *"violates check constraint"* \
+        && "$logs" != *"Failing row contains"* && "$logs" != *"BRAINCHECK-ROW-VALUE"* ]]; then
+    pass "command_center logs at log_error_verbosity=terse with bind parameters: a refused row's values never reach the PostgreSQL log"
+  else fail "database error logging: verbosity '$verbosity', parameters on error '$params'; see $LOGS/db-verbosity.log"; fi
+  check_fp "database error verbosity"
 }
 
 step_worker_offline() {  # 7. the worker cannot reach the internet
@@ -767,6 +807,7 @@ step_refusals_before_start
 step_start || { echo "The test copy did not start; the remaining steps need it."; exit 1; }
 step_config_assertions
 step_api_basics
+step_db_error_verbosity
 step_worker_offline
 step_importer_container
 step_import_refusals

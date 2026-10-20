@@ -7,8 +7,8 @@ network and volumes, so it does not touch XAMPP or other Docker projects
 
 | What | Where |
 |---|---|
-| Installation package | `InfiniteAI-CommandCenter-0.6.0-windows.zip` (in the GitHub repo at `command-center/releases/` on the branch `jarvis-migration`, with a `.sha256` file) |
-| Source | GitHub `mytechmobilebiz/Jarvis`, branch `jarvis-migration` (0.6.0; 0.5.1 and earlier on `ccr-eb27a2af-8u7i39`), folder `command-center/` |
+| Installation package | `InfiniteAI-CommandCenter-0.6.1-windows.zip` (in the GitHub repo at `command-center/releases/` on the branch `jarvis-migration`, with a `.sha256` file) |
+| Source | GitHub `mytechmobilebiz/Jarvis`, branch `jarvis-migration` (0.6.1 and 0.6.0; 0.5.1 and earlier on `ccr-eb27a2af-8u7i39`), folder `command-center/` |
 | Install location on the PC | `C:\InfiniteAI\InfiniteAI-CommandCenter` (outside `C:\xampp`) |
 | Dashboard | http://localhost:8090 (bound to 127.0.0.1 only) |
 | n8n editor | http://localhost:5680 (bound to 127.0.0.1 only) |
@@ -31,9 +31,9 @@ The scripts are run with `-ExecutionPolicy Bypass` for that one process only;
 the machine-wide execution policy is not changed. `preflight.ps1` and
 `status.ps1` are read-only; read any script first if you wish.
 
-1. Download `InfiniteAI-CommandCenter-0.6.0-windows.zip` and, optionally,
+1. Download `InfiniteAI-CommandCenter-0.6.1-windows.zip` and, optionally,
    check it against the `.sha256` file:
-   `Get-FileHash .\InfiniteAI-CommandCenter-0.6.0-windows.zip -Algorithm SHA256`
+   `Get-FileHash .\InfiniteAI-CommandCenter-0.6.1-windows.zip -Algorithm SHA256`
 2. Extract it to `C:\InfiniteAI` (you get `C:\InfiniteAI\InfiniteAI-CommandCenter`).
 3. Open PowerShell and run:
 
@@ -72,6 +72,22 @@ and run the same command from `Jarvis\command-center`.
 | `N8N_OWNER_PASSWORD` | n8n editor sign-in |
 | `ANTHROPIC_API_KEY` (optional) | Deployment default for Claude; normally leave empty and enter your key on the dashboard's Settings page instead (stored encrypted) |
 | `DASHBOARD_PORT`, `N8N_PORT`, `TZ` | Local ports and time zone |
+
+Upgrading to 0.6.1 (from 0.6.0, or from 0.5.0 directly) needs no new keys
+and changes no existing data. Its migration `0007_brain_withhold` replaces one
+check on a JARVIS Brain table (it allows one more value) and adds two
+indexes; `db-init` sets short PostgreSQL error messages for the Command
+Center's database user. 0.6.1 fixes withholding a JARVIS message that has a
+promoted memory copy, and a withhold now removes the message's text from every
+promoted copy and its versions, from the history answers that quote them and
+from the import records. Step by step from 0.6.0:
+[releases/UPGRADE_0.6.0_TO_0.6.1_WINDOWS.md](../releases/UPGRADE_0.6.0_TO_0.6.1_WINDOWS.md)
+(on GitHub, in `command-center/releases/` on the branch `jarvis-migration`,
+next to the zip; it is not inside the zip);
+what changed, going back and the tests:
+[RELEASE_NOTES_0.6.1.md](RELEASE_NOTES_0.6.1.md). Install 0.6.1 on the live
+installation, and use 0.6.1 for the test copy, before the JARVIS import
+below.
 
 Upgrading to 0.6.0 (from 0.5.0 directly, or from 0.5.1) needs no new keys
 and changes no existing data: one migration adds the nine empty JARVIS Brain
@@ -281,7 +297,7 @@ You need, from the JARVIS migration kit (`migration\jarvis\README.md`):
 | Folder | What it is |
 |---|---|
 | `C:\InfiniteAI\InfiniteAI-CommandCenter` (or wherever it is now) | the live installation, with its `.env`. Stays as it is. |
-| `C:\InfiniteAI\v0.6.0-brain-test\InfiniteAI-CommandCenter` | 0.6.0 extracted into a new folder, **without** a `.env`. The test copy runs only from here. |
+| `C:\InfiniteAI\v0.6.1-brain-test\InfiniteAI-CommandCenter` | 0.6.1 extracted into a new folder, **without** a `.env`. The test copy runs only from here. |
 | `C:\InfiniteAI\JarvisMigration` | the kit, the JARVIS backups, `restored`, the pre-check reports and `import-reports` |
 
 The test copy is a separate Docker project, `cc-brain-test`: its own
@@ -290,11 +306,11 @@ containers, database, images and secrets (in `.env.brain-test`, never
 label on every page, no n8n, and a worker without internet. It needs Docker
 Desktop with Docker Compose 2.24.4 or later.
 
-**1. Folders.** Extract the 0.6.0 zip into `C:\InfiniteAI\v0.6.0-brain-test`
+**1. Folders.** Extract the 0.6.1 zip into `C:\InfiniteAI\v0.6.1-brain-test`
 (Explorer: right-click, Extract All). Do not copy `.env` there.
 
 ```powershell
-$test = "C:\InfiniteAI\v0.6.0-brain-test\InfiniteAI-CommandCenter"
+$test = "C:\InfiniteAI\v0.6.1-brain-test\InfiniteAI-CommandCenter"
 $db = "C:\InfiniteAI\JarvisMigration\backups\jarvis-state-<time>.db"
 $restored = "C:\InfiniteAI\JarvisMigration\restored"
 $discovery = "C:\InfiniteAI\JarvisMigration\discovery-<time>\discovery-summary.json"
@@ -326,8 +342,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\brain-test.ps1 -Ac
 `-SeedFromBackup` takes the folder of a `backup.ps1` run, in the `backups`
 folder of the installation you ran it from (it must contain
 `command_center.dump`): `C:\InfiniteAI\v0.5.0\InfiniteAI-CommandCenter\backups\<timestamp>`
-before the upgrade, `C:\InfiniteAI\v0.6.0\InfiniteAI-CommandCenter\backups\<timestamp>`
-after it.
+before the upgrades, `C:\InfiniteAI\v0.6.0\InfiniteAI-CommandCenter\backups\<timestamp>`
+or `C:\InfiniteAI\v0.6.1\InfiniteAI-CommandCenter\backups\<timestamp>` after them.
 
 It prints the address and how to sign in: without a seed, the email it shows
 and the `ADMIN_PASSWORD` in `.env.brain-test`; after a seed, your usual
@@ -381,14 +397,19 @@ Desktop, and the counts (agents switched off, schedules enabled, sites,
 pending approvals, users) change with normal use; neither means the test
 touched the live installation.
 
-**6. Approval.** Upgrading the live installation to 0.6.0 is a separate step
-that you approve: follow RELEASE_NOTES_0.6.0.md section 4 step by step, in a
-new PowerShell window: `backup.ps1` in your current folder
-`C:\InfiniteAI\v0.5.0\InfiniteAI-CommandCenter`, check the zip's SHA-256,
-extract it into the new folder `C:\InfiniteAI\v0.6.0`, copy `.env` there,
-then `install.ps1`, which must end with `SMOKE TEST PASSED`. From then on,
-`C:\InfiniteAI\v0.6.0\InfiniteAI-CommandCenter` is the live installation's
-folder. Set `$db`, `$restored` and `$discovery` again (step 1) before step 7.
+**6. Approval.** Upgrading the live installation to 0.6.1 is a separate step
+that you approve, in a new PowerShell window. From 0.5.0, follow
+`UPGRADE_0.5.0_TO_0.6.0_WINDOWS.md` first; then, from 0.6.0, follow
+`UPGRADE_0.6.0_TO_0.6.1_WINDOWS.md` step by step (both on GitHub in
+`command-center/releases/`, branch `jarvis-migration`; they are not in the
+zip): `backup.ps1` in
+your current folder, check the zip's SHA-256, extract it into the new folder
+`C:\InfiniteAI\v0.6.1`, copy `.env` there, then `install.ps1`, which must end
+with `SMOKE TEST PASSED`. From then on,
+`C:\InfiniteAI\v0.6.1\InfiniteAI-CommandCenter` is the live installation's
+folder. The live import refuses to run on an installation without 0.6.1's
+migration `0007_brain_withhold`. Set `$db`, `$restored` and `$discovery` again
+(step 1) before step 7.
 
 **7. The import into the live installation.** From the live installation's
 folder only (the script refuses anywhere else). `Import` asks you to type
@@ -410,7 +431,7 @@ verified and reviewed.
 $db = "C:\InfiniteAI\JarvisMigration\backups\jarvis-state-<time>.db"
 $restored = "C:\InfiniteAI\JarvisMigration\restored"
 $discovery = "C:\InfiniteAI\JarvisMigration\discovery-<time>\discovery-summary.json"
-Set-Location "C:\InfiniteAI\v0.6.0\InfiniteAI-CommandCenter"
+Set-Location "C:\InfiniteAI\v0.6.1\InfiniteAI-CommandCenter"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\backup.ps1   # a full backup (Command Center, n8n, Credit Repair) before every live import
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Plan -All -BackupDb $db -Restored $restored -Discovery $discovery
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Import -All -BackupDb $db -Restored $restored -Discovery $discovery
@@ -429,7 +450,7 @@ edited) and, once the live import is verified and reviewed, the pre-import
 dump (it holds your whole live database, unencrypted):
 
 ```powershell
-$test = "C:\InfiniteAI\v0.6.0-brain-test\InfiniteAI-CommandCenter"
+$test = "C:\InfiniteAI\v0.6.1-brain-test\InfiniteAI-CommandCenter"
 Set-Location $test
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\brain-test.ps1 -Action Remove
 Remove-Item -Recurse -Force C:\InfiniteAI\JarvisMigration\restored

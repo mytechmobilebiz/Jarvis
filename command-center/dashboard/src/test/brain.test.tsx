@@ -5,7 +5,20 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import { pageTitle } from "../shell/nav";
-import { CUSTOMER_PILL, hiddenText, QUARANTINED_TEXT, WITHHELD_SESSION } from "../pages/Brain";
+import {
+  CUSTOMER_PILL,
+  emptiedCopy,
+  hiddenText,
+  PURGE_PROMOTED_TEXT,
+  QUARANTINED_TEXT,
+  SOURCE_WITHHELD_PENDING_TEXT,
+  SOURCE_WITHHELD_TEXT,
+  WITHHELD_COPY_TITLE,
+  WITHHELD_SESSION,
+  WITHHOLD_NOT_REACHED,
+  WITHHOLD_REMOVES,
+  withholdText,
+} from "../pages/Brain";
 import { mockFetch } from "./fetchMock";
 
 const now = new Date().toISOString();
@@ -341,6 +354,8 @@ describe("JARVIS Brain: conversations", () => {
     fireEvent.click(within(form).getByRole("button", { name: "Promote" }));
     expect(await within(form).findByText(/Saved as memory item #77, waiting for review/)).toBeInTheDocument();
     expect(calls.find((c) => c.path === "/api/brain/messages/102/promote")!.body).toEqual({ kind: "accomplishment", title: "Published the keyword brief.", agent: "seo_content" });
+    // The count of promoted copies is an admin's, asked for only when a withhold is about to be confirmed.
+    expect(calls.some((c) => c.path.endsWith("/promoted"))).toBe(false);
   });
 
   it("offers operators no admin-only kind, and leaves a message a secret was removed from to an admin", async () => {
@@ -396,6 +411,7 @@ describe("JARVIS Brain: conversations", () => {
     const calls = renderAt("/brain?tab=conversations&session=11", admin, {
       "GET /api/brain/sessions": { sessions: [session()], total: 1 },
       "GET /api/brain/sessions/11": { session: session(), messages, total: 3, hidden: 0 },
+      "GET /api/brain/messages/102/promoted": { message: 102, count: 0, items: [] },
       "POST /api/brain/messages/102/withhold": { json: { message: { ...messages[1], content: "", withheld: true } } },
     });
     const dialog = await screen.findByRole("dialog", { name: "Weekly SEO sweep" });
@@ -404,8 +420,68 @@ describe("JARVIS Brain: conversations", () => {
     fireEvent.click(within(dialog).getAllByRole("button", { name: "Withhold" })[1]);
     const confirm = await screen.findByRole("dialog", { name: "Withhold message #1" });
     expect(calls.some((c) => c.path.endsWith("/withhold"))).toBe(false);
+    await waitFor(() => expect(within(confirm).getByRole("button", { name: "Withhold this message" })).toBeEnabled());
     fireEvent.click(within(confirm).getByRole("button", { name: "Withhold this message" }));
     await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.path === "/api/brain/messages/102/withhold")).toBe(true));
+  });
+
+  it("warns how many promoted memory items a withhold empties, before the admin confirms", async () => {
+    const calls = renderAt("/brain?tab=conversations&session=11", admin, {
+      "GET /api/brain/sessions": { sessions: [session()], total: 1 },
+      "GET /api/brain/sessions/11": { session: session(), messages, total: 3, hidden: 0 },
+      "GET /api/brain/messages/102/promoted": { message: 102, count: 2, items: [{ id: 77, status: "approved", deleted: false }] },
+      "POST /api/brain/messages/102/withhold": {
+        json: { message: { ...messages[1], content: "", withheld: true }, session: session(), copies: { items: [77, 78], versions_blanked: 3 }, answers_scrubbed: 1, rollback_copies_blanked: 0 },
+      },
+    });
+    const dialog = await screen.findByRole("dialog", { name: "Weekly SEO sweep" });
+    await within(dialog).findByText("Published the keyword brief.");
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "Withhold" })[1]);
+    const confirm = await screen.findByRole("dialog", { name: "Withhold message #1" });
+    expect(await within(confirm).findByText(/^2 memory item\(s\) were promoted from this message\./)).toBeInTheDocument();
+    expect(within(confirm).getByText(/including edits made since/)).toBeInTheDocument();
+    expect(calls.find((c) => c.path === "/api/brain/messages/102/promoted")?.method).toBe("GET");
+    expect(calls.some((c) => c.path.endsWith("/withhold"))).toBe(false);
+    fireEvent.click(within(confirm).getByRole("button", { name: "Withhold this message" }));
+    expect(await within(dialog).findByText("Withheld. 2 promoted item(s) emptied.")).toBeInTheDocument();
+    expect(withholdText(1)[1]).toMatch(/^1 memory item\(s\) were promoted from this message\. Their title, text, tags and review notes, and every earlier version, are removed too/);
+    expect(withholdText(0)).toEqual([WITHHOLD_REMOVES, WITHHOLD_NOT_REACHED]);
+  });
+
+  it("no longer says the text stays only in the JARVIS backup, and lists what a withhold cannot reach", async () => {
+    renderAt("/brain?tab=conversations&session=11", admin, {
+      "GET /api/brain/sessions": { sessions: [session()], total: 1 },
+      "GET /api/brain/sessions/11": { session: session(), messages, total: 3, hidden: 0 },
+      "GET /api/brain/messages/102/promoted": { message: 102, count: 0, items: [] },
+    });
+    const dialog = await screen.findByRole("dialog", { name: "Weekly SEO sweep" });
+    await within(dialog).findByText("Published the keyword brief.");
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "Withhold" })[1]);
+    const confirm = await screen.findByRole("dialog", { name: "Withhold message #1" });
+    expect(await within(confirm).findByText(WITHHOLD_NOT_REACHED)).toBeInTheDocument();
+    expect(within(confirm).getByText(WITHHOLD_REMOVES)).toBeInTheDocument();
+    expect(confirm.textContent).not.toMatch(/stays only in the JARVIS backup/);
+    expect(confirm.textContent).not.toMatch(/memory item\(s\) were promoted/);
+    for (const kept of ["the JARVIS backup", "Command Center backups", "decisions files", "the test copy", "Docker container logs", "an AI model", "title", "paired tool result"]) {
+      expect(WITHHOLD_NOT_REACHED).toContain(kept);
+    }
+  });
+
+  it("lets an admin withhold when the copies cannot be counted, and says copies are emptied too", async () => {
+    const calls = renderAt("/brain?tab=conversations&session=11", admin, {
+      "GET /api/brain/sessions": { sessions: [session()], total: 1 },
+      "GET /api/brain/sessions/11": { session: session(), messages, total: 3, hidden: 0 },
+      "GET /api/brain/messages/102/promoted": { status: 500, json: { detail: "the database refused this change; nothing was saved" } },
+      "POST /api/brain/messages/102/withhold": { json: { message: { ...messages[1], content: "", withheld: true }, copies: { items: [], versions_blanked: 0 } } },
+    });
+    const dialog = await screen.findByRole("dialog", { name: "Weekly SEO sweep" });
+    await within(dialog).findByText("Published the keyword brief.");
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "Withhold" })[1]);
+    const confirm = await screen.findByRole("dialog", { name: "Withhold message #1" });
+    expect(await within(confirm).findByText(/^Could not count the promoted copies \(.+\); any copies are emptied too\.$/)).toBeInTheDocument();
+    fireEvent.click(within(confirm).getByRole("button", { name: "Withhold this message" }));
+    await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.path === "/api/brain/messages/102/withhold")).toBe(true));
+    expect(await within(dialog).findByText("Withheld. 0 promoted item(s) emptied.")).toBeInTheDocument();
   });
 });
 
@@ -462,6 +538,64 @@ describe("JARVIS Brain: item dialog", () => {
     expect(within(dialog).queryByRole("button", { name: "Redact version 2" })).toBeNull();
     expect(within(dialog).getAllByText("Text redacted by an admin.")).toHaveLength(1);
     expect(within(dialog).getByRole("button", { name: "Redact version 1" })).toBeInTheDocument();
+  });
+
+  it("shows a source-withheld item as emptied: a risk chip in plain words, no Approve, Reopen or Edit, delete and purge offered", async () => {
+    const emptied = item({
+      title: "Withheld: the archived message it was promoted from was withheld", body: "", tags: [], status: "rejected", origin: "promoted", import_run_id: null,
+      source_ref: "JARVIS session abc · message 1", needs_admin: true, version: 4,
+      flags: { message_id: 102, archive_session_id: 11, message_source_key: "jarvis:message:abc:1", source_withheld: true },
+    });
+    const calls = renderAt("/brain?item=5", admin, {
+      "GET /api/brain/items/5": { item: emptied, versions },
+      "DELETE /api/brain/items/5": { json: { item: { ...emptied, deleted_at: now } } },
+    });
+    const dialog = await screen.findByRole("dialog", { name: emptied.title as string });
+    expect(within(dialog).getByText("source message withheld")).toHaveClass("br-chip-risk");
+    expect(within(dialog).getByText(SOURCE_WITHHELD_TEXT)).toBeInTheDocument();
+    expect(within(dialog).queryByText(QUARANTINED_TEXT)).toBeNull();
+    for (const name of ["Approve", "Reject", "Archive", "Reopen for review", "Edit"]) {
+      expect(within(dialog).queryByRole("button", { name })).toBeNull();
+    }
+    expect(within(dialog).queryByRole("region", { name: "Review" })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(calls.some((c) => c.method === "DELETE" && c.path === "/api/brain/items/5")).toBe(true));
+    cleanup();
+
+    renderAt("/brain?item=5", admin, { "GET /api/brain/items/5": { item: { ...emptied, deleted_at: now }, versions } });
+    const deleted = await screen.findByRole("dialog", { name: emptied.title as string });
+    expect(within(deleted).getByRole("button", { name: "Restore" })).toBeInTheDocument();
+    fireEvent.click(within(deleted).getByRole("button", { name: "Purge for good" }));
+    const confirm = await screen.findByRole("dialog", { name: "Purge item #5" });
+    expect(confirm.textContent).toContain(PURGE_PROMOTED_TEXT);
+    expect(confirm.textContent).not.toMatch(/remembered as\s+purged/);
+  });
+
+  it("never calls a flagged copy that still holds its text emptied (0.6.0 left it), and offers no Approve, Reopen or Edit", async () => {
+    const left = item({
+      title: "Plan for the renewal", body: "The renewal plan in full.", status: "approved", origin: "promoted", import_run_id: null,
+      source_ref: "JARVIS session abc · message 1", needs_admin: true, version: 2,
+      flags: { message_id: 102, archive_session_id: 11, message_source_key: "jarvis:message:abc:1", source_withheld: true },
+    });
+    renderAt("/brain?item=5", admin, { "GET /api/brain/items/5": { item: left, versions } });
+    const dialog = await screen.findByRole("dialog", { name: "Plan for the renewal" });
+    expect(within(dialog).getByText(SOURCE_WITHHELD_PENDING_TEXT)).toBeInTheDocument();
+    expect(within(dialog).queryByText(SOURCE_WITHHELD_TEXT)).toBeNull();
+    for (const name of ["Approve", "Reopen for review", "Edit"]) {
+      expect(within(dialog).queryByRole("button", { name })).toBeNull();
+    }
+    expect(emptiedCopy(left)).toBe(false);
+    expect(emptiedCopy({ ...left, title: WITHHELD_COPY_TITLE, body: "", tags: [] })).toBe(true);
+  });
+
+  it("never shows message_source_key as a chip", async () => {
+    renderAt("/brain?item=5", admin, {
+      "GET /api/brain/items/5": { item: item({ origin: "promoted", flags: { message_id: 102, archive_session_id: 11, message_source_key: "jarvis:message:abc:1" } }), versions },
+    });
+    const dialog = await screen.findByRole("dialog", { name: "Refund policy" });
+    expect(dialog.querySelector(".br-chips")).toBeNull();
+    expect(dialog.textContent).not.toMatch(/message source key|jarvis:message:abc:1/);
+    expect(within(dialog).getByRole("button", { name: "Approve" })).toBeInTheDocument();
   });
 
   it("offers restore and a typed purge for a deleted item", async () => {
@@ -676,6 +810,22 @@ describe("JARVIS Brain: review", () => {
     fireEvent.click(within(open).getByRole("radio", { name: /Keep both/ }));
     fireEvent.click(within(open).getByRole("button", { name: "Resolve" }));
     await waitFor(() => expect(calls.find((c) => c.path === "/api/brain/conflicts/2/resolve")?.body).toEqual({ resolution: "keep_both", note: "" }));
+  });
+
+  it("never offers to approve an item emptied because its source message was withheld (0.6.1)", async () => {
+    const emptied = item({
+      id: 21, title: "Withheld: the archived message it was promoted from was withheld", body: "", tags: [], status: "quarantined", origin: "promoted",
+      needs_admin: true, flags: { message_id: 102, archive_session_id: 11, message_source_key: "jarvis:message:abc:1", source_withheld: true },
+    });
+    const calls = renderAt("/brain?tab=review", admin, { ...reviewRoutes(), "GET /api/brain/items?status=quarantined&limit=100": { items: [emptied], total: 1 } });
+    const approve = await screen.findByRole("button", { name: `Approve ${emptied.title}` });
+    expect(approve).toBeDisabled();
+    expect(approve).toHaveAttribute("title", SOURCE_WITHHELD_TEXT);
+    const row = approve.closest("li") as HTMLElement;
+    expect(within(row).getByText("source message withheld")).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: `Reject ${emptied.title}` })).toBeEnabled();
+    fireEvent.click(approve);
+    expect(calls.some((c) => c.method === "POST" && c.path === "/api/brain/items/21/review")).toBe(false);
   });
 });
 

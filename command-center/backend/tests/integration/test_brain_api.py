@@ -202,6 +202,7 @@ ROUTES = [
     ("GET", "/api/brain/sessions", None, "operator"),
     ("GET", "/api/brain/sessions/{s1}", None, "operator"),
     ("POST", "/api/brain/messages/999999/withhold", None, "admin"),
+    ("GET", "/api/brain/messages/{m2}/promoted", None, "admin"),
     ("POST", "/api/brain/messages/999999/promote", {"kind": "knowledge", "title": "t"}, "operator"),
     ("GET", "/api/brain/conflicts", None, "operator"),
     ("POST", "/api/brain/conflicts/999999/resolve", {"resolution": "dismissed"}, "operator"),
@@ -478,7 +479,8 @@ async def test_delete_restore_purge_with_tombstone_and_conflicts(client):
         assert stone is not None and stone.purged_by == ADMIN[0]
         entry = await s.scalar(select(AuditLog).where(AuditLog.action == "memory.purged"))
         assert entry.detail == {"item": imported_id, "kind": "business", "agent": "", "versions_removed": 4,
-                                "conflicts_removed": 2, "tombstone": True}
+                                "conflicts_removed": 2, "tombstone": True, "origin": "import", "message": None,
+                                "source_withheld": False, "answers_scrubbed": 0}
 
 
 async def test_redacting_an_old_version(client):
@@ -605,7 +607,8 @@ async def test_withholding_a_message_recomputes_its_session(client):
         assert row.content == "" and row.withheld and row.tool_calls == []
         entry = await s.scalar(select(AuditLog).where(AuditLog.action == "archive.message_withheld"))
         assert entry.detail == {"message": ids["m2"], "session": ids["s1"], "imported_messages": 1,
-                                "withheld_messages": 1}
+                                "withheld_messages": 1, "tombstone": True, "copies": [], "versions_blanked": 0,
+                                "rollback_copies_blanked": 0, "answers_scrubbed": 0, "via": "api"}
 
 
 async def test_promoting_a_message_keeps_the_highest_sensitivity(client):

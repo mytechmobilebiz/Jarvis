@@ -112,8 +112,9 @@ imported JARVIS data, and nothing is imported by this upgrade.
   data).
 - **Workaround:** delete and purge the promoted copy first, then withhold
   the message.
-- **Fix:** a small 0.6.1 patch (one migration and a test), to be released and
-  approved before the test-copy import.
+- **Fix:** released as **0.6.1** (2026-10-20). Install it after this upgrade
+  is verified, with `releases/UPGRADE_0.6.0_TO_0.6.1_WINDOWS.md`, and before
+  the test-copy import.
 
 **JARVIS migration kit.** The kit inside 0.6.0 is byte-for-byte the kit
 0.1.0 you already used (`jarvis-migration-kit-0.1.0.zip`, SHA-256
@@ -667,5 +668,5 @@ This was tested with `-Yes`, which skips the typed confirmation.
   or payment systems.
 - **Web research:** it installs no DeepSeek or other web-research feature.
   The Research Gateway is planned for a later release.
-- **Before the test-copy import:** the 0.6.1 patch for the withhold defect
-  (section 0).
+- **Before the test-copy import:** 0.6.1, the patch for the withhold defect
+  (section 0), installed with `UPGRADE_0.6.0_TO_0.6.1_WINDOWS.md`.

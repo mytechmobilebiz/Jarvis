@@ -7,14 +7,17 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from . import __version__
 from .bootstrap import bootstrap
 from .brain.store import BrainError
 from .config import get_settings
-from .db import dispose_engine
+from .db import describe_error, dispose_engine
 from .security import LoginThrottle
 from .tasks import TaskError
+
+log = logging.getLogger(__name__)
 
 
 def create_app(run_bootstrap: bool = True) -> FastAPI:
@@ -48,6 +51,14 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
     async def brain_error(_: Request, exc: BrainError) -> JSONResponse:
         # The memory service refused the request; its messages carry no stored text (app/brain/store.py).
         return JSONResponse({"detail": str(exc)}, status_code=400)
+
+    @app.exception_handler(DBAPIError)
+    async def database_error(request: Request, exc: DBAPIError) -> JSONResponse:
+        # The database refused a statement. str(exc) carries PostgreSQL's DETAIL (the row's values: customer or
+        # imported text), so the log and the reply name classes and the SQLSTATE only; the path has no query string.
+        log.error("%s %s: %s", request.method, request.url.path, describe_error(exc))
+        return JSONResponse({"detail": "the database refused this change; nothing was saved"},
+                            status_code=409 if isinstance(exc, IntegrityError) else 500)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):

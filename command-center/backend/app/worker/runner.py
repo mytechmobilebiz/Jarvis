@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 from sqlalchemy import select, text, update
+from sqlalchemy.exc import DBAPIError
 
 from .. import events
 from .. import tasks as task_service
@@ -21,9 +22,10 @@ from ..agents.registry import get_agent
 from ..agents.wp_server import SiteBusy
 from ..brain.notes import reference_notes
 from ..brain.policy import POLICIES, SENSITIVE_AGENT
+from ..brain.quotes import QuotesBusy, lock_quotes
 from ..brain.store import AgentMemory
 from ..config import Settings
-from ..db import session_scope, sessionmaker
+from ..db import describe_error, session_scope, sessionmaker
 from ..integrations import IntegrationHub, build_hub
 from ..llm import LLMProvider, runtime_provider
 from ..models import Approval, Artifact, ServerCommand, Task, TaskLog, WorkerHeartbeat
@@ -32,7 +34,13 @@ from . import forwarder, scheduler
 
 log = logging.getLogger(__name__)
 
-BUSY_RETRY_SECONDS = 30  # a task whose site is busy (SiteBusy) is tried again this much later
+BUSY_RETRY_SECONDS = 30  # a task whose site is busy (SiteBusy), or that must quote (QuotesBusy), is tried again later
+# Capabilities that copy JARVIS Brain text into their result (a history answer): they hold the quote lock shared from
+# before their first read until they commit, so a withhold, purge or redaction finds what they wrote
+# (app/brain/quotes.py). Never waited for: while a removal holds or waits for it, the task goes back to the queue, as
+# for a busy site. summarize_request takes it itself, and only when it copies such an answer (never around a call to
+# an AI model).
+QUOTING = {("supervisor", "recall")}
 
 CLAIM_SQL = text(
     """
@@ -255,6 +263,9 @@ class Worker:
                         memory=memory,
                     )
                     try:
+                        if (agent_name, cap_name) in QUOTING and not await lock_quotes(session, shared=True,
+                                                                                       wait=False):
+                            raise QuotesBusy("a JARVIS Brain removal is running")
                         result = await asyncio.wait_for(agent.run(ctx, cap_name, params), timeout=timeout)
                         if memory is not None and agent_name != SENSITIVE_AGENT:  # never for Credit Repair
                             await self._add_memory_notes(session, task_id, memory, params, result)
@@ -263,10 +274,15 @@ class Worker:
                     except BaseException:
                         await session.rollback()
                         raise
-            except SiteBusy as exc:
+            except (SiteBusy, QuotesBusy) as exc:
                 await self._requeue(task_id, str(exc), logs)
             except TimeoutError:
                 await self._fail(task_id, f"timed out after {timeout}s", logs)
+            except DBAPIError as exc:  # its text carries the row's values (PostgreSQL's DETAIL): classes only
+                described = describe_error(exc)
+                log.warning("task %s (%s.%s) failed: %s", task_id, agent_name, cap_name, described)
+                logs.append(("error", described))
+                await self._fail(task_id, described, logs)
             except Exception as exc:  # noqa: BLE001 - every failure is recorded on the task
                 log.warning("task %s (%s.%s) failed: %s", task_id, agent_name, cap_name, exc)
                 logs.append(("error", "".join(traceback.format_exception_only(exc)).strip()))
@@ -284,6 +300,11 @@ class Worker:
         """
         # The capability's own changes are flushed first, as _complete would, so their errors surface unchanged.
         await session.flush()
+        # The quote lock, shared until this task commits (a removal then finds the notes); never waited for: while a
+        # removal holds it, the notes are left out.
+        if not await lock_quotes(session, shared=True, wait=False):
+            log.info("reference notes for task %s skipped: a JARVIS Brain removal is running", task_id)
+            return
         try:
             async with session.begin_nested():
                 notes = await reference_notes(memory, params)
@@ -340,7 +361,8 @@ class Worker:
         await task_service.on_task_terminal(session, self.settings, task)
 
     async def _requeue(self, task_id: int, reason: str, logs: list[tuple[str, str]]) -> None:
-        """Its site is busy with other server-side work: back in the queue (not an attempt, not a failure), freeing the slot."""
+        """Its site is busy with other server-side work, or a JARVIS Brain removal holds the quote lock: back in the
+        queue (not an attempt, not a failure), freeing the slot."""
         log.info("task %s waits: %s", task_id, reason)
         async with session_scope() as session:
             task = await session.get(Task, task_id, with_for_update=True)

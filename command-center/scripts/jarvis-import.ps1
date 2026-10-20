@@ -308,7 +308,8 @@ Show-Fingerprint "live installation before ($Target $Mode)" $before
 if ($Target -eq "Production") {
   # Feature check: the running api's image has the importer and the database has the JARVIS Brain tables.
   $migrations = @(Get-AppliedMigrations)
-  if ($migrations -notcontains "0006_brain") { Clear-ImportVars; Stop-Brain "the live database has no 0006_brain migration: install 0.6.0 on the live installation first" }
+  if ($migrations -notcontains "0006_brain") { Clear-ImportVars; Stop-Brain "the live database has no 0006_brain migration: install 0.6.1 on the live installation first" }
+  if ($migrations -notcontains "0007_brain_withhold") { Clear-ImportVars; Stop-Brain "the live database has no 0007_brain_withhold migration: install 0.6.1 on the live installation first" }
   if (-not (Test-Path -LiteralPath $Reports)) { $null = New-Item -ItemType Directory -Path $Reports }
   $saved = $service
   $service = "brain-importer-nosource"
@@ -319,9 +320,20 @@ if ($Target -eq "Production") {
   # pattern against the CLI's own output).
   if ($r.Code -ne 0 -or $printed -notmatch '(?m)^importer (\d+\.\d+\.\d+); JARVIS Brain tables installed\b') {
     Clear-ImportVars
-    Stop-Brain "the running api's image has no working brain-import (status exit $($r.Code)); install 0.6.0 on the live installation first"
+    Stop-Brain "the running api's image has no working brain-import (status exit $($r.Code)); install 0.6.1 on the live installation first"
   }
-  Write-Host "Live installation: importer $($Matches[1]), migration 0006_brain present, importer image = running api code ($runningVersion)."
+  $importerVersion = $Matches[1]
+  # 0.6.1 empties, at start-up, the memory items promoted from withheld messages that 0.6.0 left with their text; the
+  # status line says how many are left (tests/unit/test_brain_ops.py runs this pattern against the CLI's own output).
+  # Only what brings JARVIS text in (Import, Resume) waits for 0: Status shows the count, Rescan is a remedy, and
+  # Verify, Rollback and ApplyDecisions add no text.
+  $withheldCopies = "unknown (no 0.6.1 importer)"
+  if ($printed -match '(?m)^migration 0007_brain_withhold present; withheld copies with text: (\d+)\b') { $withheldCopies = $Matches[1] }
+  if (@("Import", "Resume") -contains $Mode -and $withheldCopies -ne "0") {
+    Clear-ImportVars
+    Stop-Brain "the live installation still has promoted memory items whose source message is withheld, or no 0.6.1 importer: install 0.6.1 on the live installation first and let it start once (the start-up check is skipped while an import, rollback or rescan runs: if brain-import status still shows withheld copies with text above 0, restart the live installation, or run .\scripts\jarvis-import.ps1 -Target Production -Mode Rescan)"
+  }
+  Write-Host "Live installation: importer $importerVersion, migrations 0006_brain and 0007_brain_withhold present, withheld copies with text: $withheldCopies, importer image = running api code ($runningVersion)."
 }
 
 # --- Run ----------------------------------------------------------------------------------------------------------

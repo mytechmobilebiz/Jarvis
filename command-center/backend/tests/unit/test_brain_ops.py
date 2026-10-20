@@ -164,6 +164,48 @@ def test_the_package_ships_the_operations_files_and_not_the_sandbox_check(tmp_pa
     assert b"\r\n" in brain_test and b"\n" not in brain_test.replace(b"\r\n", b"")
 
 
+@pytest.mark.parametrize("left", [0, 3, None])
+def test_a_production_import_waits_until_no_promoted_item_keeps_withheld_text(monkeypatch, capsys, left):
+    """jarvis-import.ps1 reads brain-import status' 0.6.1 line: 0007_brain_withhold present, and no promoted item
+    whose message is withheld still holding text (left=None: an importer older than 0.6.1, which has no such line)."""
+    from app import cli
+    from app.brain import importer
+
+    async def status(run=None):
+        out = {"importer_version": importer.IMPORTER_VERSION, "installed": True, "runs": []}
+        if left is not None:
+            out.update(migration_0007_brain_withhold=True, withheld_copies_with_text=left)
+        return out
+
+    monkeypatch.setattr(importer, "status", status)
+    assert cli.main(["cli", "brain-import", "status"]) == 0
+    printed = capsys.readouterr().out
+    if left is None:
+        printed = "\n".join(line for line in printed.splitlines() if not line.startswith("migration 0007"))
+    text = script("jarvis-import.ps1")
+    pattern = re.search(r"if \(\$printed -match '(\(\?m\)\^migration [^']+)'\) \{ \$withheldCopies = \$Matches\[1\] \}",
+                        text).group(1)
+    found = re.search(pattern, printed)
+    assert (found.group(1) if found else None) == (None if left is None else str(left)), printed
+    assert '$migrations -notcontains "0007_brain_withhold"' in text and "install 0.6.1 on the live installation" in text
+    assert "install 0.6.0" not in text
+
+
+@pytest.mark.parametrize("mode", ["Import", "Resume", "Verify", "Rollback", "Status", "Rescan", "ApplyDecisions"])
+def test_only_an_import_or_a_resume_into_production_waits_for_the_withheld_copies(mode):
+    """While promoted items of withheld messages still hold text, Status shows how many, Rescan (the remedy the
+    message names) empties them, and Verify, Rollback (the undo of an import) and ApplyDecisions, which bring no
+    JARVIS text in, still run; only Import and Resume are refused. Both migration checks apply to every mode."""
+    text = script("jarvis-import.ps1")
+    production = text[text.index('if ($Target -eq "Production") {'):text.index("# --- Run ---")]
+    [gate] = re.findall(r'if \(@\(([^)]*)\) -contains \$Mode -and \$withheldCopies -ne "0"\) \{', production)
+    gated = set(re.findall(r'"(\w+)"', gate))
+    assert (mode in gated) == (mode in ("Import", "Resume"))
+    for migration in ("0006_brain", "0007_brain_withhold"):
+        assert '$migrations -notcontains "%s"' % migration in production
+    assert "-Target Production -Mode Rescan" in production and '"Rescan" { $cli = @("rescan", "--yes") }' in text
+
+
 @pytest.mark.parametrize("installed", [True, False])
 def test_the_production_feature_check_matches_what_brain_import_status_prints(monkeypatch, capsys, installed):
     from app import cli

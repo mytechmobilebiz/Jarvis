@@ -80,7 +80,7 @@ async def test_rollback_puts_every_count_back_to_its_value_before_the_run(built)
         entry = await s.scalar(select(AuditLog).where(AuditLog.action == "brain.import_rolled_back"))
         assert entry.target_id == str(done["run_id"]) and entry.detail["deleted"] == result["deleted"]
         assert set(entry.detail) <= {"run", "deleted", "restored", "reverted", "kept_converted_drafts",
-                                     "discarded_reviewed_items"}
+                                     "discarded_reviewed_items", "kept_withheld_copies", "withheld_reinserted"}
         assert (await s.get(MemoryItem, manual.id)).version == 1
     with pytest.raises(imp.Refused, match="already rolled back"):
         await rollback(done["run_id"])

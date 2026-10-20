@@ -280,6 +280,14 @@ async def _brain_command(args: argparse.Namespace) -> int:
             out = await imp.status(args.run)
             print("importer %s; JARVIS Brain tables %s" % (out["importer_version"],
                                                           "installed" if out["installed"] else "NOT installed"))
+            if out["installed"]:
+                # scripts/jarvis-import.ps1 reads this line before a production import: it must say 0.
+                print("migration 0007_brain_withhold %s; withheld copies with text: %d" % (
+                    "present" if out.get("migration_0007_brain_withhold") else "MISSING",
+                    out.get("withheld_copies_with_text", 0)))
+                if out.get("withheld_rollback_copies_with_text"):
+                    print("rollback copies of withheld messages with text: %d (the next start, or rescan --yes, "
+                          "blanks them)" % out["withheld_rollback_copies_with_text"])
             if out.get("marked_interrupted"):
                 print("marked interrupted (their process is gone): runs %s"
                       % ", ".join(str(i) for i in out["marked_interrupted"]))

@@ -93,6 +93,26 @@ if ($api -and $api.Status -eq "running") {
   if ($r.Code -eq 0 -and $r.Out.Count -gt 0) { Add-Line ("  API version: " + $r.Out[-1].Trim()) } else { Add-Problem "the API did not report its version" }
 }
 $pg = Find-Service "postgres"
+# Memory items promoted from a message that is withheld now, which still hold text: 0.6.0's withholds left them, and
+# 0.6.1 empties them when it starts (app/brain/archive.py withheld_copies() applies the same rules;
+# tests/integration/test_brain_withhold_copies.py runs this query against both).
+$withheldCopiesSql = @'
+SELECT count(*) FROM memory_items i WHERE i.origin = 'promoted'
+AND (NOT i.flags ? 'source_withheld' OR i.title <> 'Withheld: the archived message it was promoted from was withheld'
+  OR i.body <> '' OR i.tags::text <> '[]'
+  OR EXISTS (SELECT 1 FROM memory_item_versions v WHERE v.item_id = i.id AND (v.body <> '' OR v.tags::text <> '[]'
+    OR v.title NOT IN ('[redacted]', 'Withheld: the archived message it was promoted from was withheld'))))
+AND (i.flags ? 'source_withheld'
+  OR EXISTS (SELECT 1 FROM archive_messages m WHERE m.withheld AND m.id = (i.flags ->> 'message_id')::bigint)
+  OR EXISTS (SELECT 1 FROM archive_messages m WHERE m.withheld AND m.source_key = i.flags ->> 'message_source_key')
+  OR EXISTS (SELECT 1 FROM brain_tombstones t WHERE t.reason = 'withheld by an admin'
+    AND t.source_key = i.flags ->> 'message_source_key')
+  OR (NOT i.flags ? 'message_source_key'
+    AND NOT EXISTS (SELECT 1 FROM archive_messages m WHERE m.id = (i.flags ->> 'message_id')::bigint)
+    AND EXISTS (SELECT 1 FROM archive_messages m JOIN archive_sessions s ON s.id = m.session_id WHERE m.withheld
+      AND i.source_ref IN ('JARVIS session ' || s.source_session_id || ' ' || chr(183) || ' message ' || m.position,
+        'JARVIS session ' || s.source_session_id || ' ' || chr(183) || ' message ' || m.position || ' (source removed)'))))
+'@
 if ($pg -and $pg.Status -eq "running") {
   # A read-only transaction: the database itself refuses any change from this session.
   $sql = "SELECT (SELECT string_agg(version, ',' ORDER BY version) FROM schema_migrations), " +
@@ -108,6 +128,19 @@ if ($pg -and $pg.Status -eq "running") {
     Add-Line ("  schema_migrations: " + ($migrations -join ' '))
     $brain = if ($migrations -contains "0006_brain") { "present" } else { "not present (the live installation is older than 0.6.0)" }
     Add-Line "  0006_brain: $brain"
+    $withhold = if ($migrations -contains "0007_brain_withhold") { "present" } else { "not present (the live installation is older than 0.6.1)" }
+    Add-Line "  0007_brain_withhold: $withhold"
+    if ($migrations -contains "0006_brain") {
+      $c = Invoke-Docker @("exec", "-e", "PGOPTIONS=-c default_transaction_read_only=on", $pg.Id, "psql", "-U", "postgres",
+        "-d", "command_center", "-X", "-q", "-t", "-A", "-v", "ON_ERROR_STOP=1", "-c", $withheldCopiesSql.Replace("`r", " ").Replace("`n", " "))
+      $n = @($c.Out | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' } | Select-Object -Last 1)
+      if ($c.Code -eq 0 -and $n.Count -eq 1) {
+        $after = if ($n[0] -ne "0") { " (0.6.1 empties them when it starts; a production import refuses until this is 0)" } else { "" }
+        Add-Line ("  promoted memory items whose source message is withheld, still holding text: " + $n[0] + $after)
+      } else {
+        Add-Problem ("the promoted memory items of withheld messages could not be counted: " + (($c.Err | Select-Object -First 2) -join " "))
+      }
+    }
     Add-Line "  agents switched off: $($v[1]) (agents without a saved state are on)"
     Add-Line "  schedules enabled: $($v[2]) of $($v[3])"
     Add-Line "  sites: $($v[4])"

@@ -11,7 +11,7 @@ kit the owner runs on the PC); tests/unit/test_brain_text.py checks that they st
 from __future__ import annotations
 
 # The format of what the importer writes. Bumped when the meaning of a stored field changes.
-IMPORTER_VERSION = "1.0.0"
+IMPORTER_VERSION = "1.0.1"
 
 KINDS: dict[str, str] = {
     "business": "Business memory",

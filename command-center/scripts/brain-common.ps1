@@ -297,7 +297,7 @@ function Get-TestCompose([string]$root, [switch]$Import) {
 function Assert-NotLiveFolder([string]$root) {
   # The test copy never runs from the live installation's folder.
   if (Test-Path -LiteralPath (Join-Path $root ".env")) {
-    Stop-Brain "this folder has a .env, so it is (or was copied from) the live installation: $root. Extract the new version into a new, empty folder (C:\InfiniteAI\v0.6.0-brain-test\InfiniteAI-CommandCenter) and run this from there"
+    Stop-Brain "this folder has a .env, so it is (or was copied from) the live installation: $root. Extract the new version into a new, empty folder (for example C:\InfiniteAI\v<version>-brain-test\InfiniteAI-CommandCenter, with the version you test) and run this from there"
   }
   $live = Get-LiveFolder
   if ($live -and (Test-SameFolder $live $root)) {

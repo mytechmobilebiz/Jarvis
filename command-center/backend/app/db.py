@@ -30,11 +30,21 @@ def get_engine() -> AsyncEngine:
             settings.database_url,
             pool_size=settings.db_pool_size,
             pool_pre_ping=True,
-            # Errors carry the statement, never the row values (which can be customer or imported text).
+            # Errors carry the statement without its bound parameters (which can be customer or imported text). They
+            # can still carry row values: PostgreSQL's DETAIL ("Failing row contains ...") is part of str(exc), so
+            # errors are logged with describe_error(), never str(exc).
             hide_parameters=True,
         )
         _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine
+
+
+def describe_error(exc: BaseException) -> str:
+    """A database error by its classes and SQLSTATE only: "IntegrityError (IntegrityError, SQLSTATE 23514)". Never
+    str(exc), which carries PostgreSQL's DETAIL with the row's values."""
+    orig = getattr(exc, "orig", None)
+    sqlstate = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None) or "unknown"
+    return "%s (%s, SQLSTATE %s)" % (exc.__class__.__name__, type(orig).__name__ if orig is not None else "-", sqlstate)
 
 
 def sessionmaker() -> async_sessionmaker[AsyncSession]:

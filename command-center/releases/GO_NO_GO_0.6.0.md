@@ -100,7 +100,8 @@ installed 0.5.0, JARVIS and your live database are untouched.
       the API log (confirmed in the sandbox with test data). Do not try it on
       0.6.0.
     - Workaround: delete and purge the promoted copy first.
-    - Fix: a 0.6.1 patch, to be released before the test-copy import.
+    - Fix: **released as 0.6.1** (2026-10-20): `releases/GO_NO_GO_0.6.1.md`
+      and `releases/UPGRADE_0.6.0_TO_0.6.1_WINDOWS.md`.
 13. Still open from earlier releases (RELEASE_NOTES_0.5.1.md section 5):
    - the gate cannot see an approval;
    - there has been no run on a real server;

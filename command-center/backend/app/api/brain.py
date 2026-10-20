@@ -27,7 +27,7 @@ from sqlalchemy import ColumnElement, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit, customer_settings
-from ..brain import KINDS, importer, review, store
+from ..brain import KINDS, archive, importer, review, store
 from ..brain.policy import RISK_FLAGS, SENSITIVE_AGENT, PersonScope, person_items, person_messages, person_sessions
 from ..config import Settings, get_settings
 from ..models import ArchiveMessage, ArchiveSession, ImportRun, MemoryConflict, MemoryItem, User, WorkflowDraft
@@ -334,14 +334,25 @@ async def restore_item(item_id: int, request: Request, caller: Caller = Depends(
     return {"item": review.item_out(item)}
 
 
+async def _no_import_running(session: AsyncSession) -> None:
+    """The import lock until the request's transaction ends; 409 while an import, a rollback or a rescan holds it (it
+    could write back what this request removes: a purged item from its source, a redacted version's old text)."""
+    if not await importer.try_xact_lock(session, importer.GLOBAL_LOCK):
+        raise HTTPException(409, "an import, rollback or rescan is running: try again when it has finished")
+
+
 @router.delete("/items/{item_id}/purge")
 async def purge_item(item_id: int, request: Request, caller: Caller = Depends(admin),
                      session: AsyncSession = Depends(get_db)) -> dict:
+    await _no_import_running(session)
     item = await _item(session, caller, item_id, lock=True)
     detail = {"item": item.id, "kind": item.kind, "agent": item.agent}
+    origin = {"origin": item.origin, "message": (item.flags or {}).get("message_id"),
+              "source_withheld": bool((item.flags or {}).get("source_withheld"))}
     result = await review.purge(session, item, actor=caller.name)
-    await audit.record(session, caller.name, "memory.purged", "memory_item", item_id, {**detail, **result},
-                       ip=client_ip(request))
+    answers = result.pop("answers_scrubbed")
+    await audit.record(session, caller.name, "memory.purged", "memory_item", item_id,
+                       {**detail, **result, **origin, "answers_scrubbed": answers}, ip=client_ip(request))
     await session.commit()
     return {"purged": item_id, **result}
 
@@ -349,12 +360,15 @@ async def purge_item(item_id: int, request: Request, caller: Caller = Depends(ad
 @router.post("/items/{item_id}/versions/{version}/redact")
 async def redact_version(item_id: int, version: int, request: Request, caller: Caller = Depends(admin),
                          session: AsyncSession = Depends(get_db)) -> dict:
+    await _no_import_running(session)
     item = await _item(session, caller, item_id, lock=True)
-    v = await review.redact_version(session, item, version)
-    if v is None:
+    redacted = await review.redact_version(session, item, version)
+    if redacted is None:
         raise HTTPException(404, "no such version")
+    v, answers = redacted
     await audit.record(session, caller.name, "memory.version_redacted", "memory_item", item.id,
-                       {"item": item.id, "version": version, "kind": item.kind}, ip=client_ip(request))
+                       {"item": item.id, "version": version, "kind": item.kind, "answers_scrubbed": answers},
+                       ip=client_ip(request))
     await session.commit()
     return {"version": review.version_out(v)}
 
@@ -445,23 +459,47 @@ async def get_session(session_id: int, caller: Caller = Depends(operator), sessi
             "hidden": everything - total}
 
 
+@router.get("/messages/{message_id}/promoted")
+async def promoted_copies(message_id: int, caller: Caller = Depends(admin),
+                          session: AsyncSession = Depends(get_db)) -> dict:
+    """How many memory items were promoted from a message (what withholding it empties), counted as the withhold
+    finds them; the items listed are those in the admin's own scope."""
+    message, _ = await _message(session, caller, message_id)
+    copies = await archive.promoted_copies(session, [message])
+    visible = set((await session.scalars(select(MemoryItem.id).where(
+        MemoryItem.id.in_([c.id for c in copies]), person_items(caller.scope, include_deleted=True)))).all())
+    return {"message": message.id, "count": len(copies),
+            "items": [{"id": c.id, "status": c.status, "deleted": c.deleted_at is not None}
+                      for c in copies if c.id in visible]}
+
+
 @router.post("/messages/{message_id}/withhold")
 async def withhold_message(message_id: int, request: Request, caller: Caller = Depends(admin),
                            session: AsyncSession = Depends(get_db)) -> dict:
+    await _no_import_running(session)  # it could write the message back with its text
     message, _ = await _message(session, caller, message_id, lock=True)
-    sess = await review.withhold_message(session, message, actor=caller.name)
+    done = await review.withhold_message(session, message, actor=caller.name, ip=client_ip(request))
+    sess = done.session
     assert sess is not None
+    copies = [c["item"] for c in done.copies]
     await audit.record(session, caller.name, "archive.message_withheld", "archive_message", message.id,
                        {"message": message.id, "session": sess.id, "imported_messages": sess.imported_messages,
-                        "withheld_messages": sess.withheld_messages}, ip=client_ip(request))
+                        "withheld_messages": sess.withheld_messages, "tombstone": done.tombstone_created,
+                        "copies": copies, "versions_blanked": done.versions_blanked,
+                        "rollback_copies_blanked": done.rollback_copies_blanked,
+                        "answers_scrubbed": done.answers_scrubbed, "via": "api"}, ip=client_ip(request))
     await session.commit()
-    return {"message": review.message_out(message), "session": review.session_out(sess)}
+    return {"message": review.message_out(message), "session": review.session_out(sess),
+            "copies": {"items": copies, "versions_blanked": done.versions_blanked},
+            "answers_scrubbed": done.answers_scrubbed, "rollback_copies_blanked": done.rollback_copies_blanked}
 
 
 @router.post("/messages/{message_id}/promote", status_code=201)
 async def promote_message(message_id: int, body: PromoteBody, request: Request, caller: Caller = Depends(operator),
                           session: AsyncSession = Depends(get_db)) -> dict:
-    message, sess = await _message(session, caller, message_id)
+    # Locked: a withhold of the same message (the route, or an import's update of the row) waits for this promote and
+    # then finds its copy, or this promote waits for the withhold and finds the message withheld.
+    message, sess = await _message(session, caller, message_id, lock=True)
     agent = sess.agent if body.agent is None else body.agent
     if agent == SENSITIVE_AGENT and not (caller.scope.is_admin and caller.scope.sensitive):
         raise HTTPException(403, "Credit Repair items are added by an admin with the sensitive-data permission")

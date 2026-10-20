@@ -53,8 +53,12 @@ If any target moved on since, the rollback refuses and lists the conflicts. Effe
 created itself are skipped: those rows are deleted anyway.
 
 Items promoted from archive messages (origin "promoted") have no import run and survive a rollback; when their
-message is deleted, their source_ref is marked "source removed". They are matched by flags.message_id, or by the
-source_ref "JARVIS session <source id> · message <position>".
+message is deleted, their source_ref is marked "source removed". They are matched by flags.message_id, by
+flags.message_source_key, or by the source_ref "JARVIS session <source id> · message <position>"
+(archive.promoted_ref). A message withheld by an import (every row it stores without its text: a restricted
+conversation, new or not, and a row an admin's tombstone names), a rescan, a rollback (a row put back without its text
+because an admin withheld it) or decisions-apply (also when no row of it is left) empties its promoted items as an
+admin's withhold does (archive.withhold_copies); such an emptied item is never changed by a conflict's revert.
 """
 
 from __future__ import annotations
@@ -101,7 +105,20 @@ from . import mapping
 from . import source as src
 from . import store
 from . import text as brain_text
-from .archive import WITHHELD_BY_ADMIN, WITHHELD_ROW, blank_before, recompute_session, scrub_before, withheld_later
+from .archive import (
+    WITHHELD_BY_ADMIN,
+    WITHHELD_ROW,
+    blank_before,
+    promoted_ref,
+    recompute_session,
+    scrub_before,
+    sweep_withheld_copies,
+    sweep_withheld_records,
+    withheld_copies,
+    withheld_later,
+    withheld_rollback_copies,
+    withhold_copies,
+)
 from .quotes import refresh_quotes, scrub_quotes
 from .policy import RISK_FLAGS, SENSITIVE_AGENT
 
@@ -639,6 +656,11 @@ class Processor:
         self._fake = 0
         self.tombstones: set[str] = set()
         self.admin_withheld: set[str] = set()  # messages an admin withheld: imported with no text
+        # Rows this batch withheld (for an admin, or by _reconcile; copies go too), inserted (nothing can quote them
+        # yet) and deleted (their quotes go): handled once per batch, by withhold_batch().
+        self.withheld_now: list[int] = []
+        self.inserted_now: set[int] = set()
+        self.deleted_now: list[int] = []
         self.site_urls: dict[str, int] = {}
         self.schedules: list[dict[str, Any]] = []
         self.new_hashes: dict[str, int] = {}
@@ -1209,6 +1231,8 @@ class Processor:
             # Newly restricted: no copy of its earlier text is kept for a rollback either (the source keeps it).
             await self.flush()
             await scrub_before(self.s, archive_session_id=sess_id)
+            self.withheld_now += (await self.s.scalars(select(ArchiveMessage.id).where(
+                ArchiveMessage.session_id == sess_id))).all()
         level = "general"
         if created or changed or source_changed:
             if self.write:
@@ -1263,6 +1287,9 @@ class Processor:
                 continue
             ids[p.m.key] = outcome
             changed += 1
+            self.inserted_now.add(outcome)
+            if withheld or p.m.key in self.admin_withheld:  # stored without its text: copies of an earlier row go too
+                self.withheld_now.append(outcome)
             self._count_message(p, withheld)
             self.record(p.m.key, "message", "withheld" if withheld else "imported", why if withheld else "",
                         "archive_messages", outcome)
@@ -1317,13 +1344,25 @@ class Processor:
         kept = {k: v for k, v in (row["flags"] or {}).items() if k.startswith("withheld")} if row["withheld"] else {}
         session_withheld, withheld = withheld, withheld or bool(row["withheld"])
         if row["source_fp"] == m.fp:
+            # Withheld now: the rollback copy keeps no text either (it is never stored to be scrubbed later).
             if withheld and not row["withheld"]:
                 values = {"content": "", "truncated": False, "tool_calls": [], "sensitivity": "restricted",
                           "withheld": True, "labels": [],
                           "flags": {**(row["flags"] or {}), "withheld": "restricted data in this conversation"}}
                 await self._update_row(row, values)
                 self.record(m.key, "message", "updated", "withheld: " + why, "archive_messages", row["id"],
-                            jsonable({k: row[k] for k in MESSAGE_FIELDS}))
+                            blank_before(jsonable({k: row[k] for k in MESSAGE_FIELDS})))
+                self.withheld_now.append(row["id"])
+                return 1
+            if m.key in self.admin_withheld and not row["withheld"]:
+                # An admin withheld it (its tombstone says so) but the row still has its text: an import that ran
+                # during the withhold, or a withhold decisions-apply could not make. The conversation stays as it is.
+                values = {"content": "", "truncated": False, "tool_calls": [], "withheld": True, "labels": [],
+                          "flags": {**(row["flags"] or {}), "withheld_by_admin": {"note": WITHHELD_BY_ADMIN}}}
+                await self._update_row(row, values)
+                self.record(m.key, "message", "updated", "withheld: an admin withheld it", "archive_messages",
+                            row["id"], blank_before(jsonable({k: row[k] for k in MESSAGE_FIELDS})))
+                self.withheld_now.append(row["id"])
                 return 1
             self.record(m.key, "message", "duplicate", "already imported", "archive_messages", row["id"])
             return 0
@@ -1332,6 +1371,7 @@ class Processor:
                       else "%s since an earlier import" % p.reason)
             if self.write:
                 await self.s.execute(delete(ArchiveMessage).where(ArchiveMessage.id == row["id"]))
+                self.deleted_now.append(row["id"])
             self.record(m.key, "message", "updated", reason, "archive_messages", row["id"],
                         {"deleted_row": jsonable(row)})
             return 1
@@ -1347,8 +1387,11 @@ class Processor:
         reason = ("compacted since an earlier import" if values["state"] == "compacted" and row["state"] == "live"
                   else "changed since an earlier import")
         self._count_message(p, withheld)
-        self.record(m.key, "message", "updated", reason, "archive_messages", row["id"],
-                    jsonable({k: row[k] for k in MESSAGE_FIELDS}))
+        before = jsonable({k: row[k] for k in MESSAGE_FIELDS})
+        if values["withheld"] and not row["withheld"]:  # withheld now (its session, or an admin's tombstone)
+            before = blank_before(before)
+            self.withheld_now.append(row["id"])
+        self.record(m.key, "message", "updated", reason, "archive_messages", row["id"], before)
         return 1
 
     async def _update_row(self, row: dict[str, Any], values: dict[str, Any]) -> None:
@@ -1417,8 +1460,23 @@ class Processor:
                 msgs, text_size = await self.do_session(sessions[i], i)
                 n_sessions, n_messages, n_text = n_sessions + 1, n_messages + msgs, n_text + text_size
                 i += 1
+            await self.withhold_batch()
             await self.flush()
             await checkpoint("sessions", i)
+
+    async def withhold_batch(self) -> None:
+        """What the batch's sessions stored without their text: the items promoted from those messages are emptied
+        and the answers quoting them, or an older row of them, lose those lines (archive.withhold_copies); the quotes
+        of the rows it deleted go too (quotes.scrub_quotes). Once per batch, right before its commit: the quote lock
+        that removing quotes takes is held only from here (recalls are queued again meanwhile), and the rows the batch
+        inserted are never looked for in quotes (nothing can have read them yet)."""
+        withheld, inserted, deleted = self.withheld_now, self.inserted_now, self.deleted_now
+        self.withheld_now, self.inserted_now, self.deleted_now = [], set(), []
+        if not self.write:
+            return
+        if withheld:
+            await withhold_copies(self.s, message_ids=withheld, fresh_ids=inserted, actor=self.actor, cause="import")
+        await scrub_quotes(self.s, message_ids=deleted)
 
     async def _orphans(self, start: int, checkpoint: Callable[[str, int], Awaitable[None]]) -> None:
         i = 0
@@ -1947,7 +2005,7 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
         raise Refused("conflict decisions of run %d changed rows that were changed again since: revert those by "
                       "hand first" % run_id, blocked)
 
-    reverted = await _revert_effects(session, run_id, conflicts, actor)
+    reverted, kept_copies = await _revert_effects(session, run_id, conflicts, actor)
     restored = {"archive_messages": 0, "archive_sessions": 0}
     touched: set[int] = set()
     created_sessions = set((await session.scalars(select(ArchiveSession.id).where(
@@ -1955,7 +2013,12 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
     updates = (await session.execute(select(ImportRecord.target_table, ImportRecord.target_id, ImportRecord.before)
                                      .where(ImportRecord.run_id == run_id, ImportRecord.action == "updated")
                                      .order_by(ImportRecord.id.desc()))).all()
-    # A withheld row stays withheld (whoever withheld it, and when): its text is never restored.
+    # A withheld row stays withheld (whoever withheld it, and when): its text is never restored. A row whose source
+    # key an admin withheld (brain_tombstones) comes back without its text too, keeping its sensitivity.
+    admin_withheld = set((await session.scalars(select(BrainTombstone.source_key).where(
+        BrainTombstone.reason == WITHHELD_BY_ADMIN))).all())
+    by_admin = {"withheld_by_admin": {"note": WITHHELD_BY_ADMIN}}
+    put_back_withheld: list[int] = []
     for table, target, before in updates:
         if table == "archive_messages" and before:
             if "deleted_row" in before:
@@ -1963,15 +2026,25 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
                 if withheld_later(await session.scalar(select(ArchiveSession.flags).where(
                         ArchiveSession.id == int(row["session_id"])))):
                     row.update(WITHHELD_ROW)
+                elif row.get("source_key") in admin_withheld and not row.get("withheld"):
+                    row.update(content="", tool_calls=[], labels=[], withheld=True, truncated=False,
+                               flags={**(row.get("flags") or {}), **by_admin})
                 await session.execute(insert(ArchiveMessage).values(**row))
                 touched.add(int(row["session_id"]))
+                if row.get("withheld"):
+                    put_back_withheld.append(int(row["id"]))
             else:
                 values = unjson(before)
                 current = (await session.execute(select(ArchiveMessage.session_id, ArchiveMessage.flags,
-                                                        ArchiveMessage.withheld, ArchiveMessage.sensitivity).where(
+                                                        ArchiveMessage.withheld, ArchiveMessage.sensitivity,
+                                                        ArchiveMessage.source_key).where(
                     ArchiveMessage.id == target))).first()
                 if current is not None and current.withheld:
                     values.update(WITHHELD_ROW, flags=current.flags, sensitivity=current.sensitivity)
+                elif current is not None and current.source_key in admin_withheld:
+                    values.update(WITHHELD_ROW, flags={**(current.flags or {}), **by_admin},
+                                  sensitivity=current.sensitivity)
+                    put_back_withheld.append(int(target))
                 await session.execute(update(ArchiveMessage).where(ArchiveMessage.id == target).values(**values))
                 if current is not None:
                     touched.add(current.session_id)
@@ -2008,6 +2081,8 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
     deleted["sessions"] = (await session.execute(delete(ArchiveSession).where(
         ArchiveSession.import_run_id == run_id))).rowcount
     session.expire_all()
+    # The rows put back without their text: their promoted items, rollback copies and quotes lose it as well.
+    await withhold_copies(session, message_ids=put_back_withheld, actor=actor, cause="rollback")
     for sid in sorted(touched):
         await recompute_session(session, sid)
     left = {t: int(await session.scalar(sql("SELECT count(*) FROM %s WHERE import_run_id = :r" % t), params) or 0)
@@ -2028,13 +2103,15 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
     result = {"run_id": run_id, "status": "rolled_back", "deleted": deleted, "restored": restored,
               "reverted": reverted, "recomputed_sessions": len(touched), "kept_converted_drafts": kept,
               "discarded_reviewed_items": len(reviewed) if discard_reviewed else 0,
-              "promoted_items_marked": promoted, "rolled_back_at": now().isoformat()}
+              "promoted_items_marked": promoted, "kept_withheld_copies": kept_copies,
+              "withheld_reinserted": len(put_back_withheld), "rolled_back_at": now().isoformat()}
     report["rollback"] = {k: v for k, v in result.items() if k not in ("run_id", "status")}
     await set_status(session, run_id, expected_status, status="rolled_back", rolled_back_at=now(),
                      rolled_back_by=actor[:200], report=report)
     await audit.record(session, actor, "brain.import_rolled_back", "import_run", run_id,
                        {"run": run_id, "deleted": deleted, "restored": restored, "reverted": reverted,
-                        "kept_converted_drafts": kept, "discarded_reviewed_items": result["discarded_reviewed_items"]})
+                        "kept_converted_drafts": kept, "discarded_reviewed_items": result["discarded_reviewed_items"],
+                        "kept_withheld_copies": kept_copies, "withheld_reinserted": len(put_back_withheld)})
     await session.flush()
     return result
 
@@ -2054,6 +2131,8 @@ async def _blocked_effects(session: AsyncSession, run_id: int, conflicts: list[M
             item = await session.get(MemoryItem, int(e["id"]))
             if item is None:
                 ok = False
+            elif (item.flags or {}).get("source_withheld"):
+                continue  # emptied since (its source message was withheld): the revert leaves it as it is
             elif item.import_run_id != run_id:
                 snap = await session.scalar(select(MemoryItemVersion).where(
                     MemoryItemVersion.item_id == item.id, MemoryItemVersion.version == int(e["version_before"])))
@@ -2094,13 +2173,20 @@ def text_risk_flags(item: MemoryItem, flags: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _revert_effects(session: AsyncSession, run_id: int, conflicts: list[MemoryConflict],
-                          actor: str) -> dict[str, int]:
+                          actor: str) -> tuple[dict[str, int], list[int]]:
+    """(what was reverted, the ids of items left as they are because their source message was withheld since: an
+    emptied item never gets its text or its status back)."""
     counts = {"items": 0, "sites": 0, "drafts": 0, "purged_items_reported": 0}
+    kept: list[int] = []
     for c in conflicts:
         effects = c.effects or {}
         for e in effects.get("items") or []:
             item = await session.get(MemoryItem, int(e["id"]))
             if item is None or item.import_run_id == run_id:
+                continue
+            if (item.flags or {}).get("source_withheld"):
+                if item.id not in kept:
+                    kept.append(item.id)
                 continue
             if e.get("rejected_source_sha256"):
                 flags = dict(item.flags or {})
@@ -2159,7 +2245,7 @@ async def _revert_effects(session: AsyncSession, run_id: int, conflicts: list[Me
             counts["drafts"] += 1
         counts["purged_items_reported"] += len(effects.get("purged_items") or [])
     await session.flush()
-    return counts
+    return counts, kept
 
 
 async def _mark_promoted(session: AsyncSession, run_id: int) -> int:
@@ -2171,7 +2257,7 @@ async def _mark_promoted(session: AsyncSession, run_id: int) -> int:
     if not gone:
         return 0
     ids = {g.id for g in gone}
-    refs = {"JARVIS session %s · message %s" % (g.source_session_id, g.position) for g in gone}
+    refs = {promoted_ref(g.source_session_id, g.position) for g in gone}
     marked = 0
     for item in (await session.scalars(select(MemoryItem).where(MemoryItem.origin == "promoted"))).all():
         message_id = (item.flags or {}).get("message_id")
@@ -2214,10 +2300,17 @@ async def status(run_id: int | None = None) -> dict[str, Any]:
         installed = bool(await s.scalar(sql("SELECT to_regclass('public.import_runs') IS NOT NULL")))
         migration = bool(await s.scalar(sql(
             "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0006_brain')")))
+        withhold = bool(await s.scalar(sql(
+            "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0007_brain_withhold')")))
         out: dict[str, Any] = {"importer_version": IMPORTER_VERSION, "installed": installed,
-                               "migration_0006_brain": migration, "runs": []}
+                               "migration_0006_brain": migration, "migration_0007_brain_withhold": withhold,
+                               "runs": []}
         if not installed:
             return out
+        # Promoted items whose message is withheld but which still hold text, and rollback copies of withheld messages
+        # that still hold it (0.6.0 left them under an older row id): the start-up check empties both.
+        out["withheld_copies_with_text"] = len(await withheld_copies(s))
+        out["withheld_rollback_copies_with_text"] = await withheld_rollback_copies(s)
         out["marked_interrupted"] = await mark_dead_runs(s)
         query = select(ImportRun).order_by(ImportRun.id.desc())
         query = query.where(ImportRun.id == run_id) if run_id is not None else query.limit(20)
@@ -2255,8 +2348,8 @@ def _reclean_json(value: Any) -> tuple[Any, bool, list[str]]:
 async def rescan(*, apply: bool, actor: str = DEFAULT_ACTOR) -> dict[str, Any]:
     """Re-clean every stored brain text and JSONB value with the current detectors (spec 2.1)."""
     counts = {"items_changed": 0, "items_withheld": 0, "versions_changed": 0, "messages_changed": 0,
-              "sessions_changed": 0, "sessions_withheld": 0, "conflicts_changed": 0, "drafts_changed": 0,
-              "records_changed": 0}
+              "sessions_changed": 0, "sessions_withheld": 0, "copies_withheld": 0, "copy_versions_blanked": 0,
+              "rollback_copies_blanked": 0, "conflicts_changed": 0, "drafts_changed": 0, "records_changed": 0}
     locks = await LockConnection.open()
     try:
         if not await locks.try_lock(GLOBAL_LOCK):
@@ -2267,6 +2360,8 @@ async def rescan(*, apply: bool, actor: str = DEFAULT_ACTOR) -> dict[str, Any]:
             withhold, touched = await _rescan_messages(s, counts, apply)
             await _rescan_sessions(s, counts, apply, withhold, touched)
             await _rescan_json(s, counts, apply)
+            # Last: removing quotes takes the quote lock until the commit (recalls are queued again meanwhile).
+            await _rescan_copies(s, counts, withhold, actor)
             if apply:
                 counts["answers_changed"] = await refresh_quotes(s)
                 await audit.record(s, actor, "brain.rescanned", "brain", "", dict(counts))
@@ -2415,6 +2510,20 @@ async def _rescan_sessions(s: AsyncSession, counts: dict[str, int], apply: bool,
             await recompute_session(s, sid)
 
 
+async def _rescan_copies(s: AsyncSession, counts: dict[str, int], withhold: set[int], actor: str) -> None:
+    """The items promoted from the messages of the sessions this rescan withholds are emptied, and so is every
+    promoted item whose message is withheld but which still holds text (archive.sweep_withheld_copies), and every
+    rollback copy of a withheld message that still holds it (archive.sweep_withheld_records). Without --yes this runs
+    too and is rolled back with the rest: the counts say what --yes would do."""
+    ids = list((await s.scalars(select(ArchiveMessage.id).where(ArchiveMessage.session_id.in_(withhold))))
+               .all()) if withhold else []
+    done = await withhold_copies(s, message_ids=ids, actor=actor, cause="rescan")
+    swept = await sweep_withheld_copies(s, actor=actor, cause="rescan")
+    counts["copies_withheld"] += len(done.copies) + len(swept)
+    counts["copy_versions_blanked"] += done.versions_blanked + sum(c["versions_blanked"] for c in swept)
+    counts["rollback_copies_blanked"] = done.rollback_copies_blanked + await sweep_withheld_records(s)
+
+
 async def _rescan_json(s: AsyncSession, counts: dict[str, int], apply: bool) -> None:
     for c in (await s.scalars(select(MemoryConflict))).all():
         changed = False
@@ -2470,7 +2579,7 @@ DECISION_STATUS = {"approved": "approve", "rejected": "reject", "archived": "arc
 PURGED_BY_ADMIN = "purged by an admin"  # review.purge()'s tombstone reason
 
 
-async def decisions_export(out_path: str) -> dict[str, Any]:
+async def decisions_export(out_path: str, *, actor: str = DEFAULT_ACTOR) -> dict[str, Any]:
     """Every imported item a person reviewed or edited in this database, keyed by source_key and by the content hash
     of the imported version (so production applies a decision only to the very same import).
 
@@ -2520,8 +2629,12 @@ async def decisions_export(out_path: str) -> dict[str, Any]:
         json.dump({"format": "jarvis-brain-decisions", "version": 3, "exported_at": now().isoformat(),
                    "importer_version": IMPORTER_VERSION, "decisions": decisions, "removals": removals}, f, indent=2,
                   sort_keys=True)
-    return {"exported": len(decisions), "skipped_without_source_key": skipped, "edits_not_exported": not_exported,
-            "removals": len(removals)}
+    out = {"exported": len(decisions), "skipped_without_source_key": skipped, "edits_not_exported": not_exported,
+           "removals": len(removals)}
+    async with sessionmaker()() as s:
+        await audit.record(s, actor, "brain.decisions_exported", "brain", "", dict(out))  # no path: it can name a user
+        await s.commit()
+    return out
 
 
 async def decisions_apply(in_path: str, run_id: int, *, actor: str, apply: bool) -> dict[str, Any]:
@@ -2550,6 +2663,9 @@ async def decisions_apply(in_path: str, run_id: int, *, actor: str, apply: bool)
                           "needing one")
         if await s.get(ImportRun, run_id) is None:
             raise Refused("there is no import run %d" % run_id)
+        # Not while an import, a rollback or a rescan runs (its rows could be written back over a withhold).
+        if not await try_xact_lock(s, GLOBAL_LOCK):
+            raise Refused("an import, rollback or rescan is running: try again when it has finished")
         for n, d in enumerate(data.get("decisions") or [], 1):
             reason = await _apply_decision(s, d, run_id, user, apply)
             if reason:
@@ -2578,36 +2694,67 @@ async def decisions_apply(in_path: str, run_id: int, *, actor: str, apply: bool)
             "removals_not_applied": removals_listed}
 
 
+async def _tombstone(s: AsyncSession, key: str, reason: str, user: User) -> bool:
+    """Whether the tombstone was there already; adds it otherwise."""
+    if await s.get(BrainTombstone, key) is not None:
+        return True
+    s.add(BrainTombstone(source_key=key, purged_at=now(), purged_by=user.email[:200], reason=reason))
+    await s.flush()
+    return False
+
+
 async def _apply_removal(s: AsyncSession, r: Any, user: User, review: Any) -> str:
     """One removal from the test copy: the tombstone, then the message withheld or the item purged if this database
-    holds it. Returns what happened, or why it was not applied."""
+    holds it, each audited as the API audits it (ids and counts). Returns what happened, or why it was not applied.
+
+    A withhold's tombstone is written in a savepoint of its own: when the withhold itself is refused here, the
+    tombstone stays, so the next import brings the message back withheld. A purge and its tombstone go together: a
+    refusal (the sensitive-data permission) leaves neither."""
     if not isinstance(r, dict) or not isinstance(r.get("source_key"), str) or not r["source_key"] or r.get(
             "reason") not in (WITHHELD_BY_ADMIN, PURGED_BY_ADMIN):
         return "not a removal"
     key, reason = r["source_key"], r["reason"]
     try:
-        async with s.begin_nested():
-            existed = await s.get(BrainTombstone, key) is not None
-            if not existed:
-                s.add(BrainTombstone(source_key=key, purged_at=now(), purged_by=user.email[:200], reason=reason))
-                await s.flush()
-            absent = "already done" if existed else "kept for later imports"
-            if reason == WITHHELD_BY_ADMIN:
+        if reason == WITHHELD_BY_ADMIN:
+            async with s.begin_nested():
+                existed = await _tombstone(s, key, reason, user)
+            async with s.begin_nested():
                 message = await s.scalar(select(ArchiveMessage).where(ArchiveMessage.source_key == key))
                 if message is None:
-                    return absent
+                    # No row of it here (not imported yet, or removed by a rollback or an import): its rollback
+                    # copies, and the items promoted from an earlier row of it, which kept the text, lose it.
+                    await withhold_copies(s, source_keys=[key], actor=user.email, cause="decisions-apply")
+                    return "already done" if existed else "kept for later imports"
                 if message.withheld:
                     return "already done"
-                await review.withhold_message(s, message, actor=user.email)
+                done = await review.withhold_message(s, message, actor=user.email, cause="decisions-apply")
+                sess = done.session
+                await audit.record(s, user.email, "archive.message_withheld", "archive_message", message.id, {
+                    "message": message.id, "session": message.session_id,
+                    "imported_messages": sess.imported_messages if sess is not None else None,
+                    "withheld_messages": sess.withheld_messages if sess is not None else None,
+                    "tombstone": not existed, "copies": [c["item"] for c in done.copies],
+                    "versions_blanked": done.versions_blanked,
+                    "rollback_copies_blanked": done.rollback_copies_blanked,
+                    "answers_scrubbed": done.answers_scrubbed, "via": "decisions-apply"})
                 return "withheld"
+        async with s.begin_nested():
+            existed = await _tombstone(s, key, reason, user)
             item = await s.scalar(select(MemoryItem).where(MemoryItem.source_key == key))
             if item is None:
-                return absent
+                return "already done" if existed else "kept for later imports"
             if SENSITIVE_AGENT == item.agent and not user.can_access_sensitive:
                 raise store.BrainError("needs the sensitive-data permission")
             if item.deleted_at is None:
                 await store.delete_item(s, item, actor=user.email, note=DECISION_NOTE)
-            await review.purge(s, item, actor=user.email)
+            flags = dict(item.flags or {})
+            detail = {"item": item.id, "kind": item.kind, "agent": item.agent}
+            origin = {"origin": item.origin, "message": flags.get("message_id"),
+                      "source_withheld": bool(flags.get("source_withheld"))}
+            result = await review.purge(s, item, actor=user.email)
+            answers = result.pop("answers_scrubbed")
+            await audit.record(s, user.email, "memory.purged", "memory_item", detail["item"],
+                               {**detail, **result, **origin, "answers_scrubbed": answers})
             return "purged"
     except store.BrainError as exc:
         return "%s on the test copy, refused here: %s" % (reason, exc)

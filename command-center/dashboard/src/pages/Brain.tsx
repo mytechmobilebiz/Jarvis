@@ -71,6 +71,38 @@ const HISTORY_LABELS = ["accomplishment", "problem", "decision"];
 
 export const WITHHELD_SESSION = "Withheld: this conversation contained restricted data; it is kept only in the JARVIS backup";
 export const QUARANTINED_TEXT = "Quarantined: held a secret (removed) or an instruction-like rule; an admin must review it.";
+export const SOURCE_WITHHELD_TEXT =
+  "Its source message was withheld: its text, and the text of every earlier version, was removed for good. It cannot be edited, approved or reopened; delete and purge it when it is no longer needed.";
+export const SOURCE_WITHHELD_PENDING_TEXT =
+  "Its source message was withheld, but its text is not removed yet: the next start of the Command Center, or a rescan, removes it. Until then only admins see it, and it cannot be edited, approved or reopened.";
+/** The title of a memory item emptied because its source message was withheld (backend policy.WITHHELD_COPY_TITLE). */
+export const WITHHELD_COPY_TITLE = "Withheld: the archived message it was promoted from was withheld";
+export const WITHHOLD_REMOVES =
+  "Its text, tool calls and labels are removed from the Command Center for good, and the conversation's summary, labels and counts are worked out again without it. Answers and reference notes that quote it are replaced with a removal note.";
+export const WITHHOLD_NOT_REACHED =
+  "Not reached: the JARVIS backup, Command Center backups, exports and decisions files already saved, the test copy, Docker container logs, and text already sent to an AI model or written into drafts. The conversation's title and related messages (a paired tool result, a summary, a copy in a branch) are kept; withhold them separately. This cannot be undone.";
+export const PURGE_PROMOTED_TEXT = "The conversation message it came from is kept; withhold that message to remove its text.";
+
+/** Emptied because its source message was withheld (backend store.emptied()): flagged and without text. A copy 0.6.0
+ * flagged can still hold its text until the next start or a rescan empties it. */
+export function emptiedCopy(item: Pick<MemoryItem, "flags" | "title" | "body" | "tags">): boolean {
+  return !!item.flags?.source_withheld && item.title === WITHHELD_COPY_TITLE && !item.body && !item.tags?.length;
+}
+
+/** What withholding a message removes, given how many memory items were promoted from it (null: they could not be
+ * counted, with the error). The API empties every copy whatever this says (GET /messages/{id}/promoted counts them). */
+export function withholdText(count: number | null, error?: string | null): string[] {
+  const lines = [WITHHOLD_REMOVES];
+  if (count === null) {
+    lines.push(`Could not count the promoted copies (${error || "no answer"}); any copies are emptied too.`);
+  } else if (count > 0) {
+    lines.push(
+      `${count.toLocaleString()} memory item(s) were promoted from this message. Their title, text, tags and review notes, and every earlier version, are removed too, including edits made since (copy any words of your own into a new item first). Each stays as an empty placeholder an admin can delete and purge.`,
+    );
+  }
+  lines.push(WITHHOLD_NOT_REACHED);
+  return lines;
+}
 export const CUSTOMER_PILL = "customer data (masked)";
 export const NO_IMPORT = "No JARVIS import yet";
 export const AI_OFF = "Off: memory never goes into AI prompts.";
@@ -233,7 +265,7 @@ export function CustomerPill() {
 }
 
 /** Flags that keep an item out of AI prompts and need an admin (backend policy.RISK_FLAGS). */
-const RISK_FLAGS = ["instruction_like", "approval_conflict", "secrets_redacted", "script", "plugin_or_hook", "custom", "owner_profile"];
+const RISK_FLAGS = ["instruction_like", "approval_conflict", "secrets_redacted", "script", "plugin_or_hook", "custom", "owner_profile", "source_withheld"];
 const FLAG_TEXT: Record<string, string | ((v: unknown) => string)> = {
   secrets_redacted: "secrets removed",
   instruction_like: "instruction-like",
@@ -252,11 +284,12 @@ const FLAG_TEXT: Record<string, string | ((v: unknown) => string)> = {
   rejected_source_sha256: "a changed version was rejected before",
   restricted: "restricted data removed",
   withheld: "withheld by an admin",
+  source_withheld: "source message withheld",
 };
 /** Flags that describe rather than warn (a skill's mapping, the masking shown by the customer pill). */
 const NOT_CHIPS = new Set([
   "skill", "staff", "capabilities", "compatibility", "note", "frontmatter", "language", "executable", "masked", "attribution", "reference_only",
-  "source_session", "text_kind", "message_id", "archive_session_id", "unknown_role",
+  "source_session", "text_kind", "message_id", "archive_session_id", "unknown_role", "message_source_key",
 ]);
 
 function secretTypes(v: unknown): string {
@@ -603,6 +636,10 @@ export function ItemModal({ id, onClose, onChanged }: { id: number; onClose: () 
 
   const locked = !!item && item.needs_admin && !isAdmin;
   const deleted = !!item?.deleted_at;
+  // Its source message was withheld: never edited, approved or reopened again (backend store.py). Emptied once its
+  // text is gone; a copy 0.6.0 flagged keeps it until the next start or a rescan.
+  const sourceWithheld = !!item?.flags?.source_withheld;
+  const emptied = !!item && emptiedCopy(item);
   return (
     <Modal title={item ? item.title : `Memory item #${id}`} onClose={onClose} wide>
       <ErrorNote error={detail.error} />
@@ -615,7 +652,13 @@ export function ItemModal({ id, onClose, onChanged }: { id: number; onClose: () 
             <span className="muted">· {agentTitle(item.agent)} · item #{item.id} · version {item.version}</span>
           </p>
           <FlagChips flags={item.flags} sensitivity={item.sensitivity} />
-          {item.status === "quarantined" ? <p className="alert alert-warn small br-quarantined">{QUARANTINED_TEXT}</p> : null}
+          {emptied ? (
+            <p className="alert alert-warn small br-quarantined">{SOURCE_WITHHELD_TEXT}</p>
+          ) : sourceWithheld ? (
+            <p className="alert alert-warn small br-quarantined">{SOURCE_WITHHELD_PENDING_TEXT}</p>
+          ) : item.status === "quarantined" ? (
+            <p className="alert alert-warn small br-quarantined">{QUARANTINED_TEXT}</p>
+          ) : null}
           {item.origin !== "manual" ? (
             <p className="muted small">Imported text is reference only: it never becomes an instruction, an approval or a setting, and code still decides every approval.</p>
           ) : null}
@@ -693,7 +736,7 @@ export function ItemModal({ id, onClose, onChanged }: { id: number; onClose: () 
             ) : null}
           </dl>
 
-          {canOperate && !deleted && !editing ? (
+          {canOperate && !deleted && !editing && !sourceWithheld ? (
             <section className="br-actions" aria-label="Review">
               <h3>Review</h3>
               {locked ? (
@@ -779,8 +822,9 @@ export function ItemModal({ id, onClose, onChanged }: { id: number; onClose: () 
             setPurgeError(null);
           }}
         >
-          This deletes item #{item.id}, every version of it and its conflicts permanently. A later import will not bring it back (its source is remembered as
-          purged). This cannot be undone.
+          This deletes item #{item.id}, every version of it and its conflicts permanently.{" "}
+          {item.origin === "promoted" ? PURGE_PROMOTED_TEXT : "A later import will not bring it back (its source is remembered as purged)."} This cannot be
+          undone.
         </TypedConfirm>
       ) : null}
     </Modal>
@@ -1033,6 +1077,9 @@ export function SessionModal({
   const [promote, setPromote] = useState<ArchiveMessage | null>(null);
   const [withhold, setWithhold] = useState<ArchiveMessage | null>(null);
   const [withholdError, setWithholdError] = useState<string | null>(null);
+  /** The memory items promoted from the message being withheld (undefined while they are counted). */
+  const [copies, setCopies] = useState<{ count: number | null; error: string | null } | undefined>(undefined);
+  const [withheldNote, setWithheldNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const d = detail.data;
   const current = d && d.offset === offset ? d : null;
@@ -1051,12 +1098,27 @@ export function SessionModal({
     }
   }, [focus, current, offset]);
 
+  // The withhold dialog says how many promoted memory items it empties before the admin confirms.
+  useEffect(() => {
+    setCopies(undefined);
+    if (!withhold) return;
+    let live = true;
+    api.get<{ count: number }>(`${BASE}/messages/${withhold.id}/promoted`).then(
+      (r) => live && setCopies({ count: r.count, error: null }),
+      (err) => live && setCopies({ count: null, error: errText(err) }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [withhold]);
+
   async function doWithhold(m: ArchiveMessage) {
     setBusy(true);
     setWithholdError(null);
     try {
-      await api.post(`${BASE}/messages/${m.id}/withhold`);
+      const r = await api.post<{ copies?: { items?: number[] } }>(`${BASE}/messages/${m.id}/withhold`);
       setWithhold(null);
+      setWithheldNote(`Withheld. ${(r?.copies?.items?.length ?? 0).toLocaleString()} promoted item(s) emptied.`);
       await detail.refresh();
       onChanged?.();
     } catch (err) {
@@ -1127,6 +1189,11 @@ export function SessionModal({
             </div>
           ) : null}
           {d && d.hidden > 0 ? <p className="br-hidden small">{hiddenText(d.hidden)}</p> : null}
+          {withheldNote ? (
+            <p className="alert alert-good small" role="status">
+              {withheldNote}
+            </p>
+          ) : null}
           {restricted ? null : !current ? (
             <p className="muted">Loading messages…</p>
           ) : current.messages.length ? (
@@ -1184,7 +1251,7 @@ export function SessionModal({
         <ConfirmModal
           title={`Withhold message #${withhold.position}`}
           action="Withhold this message"
-          busy={busy}
+          busy={busy || copies === undefined}
           error={withholdError}
           onConfirm={() => void doWithhold(withhold)}
           onCancel={() => {
@@ -1192,8 +1259,11 @@ export function SessionModal({
             setWithholdError(null);
           }}
         >
-          Its text is deleted from the Command Center's archive, and the conversation's summary, labels and counts are worked out again without it. The
-          text stays only in the JARVIS backup. This cannot be undone here.
+          {copies === undefined ? (
+            <p>Counting the memory items promoted from this message…</p>
+          ) : (
+            withholdText(copies.count, copies.error).map((line) => <p key={line}>{line}</p>)
+          )}
         </ConfirmModal>
       ) : null}
     </Modal>
@@ -2662,8 +2732,16 @@ function ReviewList({
                   <button
                     type="button"
                     className="btn small primary"
-                    disabled={locked || busy === it.id}
-                    title={locked ? `Needs an admin: ${adminReason(it)}` : undefined}
+                    disabled={locked || busy === it.id || !!it.flags?.source_withheld}
+                    title={
+                      it.flags?.source_withheld
+                        ? emptiedCopy(it)
+                          ? SOURCE_WITHHELD_TEXT
+                          : SOURCE_WITHHELD_PENDING_TEXT
+                        : locked
+                          ? `Needs an admin: ${adminReason(it)}`
+                          : undefined
+                    }
                     aria-label={`Approve ${it.title}`}
                     onClick={() => void decide(it, "approve")}
                   >

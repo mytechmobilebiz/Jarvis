@@ -75,10 +75,40 @@ async def ensure_schedules(extra: list[dict] | None = None) -> None:
                 session.add(Schedule(**spec))
 
 
+async def check_withheld_copies() -> None:
+    """Empties the memory items promoted from a withheld message that still hold text, blanks the rollback copies of
+    withheld messages that still hold it (what a database 0.6.0 left behind: its withholds kept them,
+    app/brain/archive.py), and removes the quotes of withheld, deleted or emptied sources that tasks kept
+    (quotes.refresh_quotes). Skipped, never waited for, while an import, a rollback or a rescan holds the lock, or a
+    task quoting the brain holds the quote lock (the next start, or rescan --yes, does it); a failure is logged by its
+    class only and never stops the start-up, and brain-import status keeps counting what is left
+    (withheld_copies_with_text)."""
+    from .brain import archive, importer, quotes
+
+    try:
+        async with session_scope() as session:
+            if not await importer.try_xact_lock(session, importer.GLOBAL_LOCK):
+                log.info("withheld-copies check skipped: an import, rollback or rescan is running")
+                return
+            # Held from here (the sweep and refresh_quotes take it again at once): never waits for a running recall.
+            if not await quotes.lock_quotes(session, wait=False):
+                log.info("withheld-copies check skipped: a task is writing a history answer")
+                return
+            emptied = await archive.sweep_withheld_copies(session, actor="system (start-up check)")
+            blanked = await archive.sweep_withheld_records(session)
+            scrubbed = await quotes.refresh_quotes(session)
+            if emptied or blanked or scrubbed:
+                log.info("withheld-copies check: %d promoted memory item(s) emptied or quarantined again, %d rollback "
+                         "copies blanked, %d task result(s) lost a quote", len(emptied), blanked, scrubbed)
+    except Exception as exc:  # noqa: BLE001 - never stops the start-up; the class only, never the text
+        log.warning("withheld-copies check failed: %s", exc.__class__.__name__)
+
+
 async def bootstrap(settings: Settings) -> None:
     applied = await run_migrations()
     if applied:
         log.info("applied migrations: %s", ", ".join(applied))
+    await check_withheld_copies()
     await ensure_admin(settings)
     from .credit_repair import store as credit_repair_store
 

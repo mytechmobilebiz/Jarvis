@@ -263,6 +263,17 @@ Otherwise it does all of this in one transaction:
 Items promoted from archive messages have `import_run_id = NULL` and survive a
 rollback. Their `source_ref` then reads "source removed".
 
+Since 0.6.1:
+- a row a rollback puts back (`deleted_row`, or an `updated` row) whose source key
+  has an admin's withhold tombstone comes back without its text, flagged
+  `withheld_by_admin`, keeping its sensitivity; its promoted items are emptied
+  (`archive.withhold_copies`, cause `rollback`). The result and the audit entry
+  add `withheld_reinserted` (a count);
+- an item emptied because its source message was withheld (`flags.source_withheld`)
+  never blocks a rollback and is never reverted by one: it keeps no text and stays
+  as it is. The result and the audit entry list it in `kept_withheld_copies`
+  (ids), outside `reverted`.
+
 `rollback_run(session, run_id, actor, discard_reviewed=False) -> dict` is also
 called by the API.
 
@@ -270,6 +281,12 @@ called by the API.
 current detectors:
 - changed items get a `redacted` version;
 - messages that are now restricted withhold their session;
+- the items promoted from the messages of a session it withholds are emptied, and
+  so is any promoted item whose message is withheld but which still holds text
+  (`archive.sweep_withheld_copies`), and every rollback copy of a withheld message
+  that still holds it (`archive.sweep_withheld_records`); counts `copies_withheld`,
+  `copy_versions_blanked` and `rollback_copies_blanked`, also in a dry run, whose
+  changes are rolled back;
 - older versions' text is re-cleaned too.
 
 It reports counts and writes the audit entry `brain.rescanned`.
@@ -297,13 +314,31 @@ It reports counts and writes the audit entry `brain.rescanned`.
   whole database, not only to `--run`. A removal the memory service refuses (a
   purge named by a conflict decision of an import not rolled back, a Credit
   Repair item without the sensitive-data permission) is listed, not applied.
+- Since 0.6.1: apply refuses while an import, a rollback or a rescan holds the
+  lock. A withhold's tombstone is written in a savepoint of its own, so a withhold
+  refused here still leaves it (the next import brings the message back
+  withheld); a message production holds no row of (not imported yet, or removed by
+  a rollback or an import) has its rollback copies under older row ids blanked and
+  the items promoted from an earlier row of it emptied (`memory.source_withheld`,
+  cause `decisions-apply`). Each withhold and purge is audited as the API audits it
+  (`archive.message_withheld` with `via: decisions-apply`, `memory.purged`), and
+  the withhold empties production's own promoted copies.
 - Not carried over (redo by hand): edits of customer and Credit Repair items,
   conflict decisions, workflow drafts reviewed or converted, promoted messages,
   redacted versions.
 
 **Audit actions:** `brain.import_started`, `brain.import_completed`,
 `brain.import_failed`, `brain.import_rolled_back`, `brain.rescanned`,
-`brain.decisions_applied` (actor `--actor`, default `importer (cli)`).
+`brain.decisions_exported`, `brain.decisions_applied` (actor `--actor`, default
+`importer (cli)`), and `memory.source_withheld` for each item a withhold empties.
+
+**`status`** also reports `migration_0007_brain_withhold`,
+`withheld_copies_with_text` (promoted items whose message is withheld but which
+still hold text) and `withheld_rollback_copies_with_text` (rollback copies of a
+withheld message that still hold it). `jarvis-import.ps1 -Target Production`
+requires the migrations in every mode, and a `withheld_copies_with_text` of 0 for
+`-Mode Import` and `-Mode Resume` only (the other modes print the count; `-Mode
+Rescan` empties them).
 
 ### 2.2 Sessions and messages
 
@@ -573,13 +608,14 @@ credential".
 | `POST /items/{id}/review` | operator; admin when `needs_admin` | `{decision: approve\|reject\|archive\|reopen, note?}` → `memory.<decision>` |
 | `DELETE /items/{id}` | admin | soft delete → `memory.deleted` |
 | `POST /items/{id}/restore` | admin | `memory.restored` |
-| `DELETE /items/{id}/purge` | admin | only deleted items. Deletes the item, its versions and its conflicts, and writes a tombstone for `source_key` → `memory.purged` |
-| `POST /items/{id}/versions/{version}/redact` | admin | Blanks that version's title and body (a `redacted` marker) → `memory.version_redacted` |
+| `DELETE /items/{id}/purge` | admin | 409 while an import, a rollback or a rescan holds the lock. Only deleted items. Deletes the item, its versions and its conflicts, and writes a tombstone for `source_key` (a promoted item has none: the audit entry is its record, and its message is withheld separately, never by a purge) → `memory.purged` with `origin`, `message`, `source_withheld` and `answers_scrubbed`. Refused while a decided conflict of an import not rolled back changed a site, a draft or another item (except an item that import created itself), or this item when it was not emptied |
+| `POST /items/{id}/versions/{version}/redact` | admin | 409 while an import, a rollback or a rescan holds the lock. Blanks that version's title and body (a `redacted` marker) → `memory.version_redacted` |
 | `GET /search` | user | `q, scope=all\|memory\|archive, kind, agent, staff, label, since, until, limit ≤ 50` → `{memory:{hits,total}, archive:{hits:[{message, session:{id,title,staff,agent,started_at}, excerpt}], total}, filtered}`. Archive results only for operators and admins. |
 | `GET /sessions` | operator | `q, staff, agent, origin, label, since, until, limit ≤ 200, offset` → `{sessions, total}` |
 | `GET /sessions/{id}` | operator | `limit ≤ 500, offset` → `{session, messages, total, hidden}`. `hidden` = messages outside the scope. |
-| `POST /messages/{id}/withhold` | admin | content `''`, `withheld`, flags note; session derived fields recomputed → `archive.message_withheld` |
-| `POST /messages/{id}/promote` | operator | `{kind, title, agent?}` → a pending item: origin `promoted`, `import_run_id NULL`, `source_ref = "JARVIS session <source id> · message <position>"`, sensitivity = the highest of the message and its session → `memory.promoted`. A withheld message → 400. |
+| `GET /messages/{id}/promoted` | admin | `{message, count, items:[{id, status, deleted}]}`: every memory item promoted from the message (what a withhold empties); `items` lists those in the admin's scope |
+| `POST /messages/{id}/withhold` | admin | 409 while an import, a rollback or a rescan holds the lock. Content `''`, `withheld`, flags note, admin tombstone; its rollback copies blanked (also under older row ids); every promoted item emptied (below); quotes removed; session derived fields recomputed → `{message, session, copies:{items, versions_blanked}, answers_scrubbed, rollback_copies_blanked}`, `archive.message_withheld`, `memory.source_withheld` per emptied item. All or nothing |
+| `POST /messages/{id}/promote` | operator | `{kind, title, agent?}` → a pending item: origin `promoted`, `import_run_id NULL`, `source_ref = "JARVIS session <source id> · message <position>"`, sensitivity = the highest of the message and its session → `memory.promoted`. A withheld message, or one with an admin's withhold tombstone → 400. The message's row is locked: a withhold of it waits for the promote and then empties the new item, or the promote waits for the withhold and is refused. |
 | `GET /conflicts` | operator | `status` → `{conflicts, total}` |
 | `POST /conflicts/{id}/resolve` | operator (`instruction`, `source_changed` and `workflow`: admin) | `{resolution, note?}` → `memory.conflict_resolved`; see the resolution rules below |
 | `GET /workflows`, `GET /workflows/{id}` | operator | `{drafts}` / `{draft, schedule_exists}` |
@@ -597,6 +633,73 @@ credential".
 notes)"` for every agent except Credit Repair, plus `"AI drafting prompts (when
 allowed)"` for SEO & Content, Social Media & Marketing and Email & Customer
 Communications, plus `"answers about JARVIS's history"` for the Supervisor.
+
+**Withholding a message that has promoted items (0.6.1).** An item promoted from a
+message (`origin = 'promoted'`) names it by `flags.message_id`, by
+`flags.message_source_key` (kept by a rollback and a new import, which change the
+row id), or, promoted by 0.6.0, by its `source_ref` while its `message_id` names no
+row (`archive.promoted_copies`). Whoever withholds the message (an admin,
+decisions-apply, an import, a rescan, a rollback) empties every such item, whatever
+its status and deleted ones too (`store.empty_withheld_copy`):
+- the item and every version lose their title, text, tags and notes (versions read
+  `[redacted]`), including an admin's own edits: no version can be told apart;
+- the item becomes `quarantined` with `flags.source_withheld`, titled "Withheld:
+  the archived message it was promoted from was withheld", as a new `redacted`
+  version; ids, provenance flags, `source_ref`, dates and deletion stay; the content
+  hash keeps no fingerprint of the text;
+- it is never approved, reopened or edited again (400); rejecting, archiving,
+  deleting, restoring and purging stay possible. `source_withheld` is a risk flag,
+  and agents never read such an item, nor a promoted item whose message is withheld
+  (`policy.withheld_source`, in `policy.agent_items`): its `message_id` row is
+  withheld, a row with its `message_source_key` is withheld or that key has an
+  admin's withhold tombstone, or (promoted by 0.6.0) its `message_id` names no row
+  and its `source_ref` names a withheld row (read out of the `source_ref`, so it is
+  found by index). Viewers and operators never list such an item while it still
+  holds text, nor one flagged `source_withheld` that still holds it (0.6.0 flagged
+  a copy quarantined at promotion and kept its text) (`policy.person_items`);
+  admins do, but never export it.
+
+An import empties them for every row it stores without its text: a row of a
+conversation that is, or becomes, restricted (also when the session is created again
+after a rollback) and a row an admin's tombstone names. It does so once per batch,
+right before the batch commits, and never looks for quotes of the rows the batch
+inserted (nothing can have read them yet); the rows it deletes (rewound or compacted
+since an earlier import) lose their quotes then too. A withhold also removes the
+quotes of the message's older rows (the rows its `import_records` name, never a
+`duplicate` record's).
+
+At start-up (`app/bootstrap.py`, logged by class only on a failure, never stopping
+the start) and in `rescan --yes`, `archive.sweep_withheld_copies` empties the
+promoted items a 0.6.0 database left with their text, `archive.sweep_withheld_records`
+blanks the rollback copies of withheld messages that 0.6.0 left under an older row id
+(it blanked them by row id only), and `quotes.refresh_quotes` removes the quotes of
+withheld, deleted or emptied sources that tasks kept; an emptied item that is
+approved or waiting for review again (0.6.0, after going back to it, allowed that) is
+quarantined again. The start-up check runs under the import lock and the quote lock,
+and is skipped, not waited for, while an import, a rollback or a rescan holds the
+one, or a task quoting the brain holds the other: if `brain-import status` still
+shows `withheld copies with text` above 0, start again or run `rescan --yes`.
+
+A task that quotes JARVIS Brain text into its result (the Supervisor's `recall`, a
+`summarize_request` that copies a recall's local-only answer, and reference notes)
+holds the quote lock (`quotes.lock_quotes`, advisory lock (7314002213, -1)) shared
+until it commits; every removal of quotes (`quotes.scrub_quotes`: a withhold, a
+purge, a redaction, a rollback, an import; and `refresh_quotes`) takes it
+exclusively first, and finds the quoting tasks through the index `tasks_quotes_idx`.
+So a quote is either committed before the removal looks for it, or read after the
+removal committed. Nothing holds it around a call to an AI model: a summary written
+by a model copies no brain text and takes no lock. A recall never waits for it: while
+a removal holds or waits for it, the worker queues the recall again (not an attempt,
+like a busy site). Reference notes never wait for it either: they are left out of
+that task. A rescan takes it only for its last pass (the copies, then the quotes).
+
+Database errors reach responses and logs by their classes and SQLSTATE only
+(`db.describe_error`): 409 for an `IntegrityError`, 500 otherwise, "the database
+refused this change; nothing was saved". The `command_center` role logs at
+`log_error_verbosity = terse` (`postgres/provision.sh`), and the app sends values only
+as bind parameters (which PostgreSQL leaves out of the log while
+`log_parameter_max_length_on_error` is 0, its default), so a refused row's values
+never reach the PostgreSQL log (`testing/brain-check.sh` checks both).
 
 **Conflict resolutions.** Only `open` conflicts can be resolved, and each resolution
 records `effects`.

@@ -19,12 +19,27 @@ from ..models import AppSetting, ArchiveMessage, ArchiveSession, MemoryItem, Mem
 from . import AGENTS, KINDS
 from . import text as brain_text
 from .quotes import scrub_quotes
-from .policy import PROMPT_KINDS, RISK_FLAGS, AgentPolicy, agent_archive, agent_items, agent_messages, policy_for
+from .policy import (
+    PROMPT_KINDS,
+    RISK_FLAGS,
+    WITHHELD_COPY_TITLE,
+    AgentPolicy,
+    agent_archive,
+    agent_items,
+    agent_messages,
+    policy_for,
+)
 
 MAX_TITLE = 300
 MAX_BODY = 200_000
 MAX_TAGS = 20
 AI_CONTEXT_KEY = "brain_ai_context"  # customer setting: "off" (default) or "approved_general"
+# A version whose text an admin redacted (review.redact_version) or empty_withheld_copy() removed.
+REDACTED_TITLE = "[redacted]"
+REDACTED_NOTE = "text redacted by an admin"
+# An item promoted from an archived message that was withheld since (empty_withheld_copy); WITHHELD_COPY_TITLE is in
+# policy.py, whose person_items() tells an emptied copy by it.
+WITHHELD_COPY_NOTE = "text removed: the archived message it was promoted from was withheld"
 
 # Words that say what kind of answer is wanted rather than what it is about.
 QUESTION_WORDS = {
@@ -200,6 +215,9 @@ async def edit_item(
     """A new version. An edited item needs approval again, whoever edits it."""
     if item.deleted_at is not None:
         raise BrainError("restore the item before editing it")
+    if (item.flags or {}).get("source_withheld"):
+        raise BrainError("its source message was withheld and its text removed for good: it cannot be edited; write a "
+                         "new item instead")
     new_title = item.title if title is None else title
     new_body = item.body if body is None else body
     flags = dict(item.flags or {})
@@ -242,6 +260,10 @@ async def review_item(session: AsyncSession, item: MemoryItem, *, decision: str,
         raise BrainError("decision must be approve, reject, archive or reopen")
     if item.deleted_at is not None:
         raise BrainError("this item is deleted")
+    if decision in ("approve", "reopen") and (item.flags or {}).get("source_withheld"):
+        # Rejecting or archiving it stays possible: conflict resolutions do that.
+        raise BrainError("its source message was withheld and its text removed for good: it cannot be approved or "
+                         "reopened; delete or purge it")
     status, change = REVIEW[decision]
     if item.status == status:
         raise BrainError(f"the item is already {status.replace('_', ' ')}")
@@ -277,6 +299,64 @@ async def quarantine_item(session: AsyncSession, item: MemoryItem, *, actor: str
         session.add(_snapshot(item, "quarantined", actor, note))
     await session.flush()
     return item
+
+
+def blank_version(v: MemoryItemVersion) -> bool:
+    """A version that holds no text any more: redacted, or emptied because its item's source was withheld."""
+    return v.body == "" and not v.tags and v.title in (REDACTED_TITLE, WITHHELD_COPY_TITLE)
+
+
+def emptied(item: MemoryItem) -> bool:
+    """An item empty_withheld_copy() emptied (its versions are checked separately)."""
+    return (bool((item.flags or {}).get("source_withheld")) and item.title == WITHHELD_COPY_TITLE and item.body == ""
+            and not item.tags)
+
+
+async def empty_withheld_copy(session: AsyncSession, item: MemoryItem, *, actor: str) -> dict[str, Any] | None:
+    """Removes for good the text of an item promoted from an archived message that is withheld now.
+
+    The item and every version (the current one too) lose their title, text, tags and notes: no version can be told
+    to hold the message's words rather than an admin's, so all of them go. Ids, version numbers, who changed what and
+    when, and the provenance (flags message_id, archive_session_id, message_source_key; source_ref) stay. The item
+    becomes a quarantined placeholder flagged source_withheld, which is never approved, reopened or edited again;
+    a deleted item stays deleted. The change is a new 'redacted' version, and the content hash keeps no fingerprint
+    of the withheld text. None when the item and its versions were empty already: nothing is written then."""
+    blanked = 0
+    for v in (await session.scalars(select(MemoryItemVersion).where(MemoryItemVersion.item_id == item.id))).all():
+        if blank_version(v):
+            continue
+        v.title, v.body, v.tags, v.note = REDACTED_TITLE, "", [], WITHHELD_COPY_NOTE
+        blanked += 1
+    if not blanked and emptied(item):
+        return None
+    status_before = item.status
+    item.title, item.body, item.tags, item.review_note = WITHHELD_COPY_TITLE, "", [], ""
+    item.flags = {**(item.flags or {}), "source_withheld": True}
+    item.status = "quarantined"
+    item.content_hash = brain_text.content_hash(item.kind, item.agent, WITHHELD_COPY_TITLE, "")
+    item.version += 1
+    item.updated_at, item.updated_by = now(), actor
+    session.add(_snapshot(item, "redacted", actor, WITHHELD_COPY_NOTE))
+    await session.flush()
+    return {"item": item.id, "kind": item.kind, "agent": item.agent, "status_before": status_before,
+            "deleted": item.deleted_at is not None, "version": item.version, "versions_blanked": blanked}
+
+
+async def quarantine_emptied_copy(session: AsyncSession, item: MemoryItem, *, actor: str) -> dict[str, Any] | None:
+    """An emptied copy (emptied()) that is approved or waiting for review again, which only 0.6.0 allowed (on a
+    database a 0.6.1 had emptied, after going back to 0.6.0): quarantined again, as empty_withheld_copy() leaves every
+    copy, with a new 'quarantined' version. A rejected or archived one stays so (an admin may reject or archive it).
+    None when there is nothing to do."""
+    if not emptied(item) or item.status not in ("approved", "pending_review"):
+        return None
+    status_before = item.status
+    item.status = "quarantined"
+    item.version += 1
+    item.updated_at, item.updated_by = now(), actor
+    session.add(_snapshot(item, "quarantined", actor, WITHHELD_COPY_NOTE))
+    await session.flush()
+    return {"item": item.id, "kind": item.kind, "agent": item.agent, "status_before": status_before,
+            "deleted": item.deleted_at is not None, "version": item.version, "versions_blanked": 0}
 
 
 async def restore_item(session: AsyncSession, item: MemoryItem, *, actor: str, note: str = "") -> MemoryItem:

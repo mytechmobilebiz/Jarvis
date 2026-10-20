@@ -14,6 +14,9 @@ SELECT format('CREATE ROLE %I LOGIN', r)
 ALTER ROLE command_center PASSWORD :'cc_pw';
 ALTER ROLE n8n PASSWORD :'n8n_pw';
 ALTER ROLE credit_repair PASSWORD :'cr_pw';
+-- The app's errors are logged without DETAIL: a refused row ("Failing row contains ...") can be imported or customer
+-- text. Superuser-only, so set here, for this role's sessions only.
+ALTER ROLE command_center SET log_error_verbosity = 'terse';
 SELECT format('CREATE DATABASE %I OWNER %I', d, d)
   FROM unnest(ARRAY['command_center', 'n8n', 'credit_repair']) AS d
  WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = d) \gexec
