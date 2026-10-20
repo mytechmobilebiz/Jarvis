@@ -43,7 +43,7 @@ if (-not $research.Listed) {
   if ($state) { Write-Host "Web research search service (SearXNG): switched off, but its container is still there ($state); run scripts\research.ps1 -Disable" -ForegroundColor Yellow }
   else { Write-Host "Web research search service (SearXNG): switched off" }
 } elseif (-not $research.Active) {
-  Write-Host "Web research search service (SearXNG): switched on, but SEARXNG_SECRET is missing (see above)" -ForegroundColor Yellow
+  Write-Host "Web research search service (SearXNG): switched on, but SEARXNG_SECRET is missing or shorter than 32 characters (see above)" -ForegroundColor Yellow
 } elseif (-not $state) {
   Write-Host "Web research search service (SearXNG): switched on, not running (start.ps1 starts it)" -ForegroundColor Yellow
 } else {

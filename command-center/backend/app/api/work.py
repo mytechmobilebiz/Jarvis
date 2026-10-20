@@ -124,8 +124,10 @@ async def screen_research(session: AsyncSession, settings: Settings, principal: 
     """A research run's parameters, screened before any task row holds them: the query in its canonical form, or a
     400 with the reason code (the attempt is recorded with the code only)."""
     validated = task_service.validate_params(agent, capability, params)
+    # release=True: a refusal made before the person lock gives this request's connection back before its row is
+    # written (the 400 below follows at once), so a burst of refusals never holds the API's connection pool.
     admission = await intake.admit(session, settings, agent=agent, capability=capability, params=validated,
-                                   trigger=trigger, person=principal.name)
+                                   trigger=trigger, person=principal.name, release=True)
     if admission.refused:
         raise HTTPException(400, admission.message())
     return admission.params or {}

@@ -396,6 +396,41 @@ async def test_a_burst_larger_than_the_connection_pool_stays_within_the_limit_an
     assert took < 4 * intake.LOCK_WAIT_SECONDS, took  # the pool's own timeout is 30 s
 
 
+async def test_a_research_off_burst_larger_than_the_pool_gives_each_connection_back_before_recording(app_client, caplog):
+    """Research off (the default): every request is refused before the person lock, and each refusal's row takes a
+    second pooled connection. An API request gives its own connection back first (intake.admit(release=True)), so
+    more refusals at once than the pool holds are all answered and recorded at once, and another API request sent
+    during the burst does not wait for the pool's 30 s timeout."""
+    pool = get_engine().pool
+    burst = pool.size() + pool._max_overflow + 5  # 25 with the defaults (10 + 10)
+    await add_people()
+    client = await as_(app_client, "operator")
+    caplog.set_level(logging.WARNING)
+
+    async def other_request() -> float:
+        await asyncio.sleep(0.2)
+        started = time.monotonic()
+        assert (await client.get("/api/tasks")).status_code == 200
+        return time.monotonic() - started
+
+    started = time.monotonic()
+    *answers, other = await asyncio.gather(*(client.post("/api/agents/supervisor/tasks", json={
+        "capability": "web_search", "params": {"query": f"small business ideas {n}"}}) for n in range(burst)),
+        other_request(), return_exceptions=True)
+    took = time.monotonic() - started
+    assert [a for a in [*answers, other] if isinstance(a, BaseException)] == []
+    assert [r.status_code for r in answers] == [400] * burst
+    assert [answer_code(r) for r in answers] == ["research_off"] * burst
+    async with session_scope() as s:
+        rows = await s.scalar(select(func.count()).select_from(ResearchQuery).where(
+            ResearchQuery.requested_by == OPERATOR, ResearchQuery.status == "refused_policy",
+            ResearchQuery.reason_code == "research_off"))
+    assert rows == burst
+    assert "not recorded" not in caplog.text
+    assert took < 5, took  # the pool's own timeout is 30 s
+    assert other < 5, other
+
+
 async def test_a_request_that_cannot_have_the_persons_lock_in_time_is_refused_unscreened(app_client, settings,
                                                                                        monkeypatch):
     await add_people()

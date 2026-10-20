@@ -18,8 +18,12 @@ and the first time each day an audit entry (research.personal_record_limit: the 
 admins. Apart from that, after as many refusals as their daily search cap, nothing more of theirs is screened that day.
 One person's queries are counted and screened one at a time (lock_person), here and in the gateway: requests sent at the
 same moment cannot all read a count below the limit. A request that cannot have the lock within LOCK_WAIT_SECONDS is
-refused unscreened (refused_budget, busy), so a burst of one person's requests never holds the connection pool. A screen
-refusal whose row could not be recorded answers screen_error, never its own code: it would not be counted.
+refused unscreened (refused_budget, busy): requests waiting for the lock hold their connections at most that long, so a
+refusal made under the lock gets the second connection its row needs. A refusal made before the lock (research off,
+the edition, the agent's policy, settings that cannot be read) also takes a second connection for its row: in the API
+(release=True) the request gives its own connection back first, so a burst of such refusals never holds the API's
+connection pool; the Supervisor's planning (in the worker) keeps its transaction (release=False). A screen refusal whose
+row could not be recorded answers screen_error, never its own code: it would not be counted.
 
 Any error refuses (screen_error, policy_error): nothing that could not be checked is queued.
 """
@@ -124,9 +128,12 @@ class Admission:
 
 
 async def admit(session: AsyncSession, settings: Settings, *, agent: str, capability: str, params: SearchParams,
-                trigger: str, person: str, request_id: int | None = None) -> Admission:
+                trigger: str, person: str, request_id: int | None = None, release: bool = False) -> Admission:
     """Checks one research query: params are the capability's parameters, already validated by its own model.
-    A refusal is recorded (codes only) in its own transaction."""
+    A refusal is recorded (codes only) in its own transaction. release=True (an API request, which answers 400 right
+    after a refusal): a refusal made before the person lock first rolls the session back, so the request's connection
+    goes back to the pool before the row takes a second one. A refusal made under the lock (too_many_blocked, a screen
+    refusal) is recorded while the lock is held (refused_today() must see it), whatever release says."""
     attempt = store.Attempt(agent=agent, capability=capability, request_id=request_id, requested_by=person,
                             trigger_source=trigger)
     mode = "off"
@@ -143,8 +150,12 @@ async def admit(session: AsyncSession, settings: Settings, *, agent: str, capabi
         await lock_person(session, person)  # held until the caller's transaction ends, after a refusal's own row
         blocked, named = await refused_today(session, person)
     except policy.PolicyRefused as exc:
+        if release:
+            await _give_back(session)
         return await _refuse(attempt, "refused_policy", exc.code, mode)
     except policy.SettingsUnreadable:
+        if release:
+            await _give_back(session)
         return await _refuse(attempt, "refused_policy", "settings_unreadable", "off")
     except PersonBusy:
         # Nothing was screened. Not recorded: the row would take a second pooled connection while this request holds
@@ -153,6 +164,8 @@ async def admit(session: AsyncSession, settings: Settings, *, agent: str, capabi
         return Admission(status="refused_budget", code="busy")
     except Exception as exc:  # noqa: BLE001 - a policy that cannot be read refuses
         log.warning("research intake policy check failed (%s)", exc.__class__.__name__)
+        if release:
+            await _give_back(session)
         return await _refuse(attempt, "refused_policy", "policy_error", mode)
     if named >= PERSONAL_RECORD_DAILY:
         await note_limit(person, named)
@@ -217,6 +230,15 @@ async def note_limit(person: str, count: int) -> None:
                                    {"person": person, "count": count})
     except Exception as exc:  # noqa: BLE001 - the refusal stands without its entry
         log.warning("research refusal limit not audited (%s)", exc.__class__.__name__)
+
+
+async def _give_back(session: AsyncSession) -> None:
+    """Ends the caller's transaction (admit(release=True)), so its connection goes back to the pool before a refusal's
+    row takes another. A rollback that fails is logged; the refusal stands."""
+    try:
+        await session.rollback()
+    except Exception as exc:  # noqa: BLE001 - the refusal stands
+        log.warning("research intake transaction not rolled back (%s)", exc.__class__.__name__)
 
 
 async def _refuse(attempt: store.Attempt, status: str, code: str, mode: str, *, ref: str = "") -> Admission:

@@ -178,9 +178,10 @@ Each step is your decision; stop after any of them. The details are in
    stays) and creates `SEARXNG_SECRET` (never printed). It downloads the
    SearXNG image once (about 100 MB, 383 MB on disk) and recreates the
    worker; the other services keep running. Agents still cannot search.
-   It refuses a read-only `.env`, and replaces `.env` in one step: if the
-   write fails (a lock held by antivirus or sync software, a full disk), it
-   stops with `.env` unchanged (exit 1) and starts nothing.
+   It refuses a read-only `.env`, and replaces `.env` in one step with the
+   same permissions: if the write fails (a lock held by antivirus or sync
+   software, a full disk), it stops with `.env` unchanged (exit 1) and
+   starts nothing.
 3. **The real connectivity test** (not run yet): live mode with the typed
    confirmation `ENABLE LIVE RESEARCH`, one fixed search ("Wikipedia"), then
    back to mock or off unless you decide otherwise.

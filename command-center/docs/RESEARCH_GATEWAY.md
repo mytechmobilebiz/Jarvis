@@ -154,10 +154,13 @@ visible: after 5 `personal_record` refusals in one day (UTC), nothing more of th
 day an audit entry `research.personal_record_limit` names the person and the count. One person's queries are counted
 and screened one at a time, so searches sent at the same moment cannot get past the 5. A search that waits more than
 3 seconds for that person's turn is refused without being screened (`refused_budget`, `busy`; recorded by the gateway,
-not at intake, where the row would need a second database connection while others wait), so a burst never holds the
-API's connection pool; and a refusal whose row could not be written is answered `screen_error`, never with its own
-code, because it would not be counted. Apart from that, a person's refusals per day are limited to their daily search
-cap.
+not at intake, where the row would need a second database connection while others wait), so the searches waiting for
+a turn hold their database connections for at most 3 seconds. A search refused before its turn (research switched
+off, the edition, the agent's policy, settings that cannot be read) is recorded on a second connection too: the API
+gives the request's own connection back first, so a burst of such refusals never holds the API's connection pool
+either (a step the Supervisor plans is checked in the worker, in the plan's own transaction). A refusal whose row could
+not be written is answered `screen_error`, never with its own code, because it would not be counted. Apart from that,
+a person's refusals per day are limited to their daily search cap.
 
 Names are matched as stored: a lead's two name words anywhere in a query refuse it, so a lead with a common name, or
 one planted through the public lead form, refuses more searches (it fails closed, and the Blocked list shows the lead to
@@ -287,12 +290,18 @@ below. The upgrade tests from the packaged 0.6.1 are recorded with the package (
   refused with nothing changed. For `-Enable`, `-RotateSecret` and `-Disable`, run as an ordinary user: a read-only
   `.env` is refused (exit 2) with nothing copied, changed or started; when the new text cannot be written, or cannot
   be swapped in, each exits 1 with `.env` byte for byte as it was, no temporary file left, no "switched on", "new
-  value" or "switched off" line and no `start.ps1`. A short secret gets the hint `-RotateSecret, then -Enable` from
-  `preflight.ps1`, the Compose helper and `-Status`; a missing one gets `-Enable`.
+  value" or "switched off" line and no `start.ps1`. Outside Windows (`pwsh` as an ordinary user, umask 022), a `.env`
+  with mode 0600 is still 0600 after each of them, and so are its `.env.before-research-*` copies (the new `.env` used
+  to take the temporary file's mode, 0644). A short secret gets the hint `-RotateSecret, then -Enable` from
+  `preflight.ps1`, the Compose helper and `-Status`, and `status.ps1`'s SearXNG line says the secret is "missing or
+  shorter than 32 characters"; a missing one gets `-Enable`.
 - **Concurrent searches by one person** (the test suite): 25 at once, more than the API's database connection pool
   (10 + 10), with research in mock mode and a lead's name: at most 5 `personal_record` answers, each recorded, the
   rest `too_many_blocked` or `busy`, no pool timeout, done in about 4 seconds (before: 6 `personal_record` answers, 5
-  pool timeouts and an unrecorded refusal after 34 seconds).
+  pool timeouts and an unrecorded refusal after 34 seconds). With research switched off (the default), 25 at once are
+  all answered `research_off` and recorded, and another API request sent during them is answered at once, all within
+  a second (before: after 30 seconds, 5 pool timeouts, refusals not recorded, and the other request failed with a pool
+  timeout too).
 - **db-init's volume** (Compose projects of their own, removed afterwards): with this `docker-compose.yml`, `up`,
   `up --force-recreate` and `down --volumes` leave no anonymous volume. An installation whose `db-init` got one under
   0.6.x keeps it mounted after the upgrade (Compose hands it on); `uninstall.ps1 -DeleteData` and `brain-test.ps1

@@ -10,7 +10,8 @@
 # stops, recreates, rebuilds, retags or changes it, and fails if its fingerprint (images, containers with their start
 # times, volumes, networks) changes at any point. cc-test-pg and decoy-* containers are watched the same way. The
 # test copy is the project cc-brain-test; everything it creates is removed at the end (also after a failure). An
-# anonymous volume (no project label) that appeared during the run and is still there counts as left behind.
+# anonymous volume (no project label) that a cc-brain-test container mounted and that is still there counts as left
+# behind; one made by anything else on this machine during the run (another check, a "docker run -v") does not.
 #
 # Now: every .ps1 parses (ASCII only); brain-precheck.ps1; refusals before anything runs; brain-test.ps1 Start (build
 # with the test copy's own image names, health, versions against VERSION, instance_label and the cookie name); the
@@ -77,7 +78,15 @@ anon_of() {  # the anonymous volumes mounted by these containers
   docker inspect --format '{{range .Mounts}}{{.Type}} {{.Name}}{{println}}{{end}}' $1 | awk '$1 == "volume" {print $2}' \
     | LC_ALL=C sort -u | LC_ALL=C comm -12 - <(anonymous)
 }
-ANON0=$(anonymous)
+# The test copy's own anonymous volumes: recorded before and after every step (run_step) from the containers that carry
+# its project label, so one its containers mounted is still known after they are gone.
+record_anon() {
+  anon_of "$(docker ps -aq --filter "label=com.docker.compose.project=$TEST_PROJECT")" >> "$WORK/test-anon.txt" 2> /dev/null || true
+}
+test_anon_left() {  # those of them that still exist
+  [ -f "$WORK/test-anon.txt" ] || return 0
+  LC_ALL=C sort -u "$WORK/test-anon.txt" | while read -r v; do docker volume inspect "$v" > /dev/null 2>&1 && echo "$v"; done || true
+}
 
 # ------------------------------------------------------------------------------------------------ the live installation
 fingerprint() {  # the scripts' fingerprint (6.4) plus networks, and the containers other engineers use
@@ -150,7 +159,9 @@ psh() {  # answer for Read-Host, folder to run in, script, then its parameters; 
 exit_of() { sed -n 's/^exit=\([0-9]*\)\r\{0,1\}$/\1/p' <<<"$1" | tail -1; }
 run_step() {  # name, then psh arguments; output in $LOGS/<name>.log and in $OUT
   local name=$1; shift
+  record_anon
   OUT=$(psh "$@" || true)
+  record_anon
   echo "$OUT" > "$LOGS/$name.log"
   CODE=$(exit_of "$OUT")
 }
@@ -173,10 +184,10 @@ wait_health() {
   done
   return 1
 }
-test_left() {  # containers, volumes (also anonymous ones new since the start), networks and images of the test copy
+test_left() {  # containers, volumes (also the anonymous ones its containers mounted), networks and images of the test copy
   echo "$(docker ps -aq --filter "label=com.docker.compose.project=$TEST_PROJECT" | wc -l)" \
        "$(( $(docker volume ls -q --filter "label=com.docker.compose.project=$TEST_PROJECT" | wc -l) + \
-            $(LC_ALL=C comm -13 <(echo "$ANON0") <(anonymous) | grep -c . || true) ))" \
+            $(test_anon_left | grep -c . || true) ))" \
        "$(docker network ls -q --filter "label=com.docker.compose.project=$TEST_PROJECT" | wc -l)" \
        "$(docker images -q --filter 'reference=infinite-command-center-brain-test/*' | wc -l)"
 }
@@ -844,6 +855,7 @@ step_seed
 step_remove
 step_precheck_again
 [ "$(fingerprint)" = "$FP0" ] && pass "live installation (and cc-test-pg, decoy-*) unchanged from start to end" || fail "LIVE INSTALLATION CHANGED"
-new_anon=$(LC_ALL=C comm -13 <(echo "$ANON0") <(anonymous))
-[ -z "$new_anon" ] && pass "no anonymous volume left behind" || fail "anonymous volumes left behind: $(echo $new_anon)"
+new_anon=$(test_anon_left)
+[ -z "$new_anon" ] && pass "no anonymous volume of the test copy left behind" \
+  || fail "anonymous volumes of the test copy left behind: $(echo $new_anon)"
 exit $FAILED

@@ -214,7 +214,10 @@ def test_research_enable_creates_a_missing_secret_after_the_env_copy_and_never_p
     # Each change is one write, after a copy of .env.
     writer = text[text.index("function Write-EnvLines"):text.index("function Set-ComposeFile")]
     assert writer.index("Copy-Item -LiteralPath $envFile") < writer.index("WriteAllText")
-    assert writer.count("WriteAllText") == 1
+    # The temporary file is written once (outside Windows through a stream created with .env's mode) and replaces
+    # .env once.
+    assert writer.count("WriteAllText($tmp, ") == writer.count("WriteAllText") == 1
+    assert writer.count("[IO.File]::Replace(") == 1
     for name in ("Set-ComposeFile", "Set-Secret"):
         body = text[text.index(f"function {name}"):]
         body = body[:body.index("\n}\n")]
@@ -336,6 +339,30 @@ def test_research_ps1_replaces_env_in_one_step_and_stops_when_it_cannot():
             assert body.index("Assert-EnvWritable") < body.index(change), (action, change)
 
 
+def test_research_ps1_keeps_the_mode_of_env_outside_windows():
+    """Outside Windows File.Replace is a rename: the new .env took the temporary file's mode (the umask, often 0644)
+    instead of .env's (0600 from init-env.sh), and every secret in it became readable by everyone. The temporary file
+    is created with .env's mode (CreateNew, UnixCreateMode): never readable by others, not even while still empty (a
+    descriptor opened then reads the secrets written afterwards). Windows PowerShell 5.1 (PSEdition Desktop) and
+    Windows never run that branch (Windows keeps .env's permissions itself)."""
+    text = script("research.ps1")
+    writer = text[text.index("function Write-EnvLines"):text.index("function Set-ComposeFile")]
+    branch = writer.index('if ($PSVersionTable.PSEdition -eq "Core" -and -not $IsWindows) {')
+    stale = writer.index("if (Test-Path -LiteralPath $tmp -PathType Leaf) { Remove-Item -LiteralPath $tmp -Force "
+                         "-ErrorAction Stop }")
+    mode = writer.index("$mode = [IO.File]::GetUnixFileMode($envFile)")
+    create = writer.index("$options.Mode = [IO.FileMode]::CreateNew")
+    unix = writer.index("$options.UnixCreateMode = $mode")
+    opened = writer.index("$stream = New-Object IO.FileStream -ArgumentList $tmp, $options")
+    written = writer.index("$stream.Write($bytes, 0, $bytes.Length)")
+    chmod = writer.index("[IO.File]::SetUnixFileMode($tmp, $mode)")
+    other = writer.index("} else {\n      [IO.File]::WriteAllText($tmp, $written, $utf8)")
+    swap = writer.index("[IO.File]::Replace($tmp, $envFile, ")
+    assert (writer.index("try {") < branch < stale < mode < create < unix < opened < written < chmod < other < swap
+            < writer.index("} catch {"))
+    assert '[IO.File]::WriteAllText($tmp, "")' not in writer  # no file under the umask's mode, not even empty
+
+
 def test_a_short_secret_is_sent_to_rotate_secret_and_a_missing_one_to_enable():
     """-Enable adds a missing SEARXNG_SECRET but refuses a short one, so each hint names the step that works:
     -RotateSecret, then -Enable (which recreates the worker on the research network)."""
@@ -353,6 +380,11 @@ def test_a_short_secret_is_sent_to_rotate_secret_and_a_missing_one_to_enable():
            "-RotateSecret, then -Enable" in status
     rotate = research[research.index("if ($RotateSecret) {"):research.index("if ($Enable) {")]
     assert "$wasShort" in rotate and "research.ps1 -Enable to reconnect it" in rotate
+    # status.ps1's own line under the helper's advice says both cases, never "missing" for a short secret.
+    status_ps1 = script("status.ps1")
+    assert ("Web research search service (SearXNG): switched on, but SEARXNG_SECRET is missing or shorter than 32 "
+            "characters (see above)") in status_ps1
+    assert "SEARXNG_SECRET is missing (see above)" not in status_ps1
 
 
 def test_the_brain_test_copy_switches_research_off_and_tolerates_a_searxng_restart():

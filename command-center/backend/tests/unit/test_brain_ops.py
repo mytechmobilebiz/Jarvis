@@ -148,6 +148,27 @@ def test_db_init_gets_no_anonymous_volume_and_remove_clears_one_handed_on():
     assert "label=com.docker.volume.anonymous" in helper and "{{range .Mounts}}{{.Type}} {{.Name}}{{println}}{{end}}" in helper
 
 
+def test_brain_check_counts_only_the_test_copys_own_anonymous_volumes():
+    """brain-check.sh counted every anonymous volume made on the machine during the run as the test copy's: another
+    tree's check or any "docker run -v" failed Remove and the final check. Only the volumes that cc-brain-test
+    containers mounted, recorded before and after every step, count; those still there are left behind."""
+    text = (ROOT / "testing" / "brain-check.sh").read_text()
+    assert "ANON0" not in text and "comm -13" not in text
+    record = text[text.index("record_anon() {"):text.index("test_anon_left() {")]
+    assert 'anon_of "$(docker ps -aq --filter "label=com.docker.compose.project=$TEST_PROJECT")"' in record
+    assert '>> "$WORK/test-anon.txt"' in record
+    left = text[text.index("test_anon_left() {"):]
+    left = left[:left.index("\n}\n")]
+    assert 'sort -u "$WORK/test-anon.txt"' in left and 'docker volume inspect "$v"' in left
+    run_step = text[text.index("run_step() {"):]
+    run_step = run_step[:run_step.index("\n}\n")]
+    assert run_step.index("record_anon") < run_step.index('OUT=$(psh "$@"') < run_step.rindex("record_anon")
+    test_left = text[text.index("test_left() {"):]
+    test_left = test_left[:test_left.index("\n}\n")]
+    assert "$(test_anon_left | grep -c . || true)" in test_left and "anonymous)" not in test_left
+    assert text[text.rindex("new_anon="):].startswith("new_anon=$(test_anon_left)\n")
+
+
 def test_typed_confirmations():
     assert 'Confirm-Typed "REMOVE TEST COPY"' in script("brain-test.ps1")
     jarvis = script("jarvis-import.ps1")

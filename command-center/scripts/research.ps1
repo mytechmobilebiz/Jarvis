@@ -85,7 +85,31 @@ function Write-EnvLines([scriptblock]$change, [string[]]$append = @()) {
     }
     foreach ($extra in $append) { if ($extra) { $out.Add($extra) } }
     $written = ($out -join "`n") + "`n"
-    [IO.File]::WriteAllText($tmp, $written, (New-Object System.Text.UTF8Encoding $false))
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    if ($PSVersionTable.PSEdition -eq "Core" -and -not $IsWindows) {
+      # Outside Windows File.Replace is a rename: the new .env gets the temporary file's mode. So the temporary file
+      # is created with .env's mode, never the umask's (often readable by everyone), not even for a moment: a program
+      # that opened it then could read the secrets written afterwards. PowerShell 7.3 or later; an older one stops
+      # here, .env unchanged. Windows keeps .env's permissions itself.
+      if (Test-Path -LiteralPath $tmp -PathType Leaf) { Remove-Item -LiteralPath $tmp -Force -ErrorAction Stop }
+      $mode = [IO.File]::GetUnixFileMode($envFile)
+      $options = New-Object IO.FileStreamOptions
+      $options.Mode = [IO.FileMode]::CreateNew
+      $options.Access = [IO.FileAccess]::Write
+      $options.UnixCreateMode = $mode
+      $stream = New-Object IO.FileStream -ArgumentList $tmp, $options
+      try { $bytes = $utf8.GetBytes($written); $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+      [IO.File]::SetUnixFileMode($tmp, $mode)  # the umask may have taken bits off
+      # And .env's owner: run with sudo on the user's .env, the new .env would be root's, unreadable by its user.
+      $owner = (Get-Item -LiteralPath $envFile -Force).UnixStat
+      $made = (Get-Item -LiteralPath $tmp -Force).UnixStat
+      if ($owner.UserId -ne $made.UserId -or $owner.GroupId -ne $made.GroupId) {
+        & chown -- "$($owner.UserId):$($owner.GroupId)" $tmp
+        if ($LASTEXITCODE -ne 0) { throw (New-Object System.UnauthorizedAccessException "the owner of .env could not be kept") }
+      }
+    } else {
+      [IO.File]::WriteAllText($tmp, $written, $utf8)
+    }
     # No backup file (the copy above is the backup). PowerShell would pass $null as "", which File.Replace refuses.
     [IO.File]::Replace($tmp, $envFile, [System.Management.Automation.Language.NullString]::Value)
   } catch {
