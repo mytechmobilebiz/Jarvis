@@ -6,8 +6,10 @@ run in the cloud sandbox (PowerShell 7.4, against a running Command Center), exc
 download itself and the Windows-only commands (`Get-PSDrive C`, `Expand-Archive`).
 
 **What this upgrade does:** it replaces the program files and rebuilds the
-API, worker and dashboard containers from a new folder. One database
-migration adds nine empty JARVIS Brain tables.
+API, worker and dashboard images. It then recreates the API, worker,
+dashboard and n8n containers from a new folder, so n8n restarts once.
+PostgreSQL keeps running. One database migration adds nine empty JARVIS
+Brain tables.
 
 **What it does not do:**
 - It does not delete or reset any Docker volume, and it does not reset
