@@ -70,13 +70,13 @@ foreach ($p in $projects) {
 Write-Host "`nDisk"
 $drive = (Get-Item $root).PSDrive
 $freeGb = [math]::Round($drive.Free / 1GB, 1)
-if ($freeGb -ge 10) { Ok "$freeGb GB free on $($drive.Name):" } else { Warn "only $freeGb GB free on $($drive.Name): (images and data need about 5 GB)" }
+if ($freeGb -ge 10) { Ok "$freeGb GB free on $($drive.Name):" } else { Warn "only $freeGb GB free on $($drive.Name): (images and data need about 5 GB; web research, once switched on, about 0.5 GB more)" }
 
 Write-Host "`nConfiguration"
 if (Test-Path (Join-Path $root ".env")) {
-  $required = "ADMIN_EMAIL","ADMIN_PASSWORD","POSTGRES_PASSWORD","CC_DB_PASSWORD","N8N_DB_PASSWORD","CC_SERVICE_TOKEN","CC_SECRETS_KEY","CREDIT_REPAIR_DB_PASSWORD","CREDIT_REPAIR_DATA_KEY","N8N_WEBHOOK_SECRET","N8N_ENCRYPTION_KEY","N8N_OWNER_PASSWORD"
+  $required = "ADMIN_EMAIL","ADMIN_PASSWORD","POSTGRES_PASSWORD","CC_DB_PASSWORD","N8N_DB_PASSWORD","CC_SERVICE_TOKEN","CC_SECRETS_KEY","CREDIT_REPAIR_DB_PASSWORD","CREDIT_REPAIR_DATA_KEY","N8N_WEBHOOK_SECRET","N8N_ENCRYPTION_KEY","N8N_OWNER_PASSWORD","SEARXNG_SECRET"
   # Keys introduced after 0.1.0; install.ps1 adds them to an older .env (existing values are never changed).
-  $addable = "CC_SECRETS_KEY","CREDIT_REPAIR_DB_PASSWORD","CREDIT_REPAIR_DATA_KEY"
+  $addable = "CC_SECRETS_KEY","CREDIT_REPAIR_DB_PASSWORD","CREDIT_REPAIR_DATA_KEY","SEARXNG_SECRET"
   $missing = @($required | Where-Object { -not $envValues[$_] })
   $toAdd = @($missing | Where-Object { $addable -contains $_ })
   $blocking = @($missing | Where-Object { $addable -notcontains $_ })

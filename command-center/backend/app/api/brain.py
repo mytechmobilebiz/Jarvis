@@ -27,6 +27,7 @@ from sqlalchemy import ColumnElement, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit, customer_settings
+from .. import tasks as task_service
 from ..brain import KINDS, archive, importer, review, store
 from ..brain.policy import RISK_FLAGS, SENSITIVE_AGENT, PersonScope, person_items, person_messages, person_sessions
 from ..config import Settings, get_settings
@@ -605,6 +606,9 @@ async def review_workflow(draft_id: int, body: DraftReview, request: Request, ca
 async def convert_workflow(draft_id: int, body: ConvertBody, request: Request, caller: Caller = Depends(admin),
                            session: AsyncSession = Depends(get_db)) -> dict:
     draft = await _draft(session, draft_id, lock=True)
+    refused = task_service.schedulable(draft.agent, draft.capability) if draft.capability else ""
+    if refused:  # web research is never scheduled, not even disabled
+        raise HTTPException(400, refused)
     schedule = await review.convert_draft(session, draft, jarvis_job_is_off=body.jarvis_job_is_off)
     await audit.record(session, caller.name, "workflow_draft.converted", "workflow_draft", draft.id,
                        {"draft": draft.id, "schedule": schedule.id, "enabled": schedule.enabled},

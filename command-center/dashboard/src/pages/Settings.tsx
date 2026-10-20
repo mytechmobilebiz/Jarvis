@@ -1,9 +1,11 @@
 import { FormEvent, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, type EditionInfo, type ManagedUser, type SettingsPage } from "../api";
 import { useAuth } from "../App";
 import { Card, ErrorNote, Pill, Time } from "../components";
 import { usePoll } from "../hooks";
 import { Icon } from "../icons";
+import { ResearchSettingsForm } from "./Research";
 import "./Settings.css";
 
 function BusinessSettings({ page, onSaved }: { page: SettingsPage; onSaved: () => void }) {
@@ -324,8 +326,8 @@ export default function Settings() {
           <div className="eyebrow">System</div>
           <h1>Settings</h1>
           <p className="muted">
-            Business settings, your AI provider and key, edition and license, and who can sign in. Installation settings (database, ports, deployment
-            secrets) live in the server's .env file and are not shown here.
+            Business settings, your AI provider and key, web research, edition and license, and who can sign in. Installation settings (database, ports,
+            deployment secrets) live in the server's .env file and are not shown here.
           </p>
         </div>
       </header>
@@ -378,6 +380,20 @@ export default function Settings() {
           </Card>
         </div>
       </div>
+      <Card
+        className="st-research"
+        title={
+          <>
+            <Icon name="globe" size={18} className="card-icon" /> Research
+          </>
+        }
+      >
+        <p className="muted small st-research-lead">
+          Web research for the agents through the private search service: off until you switch it on. Agent permissions, the connectivity test and purge are
+          in <Link to="/research?tab=settings">Research Center › Policy and settings</Link>.
+        </p>
+        <ResearchSettingsForm />
+      </Card>
       <Card
         title={
           <>

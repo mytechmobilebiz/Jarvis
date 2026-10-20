@@ -40,6 +40,7 @@ FEATURES: dict[str, str] = {
     "credit_repair": "Credit Repair module (isolated, encrypted sensitive-data store)",
     "white_label": "Own branding on the dashboard and reports",
     "custom_workflow_engine": "Use a workflow engine other than the default",
+    "web_research": "Web research through the Research Gateway (the self-hosted SearXNG search service)",
 }
 
 PERSONAL_AGENTS = frozenset({"supervisor", "monitoring", "wordpress_security", "seo_content"})

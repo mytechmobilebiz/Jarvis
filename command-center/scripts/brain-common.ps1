@@ -165,6 +165,8 @@ function Get-LiveFolder {
 function Get-LiveFingerprint {
   # Image IDs of the live images; name, ID, image ID and start time of every container of the live project; its
   # volume names. Read-only. A container that disappears between listing and reading is read again.
+  # Web research's search service (SearXNG, when switched on) may restart by itself: its start time is left out, its
+  # container ID, image ID and configuration are not (a changed SearXNG is still a change).
   for ($attempt = 1; $attempt -le 3; $attempt++) {
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($image in $BrainLiveImages) {
@@ -174,11 +176,21 @@ function Get-LiveFingerprint {
       $lines.Add("image $image $id")
     }
     $ids = @(Get-ProjectContainers $BrainLiveProject "")
+    $searxng = @(Get-ProjectContainers $BrainLiveProject "searxng")
     $complete = $true
     if ($ids.Count -gt 0) {
       $r = Invoke-Docker (@("inspect", "--format", "{{.Name}} {{.Id}} {{.Image}} {{.State.StartedAt}}") + $ids)
       if ($r.Code -ne 0) { $complete = $false }
-      foreach ($line in $r.Out) { if ($line.Trim()) { $lines.Add("container " + $line.Trim().TrimStart('/')) } }
+      foreach ($line in $r.Out) {
+        $line = $line.Trim()
+        if (-not $line) { continue }
+        $parts = $line.Split(" ")
+        if ($parts.Count -eq 4 -and $searxng -contains $parts[1]) {
+          $line = "{0} {1} {2} (start time not compared: web research's search service)" -f $parts[0], $parts[1], $parts[2]
+          Write-Host "Fingerprint: the start time of $($parts[0].TrimStart('/')) is left out (it may restart by itself)."
+        }
+        $lines.Add("container " + $line.TrimStart('/'))
+      }
     }
     $r = Invoke-Docker @("volume", "ls", "-q", "--filter", "label=com.docker.compose.project=$BrainLiveProject")
     if ($r.Code -ne 0) { throw "docker volume ls failed" }

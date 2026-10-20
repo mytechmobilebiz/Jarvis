@@ -18,6 +18,7 @@ from .. import tasks as task_service
 from ..models import Server
 from ..ssh.client import scan_host_key as presented_host_key
 from .base import AgentContext, AgentResult, BaseAgent, Finding, Params, Risk, capability
+from .research import AdvisoryCapabilities
 from .wp_server import server_binding, server_label
 
 
@@ -74,7 +75,7 @@ async def server_approval_context(session: AsyncSession, server_id: int | None, 
             "binding": {"server": server_binding(server)}}
 
 
-class ServerManagementAgent(BaseAgent):
+class ServerManagementAgent(AdvisoryCapabilities, BaseAgent):
     name = "server_management"
     title = "VPS & Server Management (CWP/SSH)"
     description = (

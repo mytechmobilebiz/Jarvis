@@ -10,6 +10,7 @@ Status, test results and open items: [PROJECT_STATUS.md](PROJECT_STATUS.md).
 Install on Windows 11: [docs/DEPLOY_WINDOWS.md](docs/DEPLOY_WINDOWS.md).
 Commercial edition plan and blockers: [COMMERCIALIZATION.md](COMMERCIALIZATION.md).
 Third-party components and licenses: [SBOM.md](SBOM.md).
+Web research (0.7.0-dev, off by default, not installed anywhere yet): [docs/RESEARCH_GATEWAY.md](docs/RESEARCH_GATEWAY.md).
 
 ## What is in the box
 
@@ -133,6 +134,10 @@ the page loads nothing from other sites.
   cannot read dashboard data or approve anything.
 - **Model text is data**: agent output and fetched pages go to the summariser
   wrapped as data, and the planner can only choose from real capabilities.
+- **Web research is off by default** (0.7.0-dev): only admins and operators can
+  use it, every query is screened before it leaves (no secrets, contacts, client
+  or Credit Repair data, private JARVIS text), it goes only to a private SearXNG
+  container, and results come back as citations the AI never reads.
 - Everything a person changes is in the audit log.
 - **Credit Repair data is isolated**: a separate database and login role
   (the main application's role cannot connect to it), field encryption with

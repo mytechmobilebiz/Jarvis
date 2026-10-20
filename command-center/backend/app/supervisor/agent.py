@@ -1,8 +1,16 @@
-"""The AI supervisor: plans requests, delegates them, reviews results and the platform."""
+"""The AI supervisor: plans requests, delegates them, reviews results and the platform.
+
+Web research (app/research) in a request: offered to the planner only when research is on and a person (an admin or
+operator) typed the request on the dashboard, never for n8n; every planned web search is screened before its task
+is created and before the plan is stored (a refused one is removed, with a note that gives no reason: the code is in
+the Research Center); the summary sees only each search's fixed line, and the citations stay in the tasks'
+data.citations, apart from the reply.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections import Counter
 from datetime import UTC, datetime, timedelta
@@ -27,8 +35,10 @@ from ..agents.base import (
     capability,
 )
 from ..agents.monitoring.findings import open_findings
+from ..agents.research import WebSearchCapabilities
 from ..brain import STAFF
 from ..brain.quotes import lock_quotes
+from ..config import Settings
 from ..llm.base import LLMError
 from ..models import (
     Approval,
@@ -39,10 +49,15 @@ from ..models import (
     Site,
     SupervisorRequest,
     Task,
+    User,
     WorkerHeartbeat,
 )
-from .planner import make_plan
+from ..research import intake
+from ..research import policy as research_policy
+from .planner import Plan, fixed_reply, make_plan
 from .recall import RecallParams, recall_history
+
+log = logging.getLogger(__name__)
 
 SUMMARY_SYSTEM = """You are the supervisor of Infinite AI Command Center, reporting to the owner of \
 Infinite Marketing. Summarise what the agents did for the request below in at most 8 short lines of plain \
@@ -123,9 +138,84 @@ def template_summary(message: str, digests: list[dict[str, Any]], answers: list[
 
 
 HISTORY_SUBJECT = re.compile(r"\b(?:jarvis|hermes|%s)\b" % "|".join(STAFF), re.IGNORECASE)
+# Web search only on these explicit phrases (app/tasks.py); the query is the text after the phrase, never the whole
+# message. "online", "look up", "latest", "current" or "news" alone never search the web.
+WEB_SEARCH_PHRASE = task_service.WEB_SEARCH_PHRASE
+WEB_SEARCH = re.compile(WEB_SEARCH_PHRASE + r"\s*(.*)$", re.IGNORECASE | re.DOTALL)
+PERSON_ROLES = ("admin", "operator")
 
 
-class SupervisorAgent(BaseAgent):
+def web_search_params(text: str, urls: list[str]) -> dict[str, Any] | None:
+    match = WEB_SEARCH.search(text)
+    query = " ".join(match.group(1).split()).strip(" .?!") if match else ""
+    return {"query": query} if query else None
+
+
+async def research_hidden(session: Any, settings: Settings, request: SupervisorRequest, agents: dict[str, BaseAgent],
+                          entitlements: licensing.Entitlements) -> frozenset[tuple[str, str]]:
+    """The web-search capabilities the planner may not use for this request: every one, unless research is on and an
+    active admin or operator typed the request on the dashboard (never n8n or a service token); and then those of
+    agents whose research policy does not allow search. Anything that cannot be read hides them all."""
+    every = frozenset((a.name, c.name) for a in agents.values() for c in a.capabilities().values()
+                      if c.research is not None)
+    if not every or request.source != "dashboard" or request.requested_by.startswith("service:"):
+        return every
+    try:
+        user = await session.scalar(select(User).where(User.email == request.requested_by.lower()))
+        if user is None or not user.is_active or user.role not in PERSON_ROLES:
+            return every
+        if (await research_policy.load_settings(session)).mode == "off" or not entitlements.has(intake.FEATURE):
+            return every
+        allowed: set[str] = set()
+        for agent in {name for name, _ in every}:
+            try:
+                await research_policy.search_policy(session, agent)
+            except research_policy.PolicyRefused:
+                continue
+            allowed.add(agent)
+    except research_policy.SettingsUnreadable:
+        log.warning("web search left out of request %s: the research settings cannot be read", request.id)
+        return every
+    return frozenset(pair for pair in every if pair[0] not in allowed)
+
+
+async def screen_research_steps(session: Any, settings: Settings, request: SupervisorRequest, plan: Plan,
+                                hidden: frozenset[tuple[str, str]]) -> None:
+    """Every web-search step is screened (app/research/intake.py) before its task is created and before the plan is
+    stored: a refused step is removed with its rationale, its note gives the refusal's status only, and the reply
+    becomes a fixed one (Claude's may repeat the query). A kept step's query is stored in its canonical form."""
+    kept = []
+    dropped = False
+    for step in plan.steps:
+        if not task_service.uses_research(step.agent, step.capability):
+            kept.append(step)
+            continue
+        name = f"{step.agent}.{step.capability}"
+        if (step.agent, step.capability) in hidden:
+            plan.notes.append(f"dropped {name}: not available for this request")
+            dropped = True
+            continue
+        try:
+            params = task_service.validate_params(step.agent, step.capability, step.params)
+        except task_service.TaskError:
+            plan.notes.append(f"dropped {name}: invalid_parameters")
+            dropped = True
+            continue
+        admission = await intake.admit(session, settings, agent=step.agent, capability=step.capability, params=params,
+                                       trigger="supervisor", person=request.requested_by, request_id=request.id)
+        if admission.refused:
+            # The status only: the reason code is in the Research Center (Blocked attempts), for operators and admins.
+            plan.notes.append(f"dropped {name}: {admission.status}")
+            dropped = True
+            continue
+        step.params = admission.params or {}
+        kept.append(step)
+    plan.steps = kept
+    if dropped:
+        plan.reply = fixed_reply(plan.steps)
+
+
+class SupervisorAgent(WebSearchCapabilities, BaseAgent):
     name = "supervisor"
     title = "AI Supervisor"
     description = (
@@ -158,6 +248,8 @@ class SupervisorAgent(BaseAgent):
                 lambda text, urls: {"question": text.strip()[:500]} if HISTORY_SUBJECT.search(text) else None,
                 weight=2,
             ),
+            # Web search (app/research): offered only when the request may use it (research_hidden).
+            Intent("web_search", (WEB_SEARCH_PHRASE,), web_search_params, weight=3),
         ]
 
     # ---------------------------------------------------------------- planning
@@ -180,10 +272,13 @@ class SupervisorAgent(BaseAgent):
             if not a.sensitive and entitlements.allows_agent(n) and await task_service.agent_enabled(session, n)
         }
         sites = [(r.id, r.name, r.url) for r in (await session.execute(select(Site.id, Site.name, Site.url).order_by(Site.id).limit(100))).all()]
-        plan = await make_plan(request.message, agents, ctx.llm, sites)
+        hidden = await research_hidden(session, ctx.settings, request, agents, entitlements)
+        plan = await make_plan(request.message, agents, ctx.llm, sites, hidden=hidden)
+        # Before any task is created and before the plan is stored: no row may hold a refused query.
+        await screen_research_steps(session, ctx.settings, request, plan, hidden)
         created: list[Task] = []
         for step in plan.steps:
-            if step.agent == "supervisor" and step.capability in task_service.SUPERVISOR_INTERNAL:
+            if task_service.is_internal(step.agent, step.capability):
                 plan.notes.append(f"dropped internal step {step.agent}.{step.capability}")
                 continue
             try:
@@ -200,7 +295,8 @@ class SupervisorAgent(BaseAgent):
                     )
                 )
             except task_service.TaskError as exc:
-                plan.notes.append(str(exc))
+                research = task_service.uses_research(step.agent, step.capability)
+                plan.notes.append(f"dropped {step.agent}.{step.capability}: task_refused" if research else str(exc))
         request.plan = plan.as_dict()
         request.planner = plan.planner
         request.reply = plan.reply

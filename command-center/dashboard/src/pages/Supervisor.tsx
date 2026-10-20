@@ -2,6 +2,7 @@ import { FormEvent, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, type SupervisorRequest, type Task } from "../api";
 import { useAuth } from "../App";
+import { WebSources } from "../citations";
 import { Card, Empty, ErrorNote, Findings, Pill, RiskBadge, Tile, Time } from "../components";
 import { usePoll } from "../hooks";
 import { Icon } from "../icons";
@@ -94,6 +95,8 @@ function RequestDetail({ id }: { id: number }) {
       ) : ACTIVE.has(req.status) ? (
         <p className="muted su-working">Agents working…</p>
       ) : null}
+      {/* Web search citations: a list of their own, never part of the reply or the summary (the AI saw a fixed line only). */}
+      <WebSources tasks={tasks} />
     </div>
   );
 }

@@ -1,4 +1,9 @@
-"""Agents, tasks and approvals."""
+"""Agents, tasks and approvals.
+
+A research capability's query is screened here, before create_task (plan section 3.13): a refused query is answered
+with its reason code and no task row ever holds it. Viewers never see research parameters or results (owner
+decision 13), nor the text of a Supervisor request that asked for a web search (it holds the query).
+"""
 
 from __future__ import annotations
 
@@ -14,7 +19,8 @@ from .. import audit, licensing
 from .. import tasks as task_service
 from ..agents.registry import all_agents, get_agent
 from ..config import Settings, get_settings
-from ..models import AgentState, Approval, Task, TaskLog, User
+from ..models import AgentState, Approval, SupervisorRequest, Task, TaskLog, User
+from ..research import intake
 from .deps import OPERATOR_ROLES, Principal, client_ip, get_db, require_operator, require_user, to_dict
 
 router = APIRouter(prefix="/api", tags=["work"])
@@ -51,16 +57,74 @@ async def require_sensitive_access(session: AsyncSession, principal: Principal, 
 OPERATOR_ONLY_RESULT_DATA = ("answer", "memory_notes")
 
 
+# What a viewer reads instead of the text of a Supervisor request that asked for, planned or dropped a web search.
+WEB_SEARCH_VIEWER_TEXT = "Request with a web search (visible to operators and admins)"
+
+
+def viewer_plan(plan: Any, searched: bool) -> Any:
+    """A Supervisor plan as a viewer sees it: no web-search step's parameters or rationale, no planner notes (they say
+    what was dropped and why), and no reply when the request asked for or searched the web (Claude's reply may repeat
+    the query)."""
+    plan = task_service.hide_research_steps(plan)
+    if not isinstance(plan, dict):
+        return plan
+    return {**plan, "notes": [], **({"reply": WEB_SEARCH_VIEWER_TEXT} if searched and "reply" in plan else {})}
+
+
 def task_view(task: Task, principal: Principal | None = None) -> dict[str, Any]:
     """A task as the API returns it. For a viewer (any role that does not operate), the operator-only parts of the
-    result are left out; callers that already require an operator pass no principal."""
+    result are left out, and a research task's parameters and result data (the query and its citations), and a plan
+    as viewer_plan() shows it; callers that already require an operator pass no principal."""
     out = to_dict(task)
     if principal is not None and principal.role not in OPERATOR_ROLES:
         result = out.get("result")
         data = result.get("data") if isinstance(result, dict) else None
+        if task_service.uses_research(task.agent, task.capability):
+            out["params"] = {}
+            if isinstance(result, dict):
+                out["result"] = {**result, "data": {}}
+            return out
         if isinstance(data, dict) and any(key in data for key in OPERATOR_ONLY_RESULT_DATA):
-            out["result"] = {**result, "data": {k: v for k, v in data.items() if k not in OPERATOR_ONLY_RESULT_DATA}}
+            data = {k: v for k, v in data.items() if k not in OPERATOR_ONLY_RESULT_DATA}
+            out["result"] = {**result, "data": data}
+        if isinstance(data, dict) and "plan" in data:  # supervisor.plan_request
+            # Never the reply here: only the request's message tells whether it asked for a web search (a plan made
+            # while web search was hidden has no search step), and a viewer reads the reply through request_view.
+            plan = viewer_plan(data["plan"], True)
+            out["result"] = {**out["result"], "data": {**data, "plan": plan}}
     return out
+
+
+async def approvals_view(session: AsyncSession, approvals: list[Approval], principal: Principal) -> list[dict[str, Any]]:
+    """Approvals as the API returns them. A viewer does not read the message of the Supervisor request behind one when
+    that request asked for a web search (the approval card quotes the message)."""
+    out = [to_dict(a) for a in approvals]
+    if principal.role in OPERATOR_ROLES:
+        return out
+    asked = {a["id"]: (a.get("details") or {}).get("requested") or {} for a in out}
+    ids = {r.get("request_id") for r in asked.values() if isinstance(r, dict) and r.get("message")}
+    ids.discard(None)
+    if not ids:
+        return out
+    requests = (await session.scalars(select(SupervisorRequest).where(SupervisorRequest.id.in_(ids)))).all()
+    searched = {r.id for r in requests if task_service.request_searches_web(r.message, r.plan)}
+    for a in out:
+        requested = asked[a["id"]]
+        if isinstance(requested, dict) and requested.get("request_id") in searched:
+            a["details"] = {**a["details"], "requested": {**requested, "message": WEB_SEARCH_VIEWER_TEXT}}
+    return out
+
+
+async def screen_research(session: AsyncSession, settings: Settings, principal: Principal, agent: str, capability: str,
+                          params: dict[str, Any], *, trigger: str = "dashboard") -> dict[str, Any]:
+    """A research run's parameters, screened before any task row holds them: the query in its canonical form, or a
+    400 with the reason code (the attempt is recorded with the code only)."""
+    validated = task_service.validate_params(agent, capability, params)
+    admission = await intake.admit(session, settings, agent=agent, capability=capability, params=validated,
+                                   trigger=trigger, person=principal.name)
+    if admission.refused:
+        raise HTTPException(400, admission.message())
+    return admission.params or {}
 
 
 @router.get("/agents")
@@ -147,15 +211,18 @@ async def run_capability(
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> dict:
-    if name == "supervisor" and body.capability in task_service.SUPERVISOR_INTERNAL:
+    if task_service.is_internal(name, body.capability):
         raise HTTPException(400, "internal supervisor capability")
     await require_sensitive_access(session, principal, name)
+    params = body.params
+    if task_service.uses_research(name, body.capability):
+        params = await screen_research(session, settings, principal, name, body.capability, params)
     task = await task_service.create_task(
         session,
         settings,
         agent=name,
         capability=body.capability,
-        params=body.params,
+        params=params,
         source="dashboard",
         created_by=principal.name,
     )
@@ -195,11 +262,13 @@ async def get_task(task_id: int, principal: Principal = Depends(require_user), s
     if task is None:
         raise HTTPException(404, "no such task")
     logs = (await session.scalars(select(TaskLog).where(TaskLog.task_id == task_id).order_by(TaskLog.id))).all()
+    if principal.role not in OPERATOR_ROLES and (task.agent, task.capability) == ("supervisor", "plan_request"):
+        logs = []  # the planner's notes, which viewers do not read (viewer_plan)
     approval = await session.scalar(select(Approval).where(Approval.task_id == task_id))
     return {
         "task": task_view(task, principal),
         "logs": [to_dict(entry) for entry in logs],
-        "approval": to_dict(approval) if approval else None,
+        "approval": (await approvals_view(session, [approval], principal))[0] if approval else None,
     }
 
 
@@ -236,6 +305,10 @@ async def retry(
 ) -> dict:
     task = await _locked_task(session, task_id)
     await require_sensitive_access(session, principal, task.agent)
+    if (task_service.uses_research(task.agent, task.capability) and not task_service.is_internal(task.agent, task.capability)
+            and task.status in ("failed", "cancelled")):
+        # Screened again: a lead, client or setting added since may refuse the same words now.
+        await screen_research(session, settings, principal, task.agent, task.capability, task.params, trigger="retry")
     task = await task_service.retry_task(session, settings, task, principal.name)
     await audit.record(session, principal.name, "task.retried", "task", task_id, {"new_task_id": task.id}, ip=client_ip(request))
     await session.commit()
@@ -244,7 +317,7 @@ async def retry(
 
 @router.get("/approvals")
 async def list_approvals(
-    _: Principal = Depends(require_user),
+    principal: Principal = Depends(require_user),
     session: AsyncSession = Depends(get_db),
     status: str | None = "pending",
     limit: int = Query(100, ge=1, le=500),
@@ -253,7 +326,7 @@ async def list_approvals(
     if status and status != "all":
         q = q.where(Approval.status == status)
     rows = (await session.scalars(q.order_by(Approval.id.desc()).limit(limit))).all()
-    return {"approvals": [to_dict(a) for a in rows]}
+    return {"approvals": await approvals_view(session, list(rows), principal)}
 
 
 @router.post("/approvals/{approval_id}/decision")

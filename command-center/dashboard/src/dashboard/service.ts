@@ -1,5 +1,5 @@
 // Service Status rows: each says what was checked and when, and claims nothing it cannot verify (owner request 3).
-import type { Integration, Server, SystemStatus } from "../api";
+import type { Integration, ResearchHealth, Server, SystemStatus } from "../api";
 import { aiState, engineState, isStale, statusAge, type StatusMeta } from "../status";
 import { ago, clock, ms, type Tone } from "./model";
 
@@ -157,13 +157,44 @@ function channelRow(key: string, name: string, item: Integration | undefined, in
   return { ...base, tone: "muted", state: "Live", detail: "Not used yet" };
 }
 
-/** Rows in the reference's order. Every row but the database's turns "Unknown" while the status is stale. */
+/** Web research (0.7.0): the SearXNG service as the worker last found it, or the mode when research is off or a mock. Shown
+ * to admins and operators only; the API refuses viewers (owner decision 13). */
+function researchRow(research: Loaded<ResearchHealth>, now: number): ServiceRow {
+  const base = { key: "research", name: "Web research" };
+  if (!research.data) return research.error ? { ...base, tone: "unknown", state: "Unavailable", detail: research.error } : { ...base, tone: "muted", state: "Checking…", detail: "" };
+  if (research.error) return { ...base, tone: "unknown", state: "Unknown", detail: `Not updated · ${research.error}` };
+  const s = research.data.searxng;
+  const probed = ms(s.probed_at);
+  const when = probed === null ? "not probed yet" : `probed ${ago(Math.max(0, now - probed))}`;
+  switch (s.state) {
+    case "off":
+      return { ...base, tone: "muted", state: "Off", detail: "Switched off; no searches" };
+    case "mock":
+      return { ...base, tone: "muted", state: "Mock", detail: "Made-up answers; nothing leaves this PC" };
+    case "healthy":
+      return { ...base, tone: "good", state: "SearXNG healthy", detail: sentence(when) };
+    case "degraded":
+      return { ...base, tone: "warn", state: "Degraded", detail: "Some search engines paused", title: s.message || undefined };
+    case "all_engines_failing":
+      return { ...base, tone: "warn", state: "All engines failing", detail: "SearXNG answers; its engines do not", title: s.message || undefined };
+    case "pc_offline":
+      return { ...base, tone: "warn", state: "PC offline", detail: "Searches cannot leave this PC" };
+    case "unreachable":
+      return { ...base, tone: "bad", state: "Unreachable", detail: `SearXNG not answering · ${when}`, title: s.last_error || undefined };
+    default:
+      return { ...base, tone: "unknown", state: "Unknown", detail: "" };
+  }
+}
+
+/** Rows in the reference's order, then web research when `research` is given (admins and operators). Every row but the
+ * database's turns "Unknown" while the status is stale. */
 export function serviceRows(
   status: SystemStatus | null,
   meta: StatusMeta,
   servers: Loaded<Server[]>,
   integrations: Loaded<Integration[]>,
   now: number = Date.now(),
+  research?: Loaded<ResearchHealth>,
 ): ServiceRow[] {
   const db = databaseRow(status, meta, now);
   // No status yet: still checking, or unknown once the first poll has failed.
@@ -178,6 +209,7 @@ export function serviceRows(
     serversRow(servers, status, now),
     channelRow("email", "Email", list.find((i) => i.name === "email"), integrations, "sent", now),
     channelRow("postonomous", "Postonomous", list.find((i) => i.name === "postonomous"), integrations, "published", now),
+    ...(research ? [researchRow(research, now)] : []),
   ];
   // While the API is not answering (or its last answer is too old), no row may look current: every row turns unknown, with
   // when the status was last known.

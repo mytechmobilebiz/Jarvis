@@ -1,0 +1,429 @@
+/* Research Center page. Every class here starts with rc-. Colours come from the tokens in styles.css; the layout follows the
+   JARVIS Brain page (tabs, panels, tables that turn into cards on narrow screens). */
+
+/* tabs */
+.rc-tabs {
+  margin-bottom: 16px;
+}
+.rc-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.rc-tab-icon {
+  flex: none;
+}
+.rc-panel {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.rc-panel > .card,
+.rc-panel > .tiles,
+.rc-panel > .grid-2,
+.rc-grid > .card {
+  margin: 0;
+}
+.rc-grid {
+  align-items: start;
+}
+.rc-page .card-head h2 > svg {
+  flex: none;
+}
+
+/* key-value lists, times and codes */
+.rc-kv {
+  grid-template-columns: 170px minmax(0, 1fr);
+  margin-bottom: 12px;
+}
+.rc-when {
+  display: inline-flex;
+  flex-direction: column;
+  white-space: nowrap;
+}
+.rc-reason {
+  display: block;
+}
+.rc-query {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.rc-web,
+.rc-url {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.rc-url a {
+  color: var(--primary-text);
+  word-break: break-all;
+}
+.rc-link {
+  color: var(--primary-text);
+  font-weight: 600;
+}
+.rc-unverified {
+  margin: 4px 0 8px;
+}
+.rc-list {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+/* overview */
+.rc-tile-state {
+  display: inline-flex;
+  align-items: center;
+  font-size: 15px;
+}
+.rc-provider {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.rc-provider:first-child {
+  padding-top: 0;
+}
+.rc-provider:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.rc-provider-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.rc-provider p {
+  margin: 4px 0 0;
+}
+.rc-engines {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-top: 6px;
+}
+.rc-engine {
+  display: inline-block;
+  padding: 1px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border-2);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+}
+.rc-engine-ok {
+  border-color: rgba(34, 197, 94, 0.35);
+  color: var(--good-text);
+}
+.rc-engine-paused {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: var(--warn-soft);
+  color: var(--warn-text);
+}
+.rc-engine-failing {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: var(--bad-soft);
+  color: var(--bad-text);
+}
+.rc-agents li {
+  justify-content: space-between;
+  align-items: center;
+}
+.rc-agent-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* new research */
+.rc-form select:disabled {
+  cursor: not-allowed;
+}
+.rc-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 12px;
+  align-items: start;
+}
+.rc-row.rc-options {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.rc-row > .check {
+  align-self: center;
+}
+.rc-wide {
+  grid-column: 1 / -1;
+  margin: -6px 0 12px;
+}
+.rc-counter {
+  margin: -6px 0 10px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.rc-precheck {
+  margin: 0 0 12px;
+}
+.rc-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+  color: var(--info-text);
+  font-weight: 600;
+}
+.rc-notice svg {
+  flex: none;
+}
+.rc-how p {
+  margin: 0 0 6px;
+}
+.rc-progress {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+
+/* filters and paging */
+.rc-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+}
+.rc-filters label {
+  margin: 0;
+}
+.rc-filters select {
+  width: auto;
+  max-width: 100%;
+}
+.rc-filters + p {
+  margin: 10px 0 4px;
+}
+.rc-search-q {
+  position: relative;
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.rc-search-q input {
+  padding-left: 34px;
+}
+.rc-search-icon {
+  position: absolute;
+  left: 11px;
+  bottom: 11px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.rc-date {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+.rc-date input {
+  width: auto;
+}
+.rc-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* tables */
+.table.rc-table td {
+  vertical-align: top;
+}
+.rc-c-main {
+  min-width: 220px;
+}
+.rc-c-when {
+  white-space: nowrap;
+}
+.rc-row-title {
+  font-weight: 600;
+  color: var(--text);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+/* usage meters */
+.rc-meter-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.rc-meter {
+  display: inline-block;
+  width: 160px;
+  max-width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.rc-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+.rc-meter-good {
+  background: var(--good);
+}
+.rc-meter-warn {
+  background: var(--warn);
+}
+.rc-meter-bad {
+  background: var(--bad);
+}
+
+/* policy and settings */
+.rc-settings {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.rc-modes {
+  border: 0;
+  margin: 0 0 8px;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.rc-modes legend {
+  padding: 0;
+  margin-bottom: 6px;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.rc-mode {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+.rc-mode input {
+  width: auto;
+  margin: 3px 0 0;
+  accent-color: var(--primary-bright);
+}
+.rc-mode > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.rc-mode-on {
+  border-color: rgba(47, 123, 255, 0.55);
+  background: var(--primary-soft);
+}
+.rc-mode:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.rc-limit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 0 12px;
+}
+.rc-matrix td {
+  vertical-align: middle;
+}
+.rc-matrix .check {
+  margin: 0;
+}
+.rc-cap {
+  width: 90px;
+}
+.rc-classes {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+}
+.rc-domains {
+  min-width: 160px;
+  font-size: 12.5px;
+}
+.rc-never td {
+  color: var(--muted);
+}
+
+/* narrow screens: each table row becomes a card with labelled cells */
+@media (max-width: 900px) {
+  .rc-table,
+  .rc-table tbody {
+    display: block;
+  }
+  .rc-table thead {
+    display: none;
+  }
+  .rc-table tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 14px;
+    padding: 12px 2px;
+    border-bottom: 1px solid var(--border);
+  }
+  .rc-table tr:last-child {
+    border-bottom: 0;
+  }
+  .table.rc-table td {
+    display: block;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+  }
+  .rc-table td.rc-c-main {
+    grid-column: 1 / -1;
+    order: -1;
+  }
+  .rc-table td[colspan] {
+    grid-column: 1 / -1;
+  }
+  .rc-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 3px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .rc-kv {
+    grid-template-columns: 140px minmax(0, 1fr);
+  }
+}
+@media (max-width: 760px) {
+  .rc-row,
+  .rc-row.rc-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rc-filters select,
+  .rc-filters .btn {
+    flex: 1 1 140px;
+  }
+}
+@media (max-width: 560px) {
+  .rc-kv {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rc-table tr {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rc-c-main {
+    min-width: 0;
+  }
+  .rc-meter {
+    width: 120px;
+  }
+}

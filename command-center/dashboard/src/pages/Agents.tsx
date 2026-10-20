@@ -7,7 +7,8 @@ import { Icon, type IconName } from "../icons";
 import { RunModal } from "../work";
 import "./Agents.css";
 
-const INTERNAL = new Set(["supervisor.plan_request", "supervisor.summarize_request"]);
+// The supervisor's own planning and summary steps, and the research connectivity test (started only from the Research Center).
+const INTERNAL = new Set(["supervisor.plan_request", "supervisor.summarize_request", "supervisor.research_connectivity_test"]);
 
 const AGENT_ICON: Record<string, IconName> = {
   supervisor: "sparkles",

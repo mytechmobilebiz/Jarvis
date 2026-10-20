@@ -6,6 +6,8 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\backup.ps1
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+. (Join-Path $PSScriptRoot "compose-env.ps1")
+$null = Use-ComposeEnv $root
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $target = Join-Path $root "backups\$stamp"
 New-Item -ItemType Directory -Force -Path $target | Out-Null

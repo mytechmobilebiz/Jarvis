@@ -68,9 +68,15 @@ async def ensure_admin(settings: Settings) -> bool:
 
 
 async def ensure_schedules(extra: list[dict] | None = None) -> None:
+    from .tasks import schedulable
+
     async with session_scope() as session:
         existing = set((await session.scalars(select(Schedule.name))).all())
         for spec in [*DEFAULT_SCHEDULES, *(extra or [])]:
+            refused = schedulable(spec["agent"], spec["capability"])
+            if refused:  # web research is never scheduled
+                log.warning("schedule %s not created: %s", spec["name"], refused)
+                continue
             if spec["name"] not in existing:
                 session.add(Schedule(**spec))
 

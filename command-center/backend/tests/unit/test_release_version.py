@@ -37,7 +37,7 @@ def packager():
 
 def test_every_version_constant_matches_the_version_file():
     version = (ROOT / "VERSION").read_text().strip()
-    assert re.fullmatch(r"\d+\.\d+\.\d+", version)
+    assert re.fullmatch(r"\d+\.\d+\.\d+(-dev)?", version)  # a release, or a development build (never installed)
     assert app.__version__ == version
     package = json.loads((ROOT / "dashboard" / "package.json").read_text())
     lock = json.loads((ROOT / "dashboard" / "package-lock.json").read_text())

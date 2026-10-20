@@ -1,4 +1,9 @@
-"""The worker: claims queued tasks, runs agent capabilities, records results."""
+"""The worker: claims queued tasks, runs agent capabilities, records results.
+
+It is also the only process that reaches the Research Gateway's search service (app/research): research
+capabilities run here with a reduced context, and the worker's own loop probes SearXNG's health while research is
+live and does the research housekeeping (retention, budget slots left by a crash): not a schedule.
+"""
 
 from __future__ import annotations
 
@@ -29,12 +34,19 @@ from ..db import describe_error, session_scope, sessionmaker
 from ..integrations import IntegrationHub, build_hub
 from ..llm import LLMProvider, runtime_provider
 from ..models import Approval, Artifact, ServerCommand, Task, TaskLog, WorkerHeartbeat
+from ..research import budget as research_budget
+from ..research import policy as research_policy
+from ..research import store as research_store
+from ..research.gateway import Gateway
 from ..workflow import WorkflowEngine, build_engine
 from . import forwarder, scheduler
 
 log = logging.getLogger(__name__)
 
 BUSY_RETRY_SECONDS = 30  # a task whose site is busy (SiteBusy), or that must quote (QuotesBusy), is tried again later
+RESEARCH_PROBE_SECONDS = 60  # SearXNG's /healthz, while research is live
+RESEARCH_CONFIG_SECONDS = 3600  # and its /config (version, engines)
+HOUSEKEEPING_SECONDS = 600  # research retention and leftovers
 # Capabilities that copy JARVIS Brain text into their result (a history answer): they hold the quote lock shared from
 # before their first read until they commit, so a withhold, purge or redaction finds what they wrote
 # (app/brain/quotes.py). Never waited for: while a removal holds or waits for it, the task goes back to the queue, as
@@ -72,6 +84,7 @@ class Worker:
         engine: WorkflowEngine | None = None,
         http_transport: httpx.AsyncBaseTransport | None = None,
         worker_id: str | None = None,
+        research: Gateway | None = None,
     ) -> None:
         self.settings = settings
         # A fixed provider (tests); otherwise resolved per task from the
@@ -85,6 +98,12 @@ class Worker:
         self._running: set[asyncio.Task[None]] = set()
         self._stop = asyncio.Event()
         self._last_probe = 0.0
+        # The Research Gateway (a test passes one with a fake provider or transport). It builds its SearXNG client only
+        # when research is live and a search or probe needs it.
+        self.research = research or Gateway(settings)
+        self._last_research_probe = 0.0
+        self._last_research_config: float | None = None
+        self._last_housekeeping = 0.0
         from ..ssh.gateway import SSHGateway
 
         self.ssh = SSHGateway(settings)
@@ -107,6 +126,7 @@ class Worker:
                 pass
         if self._running:
             await asyncio.gather(*self._running, return_exceptions=True)
+        await self.research.aclose()
         log.info("worker %s stopped", self.worker_id)
 
     async def tick(self) -> int:
@@ -124,6 +144,8 @@ class Worker:
             job.add_done_callback(self._running.discard)
         await forwarder.forward_pending(self.engine)
         await self.probe_engine()
+        await self.probe_research()
+        await self.research_housekeeping()
         return claimed
 
     async def run_until_idle(self, max_rounds: int = 100) -> None:
@@ -167,6 +189,45 @@ class Worker:
                 self.engine.name, False, f"health check returned HTTP {health.get('status_code')}", detail=health
             )
 
+    async def probe_research(self) -> None:
+        """SearXNG's /healthz every minute and its /config every hour, only while research is live (the mode is read
+        fresh each time, so switching research off stops the probe at once). A failure is recorded, never raised."""
+        loop = asyncio.get_running_loop()
+        if loop.time() - self._last_research_probe < RESEARCH_PROBE_SECONDS:
+            return
+        self._last_research_probe = loop.time()
+        with_config = self._last_research_config is None or loop.time() - self._last_research_config >= RESEARCH_CONFIG_SECONDS
+        try:
+            if await self.research.probe(with_config=with_config) and with_config:
+                self._last_research_config = loop.time()
+        except Exception as exc:  # noqa: BLE001 - the next probe tries again
+            log.warning("research health probe failed (%s)", exc.__class__.__name__)
+
+    async def research_housekeeping(self) -> None:
+        """Research rows left "running" by a stopped worker, budget slots of crashed searches, and retention (owner
+        decision 14: pages 30 days, logs 90, usage 2 years; research tasks' parameters and results, and the queries in
+        stored Supervisor plans, with the logs).
+
+        In the worker's own loop, not a schedule: a schedule would need a DESTRUCTIVE capability, approved on every
+        run. With settings that cannot be read, nothing is purged."""
+        loop = asyncio.get_running_loop()
+        if loop.time() - self._last_housekeeping < HOUSEKEEPING_SECONDS:
+            return
+        self._last_housekeeping = loop.time()
+        try:
+            await research_store.mark_abandoned()
+            await research_budget.expire_stale()
+            async with session_scope() as session:
+                values = await research_policy.load_settings(session)
+            await research_store.purge_expired(values)
+            cutoff = _now() - timedelta(days=values.logs_days)
+            await research_store.purge_task_data(cutoff, task_service.research_capabilities())
+            await research_store.purge_plan_queries(cutoff, task_service.research_capabilities())
+        except research_policy.SettingsUnreadable:
+            log.warning("research retention skipped: the research settings cannot be read")
+        except Exception as exc:  # noqa: BLE001 - the next round tries again
+            log.warning("research housekeeping failed (%s)", exc.__class__.__name__)
+
     async def reap_stale(self) -> None:
         """Fail tasks whose worker vanished mid-run (container restart, crash)."""
         cutoff = _now() - timedelta(minutes=self.settings.stale_task_minutes)
@@ -209,6 +270,10 @@ class Worker:
                 task = await session.get(Task, task_id)
                 assert task is not None
                 agent_name, cap_name, params = task.agent, task.capability, dict(task.params)
+                # A research capability gets the reduced context: its Research Gateway client and nothing that could
+                # put host names, command output, memory or model text into a query (no SSH, integrations, model,
+                # HTTP client or memory). Credit Repair never gets a client (the gateway refuses it as well).
+                reduced = task_service.uses_research(agent_name, cap_name)
                 request_id = task.request_id
                 requested_by = task.created_by
                 approval = await session.scalar(select(Approval).where(Approval.task_id == task_id))
@@ -223,7 +288,7 @@ class Worker:
                         await task_service.current_target(session, approval, params)
                     except task_service.TargetChanged as exc:
                         refused = str(exc)
-                llm = self._fixed_llm or await runtime_provider(session, self.settings)
+                llm = None if reduced else (self._fixed_llm or await runtime_provider(session, self.settings))
             if switched_off:
                 await self._withdraw(task_id, refused)
                 return
@@ -231,7 +296,9 @@ class Worker:
                 await self._fail(task_id, f"refused: {refused}", [("error", refused)])
                 return
 
-            http = ReadOnlyHttpClient(self.settings, transport=self.http_transport)
+            http = None if reduced else ReadOnlyHttpClient(self.settings, transport=self.http_transport)
+            research = (self.research.client(agent=agent_name, task_id=task_id)
+                        if reduced and agent_name != SENSITIVE_AGENT else None)
             logs: list[tuple[str, str]] = []
             beat = asyncio.create_task(self._heartbeat(task_id))
             timeout = self.settings.task_timeout_seconds
@@ -244,23 +311,24 @@ class Worker:
                     timeout = cap.timeout_seconds
                 async with sessionmaker()() as session:
                     # Read-only memory through the agent's access policy (none for agents without one).
-                    memory = AgentMemory(session, agent_name) if agent_name in POLICIES else None
+                    memory = AgentMemory(session, agent_name) if agent_name in POLICIES and not reduced else None
                     ctx = AgentContext(
                         session=session,
                         settings=self.settings,
                         http=http,
                         llm=llm,
-                        integrations=self.hub,
+                        integrations=None if reduced else self.hub,
                         task_id=task_id,
                         request_id=request_id,
                         approved_by=approved_by,
                         approved_target=approved_target,
                         logs=logs,
-                        ssh=self.ssh,
+                        ssh=None if reduced else self.ssh,
                         requested_by=requested_by,
                         agent_name=agent_name,
                         deadline=asyncio.get_running_loop().time() + timeout,
                         memory=memory,
+                        research=research,
                     )
                     try:
                         if (agent_name, cap_name) in QUOTING and not await lock_quotes(session, shared=True,
@@ -284,12 +352,16 @@ class Worker:
                 logs.append(("error", described))
                 await self._fail(task_id, described, logs)
             except Exception as exc:  # noqa: BLE001 - every failure is recorded on the task
-                log.warning("task %s (%s.%s) failed: %s", task_id, agent_name, cap_name, exc)
-                logs.append(("error", "".join(traceback.format_exception_only(exc)).strip()))
-                await self._fail(task_id, f"{exc.__class__.__name__}: {exc}", logs)
+                # A research task's error is a code (the exception's name): its text could quote the query, and a
+                # failed task's error reaches an event that is forwarded to n8n.
+                error = exc.__class__.__name__ if reduced else f"{exc.__class__.__name__}: {exc}"
+                log.warning("task %s (%s.%s) failed: %s", task_id, agent_name, cap_name, error if reduced else exc)
+                logs.append(("error", error if reduced else "".join(traceback.format_exception_only(exc)).strip()))
+                await self._fail(task_id, error, logs)
             finally:
                 beat.cancel()
-                await http.aclose()
+                if http is not None:
+                    await http.aclose()
 
     async def _add_memory_notes(self, session: Any, task_id: int, memory: AgentMemory, params: dict[str, Any],
                                 result: AgentResult) -> None:

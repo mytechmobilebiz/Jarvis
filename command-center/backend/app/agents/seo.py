@@ -140,7 +140,9 @@ class SEOCapabilities:
         return [
             Intent("audit_page", (r"\bseo\b", r"\baudit\b", r"\bon-?page\b", r"\bmeta (tags?|description)\b"),
                    lambda text, urls: [{"url": u} for u in urls] or None, weight=2),
-            Intent("keyword_brief", (r"\bkeywords?\b", r"\bbrief\b.*\b(seo|content|keyword)", r"\bresearch\b"),
+            # "research" alone, but not "research the web / online / on the internet" (the Supervisor's web search).
+            Intent("keyword_brief", (r"\bkeywords?\b", r"\bbrief\b.*\b(seo|content|keyword)",
+                                     r"\bresearch\b(?!\s+(?:the\s+web|online|on\s+the\s+internet)\b)"),
                    lambda text, urls: None if urls else {"topic": re.sub(r"(?i)^.*?(keywords?|research|brief)\s*(for|on|about)?\s*", "", text).strip(" .?!")[:200] or text[:200]}),
         ]
 

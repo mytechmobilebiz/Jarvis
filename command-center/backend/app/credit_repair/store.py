@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
@@ -16,12 +17,14 @@ from pathlib import Path
 from typing import Any
 
 from cryptography.fernet import Fernet
-from sqlalchemy import ARRAY, BigInteger, Date, DateTime, ForeignKey, Integer, Text, func, select, text
+from sqlalchemy import ARRAY, BigInteger, Date, DateTime, ForeignKey, Integer, SmallInteger, Text, func, select, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from ..config import Settings
+
+log = logging.getLogger(__name__)
 
 MIGRATIONS = Path(__file__).parent / "migrations"
 LOCK_ID = 7_314_002_212
@@ -79,6 +82,25 @@ class CRLetter(CRBase):
     status: Mapped[str] = mapped_column(Text, default="draft")
     task_id: Mapped[int | None] = mapped_column(BigInteger)
     mailed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CRResearchIndex(CRBase):
+    """HMAC values the Research Gateway matches searches against (app/credit_repair/blind_index.py)."""
+
+    __tablename__ = "cr_research_index"
+    client_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)
+    mac: Mapped[str] = mapped_column(Text, primary_key=True)
+
+
+class CRResearchIndexMeta(CRBase):
+    """How the research match index was built: its version and a check value of its key (one row, id 1)."""
+
+    __tablename__ = "cr_research_index_meta"
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    key_check: Mapped[str] = mapped_column(Text)
+    version: Mapped[int] = mapped_column(Integer)
+    built_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class CRAccessLog(CRBase):
@@ -142,6 +164,14 @@ async def migrate(settings: Settings) -> list[str]:
             await raw.driver_connection.execute(path.read_text(encoding="utf-8"))
             await conn.execute(text("INSERT INTO cr_schema_migrations (version) VALUES (:v)"), {"v": path.stem})
             applied.append(path.stem)
+    # The research match index, rebuilt for every client: rows a restore or an older version left are replaced.
+    from . import blind_index
+
+    try:
+        await blind_index.rebuild(settings)
+    except Exception as exc:  # noqa: BLE001 - never stops the start-up; searches are refused until a rebuild succeeds
+        blind_index.REBUILD_FAILED = True
+        log.warning("research match index not rebuilt: %s", exc.__class__.__name__)
     return applied
 
 

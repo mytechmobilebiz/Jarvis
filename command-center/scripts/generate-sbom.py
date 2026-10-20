@@ -29,6 +29,8 @@ IMAGES = [
     ("node", "22-alpine", "MIT (Node.js) + Alpine package licenses", "build only", "builds the dashboard; not in the shipped image"),
     ("wordpress", "6-apache", "GPL-2.0-or-later", "test only", "throwaway site in docker-compose.testing.yml"),
     ("mariadb", "11", "GPL-2.0", "test only", "database for the throwaway WordPress"),
+    ("searxng/searxng", "2026.10.4-d48c4b555", "AGPL-3.0-or-later", "optional",
+     "web research search service; pulled only when research is switched on (docker-compose.research.yml)"),
 ]
 
 PY_PROBE = r"""
@@ -89,7 +91,8 @@ def cyclonedx(py: list[dict], npm: list[dict]) -> dict:
         return {
             "type": kind, "name": name, "version": version,
             "licenses": [{"license": {"name": lic}}],
-            "purl": purl, "scope": "excluded" if scope in ("build only", "test only", "build tool") else "required",
+            "purl": purl,
+            "scope": "excluded" if scope in ("build only", "test only", "build tool") else "optional" if scope == "optional" else "required",
             "properties": [{"name": "cc:scope", "value": scope}],
         }
 
@@ -138,6 +141,8 @@ def markdown(py: list[dict], npm: list[dict]) -> str:
     lines.append("- Licenses to review before distribution: " + (", ".join(unknown) if unknown else "none reported as unknown."))
     lines.append("- n8n is fair-code (Sustainable Use License): see COMMERCIALIZATION.md before any commercial distribution.")
     lines.append("- GPL components (WordPress, MariaDB) appear only in the test overlay and are never shipped.")
+    lines.append("- SearXNG (AGPL-3.0-or-later) runs from its official image, unmodified, only when web research is switched on;"
+                 " each installation pulls it from the registry, and it is never bundled or re-hosted.")
     return "\n".join(lines) + "\n"
 
 

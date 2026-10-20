@@ -1,5 +1,8 @@
 # Removes the Command Center's containers, network and locally built images.
 # Your data (database and n8n volumes) is KEPT unless you pass -DeleteData.
+# Web research's search service goes too (its container, its two networks and its
+# cache volume, which holds no data), also when it is no longer in COMPOSE_FILE;
+# its image is kept, like the other pulled images.
 # Nothing outside the Compose project "infinite-command-center" is touched:
 # not XAMPP, not other Docker projects, not shared base images.
 #
@@ -13,7 +16,9 @@ param(
 
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
-$project = "infinite-command-center"
+. (Join-Path $PSScriptRoot "compose-env.ps1")
+$null = Use-ComposeEnv $root
+$project = Get-ComposeProjectName
 
 Write-Host "This removes the containers and images of '$project' in $root."
 if ($DeleteData) { Write-Host "-DeleteData: the PostgreSQL and n8n volumes will be DELETED permanently." -ForegroundColor Red }
@@ -36,8 +41,24 @@ if ($DeleteData -and -not $SkipBackup) {
 if ($DeleteData) { docker compose down --volumes --remove-orphans } else { docker compose down --remove-orphans }
 if ($LASTEXITCODE -ne 0) { Write-Host "docker compose down failed" -ForegroundColor Red; exit 1 }
 
+# Web research: "down" removes only what the files in use declare, so these go by their labels.
+foreach ($key in @("research", "research_egress")) {
+  foreach ($network in @(docker network ls -q --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.network=$key" | Where-Object { $_ })) {
+    docker network rm $network | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-Host "removed network $($project)_$key" }
+  }
+}
+foreach ($volume in @(docker volume ls -q --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.volume=searxng_cache" | Where-Object { $_ })) {
+  docker volume rm $volume | Out-Null
+  if ($LASTEXITCODE -eq 0) { Write-Host "removed volume $volume (web research's search cache, no data)" }
+}
+$searxngImages = @(docker image ls --format '{{.Repository}}:{{.Tag}}' | Where-Object { $_ -match '(^|/)searxng/searxng:' })
+if ($searxngImages.Count -gt 0) {
+  Write-Host "Kept the web research search image (other projects may use it); remove it with: docker image rm $($searxngImages -join ' ')"
+}
+
 # Only the images this project built itself; pulled images (postgres, n8n,
-# nginx, python, node) may be shared with other projects and are left alone.
+# nginx, python, node, searxng) may be shared with other projects and are left alone.
 foreach ($image in @("infinite-command-center/backend:local", "infinite-command-center/dashboard:local")) {
   docker image inspect $image *> $null
   if ($LASTEXITCODE -eq 0) { docker image rm $image | Out-Null; Write-Host "removed image $image" }

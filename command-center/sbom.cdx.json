@@ -1,14 +1,14 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:9c889beb-d003-40c2-9420-e77249099b5f",
+  "serialNumber": "urn:uuid:dbee3eab-3362-4271-b284-41f976d6452c",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-20T08:25:45+00:00",
+    "timestamp": "2026-10-20T06:31:12+00:00",
     "component": {
       "type": "application",
       "name": "Infinite AI Command Center",
-      "version": "0.6.1",
+      "version": "0.7.0-dev",
       "licenses": [
         {
           "license": {
@@ -5716,6 +5716,26 @@
         {
           "name": "cc:scope",
           "value": "test only"
+        }
+      ]
+    },
+    {
+      "type": "container",
+      "name": "searxng/searxng",
+      "version": "2026.10.4-d48c4b555",
+      "licenses": [
+        {
+          "license": {
+            "name": "AGPL-3.0-or-later"
+          }
+        }
+      ],
+      "purl": "pkg:docker/searxng/searxng@2026.10.4-d48c4b555",
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "cc:scope",
+          "value": "optional"
         }
       ]
     }

@@ -53,6 +53,12 @@ REQUIRED = (
     "scripts/brain-test.ps1",
     "scripts/jarvis-import.ps1",
     "migration/jarvis/jarvis-kit.ps1",
+    # Web research's optional search service (docs/RESEARCH_GATEWAY.md): research.ps1 refuses without these.
+    "docker-compose.research.yml",
+    "research/searxng/settings.yml",
+    "research/searxng/limiter.toml",
+    "scripts/compose-env.ps1",
+    "scripts/research.ps1",
 )
 FORBIDDEN_NAMES = (".env", "id_rsa", "id_ed25519")
 FORBIDDEN_SUFFIXES = (".key", ".p12", ".pfx", ".dump", ".sqlite", ".pyc")
@@ -148,6 +154,9 @@ def main() -> None:
     parser.add_argument("--out", default=str(ROOT / "releases"))
     args = parser.parse_args()
     version = check_versions()
+    if version.endswith("-dev") and Path(args.out).resolve() == (ROOT / "releases").resolve():
+        # A development build is never a release (install.ps1 refuses it too); a test may still package it elsewhere.
+        sys.exit(f"refusing to build the package: {version} is a development build, not a release (no zip in releases/)")
     files = candidate_files()
     check(files)
 

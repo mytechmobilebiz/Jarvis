@@ -18,7 +18,7 @@ function New-Secret([int]$bytes) {
 if ($AddMissing) {
   if (-not (Test-Path $envFile)) { Write-Host "No .env to upgrade; run init-env.ps1 without -AddMissing." -ForegroundColor Yellow; exit 1 }
   # Only keys that can safely start with a fresh value. Existing lines are never changed.
-  $upgradeKeys = [ordered]@{ "CC_SECRETS_KEY" = 32; "CREDIT_REPAIR_DB_PASSWORD" = 24; "CREDIT_REPAIR_DATA_KEY" = 32 }
+  $upgradeKeys = [ordered]@{ "CC_SECRETS_KEY" = 32; "CREDIT_REPAIR_DB_PASSWORD" = 24; "CREDIT_REPAIR_DATA_KEY" = 32; "SEARXNG_SECRET" = 32 }
   $present = @{}
   foreach ($line in Get-Content $envFile) {
     if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$' -and $Matches[2].Trim()) { $present[$Matches[1]] = $true }
@@ -64,6 +64,9 @@ CREDIT_REPAIR_DATA_KEY=$(New-Secret 32)
 N8N_WEBHOOK_SECRET=$(New-Secret 32)
 N8N_ENCRYPTION_KEY=$(New-Secret 32)
 N8N_OWNER_PASSWORD=$n8nPassword
+
+# Web research's private search service (SearXNG); used only once it is switched on with scripts\research.ps1.
+SEARXNG_SECRET=$(New-Secret 32)
 
 # Set to true once the dashboard is served over HTTPS.
 COOKIE_SECURE=false

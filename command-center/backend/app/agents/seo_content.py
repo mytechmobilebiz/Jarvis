@@ -17,6 +17,7 @@ from .. import tasks as task_service
 from ..models import Server, Site
 from .base import AgentContext, AgentResult, BaseAgent, Intent
 from .content import ContentCapabilities
+from .research import TopicResearchCapabilities
 from .seo import SEOCapabilities
 
 
@@ -46,7 +47,7 @@ async def publish_context(session: AsyncSession, params: dict[str, Any], *, lock
     }
 
 
-class SEOContentAgent(SEOCapabilities, ContentCapabilities, BaseAgent):
+class SEOContentAgent(TopicResearchCapabilities, SEOCapabilities, ContentCapabilities, BaseAgent):
     name = "seo_content"
     title = "SEO & Content"
     description = (

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api, type SupervisorRequest, type Task } from "../api";
 import { useAuth } from "../App";
 import { ErrorNote, Pill } from "../components";
+import { taskCitations } from "../citations";
 import { usePoll } from "../hooks";
 import { Icon } from "../icons";
 import { speechSupported, useSpeech } from "./useSpeech";
@@ -37,6 +38,7 @@ function RequestResult({ id, onClose }: { id: number; onClose: () => void }) {
   }, [req]);
   const steps = (detail.data?.tasks ?? []).filter((t) => !(t.agent === "supervisor" && ["plan_request", "summarize_request"].includes(t.capability)));
   const waiting = steps.filter((t) => t.status === "awaiting_approval").length;
+  const sources = steps.reduce((n, t) => n + taskCitations(t).length, 0);
   return (
     <div className="command-result" role="status" aria-live="polite">
       <div className="command-result-head">
@@ -57,6 +59,11 @@ function RequestResult({ id, onClose }: { id: number; onClose: () => void }) {
             </li>
           ))}
         </ul>
+      ) : null}
+      {sources ? (
+        <p className="muted small">
+          {sources} web source{sources === 1 ? "" : "s"} (unverified): listed under the request in AI Supervisor.
+        </p>
       ) : null}
       <div className="command-result-foot">
         {waiting ? (

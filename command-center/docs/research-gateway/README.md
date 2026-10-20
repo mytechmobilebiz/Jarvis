@@ -1,13 +1,14 @@
-# Research Gateway: proposed SearXNG files (not in use)
+# Research Gateway: the SearXNG files have moved
 
-These are the copy-ready files of section 2 of
-[../RESEARCH_GATEWAY_PLAN.md](../RESEARCH_GATEWAY_PLAN.md), kept here for review.
-Nothing uses them: no script, compose file or installer refers to this folder, and
-nothing is installed until the owner approves the plan and a tested 0.7.0 release.
+The proposed files that were reviewed here are now in their real places
+(0.7.0-dev, unchanged from the reviewed copies):
 
-- `docker-compose.research.yml`: the optional overlay (in the plan it lives next to
-  `docker-compose.yml` and is switched on by `scripts\research.ps1 -Enable`).
-- `searxng/settings.yml` and `searxng/limiter.toml`: the read-only SearXNG
-  configuration (in the plan, `research/searxng/`).
+- [`../../docker-compose.research.yml`](../../docker-compose.research.yml): the
+  optional overlay, switched on by `scripts\research.ps1 -Enable`.
+- [`../../research/searxng/settings.yml`](../../research/searxng/settings.yml)
+  and [`limiter.toml`](../../research/searxng/limiter.toml): the read-only
+  SearXNG configuration.
 
-Sandbox runs of exactly these files: [S3] in the plan's evidence table.
+What the development build contains and how it is switched on:
+[../RESEARCH_GATEWAY.md](../RESEARCH_GATEWAY.md). The design:
+[../RESEARCH_GATEWAY_PLAN.md](../RESEARCH_GATEWAY_PLAN.md).

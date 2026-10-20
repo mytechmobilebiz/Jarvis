@@ -10,6 +10,11 @@ from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SESSION_COOKIE_DEFAULT = "cc_session"
+# The Research Gateway's search service: the private SearXNG container, on the worker's "research" network only. The
+# address is fixed (check-config refuses any other SEARXNG_URL, and the gateway refuses to search with one), so a
+# query can never go to a public SearXNG. Monitoring may never treat these hosts as allowed private hosts.
+SEARXNG_URL = "http://searxng:8080"
+RESEARCH_HOSTS = frozenset({"searxng", "research-fetch"})
 # A cookie name is an HTTP token; this is a safe subset of one (no separators, quotes, spaces or controls).
 COOKIE_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
 INSTANCE_LABEL = re.compile(r"[\x20-\x7e]*")
@@ -119,6 +124,10 @@ class Settings(BaseSettings):
     wp_core_version_check: bool = True
     wp_version_api_url: str = "https://api.wordpress.org/core/version-check/1.7/"
 
+    # Research Gateway (app/research): fixed, see SEARXNG_URL. Whether research is on is not a deployment setting:
+    # an admin switches it in the Research Center (off by default).
+    searxng_url: str = SEARXNG_URL
+
     @field_validator("session_cookie_name")
     @classmethod
     def _cookie_name_is_a_token(cls, value: str) -> str:
@@ -136,7 +145,10 @@ class Settings(BaseSettings):
 
     @property
     def allowed_private_hosts(self) -> set[str]:
-        return {h.strip().lower() for h in self.monitor_allowed_private_hosts.split(",") if h.strip()}
+        """MONITOR_ALLOWED_PRIVATE_HOSTS, never with the research containers: monitoring's check_url (which n8n can
+        start) must not reach SearXNG without the research screen."""
+        hosts = {h.strip().lower() for h in self.monitor_allowed_private_hosts.split(",") if h.strip()}
+        return {h for h in hosts if h.rstrip(".") not in RESEARCH_HOSTS}
 
     @property
     def ssh_private_hosts(self) -> set[str]:

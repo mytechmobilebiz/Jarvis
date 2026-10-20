@@ -16,6 +16,12 @@ Set-Location $root
 $scripts = Join-Path $root "scripts"
 function Step($text) { Write-Host "`n=== $text ===" -ForegroundColor Cyan }
 function Fail($text) { Write-Host "INSTALL STOPPED: $text" -ForegroundColor Red; exit 1 }
+
+# A development build (VERSION ends in -dev) is for the sandbox's tests only, never for a PC.
+$version = if (Test-Path (Join-Path $root "VERSION")) { (Get-Content (Join-Path $root "VERSION") -TotalCount 1).Trim() } else { "" }
+if ($version -match '-dev$' -and $env:CC_ALLOW_DEV_BUILD -ne "1") {
+  Fail "this folder holds version $version, a development build, not for installation. Nothing was changed"
+}
 # Before each script below: a script that cannot run at all (a parse error, a missing file) sets no exit code
 # of its own, so this 1 stays and counts as a failure. Each script ends with exit 0 when it succeeds.
 
@@ -44,6 +50,8 @@ if (Test-Path (Join-Path $root ".env")) {
   & (Join-Path $scripts "init-env.ps1") -AdminEmail $AdminEmail
   if ($LASTEXITCODE -ne 0) { Fail "could not write .env" }
 }
+. (Join-Path $scripts "compose-env.ps1")
+$null = Use-ComposeEnv $root
 docker compose config --quiet
 if ($LASTEXITCODE -ne 0) { Fail "docker compose rejected the configuration (see the message above)" }
 

@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from ..config import Settings
     from ..integrations import IntegrationHub
     from ..llm.base import LLMProvider
+    from ..research import ResearchClient
     from .http import ReadOnlyHttpClient
 
 log = logging.getLogger(__name__)
@@ -86,15 +87,31 @@ class NoParams(Params):
     pass
 
 
+@dataclass(frozen=True)
+class ResearchUse:
+    """Declares that a capability searches the public web through the Research Gateway (app/research).
+
+    Such a capability runs with a smaller context (app/worker/runner.py): ctx.research, and no SSH, integrations, AI
+    model, HTTP client or memory, so nothing but what a person typed can reach a query. It is never scheduled, and its
+    risk is READ: it can never start anything that needs an approval. Page fetching is not part of this release.
+    """
+
+    search: bool = True
+
+
 @dataclass
 class AgentContext:
-    """Everything a capability handler may use. Handlers get no other way out."""
+    """Everything a capability handler may use. Handlers get no other way out.
+
+    A research capability (ResearchUse) gets the reduced context: http, llm, integrations, ssh and memory are None and
+    research is its client of the Research Gateway; every other capability gets research=None.
+    """
 
     session: AsyncSession
     settings: Settings
-    http: ReadOnlyHttpClient
-    llm: LLMProvider
-    integrations: IntegrationHub
+    http: ReadOnlyHttpClient | None
+    llm: LLMProvider | None
+    integrations: IntegrationHub | None
     task_id: int | None = None
     request_id: int | None = None
     approved_by: str = ""  # set only when a human approved this task
@@ -107,6 +124,8 @@ class AgentContext:
     # This agent's read-only view of the JARVIS Brain (app/brain/store.py), through its access policy; None for agents
     # without a policy (test stand-ins). Memory is reference data: it never decides what a capability may do.
     memory: AgentMemory | None = None
+    # Web search through the Research Gateway, tied to this agent and task; only for capabilities declaring research.
+    research: ResearchClient | None = None
 
     def time_left(self) -> float | None:
         if self.deadline is None:
@@ -130,6 +149,7 @@ class Capability:
     method_name: str
     examples: tuple[str, ...] = ()
     timeout_seconds: int | None = None  # overrides TASK_TIMEOUT_SECONDS for slow work
+    research: ResearchUse | None = None  # searches the web: the reduced context, never scheduled
 
     def params_schema(self) -> dict[str, Any]:
         return self.params_model.model_json_schema()
@@ -143,6 +163,7 @@ def capability(
     params: type[Params] = NoParams,
     examples: tuple[str, ...] = (),
     timeout_seconds: int | None = None,
+    research: ResearchUse | None = None,
 ) -> Callable[[Handler], Handler]:
     def decorate(fn: Handler) -> Handler:
         fn.__capability__ = {  # type: ignore[attr-defined]
@@ -152,6 +173,7 @@ def capability(
             "params_model": params,
             "examples": examples,
             "timeout_seconds": timeout_seconds,
+            "research": research,
         }
         return fn
 
@@ -236,6 +258,7 @@ class BaseAgent:
                     "description": c.description,
                     "risk": c.risk.value,
                     "requires_approval": c.risk.requires_approval,
+                    "research": c.research is not None,
                     "params_schema": c.params_schema(),
                     "examples": list(c.examples),
                 }

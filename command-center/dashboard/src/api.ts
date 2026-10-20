@@ -76,6 +76,8 @@ export interface Capability {
   description: string;
   risk: Risk;
   requires_approval: boolean;
+  /** Searches the public web through the Research Gateway (0.7.0 API; absent from older APIs). */
+  research?: boolean;
   params_schema: { properties?: Record<string, { type?: string; default?: unknown; description?: string; enum?: unknown[] }>; required?: string[] };
   examples: string[];
 }
@@ -860,4 +862,188 @@ export interface BrainAgent {
   used_by: string[];
   items?: { approved: number; by_kind?: Record<string, number> };
   sessions?: number;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Research Center (0.7.0 API, /api/research; docs/RESEARCH_GATEWAY_PLAN.md sections 3.6, 3.15, 3.16). Admins and operators
+// only: viewers and the n8n service token get 403 on every route. Web strings in these shapes (titles, snippets, domains,
+// URLs, engine names) are untrusted: render them as plain text, never through Markdown, and link only http(s) URLs.
+
+export type ResearchMode = "off" | "mock" | "live";
+export type ResearchState = "off" | "mock" | "healthy" | "degraded" | "all_engines_failing" | "unreachable" | "pc_offline";
+
+/** One numbered result (GET /api/research/queries/{id}, and a research task's result.data.citations without the snippet). */
+export interface ResearchCitation {
+  citation: string;
+  rank: number;
+  result_id: number | null;
+  source_id?: number | null;
+  url: string | null;
+  domain: string;
+  title: string;
+  snippet?: string;
+  type: string;
+  provider: string;
+  engines: string[];
+  published_at: string | null;
+  retrieved_at: string | null;
+  provider_score?: number | null;
+  /** instruction_like, redacted, withheld. */
+  flags: string[];
+  source_purged?: boolean;
+}
+
+/** A row of research_queries as the API shows it (no cache key, no money columns). A refused attempt holds no text. */
+export interface ResearchQuery {
+  id: number;
+  created_at: string;
+  finished_at: string | null;
+  task_id: number | null;
+  request_id: number | null;
+  agent: string;
+  capability: string;
+  requested_by: string;
+  trigger_source: string;
+  kind: string;
+  query_text: string | null;
+  blocked_by_ref: string | null;
+  options: Record<string, unknown>;
+  provider: string;
+  provider_version: string;
+  mode: string;
+  status: string;
+  reason_code: string;
+  http_status: number | null;
+  result_count: number;
+  cached: boolean;
+  engines: string[];
+  unresponsive: unknown[];
+  flags: string[];
+  latency_ms: number | null;
+}
+
+export interface ResearchSource {
+  id: number;
+  url: string;
+  url_sha256: string;
+  domain: string;
+  title: string;
+  site_name: string;
+  published_at: string | null;
+  first_retrieved_at: string;
+  last_retrieved_at: string;
+  provider: string;
+  flags: Record<string, unknown>;
+  status: string;
+  expires_at: string | null;
+  /** In the list only. */
+  times_cited?: number;
+}
+
+export interface ResearchBlocked {
+  id: number;
+  created_at: string;
+  agent: string;
+  capability: string;
+  requested_by: string;
+  trigger_source: string;
+  status: string;
+  reason_code: string;
+  /** "lead:42" or "ticket:7" when one caused the block. */
+  blocked_by_ref: string | null;
+  task_id: number | null;
+  request_id: number | null;
+}
+
+export interface ResearchEngineState {
+  state: string;
+  reason: string;
+  until: string | null;
+  failures: number;
+}
+
+/** GET /api/research/health (operators and admins). */
+export interface ResearchHealth {
+  mode: ResearchMode;
+  settings_readable: boolean;
+  entitled: boolean;
+  searxng: {
+    state: ResearchState;
+    message: string;
+    engines: Record<string, ResearchEngineState>;
+    enabled_engines: string[];
+    version: string;
+    pinned: string;
+    version_ok: boolean | null;
+    consecutive_failures: number;
+    probed_at: string | null;
+    last_ok_at: string | null;
+    last_error_at: string | null;
+    last_error: string;
+  };
+  internet: string;
+  deepseek: { available: boolean; note: string };
+  fetch: { available: boolean; note: string };
+}
+
+export interface ResearchUsageDay {
+  day: string;
+  provider: string;
+  agent: string;
+  kind: string;
+  reserved: number;
+  sent: number;
+  cache_hits: number;
+  blocked: number;
+  failed: number;
+}
+
+/** GET /api/research/usage: today's searches against the caps, and the daily totals (no money: SearXNG costs nothing). */
+export interface ResearchUsage {
+  mode: ResearchMode;
+  settings_readable: boolean;
+  provider: string;
+  today: {
+    day: string;
+    global: { used: number; cap: number };
+    person: { who: string; used: number; cap: number };
+    agents: { agent: string; used: number; cap: number; search_enabled: boolean }[];
+  };
+  from: string;
+  to: string;
+  days: ResearchUsageDay[];
+}
+
+/** GET/PATCH /api/research/settings (admins). */
+export interface ResearchSettings {
+  mode: ResearchMode;
+  readable: boolean;
+  entitled: boolean;
+  global_daily_cap: number;
+  person_daily_cap: number;
+  sources_days: number;
+  logs_days: number;
+  usage_days: number;
+  owner_terms: string[];
+  live_confirm: string;
+  provider: string;
+  engines: string[];
+  deepseek: string;
+  fetch: string;
+}
+
+/** One agent's row of the research matrix (GET/PATCH /api/research/policy, admins). */
+export interface ResearchPolicy {
+  agent: string;
+  title: string;
+  exists: boolean;
+  /** Credit Repair: never searches, enforced in code. */
+  never: boolean;
+  search_enabled: boolean;
+  search_daily_cap: number;
+  data_classes: string[];
+  blocked_domains: string[];
+  updated_by: string;
+  updated_at: string | null;
+  capabilities: string[];
 }

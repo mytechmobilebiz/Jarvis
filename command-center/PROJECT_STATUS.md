@@ -1,6 +1,6 @@
 # Project status: Infinite AI Command Center
 
-Last updated: 2026-10-20 (UTC) · version 0.6.1 · branch `jarvis-migration`
+Last updated: 2026-10-20 (UTC) · released: 0.6.1 on branch `jarvis-migration` · in development: 0.7.0-dev (the Research Gateway, branch `ccr-eb27a2af-8u7i39`; not a release)
 
 ## Where it is being built
 
@@ -31,6 +31,7 @@ Windows and servers" below.
 | 0.5.1: images can no longer be built from stale files without the build stopping; plugin updates only to the approved, current, newer WordPress.org release | **Done in the sandbox**; not yet run on the PC |
 | 0.6.0: the JARVIS Brain: memory with review and versions, JARVIS's conversation archive, the importer with a test copy, agents reading approved memory as reference | **Done in the sandbox**; waits for the owner's approval to install; no real JARVIS data imported |
 | 0.6.1: withholding a message that has promoted memory copies works and removes its text from every promoted copy, the history answers quoting them and the import records; database errors never log row values | **Done in the sandbox**; to install after 0.6.0 is verified on the PC; needed before the test-copy import |
+| 0.7.0-dev: the Research Gateway (private SearXNG search for agents, off by default; no DeepSeek, no page fetching) | **Built in the sandbox only** ([docs/RESEARCH_GATEWAY.md](docs/RESEARCH_GATEWAY.md)); not installed anywhere; `install.ps1` refuses a `-dev` build |
 | M5: real integrations (email, publishing, ads, notifications) | Needs owner approval and credentials |
 
 Estimated MVP completion: **about 85%**. This is an estimate, weighted by the
@@ -359,25 +360,21 @@ Known limits that remain (by design or not yet done):
   the exact action and target. Read-only monitoring may run automatically
   within the approved scope.
 
-## Proposed: Research Gateway (SearXNG primary, DeepSeek optional), waiting for approval
+## Research Gateway 0.7.0-dev (built in the sandbox, not installed)
 
-A plan only, nothing built: [docs/RESEARCH_GATEWAY_PLAN.md](docs/RESEARCH_GATEWAY_PLAN.md),
-with the proposed SearXNG files in [docs/research-gateway/](docs/research-gateway/).
+The owner approved the SearXNG-first direction on 2026-10-20 (DeepSeek, page fetching, paid search APIs and recurring
+searches excluded) and asked for it to be prepared in an isolated environment only. The development build is done
+and tested in the sandbox: [docs/RESEARCH_GATEWAY.md](docs/RESEARCH_GATEWAY.md) says what it contains, every
+outbound data flow, the fail-closed rules and the rollback; the design is
+[docs/RESEARCH_GATEWAY_PLAN.md](docs/RESEARCH_GATEWAY_PLAN.md).
 
-- **What it proposes:**
-  - one gateway in the worker; agents get READ search capabilities that need
-    no approval and can never trigger an approval-gated action;
-  - a private SearXNG container (no published port, JSON only, hardened;
-    run three times in the sandbox);
-  - DeepSeek as an optional fallback later. It is NO-GO for now: its
-    documentation was only seen through search excerpts, and its policies
-    store data in China.
-- **Outbound screening:** secrets, contacts, Credit Repair and private JARVIS
-  text never reach a search engine.
-- **Proposed release:** 0.7.0 for Research, with Messaging moving to 0.8.0.
-  That is one of the owner decisions in the plan's section 11.
+- Off by default; admins switch it to mock or live (live needs a typed confirmation); admins and operators only.
+- 50 searches a day at first (30 per person); query privacy screening; citations kept apart from AI text; search
+  log and cache; fail-closed at every step.
+- The private SearXNG container is an optional overlay switched on with `scripts\research.ps1 -Enable`.
+- **Not on the owner's PC.** The real connectivity test (plan 7.7) has not been run and needs its own approval.
 
-## Planned 0.7.0: Messaging & Channels (after 0.6.0 is verified)
+## Planned 0.8.0: Messaging & Channels (after 0.6.0 is verified; moved from 0.7.0)
 
 Builds on the existing approvals, secrets store, audit log, worker and n8n;
 nothing is rebuilt. Each phase is a tested, upgradeable step.
@@ -410,7 +407,7 @@ Fixed whatever the answers below: Credit Repair data never flows through
 messaging; nothing is sent or created with real providers without the
 owner's approval; the dashboard and the n8n editor stay bound to localhost.
 
-**Decisions needed before 0.7.0 starts:**
+**Decisions needed before 0.8.0 starts:**
 
 1. Who the "authorized customers" are and how they prove who they are (today
    clients are records, not users; giving them their own reports needs a
@@ -468,7 +465,7 @@ owner's approval; the dashboard and the n8n editor stay bound to localhost.
    values) and rotate the credentials it names.
 4. Only after that review and a separate approval: the live import.
 5. Still open from before: the items in docs/REFERENCE_DESIGN_GAP.md, the DNS
-   inventory for remote access (docs/REMOTE_ACCESS_PLAN.md), the six 0.7.0
+   inventory for remote access (docs/REMOTE_ACCESS_PLAN.md), the six 0.8.0
    messaging decisions above, and a test server for SERVER_SETUP.md.
 6. Next development, after 0.6.0 is verified on the PC: whatever the owner
    decides from items 3 to 5, an owner-acknowledged administrator baseline,

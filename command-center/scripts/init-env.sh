@@ -15,7 +15,7 @@ secret() { python3 -c "import secrets; print(secrets.token_urlsafe($1))"; }
 if [[ "${1:-}" == "--add-missing" ]]; then
   [[ -e .env ]] || { echo "No .env to upgrade." >&2; exit 1; }
   added=()
-  for spec in CC_SECRETS_KEY:32 CREDIT_REPAIR_DB_PASSWORD:24 CREDIT_REPAIR_DATA_KEY:32; do
+  for spec in CC_SECRETS_KEY:32 CREDIT_REPAIR_DB_PASSWORD:24 CREDIT_REPAIR_DATA_KEY:32 SEARXNG_SECRET:32; do
     key="${spec%%:*}"
     if ! grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*[^[:space:]]" .env; then
       sed -i -E "/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*$/d" .env
@@ -55,6 +55,9 @@ CREDIT_REPAIR_DATA_KEY=$(secret 32)
 N8N_WEBHOOK_SECRET=$(secret 32)
 N8N_ENCRYPTION_KEY=$(secret 32)
 N8N_OWNER_PASSWORD=${N8N_OWNER_PASSWORD}
+
+# Web research's private search service (SearXNG); used only once it is switched on (scripts/research.ps1).
+SEARXNG_SECRET=$(secret 32)
 
 # Set to true once the dashboard is served over HTTPS.
 COOKIE_SECURE=false

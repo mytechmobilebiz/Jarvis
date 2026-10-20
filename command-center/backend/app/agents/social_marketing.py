@@ -17,6 +17,7 @@ from .. import tasks as task_service
 from .ads import AdsCapabilities
 from .base import AgentContext, AgentResult, BaseAgent, Finding, Intent
 from .content import PLATFORMS, SocialCapabilities
+from .research import TrendResearchCapabilities
 
 SAMPLE = "[Sample data]"
 # Postonomous has no account settings yet: the live adapter has not been built.
@@ -52,7 +53,7 @@ def label_sample_findings(result: AgentResult) -> AgentResult:
     return result.model_copy(update={"findings": findings})
 
 
-class SocialMarketingAgent(SocialCapabilities, AdsCapabilities, BaseAgent):
+class SocialMarketingAgent(TrendResearchCapabilities, SocialCapabilities, AdsCapabilities, BaseAgent):
     name = "social_marketing"
     title = "Social Media & Marketing (Postonomous)"
     description = (

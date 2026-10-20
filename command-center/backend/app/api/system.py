@@ -10,6 +10,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import __version__, audit, customer_settings, licensing
+from .. import tasks as task_service
 from ..agents.monitoring import connectivity
 from ..config import Settings, get_settings
 from ..models import (
@@ -211,6 +212,9 @@ async def patch_schedule(
     if schedule is None:
         raise HTTPException(404, "no such schedule")
     changes = body.model_dump(exclude_none=True)
+    refused = task_service.schedulable(schedule.agent, schedule.capability)
+    if body.enabled and refused:
+        raise HTTPException(400, refused)
     if body.cron is not None:
         if not valid_cron(body.cron):
             raise HTTPException(400, f"invalid cron expression: {body.cron!r}")

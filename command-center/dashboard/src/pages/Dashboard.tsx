@@ -3,7 +3,19 @@
 // missing, stale or not measurable says so (docs/REFERENCE_DESIGN_GAP.md).
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type ActivityRange, type Agent, type Integration, type Schedule, type Server, type Site, type SystemStatus, type Task, type TaskActivity } from "../api";
+import {
+  api,
+  type ActivityRange,
+  type Agent,
+  type Integration,
+  type ResearchHealth,
+  type Schedule,
+  type Server,
+  type Site,
+  type SystemStatus,
+  type Task,
+  type TaskActivity,
+} from "../api";
 import { useAuth } from "../App";
 import ActiveWorkflows from "../dashboard/ActiveWorkflows";
 import AgentCards from "../dashboard/AgentCards";
@@ -63,6 +75,8 @@ export default function Dashboard({ status, statusMeta }: { status: SystemStatus
   const servers = usePoll(() => api.get<{ servers: Server[] }>("/api/servers"), 60_000);
   // The integrations list asks n8n for its workflows on every call, so it is read only once a minute.
   const integrations = usePoll(() => api.get<{ integrations: Integration[] }>("/api/integrations"), 60_000);
+  // Web research's state is for admins and operators only (the API refuses viewers): a viewer's dashboard never asks.
+  const research = usePoll(() => (canOperate ? api.get<ResearchHealth>("/api/research/health") : Promise.resolve(null)), canOperate ? 60_000 : 0, [canOperate]);
 
   function setRange(r: ActivityRange) {
     setRangeState(r);
@@ -81,6 +95,7 @@ export default function Dashboard({ status, statusMeta }: { status: SystemStatus
     { data: servers.data?.servers ?? null, error: servers.error },
     { data: integrations.data?.integrations ?? null, error: integrations.error },
     now,
+    canOperate ? { data: research.data, error: research.error } : undefined,
   );
 
   return (

@@ -20,6 +20,7 @@ from ..models import Site, SiteCheck
 from .base import AgentContext, AgentResult, ArtifactSpec, BaseAgent, EventSpec, Finding, Intent, NoParams, Params, Risk, capability
 from .monitoring.agent import SWEEP_TIMEOUT_SECONDS, check_sites
 from .monitoring.checks import SiteReport
+from .research import AdvisoryCapabilities
 from .wp_server import REPAIR_TIMEOUT, ServerSideCapabilities, repair_expectations, site_approval_context
 
 # What to do about each finding, and which approval-based repair (if any) applies.
@@ -115,7 +116,7 @@ def _fmt_time(value: Any) -> str:
     return str(value or "")[:16].replace("T", " ") + " UTC"
 
 
-class WordPressSecurityAgent(ServerSideCapabilities, BaseAgent):
+class WordPressSecurityAgent(AdvisoryCapabilities, ServerSideCapabilities, BaseAgent):
     name = "wordpress_security"
     title = "WordPress Security & Repair"
     description = (

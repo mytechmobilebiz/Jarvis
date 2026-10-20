@@ -297,6 +297,13 @@ after 28 days if not activated.
    `start.ps1` checks the token and `tunnel.conf` first, recreates the dashboard
    container (a few seconds) and starts cloudflared. The tunnel shows
    **Healthy** in the Zero Trust dashboard, with exactly **one** connector.
+   From 0.7.0 on, if web research's search service is switched on, `.env`
+   already has a `COMPOSE_FILE` line (with `docker-compose.research.yml`) and
+   the command above adds nothing: add `;docker-compose.tunnel.yml` to the end
+   of that line instead (entries are separated by `;`; keep the others), plus
+   the `CLOUDFLARED_TOKEN_FILE` line. Docker gives the research networks
+   addresses from its default pools; if one of them took `172.29.37.0/28`
+   (`research.ps1 -Enable` warns), Compose reports "Pool overlaps" here.
 4. Tunnel → Public hostname → Add: subdomain `command`, domain
    `infinitemarketingai.com`, service **HTTP** `dashboard:8081`. Under
    Additional settings → Access: **Protect with Access** on, team name, AUD tag.
@@ -428,6 +435,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1    # rec
 docker network rm infinite-command-center_tunnel
 Remove-Item -Recurse -Force C:\InfiniteAI\secrets    # only if remote access will not be used again
 ```
+
+With web research's search service switched on (0.7.0 and later), do not
+delete the whole `COMPOSE_FILE` line as above: remove only
+`;docker-compose.tunnel.yml` from it, so `docker-compose.research.yml` stays.
 
 `uninstall.ps1` does not know about remote access: before uninstalling, switch
 it off as above and delete the tunnel at Cloudflare.

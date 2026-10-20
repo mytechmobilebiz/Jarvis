@@ -12,6 +12,7 @@ decided here from its capability's declared risk, never by the caller.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -20,8 +21,8 @@ from sqlalchemy import and_, not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import events, licensing
-from .agents.base import Capability
-from .agents.registry import get_agent
+from .agents.base import Capability, Params
+from .agents.registry import all_agents, get_agent
 from .config import Settings
 from .models import AgentState, Approval, Schedule, SupervisorRequest, Task
 
@@ -32,6 +33,16 @@ TERMINAL = frozenset({"succeeded", "failed", "rejected", "cancelled"})
 # Supervisor bookkeeping tasks: they plan and summarise a request rather than
 # being part of its work, so they do not count toward its completion.
 SUPERVISOR_INTERNAL = frozenset({"plan_request", "summarize_request"})
+# The Research Gateway's connectivity test (app/research): only an admin queues it, from POST /api/research/test,
+# as a task with this source. Direct runs, both planners and retries are refused (create_task checks the source).
+RESEARCH_TEST = ("supervisor", "research_connectivity_test")
+RESEARCH_TEST_SOURCE = "research_test"
+# Capabilities nobody runs directly and no planner offers: the Supervisor's own bookkeeping and the connectivity test.
+INTERNAL = frozenset({*(("supervisor", c) for c in SUPERVISOR_INTERNAL), RESEARCH_TEST})
+# The phrases on which the Supervisor's rules plan a web search (app/supervisor/agent.py): a request using one asked
+# for a search, whatever was planned.
+WEB_SEARCH_PHRASE = r"\b(?:search\s+the\s+web\s+for|web\s+search\s*:|research\s+the\s+web\s+for)"
+WEB_SEARCH_ASKED = re.compile(WEB_SEARCH_PHRASE, re.IGNORECASE)
 
 
 class TaskError(ValueError):
@@ -52,6 +63,62 @@ def resolve_capability(agent_name: str, capability_name: str) -> Capability:
     return cap
 
 
+def is_internal(agent_name: str, capability_name: str) -> bool:
+    return (agent_name, capability_name) in INTERNAL
+
+
+def uses_research(agent_name: str, capability_name: str) -> bool:
+    """Whether this capability searches the web (it declares ResearchUse); False for unknown ones."""
+    agent = get_agent(agent_name)
+    cap = agent.capabilities().get(capability_name) if agent is not None else None
+    return cap is not None and cap.research is not None
+
+
+def research_capabilities() -> frozenset[tuple[str, str]]:
+    """(agent, capability) of every capability that searches the web."""
+    return frozenset((a.name, c.name) for a in all_agents().values() for c in a.capabilities().values()
+                     if c.research is not None)
+
+
+def _research_step(step: Any) -> bool:
+    return isinstance(step, dict) and uses_research(str(step.get("agent")), str(step.get("capability")))
+
+
+def hide_research_steps(plan: Any) -> Any:
+    """A Supervisor plan with its web-search steps' parameters and rationale left out (the query, and Claude's words
+    about it): as a viewer sees it, and as a purge leaves it stored."""
+    if not isinstance(plan, dict) or not isinstance(plan.get("steps"), list):
+        return plan
+    steps = [{**step, "params": {}, "rationale": ""} if _research_step(step) else step for step in plan["steps"]]
+    return {**plan, "steps": steps}
+
+
+def plan_mentions_research(plan: Any) -> bool:
+    """Whether a stored Supervisor plan has a web-search step, or a note about one it dropped."""
+    if not isinstance(plan, dict):
+        return False
+    steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
+    if any(_research_step(step) for step in steps):
+        return True
+    dropped = tuple(f"dropped {agent}.{capability}" for agent, capability in research_capabilities())
+    notes = plan.get("notes") if isinstance(plan.get("notes"), list) else []
+    return any(isinstance(note, str) and note.startswith(dropped) for note in notes)
+
+
+def request_searches_web(message: str, plan: Any) -> bool:
+    """Whether a Supervisor request asked for a web search (a web-search phrase) or had one planned or dropped. Its
+    message, reply and summary then hold the query, or words of it: viewers read none of them (owner decision 13)."""
+    return bool(WEB_SEARCH_ASKED.search(message or "")) or plan_mentions_research(plan)
+
+
+def schedulable(agent_name: str, capability_name: str) -> str:
+    """Why this capability may not run on a schedule; "" if it may. Research is never scheduled: recurring searches
+    are not part of this release (and the gateway refuses a scheduled task whatever happens here)."""
+    if uses_research(agent_name, capability_name):
+        return f"{agent_name}.{capability_name} searches the web, and web research never runs on a schedule"
+    return ""
+
+
 async def agent_enabled(session: AsyncSession, agent_name: str) -> bool:
     state = await session.get(AgentState, agent_name)
     return True if state is None else state.enabled
@@ -65,6 +132,17 @@ async def agent_unavailable(session: AsyncSession, settings: Settings, agent_nam
     if not entitlements.allows_agent(agent_name):
         return f"the {agent_name} agent is not included in the {entitlements.edition.title} edition"
     return ""
+
+
+def validate_params(agent: str, capability: str, params: dict[str, Any] | None) -> Params:
+    """The parameters as the capability's own model accepts them; TaskError otherwise. A research query is never
+    repeated in the error (it may be what the screen would refuse)."""
+    cap = resolve_capability(agent, capability)
+    try:
+        return cap.params_model.model_validate(params or {})
+    except ValidationError as exc:
+        errors = exc.errors(include_url=False, include_input=cap.research is None)
+        raise TaskError(f"invalid parameters for {agent}.{capability}: {errors}") from exc
 
 
 def describe_action(agent: str, capability: str, params: dict[str, Any]) -> str:
@@ -107,10 +185,11 @@ async def create_task(
     retry_of: int | None = None,
 ) -> Task:
     cap = resolve_capability(agent, capability)
-    try:
-        validated = cap.params_model.model_validate(params or {})
-    except ValidationError as exc:
-        raise TaskError(f"invalid parameters for {agent}.{capability}: {exc.errors(include_url=False)}") from exc
+    if cap.research is not None and (schedule_id is not None or source == "schedule"):
+        raise TaskError(schedulable(agent, capability))
+    if (agent, capability) == RESEARCH_TEST and source != RESEARCH_TEST_SOURCE:
+        raise TaskError("the research connectivity test is started by an admin from the Research Center only")
+    validated = validate_params(agent, capability, params)
     unavailable = await agent_unavailable(session, settings, agent)
     if unavailable:
         raise TaskError(unavailable)

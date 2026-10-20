@@ -16,7 +16,7 @@ import signal
 import sys
 from typing import Any
 
-from .config import Settings, get_settings
+from .config import RESEARCH_HOSTS, SEARXNG_URL, Settings, get_settings
 
 MIN_SECRET = 24
 PLACEHOLDERS = ("REPLACE", "CHANGEME", "changeme", "example", "password")
@@ -51,6 +51,13 @@ def config_problems(settings: Settings) -> tuple[list[str], list[str]]:
             warnings.append("ANTHROPIC_API_KEY does not look like an Anthropic key (sk-ant-...)")
     else:
         warnings.append("ANTHROPIC_API_KEY not set: the supervisor will plan with rules (no model)")
+    if settings.searxng_url.rstrip("/") != SEARXNG_URL:
+        errors.append(f"SEARXNG_URL must be {SEARXNG_URL} (the private research container) or left unset: web "
+                      "research never goes to another search service")
+    listed = {h.strip().lower().rstrip(".") for h in settings.monitor_allowed_private_hosts.split(",") if h.strip()}
+    if listed & RESEARCH_HOSTS:
+        errors.append("MONITOR_ALLOWED_PRIVATE_HOSTS must not list " + " or ".join(sorted(listed & RESEARCH_HOSTS))
+                      + ": monitoring would reach the research service without its screen")
     if settings.environment == "production" and settings.cookie_secure is False:
         warnings.append("COOKIE_SECURE=false: fine for http://localhost, set true behind HTTPS")
     return errors, warnings

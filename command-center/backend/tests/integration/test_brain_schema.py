@@ -24,6 +24,8 @@ needs_docker = pytest.mark.skipif(not shutil.which("docker") and not REQUIRED,
 SCRATCH = os.environ["TEST_DATABASE_URL"].rsplit("/", 1)[1] + "_restore"
 PRE_BRAIN_DUMP = "/tmp/%s_pre_brain.dump" % SCRATCH
 DUMP_060 = "/tmp/%s_060.dump" % SCRATCH
+# Migrations of later releases (0008_research in 0.7.0) run after 0007 on every path these tests take.
+LATER = [p.stem for p in db.migration_files() if p.stem > "0007_brain_withhold"]
 OLD_VALUES = ("created", "imported", "edited", "approved", "rejected", "archived", "reopened", "deleted", "restored",
               "redacted", "reverted")
 CHANGE_CHECKS = ("SELECT c.conname, pg_get_constraintdef(c.oid) FROM pg_constraint c JOIN pg_attribute a ON "
@@ -201,7 +203,7 @@ async def test_0007_runs_twice_and_keeps_every_0_6_0_value(scratch):
 async def test_upgrade_from_0_5_0_applies_0006_and_0007_together(scratch):
     url = scratch
     await _install(url, "0006")
-    assert await _migrate(url) == ["0006_brain", "0007_brain_withhold"]
+    assert await _migrate(url) == ["0006_brain", "0007_brain_withhold", *LATER]
     assert await _migrate(url) == []
     conn = await asyncpg.connect(url)
     try:
@@ -220,7 +222,7 @@ async def test_upgrade_from_0_6_0_applies_0007_only(scratch):
             await _version_row(conn, "quarantined")
     finally:
         await conn.close()
-    assert await _migrate(url) == ["0007_brain_withhold"]
+    assert await _migrate(url) == ["0007_brain_withhold", *LATER]
     conn = await asyncpg.connect(url)
     try:
         await _version_row(conn, "quarantined")
@@ -237,7 +239,7 @@ async def test_a_0_6_0_backup_restored_over_0_6_1_gets_the_new_check_again(scrat
     await _install(url, "0007")  # 0.6.0
     dump = _pg(container, "pg_dump", "-U", "cc", "-Fc", "-f", DUMP_060, SCRATCH)
     assert dump.returncode == 0, dump.stderr
-    assert await _migrate(url) == ["0007_brain_withhold"]  # 0.6.1 installed
+    assert await _migrate(url) == ["0007_brain_withhold", *LATER]  # 0.6.1 or later installed
     restore = _pg(container, "pg_restore", "-U", "cc", "-d", SCRATCH, "--clean", "--if-exists",
                   "--single-transaction", "--exit-on-error", DUMP_060)
     assert restore.returncode == 0, restore.stderr
@@ -248,7 +250,7 @@ async def test_a_0_6_0_backup_restored_over_0_6_1_gets_the_new_check_again(scrat
         assert not await conn.fetchval("SELECT count(*) FROM schema_migrations WHERE version = '0007_brain_withhold'")
     finally:
         await conn.close()
-    assert await _migrate(url) == ["0007_brain_withhold"]  # the next start of 0.6.1
+    assert await _migrate(url) == ["0007_brain_withhold", *LATER]  # the next start
     conn = await asyncpg.connect(url)
     try:
         checks = await conn.fetch(CHANGE_CHECKS)

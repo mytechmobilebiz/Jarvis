@@ -1,7 +1,9 @@
 # Verifies a running Command Center end to end on this PC and prints PASS/FAIL.
 # It signs in, checks that the running API and dashboard are the version of
 # this folder, checks the worker, sends a test event through n8n and waits for
-# n8n's acknowledgement, and runs one supervisor request. It prints no secrets.
+# n8n's acknowledgement, and runs one supervisor request. Web research is reported for information only
+# (off, mock, or the search service's state): it fails only when the research API does not answer. It prints no
+# secrets.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke.ps1
 
@@ -69,6 +71,11 @@ Check "supervisor request" {
   $done = Wait-Until { $x = (Invoke-RestMethod "$base/api/supervisor/requests/$($req.id)" -WebSession $web).request; if ($x.status -in @("completed", "failed")) { $x } } 120 "the supervisor"
   if ($done.status -ne "completed") { throw "request ended as $($done.status): $($done.error)" }
   "request $($req.id) completed ($($done.planner))"
+}
+Check "web research (information only)" {
+  $h = Invoke-RestMethod "$base/api/research/health" -WebSession $web
+  if ($h.mode -eq "off") { "off" } elseif ($h.mode -eq "mock") { "mock (nothing leaves this PC)" }
+  else { "live, search service " + ([string]$h.searxng.state).Replace("_", " ") }
 }
 
 Write-Host ""

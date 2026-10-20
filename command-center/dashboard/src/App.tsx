@@ -17,6 +17,7 @@ import KnowledgeBase from "./pages/KnowledgeBase";
 import Leads from "./pages/Leads";
 import Login from "./pages/Login";
 import Outbox from "./pages/Outbox";
+import Research from "./pages/Research";
 import Schedules from "./pages/Schedules";
 import SeoMarketing from "./pages/SeoMarketing";
 import Servers from "./pages/Servers";
@@ -142,6 +143,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => Promise<void>
             <Route path="/tasks" element={<Tasks />} />
             <Route path="/supervisor" element={<Supervisor />} />
             <Route path="/brain" element={<Brain />} />
+            <Route path="/research" element={<Research />} />
             <Route path="/leads" element={<Leads />} />
             <Route path="/support" element={<Support />} />
             <Route path="/drafts" element={<Drafts />} />

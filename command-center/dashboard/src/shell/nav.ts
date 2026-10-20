@@ -9,6 +9,8 @@ export interface NavItem {
   title?: string;
   badge?: (s: SystemStatus) => number;
   adminOnly?: boolean;
+  /** Admins and operators only: hidden from viewers. */
+  operatorOnly?: boolean;
   sensitiveOnly?: boolean;
 }
 
@@ -46,6 +48,8 @@ export const OPS_NAV: NavItem[] = [
   { to: "/supervisor", label: "AI Supervisor", icon: "sparkles" },
   // Every signed-in user: the API scopes what each role sees (viewers: approved business knowledge only).
   { to: "/brain", label: "JARVIS Brain", icon: "brain" },
+  // Web research is for admins and operators; viewers do not see it at all (0.7.0, owner decision 13).
+  { to: "/research", label: "Research Center", icon: "globe", operatorOnly: true },
   { to: "/activity", label: "Activity log", icon: "history", adminOnly: true },
 ];
 
@@ -66,6 +70,7 @@ export const NAV: NavGroup[] = [
 
 export function visible(item: NavItem, user: User): boolean {
   if (item.adminOnly && user.role !== "admin") return false;
+  if (item.operatorOnly && user.role !== "admin" && user.role !== "operator") return false;
   if (item.sensitiveOnly && !(user.role === "admin" || user.can_access_sensitive)) return false;
   return true;
 }

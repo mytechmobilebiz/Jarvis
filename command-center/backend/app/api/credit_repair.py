@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit, credit_repair, licensing
 from ..config import Settings, get_settings
-from ..credit_repair import store
+from ..credit_repair import blind_index, store
 from ..models import AppSetting, User
 from .deps import OPERATOR_ROLES, Principal, client_ip, get_db, require_admin, require_user
 
@@ -132,6 +132,7 @@ async def create_client(body: ClientBody, principal: Principal = Depends(sensiti
         )
         s.add(client)
         await s.flush()
+        await blind_index.index_client(s, settings, cipher, client)  # the research screen's match-only index
         await store.log_access(s, principal.name, "create_client", client.id)
         return {"client": store.client_view(client, cipher)}
 
@@ -168,6 +169,7 @@ async def patch_client(client_id: int, body: ClientPatch, principal: Principal =
         for key, value in changes.items():
             setattr(client, key, value)
         client.updated_at = datetime.now(UTC)
+        await blind_index.index_client(s, settings, cipher, client)
         await store.log_access(s, principal.name, "update_client", client_id, fields=sorted(changes))
         return {"client": store.client_view(client, cipher)}
 

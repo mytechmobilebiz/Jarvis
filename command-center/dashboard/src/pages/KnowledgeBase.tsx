@@ -554,7 +554,7 @@ const ARTICLES: Article[] = [
 ];
 
 const ARTICLE_IDS = new Set(ARTICLES.map((a) => a.id));
-const INTERNAL_CAPS = new Set(["supervisor.plan_request", "supervisor.summarize_request"]);
+const INTERNAL_CAPS = new Set(["supervisor.plan_request", "supervisor.summarize_request", "supervisor.research_connectivity_test"]);
 const AGENT_ICON: Record<string, IconName> = {
   supervisor: "sparkles",
   wordpress_security: "shield",

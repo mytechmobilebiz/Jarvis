@@ -3,9 +3,10 @@ import type { Server, Site, Task, User } from "../api";
 import { humanize } from "../agentStyle";
 import { hidesTaskDetail } from "../work";
 
-/** The AI Supervisor's own planning and summary steps: bookkeeping, not work anyone asked for. */
+/** The AI Supervisor's own planning and summary steps: bookkeeping, not work anyone asked for; nor is the admin's research
+ * connectivity test (the task-activity chart leaves out the same three). */
 export function isInternal(t: Pick<Task, "agent" | "capability">): boolean {
-  return t.agent === "supervisor" && (t.capability === "plan_request" || t.capability === "summarize_request");
+  return t.agent === "supervisor" && ["plan_request", "summarize_request", "research_connectivity_test"].includes(t.capability);
 }
 
 export interface TaskContext {
@@ -100,6 +101,15 @@ export function taskText(t: Task, ctx: TaskContext): string {
       return "Leads overview";
     case "communications.support_overview":
       return "Support overview";
+    case "supervisor.web_search":
+      return on("Web search", str(p.query));
+    case "seo_content.research_topic":
+      return on("Topic research", str(p.query));
+    case "social_marketing.trend_research":
+      return on("Trend research", str(p.query));
+    case "wordpress_security.check_advisories":
+    case "server_management.check_advisories":
+      return on("Advisory search", [str(p.software), str(p.version)].filter(Boolean).join(" "));
     case "supervisor.daily_briefing":
       return "Daily briefing";
     case "supervisor.health_review":

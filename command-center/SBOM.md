@@ -1,4 +1,4 @@
-# Software bill of materials: Infinite AI Command Center 0.6.1
+# Software bill of materials: Infinite AI Command Center 0.7.0-dev
 
 Generated 2026-10-20 by `scripts/generate-sbom.py`; machine-readable copy: `sbom.cdx.json` (CycloneDX 1.5).
 
@@ -16,6 +16,7 @@ No third-party component is vendored into this repository: each is fetched from 
 | node | 22-alpine | MIT (Node.js) + Alpine package licenses | build only | builds the dashboard; not in the shipped image |
 | wordpress | 6-apache | GPL-2.0-or-later | test only | throwaway site in docker-compose.testing.yml |
 | mariadb | 11 | GPL-2.0 | test only | database for the throwaway WordPress |
+| searxng/searxng | 2026.10.4-d48c4b555 | AGPL-3.0-or-later | optional | web research search service; pulled only when research is switched on (docker-compose.research.yml) |
 
 ## Python packages (installed in the backend image)
 
@@ -317,3 +318,4 @@ Not distributed: they run during `npm run build` / `npm test` and are absent fro
 - Licenses to review before distribution: none reported as unknown.
 - n8n is fair-code (Sustainable Use License): see COMMERCIALIZATION.md before any commercial distribution.
 - GPL components (WordPress, MariaDB) appear only in the test overlay and are never shipped.
+- SearXNG (AGPL-3.0-or-later) runs from its official image, unmodified, only when web research is switched on; each installation pulls it from the registry, and it is never bundled or re-hosted.

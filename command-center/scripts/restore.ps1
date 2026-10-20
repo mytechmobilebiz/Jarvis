@@ -11,6 +11,8 @@ param(
 
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+. (Join-Path $PSScriptRoot "compose-env.ps1")
+$null = Use-ComposeEnv $root
 function Fail($text) { Write-Host "RESTORE STOPPED: $text" -ForegroundColor Red; exit 1 }
 
 if (-not (Test-Path $BackupFolder -PathType Container)) { Fail "no such folder: $BackupFolder" }

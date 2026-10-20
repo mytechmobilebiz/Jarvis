@@ -10,7 +10,7 @@ from .. import tasks as task_service
 from ..config import Settings, get_settings
 from ..models import SupervisorRequest, Task
 from .deps import OPERATOR_ROLES, Principal, client_ip, get_db, require_operator_or_service, require_user, to_dict
-from .work import task_view
+from .work import WEB_SEARCH_VIEWER_TEXT, task_view, viewer_plan
 
 # What a viewer reads instead of the summary of a request answered from JARVIS's history (supervisor.recall): the
 # answer quotes archived conversations, which only operators and admins may read.
@@ -18,9 +18,19 @@ LOCAL_ONLY_VIEWER_SUMMARY = "Answer about JARVIS's history (visible to operators
 
 
 def request_view(req: SupervisorRequest, principal: Principal) -> dict:
+    """A request as the API returns it. A viewer reads no local-only answer, no planner notes, and nothing of a web
+    search (owner decision 13): no step's parameters or rationale, and, when the request asked for, planned or dropped
+    one, a fixed text instead of its message, reply and summary (they hold the query, or words of it)."""
     out = to_dict(req)
-    if principal.role not in OPERATOR_ROLES and (req.plan or {}).get("local_only"):
-        out["summary"] = LOCAL_ONLY_VIEWER_SUMMARY
+    if principal.role not in OPERATOR_ROLES:
+        if (req.plan or {}).get("local_only"):
+            out["summary"] = LOCAL_ONLY_VIEWER_SUMMARY
+        searched = task_service.request_searches_web(req.message, req.plan)
+        out["plan"] = viewer_plan(req.plan, searched)
+        if searched:
+            out["message"] = WEB_SEARCH_VIEWER_TEXT
+            out["reply"] = WEB_SEARCH_VIEWER_TEXT if req.reply else req.reply
+            out["summary"] = WEB_SEARCH_VIEWER_TEXT if req.summary else req.summary
     return out
 
 router = APIRouter(prefix="/api/supervisor", tags=["supervisor"])

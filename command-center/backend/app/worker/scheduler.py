@@ -40,6 +40,13 @@ async def enqueue_due(settings: Settings, now: datetime | None = None) -> int:
                 # Newly created or re-enabled: wait for the first real slot.
                 schedule.next_run_at = next_fire(schedule.cron, now)
                 continue
+            refused = task_service.schedulable(schedule.agent, schedule.capability)
+            if refused:
+                # Research is never scheduled: nothing is queued, whatever the schedule row says.
+                log.warning("schedule %s skipped: %s", schedule.name, refused)
+                schedule.last_run_at = now
+                schedule.next_run_at = next_fire(schedule.cron, now)
+                continue
             busy = await session.scalar(
                 select(Task.id)
                 .where(Task.schedule_id == schedule.id, Task.status.in_(("queued", "running", "awaiting_approval")))

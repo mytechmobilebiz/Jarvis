@@ -173,12 +173,17 @@ def test_requests_that_do_not_name_jarvis_route_as_before(request_text, routed):
 
 def test_the_registry_is_unchanged_but_for_the_recall_capability():
     from app.api.stats import CATEGORY_OF
+    from app.tasks import research_capabilities
 
-    counts = {name: len(agent.capabilities()) for name, agent in all_agents().items()}
+    # 0.7.0 adds only the web research capabilities (tests/unit/test_research_wiring.py lists them).
+    research = research_capabilities()
+    counts = {name: len([c for c in agent.capabilities() if (name, c) not in research])
+              for name, agent in all_agents().items()}
     assert counts == {"supervisor": 5, "wordpress_security": 13, "seo_content": 4, "social_marketing": 4,
                       "server_management": 5, "communications": 8, "monitoring": 6, "credit_repair": 3}
     supervisor = all_agents()["supervisor"].capabilities()
-    assert list(supervisor) == ["plan_request", "summarize_request", "daily_briefing", "health_review", "recall"]
+    assert [c for c in supervisor if ("supervisor", c) not in research] == [
+        "plan_request", "summarize_request", "daily_briefing", "health_review", "recall"]
     assert supervisor["recall"].risk.value == "read" and not supervisor["recall"].risk.requires_approval
     assert CATEGORY_OF[("supervisor", "recall")] == "reports"
     assert "credit_repair" not in supervisor["recall"].description.lower().replace(" ", "_")

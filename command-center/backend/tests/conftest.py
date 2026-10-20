@@ -85,7 +85,8 @@ async def clean_db(migrated, settings):
     from app.credit_repair import store as cr_store
 
     async with cr_store._engines[settings.credit_repair_database_url][0].begin() as conn:
-        await conn.execute(text("TRUNCATE cr_clients, cr_items, cr_letters, cr_access_log RESTART IDENTITY CASCADE"))
+        await conn.execute(text("TRUNCATE cr_clients, cr_items, cr_letters, cr_access_log, cr_research_index "
+                                "RESTART IDENTITY CASCADE"))
     await ensure_admin(settings)
     from app import customer_settings, licensing
     from app.agents.monitoring import agent as wp_agent

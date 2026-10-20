@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { api, type Agent, type Approval, type Artifact, type Capability, type Task, type TaskLog, type User } from "./api";
 import { useAuth } from "./App";
 import { ErrorNote, Findings, JsonView, Markdown, Modal, Pill, RiskBadge, Time } from "./components";
+import { CitationList, DEEPSEEK_NOTE, SENT_NOTICE, taskCitations, taskQueryId } from "./citations";
 import { usePoll } from "./hooks";
 import { isSample, SampleDataPill } from "./pages/shared";
 
@@ -76,6 +77,15 @@ export function RunModal({ agent, cap, onClose }: { agent: Agent; cap: Capabilit
       <p>
         <RiskBadge risk={cap.risk} />
       </p>
+      {cap.research ? (
+        <div className="alert alert-info small">
+          {SENT_NOTICE}, once the query has passed its check (a refused query's text is never stored). {DEEPSEEK_NOTE}. The{" "}
+          <Link to="/research?tab=new" onClick={onClose}>
+            Research Center
+          </Link>{" "}
+          has a form for this, with a check as you type.
+        </div>
+      ) : null}
       {props.length ? (
         <ul className="params-help">
           {props.map(([k, p]) => (
@@ -265,6 +275,21 @@ export function TaskDetail({ id, onClose }: { id: number; onClose: () => void })
               <h3>Findings</h3>
               <Findings findings={task.result.findings} />
             </>
+          ) : null}
+          {taskCitations(task).length ? (
+            <section className="memory-notes" aria-label="Web sources (unverified)">
+              <h3>Web sources (unverified)</h3>
+              <p className="muted small">
+                Pages the web search returned: reference only, unchecked, and never read by an AI model.
+                {taskQueryId(task) ? (
+                  <>
+                    {" "}
+                    <Link to={`/research?tab=history&query=${taskQueryId(task)}`}>Open search #{taskQueryId(task)}</Link> for the snippets.
+                  </>
+                ) : null}
+              </p>
+              <CitationList citations={taskCitations(task)} snippets={false} />
+            </section>
           ) : null}
           {memoryNotes(task).length ? (
             <section className="memory-notes" aria-label="Reference notes from memory">

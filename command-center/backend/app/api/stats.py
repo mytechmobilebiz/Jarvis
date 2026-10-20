@@ -14,8 +14,9 @@ from .deps import Principal, get_db, require_user
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
-# Planning and summarising are the supervisor's own bookkeeping, not work anyone asked for.
-INTERNAL = {("supervisor", "plan_request"), ("supervisor", "summarize_request")}
+# Planning and summarising are the supervisor's own bookkeeping, not work anyone asked for; nor is the admin's
+# research connectivity test.
+INTERNAL = {("supervisor", "plan_request"), ("supervisor", "summarize_request"), ("supervisor", "research_connectivity_test")}
 
 # Display categories for finished tasks, in legend order. Every registered capability must map to one
 # (tests/unit/test_stats.py fails otherwise), so a new capability cannot silently vanish from the chart.
@@ -37,14 +38,17 @@ CATEGORY_OF: dict[tuple[str, str], str] = {
     ("wordpress_security", "security_scan"): "website_scans",
     ("wordpress_security", "security_scan_all"): "website_scans",
     ("wordpress_security", "wp_diagnose"): "website_scans",
+    ("wordpress_security", "check_advisories"): "website_scans",
     ("seo_content", "audit_page"): "seo",
     ("seo_content", "keyword_brief"): "seo",
+    ("seo_content", "research_topic"): "seo",
     ("seo_content", "draft_blog_post"): "content",
     ("seo_content", "publish_draft"): "content",
     ("social_marketing", "draft_social_posts"): "content",
     ("social_marketing", "publish_draft"): "content",
     ("social_marketing", "change_budget"): "content",
     ("social_marketing", "ads_report"): "content",
+    ("social_marketing", "trend_research"): "content",
     ("communications", "triage_ticket"): "email",
     ("communications", "draft_reply"): "email",
     ("communications", "send_reply"): "email",
@@ -57,6 +61,7 @@ CATEGORY_OF: dict[tuple[str, str], str] = {
     ("server_management", "scan_host_key"): "server_checks",
     ("server_management", "server_overview"): "server_checks",
     ("server_management", "check_services"): "server_checks",
+    ("server_management", "check_advisories"): "server_checks",
     ("monitoring", "check_server"): "server_checks",
     ("wordpress_security", "repair_restore_site_url"): "repairs",
     ("wordpress_security", "repair_deactivate_plugin"): "repairs",
@@ -74,6 +79,7 @@ CATEGORY_OF: dict[tuple[str, str], str] = {
     ("supervisor", "daily_briefing"): "reports",
     ("supervisor", "health_review"): "reports",
     ("supervisor", "recall"): "reports",
+    ("supervisor", "web_search"): "reports",
     ("credit_repair", "compliance_review"): "credit_repair",
     ("credit_repair", "draft_dispute_letters"): "credit_repair",
     ("credit_repair", "mail_dispute_letter"): "credit_repair",

@@ -1,0 +1,107 @@
+/* Web sources (citations.tsx; prefix cite-): plain text from the internet, labelled as unverified. Colours come from the
+   tokens in styles.css. */
+.cite-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.cite {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+.cite:last-child {
+  border-bottom: 0;
+}
+.cite-head {
+  overflow-wrap: anywhere;
+}
+.cite-label {
+  color: var(--warn-text);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.cite-title {
+  color: var(--text);
+  font-weight: 600;
+}
+.cite-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  margin-top: 3px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.cite-domain {
+  color: var(--text-2);
+  font-weight: 600;
+}
+.cite-url {
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.cite-url a {
+  color: var(--primary-text);
+}
+.cite-source {
+  color: var(--primary-text);
+  font-weight: 600;
+  word-break: normal;
+}
+.cite-snippet {
+  margin: 6px 0 0;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.cite-flags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  vertical-align: middle;
+}
+.cite-flag {
+  display: inline-block;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-2);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.cite-flag-risk {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: var(--warn-soft);
+  color: var(--warn-text);
+}
+
+/* under a Supervisor reply */
+.cite-section {
+  margin-left: 42px;
+  padding: 12px 14px;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: var(--radius);
+  background: rgba(245, 158, 11, 0.04);
+  min-width: 0;
+}
+.cite-section h3 {
+  margin: 0 0 4px;
+  font-size: var(--fs-body);
+}
+.cite-section > p {
+  margin: 0 0 6px;
+}
+.cite-group + .cite-group {
+  margin-top: 10px;
+}
+
+@media (max-width: 760px) {
+  .cite-section {
+    margin-left: 0;
+  }
+}

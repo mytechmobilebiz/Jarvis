@@ -6,10 +6,10 @@ it. tests/integration/test_schema.py checks the two stay in step.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, Computed, DateTime, ForeignKey, Integer, Text, func
+from sqlalchemy import BigInteger, Boolean, Computed, Date, DateTime, Double, ForeignKey, Integer, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -585,3 +585,137 @@ class BrainTombstone(Base):
     purged_at: Mapped[datetime] = _now_col()
     purged_by: Mapped[str] = mapped_column(Text, default="")
     reason: Mapped[str] = mapped_column(Text, default="")
+
+
+# --- Research Gateway (0008_research.sql) ----------------------------------------------------------------------
+
+
+class ResearchQuery(Base):
+    __tablename__ = "research_queries"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    created_at: Mapped[datetime] = _now_col()
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    task_id: Mapped[int | None] = mapped_column(BigInteger)  # not a foreign key: see 0008_research.sql
+    request_id: Mapped[int | None] = mapped_column(BigInteger)
+    agent: Mapped[str] = mapped_column(Text)
+    capability: Mapped[str] = mapped_column(Text, default="")
+    requested_by: Mapped[str] = mapped_column(Text, default="")
+    trigger_source: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(Text, default="search")
+    query_text: Mapped[str | None] = mapped_column(Text)
+    target_url: Mapped[str | None] = mapped_column(Text)
+    blocked_by_ref: Mapped[str | None] = mapped_column(Text)
+    options: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    provider: Mapped[str] = mapped_column(Text, default="")
+    provider_version: Mapped[str] = mapped_column(Text, default="")
+    mode: Mapped[str] = mapped_column(Text, default="off")
+    status: Mapped[str] = mapped_column(Text)
+    reason_code: Mapped[str] = mapped_column(Text, default="")
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    result_count: Mapped[int] = mapped_column(Integer, default=0)
+    cached: Mapped[bool] = mapped_column(Boolean, default=False)
+    engines: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    unresponsive: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    flags: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    cache_key: Mapped[str | None] = mapped_column(Text)
+    billable: Mapped[str] = mapped_column(Text, default="no")
+    unit_price_micro: Mapped[int | None] = mapped_column(BigInteger)
+    currency: Mapped[str] = mapped_column(Text, default="")
+    cost_micro: Mapped[int] = mapped_column(BigInteger, default=0)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    fallback_of: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class ResearchSource(Base):
+    __tablename__ = "research_sources"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    url: Mapped[str] = mapped_column(Text)
+    url_sha256: Mapped[str] = mapped_column(Text, unique=True)
+    domain: Mapped[str] = mapped_column(Text, default="")
+    title: Mapped[str] = mapped_column(Text, default="")
+    site_name: Mapped[str] = mapped_column(Text, default="")
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_retrieved_at: Mapped[datetime] = _now_col()
+    last_retrieved_at: Mapped[datetime] = _now_col()
+    provider: Mapped[str] = mapped_column(Text, default="")
+    fetched_text: Mapped[str | None] = mapped_column(Text)
+    content_sha256: Mapped[str] = mapped_column(Text, default="")
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    flags: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(Text, default="active")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    promoted_item_id: Mapped[int | None] = mapped_column(BigInteger)  # not a foreign key: see 0008_research.sql
+
+
+class ResearchResult(Base):
+    __tablename__ = "research_results"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    query_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("research_queries.id", ondelete="CASCADE"))
+    rank: Mapped[int] = mapped_column(Integer)
+    source_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("research_sources.id", ondelete="SET NULL"))
+    snippet: Mapped[str] = mapped_column(Text, default="")
+    provider_score: Mapped[float | None] = mapped_column(Double)
+    authority: Mapped[float | None] = mapped_column(Double)
+    engines: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    type: Mapped[str] = mapped_column(Text, default="web")
+    flags: Mapped[list[str]] = mapped_column(JSONB, default=list)
+
+
+class ResearchCache(Base):
+    __tablename__ = "research_cache"
+    cache_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    kind: Mapped[str] = mapped_column(Text)
+    provider: Mapped[str] = mapped_column(Text)
+    response: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = _now_col()
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    hits: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ResearchUsageDaily(Base):
+    __tablename__ = "research_usage_daily"
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    provider: Mapped[str] = mapped_column(Text, primary_key=True)
+    agent: Mapped[str] = mapped_column(Text, primary_key=True)
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)
+    reserved: Mapped[int] = mapped_column(Integer, default=0)
+    sent: Mapped[int] = mapped_column(Integer, default=0)
+    billable: Mapped[int] = mapped_column(Integer, default=0)
+    possibly_billable: Mapped[int] = mapped_column(Integer, default=0)
+    cache_hits: Mapped[int] = mapped_column(Integer, default=0)
+    blocked: Mapped[int] = mapped_column(Integer, default=0)
+    failed: Mapped[int] = mapped_column(Integer, default=0)
+    cost_micro: Mapped[int] = mapped_column(BigInteger, default=0)
+    currency: Mapped[str] = mapped_column(Text, default="")
+
+
+class ResearchReservation(Base):
+    __tablename__ = "research_reservations"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    created_at: Mapped[datetime] = _now_col()
+    day: Mapped[date] = mapped_column(Date)
+    provider: Mapped[str] = mapped_column(Text)
+    agent: Mapped[str] = mapped_column(Text)
+    person: Mapped[str] = mapped_column(Text, default="")
+    kind: Mapped[str] = mapped_column(Text, default="search")
+    status: Mapped[str] = mapped_column(Text, default="reserved")
+    query_id: Mapped[int | None] = mapped_column(BigInteger)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ResearchRate(Base):
+    __tablename__ = "research_rate"
+    provider: Mapped[str] = mapped_column(Text, primary_key=True)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    burst_tokens: Mapped[float] = mapped_column(Double, default=0.0)
+
+
+class ResearchPolicy(Base):
+    __tablename__ = "research_policy"
+    agent: Mapped[str] = mapped_column(Text, primary_key=True)
+    search_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    search_daily_cap: Mapped[int] = mapped_column(Integer, default=0)
+    data_classes: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    blocked_domains: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    updated_by: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = _now_col()

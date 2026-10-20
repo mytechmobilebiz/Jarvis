@@ -20,8 +20,24 @@ from .tasks import TaskError
 log = logging.getLogger(__name__)
 
 
+class _NoQueryString(logging.Filter):
+    """uvicorn's access log without query strings: the text of a JARVIS Brain search (GET /api/brain/search?q=...)
+    never reaches the container log. uvicorn logs (client, method, path with query, HTTP version, status)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str) and "?" in args[2]:
+            record.args = (*args[:2], args[2].split("?", 1)[0], *args[3:])
+        return True
+
+
+NO_QUERY_STRING = _NoQueryString()
+
+
 def create_app(run_bootstrap: bool = True) -> FastAPI:
     settings = get_settings()
+    # uvicorn has set up its loggers before it calls this factory; adding the same filter again changes nothing.
+    logging.getLogger("uvicorn.access").addFilter(NO_QUERY_STRING)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -74,6 +90,7 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
         credit_repair,
         integrations,
         records,
+        research,
         servers,
         sites,
         stats,
@@ -83,6 +100,6 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
     )
 
     for module in (auth, system, work, stats, supervisor, sites, servers, integrations, admin, records, credit_repair,
-                   brain):
+                   brain, research):
         app.include_router(module.router)
     return app
