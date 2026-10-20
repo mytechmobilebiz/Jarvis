@@ -72,6 +72,12 @@ PowerShell 7.4; synthetic data):
   - Only the download and the Windows-only commands were not run.
   - That installation ran 0.5.1, so the 0.5.0 → 0.6.0 path itself is
     covered by the upgrade test above.
+  - After step D-2 (your agent configuration) was added, the whole guide
+    was run again (run 2). Before that run, the installation was put back
+    on its old folder with the quick rollback of section H, which passed its
+    smoke test. In run 2, D-2 printed the 11 lines, and after the upgrade
+    the agent comparison and the data comparison both printed nothing. The
+    report says "agent configuration unchanged: yes".
   - Three independent reviewers (Windows PowerShell 5.1, data safety,
     accuracy) checked the guide, and their confirmed findings are fixed.
 - **Security review:** six independent reviewers. All critical and high
@@ -257,6 +263,53 @@ Get-Content "$work\before.txt"
   that table is empty (`app_settings|`): that is fine.
 - **STOP if:** any line says `ERROR`, or one of the 15 lines is missing.
 
+### D-2. Your current agent configuration (read-only)
+
+This records, in readable form, which agents your installation has, which are
+switched on, how many schedules each agent has (and how many are enabled), and
+whether the Credit Repair module is switched on. Step 2 after the upgrade
+reads it again and compares.
+
+```powershell
+$agentSql = @'
+SELECT line FROM (
+  SELECT n.k, n.name || ' on=' || coalesce(s.enabled::text, 'true') || ' schedules=' || (SELECT count(*) FROM schedules c WHERE c.agent = n.name) || ' enabled_schedules=' || (SELECT count(*) FROM schedules c WHERE c.agent = n.name AND c.enabled) AS line
+    FROM (VALUES (1,'supervisor'),(2,'wordpress_security'),(3,'seo_content'),(4,'social_marketing'),(5,'server_management'),(6,'communications'),(7,'monitoring'),(8,'credit_repair')) AS n(k, name)
+    LEFT JOIN agent_state s ON s.name = n.name
+  UNION ALL SELECT 9, 'other_agent_names ' || coalesce(string_agg(DISTINCT x.name, ',' ORDER BY x.name), 'none') FROM (SELECT name FROM agent_state UNION SELECT agent FROM schedules) x WHERE x.name NOT IN ('supervisor','wordpress_security','seo_content','social_marketing','server_management','communications','monitoring','credit_repair')
+  UNION ALL SELECT 10, 'credit_repair_module ' || coalesce((SELECT CASE WHEN value->>'enabled' = 'true' THEN 'switched on' ELSE 'off' END FROM app_settings WHERE key = 'credit_repair_enabled'), 'off')
+) t ORDER BY k;
+'@
+function Save-Agents($folder, $file) {
+  Set-Location $folder
+  & {
+    docker compose exec -T api python -c "from app.agents.registry import all_agents; a = all_agents(); print(len(a), 'agents:', ', '.join(sorted(a)))"
+    $agentSql | docker compose exec -T postgres psql -U postgres -d command_center -At
+  } 2>&1 | Set-Content -Encoding ASCII $file
+}
+Save-Agents $old "$work\agents-before.txt"
+Get-Content "$work\agents-before.txt"
+```
+
+- **What you should see:** 11 lines.
+  - `8 agents: communications, credit_repair, monitoring, seo_content, server_management, social_marketing, supervisor, wordpress_security`
+  - one line per agent, for example
+    `seo_content on=false schedules=0 enabled_schedules=0`;
+  - `other_agent_names none`;
+  - `credit_repair_module off` (or `switched on` if you turned it on).
+- **Check it against the dashboard:** open the **AI Agents** page. Each
+  agent's on/off switch must match its `on=` value. An agent you never
+  switched shows `on=true`.
+- **STOP if:**
+  - a line says `ERROR` or `Traceback`;
+  - the first line is not `8 agents: ...`;
+  - `other_agent_names` is not `none`: an agent name the Command Center does
+    not know is in your data, so send me the file first;
+  - the AI Agents page and the `on=` values disagree.
+
+The AI keys and model settings the agents use live in your `.env`. The upgrade
+keeps the `.env` byte for byte (the `env` line of step D, and step F).
+
 **JARVIS (read-only):** note how it runs now.
 
 ```powershell
@@ -428,16 +481,24 @@ It must show all of these:
 Then reload http://localhost:8090: the sidebar shows
 `Dashboard v0.6.0 · API v0.6.0`.
 
-### 2. All seven agents and the Supervisor
+### 2. All seven agents and the Supervisor, configured as before
 
 ```powershell
-docker compose exec -T api python -c "from app.agents.registry import all_agents; a = all_agents(); print(len(a), 'agents:', ', '.join(sorted(a)))" | Tee-Object "$work\agents-after.txt"
+Save-Agents $new "$work\agents-after.txt"
+Get-Content "$work\agents-after.txt"
+Compare-Object (Get-Content "$work\agents-before.txt") (Get-Content "$work\agents-after.txt")
 ```
 
-It must print
-`8 agents: communications, credit_repair, monitoring, seo_content, server_management, social_marketing, supervisor, wordpress_security`
-(the seven agents and the Supervisor). On the AI Agents page, the same agents
-are switched on and off as before (step 3 checks this in the data too).
+- **What you should see:** the same 11 lines as in step D-2, starting with
+  `8 agents: communications, credit_repair, monitoring, seo_content, server_management, social_marketing, supervisor, wordpress_security`
+  (the seven agents and the Supervisor).
+- **`Compare-Object` prints nothing:** every agent is switched on or off as
+  before, with the same schedules, and the Credit Repair module is unchanged.
+- **On the AI Agents page,** the switches are as you noted in step D-2.
+- **If `Compare-Object` prints a line:** stop and send me both files.
+  - An `enabled_schedules` count can change only if someone changed a
+    schedule during the upgrade.
+  - Anything else differing is unexpected.
 
 ### 3 and 4. Your data, n8n workflows, keys and configuration are unchanged
 
@@ -520,6 +581,7 @@ $report = "$work\upgrade-report.txt"
   "data unchanged: " + $(if (-not (Compare-Object (Get-Content "$work\before.txt") (Get-Content "$work\after.txt"))) { "yes" } else { "NO - see before.txt / after.txt" })
   "other Docker projects unchanged: " + $(if (-not (Compare-Object (Get-Content "$work\before-other-containers.txt") (Get-Content "$work\after-other-containers.txt"))) { "yes" } else { "NO" })
   "smoke test: " + $(if (Select-String -Quiet "SMOKE TEST PASSED" "$work\smoke-after.txt") { "passed" } else { "NOT passed" })
+  "agent configuration unchanged: " + $(if (-not (Compare-Object (Get-Content "$work\agents-before.txt") (Get-Content "$work\agents-after.txt"))) { "yes" } else { "NO - see agents-before.txt / agents-after.txt" })
   Get-Content "$work\agents-after.txt"
   Get-Content "$work\brain-after.txt"
   Select-String -Path "$work\status-after.txt" -Pattern "version|created from|HTTP" | ForEach-Object { $_.Line }
