@@ -62,10 +62,12 @@ async def test_a_lone_surrogate_from_the_site_no_longer_breaks_the_diagnosis(adm
     key = await ssh_key(admin)
     async with FakeGateServer(key["openssh"]) as srv:
         site, _ = await linked_site(admin, srv, web)
+        await make_worker().run_until_idle()  # the baseline scan first: its server-side check takes the site lock too
         site_prints_plugin_list(srv, '[{"name":"evil\\ud800","status":"must-use","version":"","update":"none","update_version":""}]')
+        seen = len(srv.gate_log())
         diag = await run_task(admin, make_worker, "wordpress_security", "wp_diagnose", {"site_id": site["id"]})
         assert diag["status"] == "succeeded", diag["error"]
-        assert "wp_core_verify" in [e["op"] for e in srv.gate_log()]  # the parts after the plugin list still ran
+        assert "wp_core_verify" in [e["op"] for e in srv.gate_log()[seen:]]  # the parts after the plugin list still ran
     plugins = diag["result"]["data"]["diagnosis"]["plugins"]
     assert [p["name"] for p in plugins] == ["evil�"]
     rows = await audit_rows(diag["id"])
@@ -79,10 +81,12 @@ async def test_answers_the_backend_cannot_parse_spoil_only_their_own_part(admin,
     key = await ssh_key(admin)
     async with FakeGateServer(key["openssh"]) as srv:
         site, _ = await linked_site(admin, srv, web)
+        await make_worker().run_until_idle()  # the baseline scan first: its server-side check takes the site lock too
         site_prints_plugin_list(srv, text)  # the gate relays both
+        seen = len(srv.gate_log())
         diag = await run_task(admin, make_worker, "wordpress_security", "wp_diagnose", {"site_id": site["id"]})
         assert diag["status"] == "succeeded", diag["error"]
-        assert "wp_core_verify" in [e["op"] for e in srv.gate_log()]
+        assert "wp_core_verify" in [e["op"] for e in srv.gate_log()[seen:]]
     assert diag["result"]["data"]["diagnosis"]["errors"]["plugins"].startswith("wp_plugin_list failed")
     row = next(r for r in await audit_rows(diag["id"]) if r.op == "wp_plugin_list")
     assert row.finished_at and row.ok is False and row.error.startswith("unexpected answer")  # not "cancelled"

@@ -33,6 +33,11 @@ async def gate_hello(admin, web: FakeWeb, server_id: int) -> None:
 
 
 async def linked_site(admin, srv: FakeGateServer, web: FakeWeb, *, environment: str = "test", server_env: str = "test") -> tuple[dict, dict]:
+    """A site registered and linked to the server, with its baseline scan queued, not run.
+
+    That scan includes the server-side check, which takes the site lock: run the worker before a task that takes it too
+    (wp_diagnose, an approved repair), or the two race for it and the loser goes back to the queue for 30 s (SiteBusy).
+    """
     server = await add_server(admin, srv, environment=server_env)
     await gate_hello(admin, web, server["id"])
     web.add("site.test", wordpress_site("http://site.test", exposed=False))

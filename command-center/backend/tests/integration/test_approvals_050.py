@@ -544,6 +544,7 @@ async def test_a_diagnosis_flags_a_gate_address_that_is_not_the_site(admin, web,
     key = await ssh_key(admin)
     async with FakeGateServer(key["openssh"]) as srv:
         site, _ = await linked_site(admin, srv, web)
+        await make_worker().run_until_idle()  # the baseline scan first: its server-side check takes the site lock too
         srv.config["sites"]["site-one"]["url"] = "http://elsewhere.test"
         srv.write_config()
         diag = await run_task(admin, make_worker, "wordpress_security", "wp_diagnose", {"site_id": site["id"]})
