@@ -340,9 +340,14 @@ same folder.
 ### G-3. Install 0.6.0 from the new folder
 
 ```powershell
-Set-Location $new
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 2>&1 | Tee-Object "$work\install.txt"
+if ((Test-Path "$new\VERSION") -and (Get-Content "$new\VERSION" -TotalCount 1).Trim() -eq "0.6.0") {
+  Set-Location $new
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 2>&1 | Tee-Object "$work\install.txt"
+} else { Write-Host "STOP: $new is not the extracted 0.6.0 folder" -ForegroundColor Red }
 ```
+
+(Pasted lines keep running after an error, so the `if` makes sure the
+installer only runs from the 0.6.0 folder.)
 
 This takes 5 to 15 minutes: it builds the new images and recreates the API,
 worker and dashboard containers. PostgreSQL and n8n keep their volumes, and
@@ -509,8 +514,11 @@ from `C:\InfiniteAI\v0.6.0\InfiniteAI-CommandCenter`.
 **Quick, data kept (if 0.6.0 misbehaves):**
 
 ```powershell
-Set-Location "C:\InfiniteAI\v0.5.0\InfiniteAI-CommandCenter"
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+$old = "C:\InfiniteAI\v0.5.0\InfiniteAI-CommandCenter"   # the folder of step A
+if ((Test-Path "$old\VERSION") -and (Get-Content "$old\VERSION" -TotalCount 1).Trim() -eq "0.5.0") {
+  Set-Location $old
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+} else { Write-Host "STOP: $old is not your 0.5.0 folder" -ForegroundColor Red }
 ```
 
 - **What it does:** it rebuilds the 0.5.0 containers from the old folder.
@@ -530,8 +538,12 @@ This was tested.
 0.5.0 folder:
 
 ```powershell
-Set-Location "C:\InfiniteAI\v0.5.0\InfiniteAI-CommandCenter"
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\restore.ps1 -BackupFolder "<the backup folder in upgrade-report.txt>"
+$old = "C:\InfiniteAI\v0.5.0\InfiniteAI-CommandCenter"   # the folder of step A
+$backupFolder = "<the backup folder in upgrade-report.txt>"
+if ((Test-Path "$old\VERSION") -and (Get-Content "$old\VERSION" -TotalCount 1).Trim() -eq "0.5.0" -and (Test-Path "$backupFolder\command_center.dump")) {
+  Set-Location $old
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\restore.ps1 -BackupFolder $backupFolder
+} else { Write-Host "STOP: check the folder and the backup folder" -ForegroundColor Red }
 ```
 
 - **The prompt:** it asks you to type `RESTORE`. Anything else cancels and
