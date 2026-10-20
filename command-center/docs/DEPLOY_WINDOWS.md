@@ -7,8 +7,8 @@ network and volumes, so it does not touch XAMPP or other Docker projects
 
 | What | Where |
 |---|---|
-| Installation package | `InfiniteAI-CommandCenter-0.5.1-windows.zip` (in the GitHub repo at `command-center/releases/`, with a `.sha256` file) |
-| Source | GitHub `mytechmobilebiz/Jarvis`, branch `ccr-eb27a2af-8u7i39`, folder `command-center/` |
+| Installation package | `InfiniteAI-CommandCenter-0.6.0-windows.zip` (in the GitHub repo at `command-center/releases/` on the branch `jarvis-migration`, with a `.sha256` file) |
+| Source | GitHub `mytechmobilebiz/Jarvis`, branch `jarvis-migration` (0.6.0; 0.5.1 and earlier on `ccr-eb27a2af-8u7i39`), folder `command-center/` |
 | Install location on the PC | `C:\InfiniteAI\InfiniteAI-CommandCenter` (outside `C:\xampp`) |
 | Dashboard | http://localhost:8090 (bound to 127.0.0.1 only) |
 | n8n editor | http://localhost:5680 (bound to 127.0.0.1 only) |
@@ -31,9 +31,9 @@ The scripts are run with `-ExecutionPolicy Bypass` for that one process only;
 the machine-wide execution policy is not changed. `preflight.ps1` and
 `status.ps1` are read-only; read any script first if you wish.
 
-1. Download `InfiniteAI-CommandCenter-0.5.1-windows.zip` and, optionally,
+1. Download `InfiniteAI-CommandCenter-0.6.0-windows.zip` and, optionally,
    check it against the `.sha256` file:
-   `Get-FileHash .\InfiniteAI-CommandCenter-0.5.1-windows.zip -Algorithm SHA256`
+   `Get-FileHash .\InfiniteAI-CommandCenter-0.6.0-windows.zip -Algorithm SHA256`
 2. Extract it to `C:\InfiniteAI` (you get `C:\InfiniteAI\InfiniteAI-CommandCenter`).
 3. Open PowerShell and run:
 
@@ -53,7 +53,7 @@ verified there. Re-running it is safe.
 Then open http://localhost:8090 and sign in with the email and password that
 were printed (they are also in `.env`).
 
-Prefer Git? `git clone --branch ccr-eb27a2af-8u7i39 https://github.com/mytechmobilebiz/Jarvis.git`
+Prefer Git? `git clone --branch jarvis-migration https://github.com/mytechmobilebiz/Jarvis.git`
 and run the same command from `Jarvis\command-center`.
 
 ## Environment variables
@@ -72,6 +72,15 @@ and run the same command from `Jarvis\command-center`.
 | `N8N_OWNER_PASSWORD` | n8n editor sign-in |
 | `ANTHROPIC_API_KEY` (optional) | Deployment default for Claude; normally leave empty and enter your key on the dashboard's Settings page instead (stored encrypted) |
 | `DASHBOARD_PORT`, `N8N_PORT`, `TZ` | Local ports and time zone |
+
+Upgrading to 0.6.0 (from 0.5.0 directly, or from 0.5.1) needs no new keys
+and changes no existing data: one migration adds the nine empty JARVIS Brain
+tables; `.env`, the agents, approval rules, PostgreSQL and n8n volumes stay as
+they are, and memory in AI prompts is off. **Installing 0.5.1 first is not
+needed**: 0.6.0 contains its fix for "the API reports 0.2.0". Exact steps,
+going back and backups: [RELEASE_NOTES_0.6.0.md](RELEASE_NOTES_0.6.0.md)
+sections 3 to 6. Importing JARVIS's data is a separate step (below, "JARVIS
+Brain: test copy and import").
 
 Upgrading from 0.5.0 to 0.5.1 needs no new keys and changes no data: there
 are no migrations, `.env` stays as it is, and the agents, approval rules,

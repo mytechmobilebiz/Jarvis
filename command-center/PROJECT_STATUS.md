@@ -1,6 +1,6 @@
 # Project status: Infinite AI Command Center
 
-Last updated: 2026-10-19 (UTC) · version 0.5.1 · branch `ccr-eb27a2af-8u7i39`
+Last updated: 2026-10-20 (UTC) · version 0.6.0 · branch `jarvis-migration`
 
 ## Where it is being built
 
@@ -9,8 +9,11 @@ container with Docker 29), which has no connection to the owner's PC or
 servers. Version **0.5.0** has been installed by the owner on the Windows 11
 PC: six of seven smoke checks passed, and the version check failed ("the API
 reports 0.2.0"). The cause was found and fixed in **0.5.1** (see "Completed in
-0.5.1"), which has not been run on Windows yet. **Nothing has been run on a
-real CWP server**; see "Cloud sandbox vs Windows and servers" below.
+0.5.1"), which has not been run on Windows yet. **0.6.0** (the JARVIS Brain)
+is finished and tested in the sandbox and **waits for the owner's approval**:
+it has not been installed, and none of JARVIS's real data has been imported
+anywhere. **Nothing has been run on a real CWP server**; see "Cloud sandbox vs
+Windows and servers" below.
 
 ## Milestones
 
@@ -24,6 +27,7 @@ real CWP server**; see "Cloud sandbox vs Windows and servers" below.
 | UI (0.4.0): official dashboard redesign: dark command-center interface, AI command input, new sidebar sections | Done; installed on the owner's PC (six smoke tests passed) |
 | 0.5.0: dashboard to the reference with real data only; approvals name the exact action and target; host-key scan fixed | Done; installed on the owner's PC (version check failed: stale build copies, fixed in 0.5.1). Remaining differences and owner decisions: docs/REFERENCE_DESIGN_GAP.md |
 | 0.5.1: images can no longer be built from stale files without the build stopping; plugin updates only to the approved, current, newer WordPress.org release | **Done in the sandbox**; not yet run on the PC |
+| 0.6.0: the JARVIS Brain: memory with review and versions, JARVIS's conversation archive, the importer with a test copy, agents reading approved memory as reference | **Done in the sandbox**; waits for the owner's approval to install; no real JARVIS data imported |
 | M5: real integrations (email, publishing, ads, notifications) | Needs owner approval and credentials |
 
 Estimated MVP completion: **about 85%**. This is an estimate, weighted by the
@@ -50,33 +54,62 @@ Every approved mock action is listed on the **Outbox** page as
 through cc-gate, only after approval, and only if the server's own
 `allow_changes` switch is on.
 
-## JARVIS migration (branch `jarvis-migration`, not in a release)
+## JARVIS migration and the JARVIS Brain (0.6.0, waiting for approval)
 
-First deliverable, waiting for the owner's approval. Nothing has been imported
-or activated, and nothing has run on the PC.
+**Nothing has been installed or imported.** 0.6.0 is built and tested in the
+sandbox with synthetic data only. Installing it, importing the real JARVIS
+backup into a test copy and importing into the live installation are three
+separate approvals (docs/RELEASE_NOTES_0.6.0.md section 8). JARVIS stays
+installed and running; nothing here changes it.
 
 - **Design and source analysis:**
-  [docs/JARVIS_MIGRATION_DESIGN.md](docs/JARVIS_MIGRATION_DESIGN.md).
-  - What JARVIS is, and where its live state is.
-  - The owner's changes that bypass approval.
-  - Staff-to-agent mapping.
-  - Six memory stores.
-  - Importer design.
-  - Workflow conversion, all as disabled drafts.
-  - Risks and decisions.
-- **Read-only kit:** `migration/jarvis/`, kit 0.1.0.
-  - `jarvis-kit.ps1 -Action Backup` makes an encrypted backup of the profile
-    and content, with no secret files and secret values redacted.
-  - `-Action Discover` makes an inventory of counts and structure only.
-  - It runs in a container with no network, the JARVIS folders mounted
-    read-only and the database backup opened read-only.
-- **Tests (cloud sandbox, synthetic installation with planted secrets and
-  personal data):**
-  - kit tests: 92 passed;
-  - `testing/jarvis-kit-check.sh`: 13 of 13 passed;
-  - three independent review rounds confirmed 21, 17 and then 14 problems.
-    All are fixed: the code fixes with tests, and the document corrections
-    checked by hand.
+  [docs/JARVIS_MIGRATION_DESIGN.md](docs/JARVIS_MIGRATION_DESIGN.md) (what
+  JARVIS is, its six memory stores, the owner's changes that bypass approval,
+  staff-to-agent mapping, risks) and the specification
+  [docs/JARVIS_BRAIN_SPEC.md](docs/JARVIS_BRAIN_SPEC.md).
+- **Read-only kit** (`migration/jarvis/`, kit 0.1.0): encrypted backup of the
+  profile and content without secret files, and a counts-only inventory, in a
+  container with no network and the JARVIS folders mounted read-only.
+- **The JARVIS Brain (0.6.0)**: see "Completed in 0.6.0" below.
+
+## Completed in 0.6.0 (one migration, nine new tables; no new keys)
+
+Full list, upgrade steps, rollback and the owner's approvals:
+[docs/RELEASE_NOTES_0.6.0.md](docs/RELEASE_NOTES_0.6.0.md).
+
+- **Memory**: business facts, knowledge, agent notes, decisions, projects,
+  accomplishments and problems; JARVIS's operating instructions and skills as
+  reference text. Each item has a source, a review status, a sensitivity
+  (general or customer) and a version history. Nothing is used before a
+  person approves it.
+- **Conversation archive**: JARVIS's sessions and messages, cleaned,
+  searchable by staff member, date and label; customer conversations admin
+  only; restricted conversations kept as empty rows.
+- **Cleaning before anything is stored**: secrets (keys, tokens, passwords,
+  webhook addresses, passwords on command lines in 15 forms) become
+  `[REDACTED:<kind>]`; SSNs, card and bank numbers, dates of birth and credit
+  files withhold the whole conversation; customer e-mail addresses and phone
+  numbers are masked; reasoning is never read.
+- **Imported text is data**: JARVIS's approval-bypass rules come in
+  quarantined, need an admin and never reach a prompt; the Command Center's
+  approvals are code and no import changes a setting, agent, schedule or
+  approval (tested: a proposal still waits for a person).
+- **Workflows stay off**: JARVIS's jobs become drafts that never run; a
+  converted schedule is created disabled; watched websites are offered as
+  paused sites.
+- **The importer** (`scripts\jarvis-import.ps1`): a plan that writes nothing,
+  staged runs, resume after an interruption, verify, rollback of one run, a
+  re-run that adds nothing, a dump of the database before a live import, and
+  typed confirmations for the live installation. It has no network and runs
+  from the live installation's own image.
+- **Withheld stays withheld**: text withheld by the import, an admin or a
+  rescan never returns through a re-import or a rollback, and quoted copies
+  in history answers are removed.
+- **Test copy** (`scripts\brain-test.ps1`): its own Docker project on port
+  8190, database and secrets, no n8n, a worker without internet.
+- **Agents** read only approved items in their scope; the AI Supervisor
+  answers questions about JARVIS's history locally, without an AI model.
+  Memory in AI prompts is off until an admin turns it on.
 
 ## Completed in 0.5.1 (no database migrations, no new keys)
 
@@ -198,7 +231,16 @@ Full list and upgrade notes: [docs/RELEASE_NOTES_0.5.0.md](docs/RELEASE_NOTES_0.
 
 ## Security reviews
 
-Two adversarial review rounds by independent agents ran on the SSH layer,
+**0.6.0 (JARVIS Brain)**: an adversarial design review (38 findings, all
+addressed in the specification before building), then six independent code
+reviewers (privacy, data integrity, API and access control, agents,
+dashboard, operations) with 57 findings, each checked by a separate verifier
+against the latest code: 18 confirmed, 23 partly confirmed, 17 refuted. The
+2 critical and 4 high ones are fixed with tests and the fixes verified again;
+the medium and low ones are fixed except those listed as known limitations in
+RELEASE_NOTES_0.6.0.md section 11.
+
+**0.3.0 to 0.5.1**: two adversarial review rounds by independent agents ran on the SSH layer,
 the gate, approvals, repairs and the monitoring checks:
 
 1. 51 findings; 49 survived verification and were fixed.
@@ -246,6 +288,8 @@ Known limits that remain (by design or not yet done):
 | 0.4.0 upgrade from 0.3.0, smoke test, new dashboard | verified (PowerShell 7.4, Chromium) | **verified by the owner** (six smoke tests passed; the footer showed v0.2.0, see 0.5.0) |
 | 0.5.0 upgrade from 0.4.0, seven smoke checks, new dashboard | verified (PowerShell 7.4, Chromium) | **installed by the owner**: six of seven smoke checks passed; the version check failed (API 0.2.0: stale build copies, fixed in 0.5.1) |
 | 0.5.1 upgrade from the owner's 0.5.0, seven smoke checks | verified (PowerShell 7.4): the owner's history reproduced, then RELEASE_NOTES_0.5.1.md section 3 step by step | not yet |
+| 0.6.0 upgrade from the owner's 0.5.0 (and through 0.5.1), seven smoke checks, going back | verified (PowerShell 7.4, nested Docker): the owner's history reproduced, then RELEASE_NOTES_0.6.0.md section 4 step by step | not yet: waits for the owner's approval |
+| JARVIS import (test copy and live path) | verified with a synthetic JARVIS installation with planted secrets and personal data, and a synthetic backup of 49,532 messages for speed and memory | not yet: the real backup has not been read by any 0.6.0 code; waits for the owner's approval |
 | Voice dictation | the button, consent and gating tested in Chromium with a simulated recogniser; real speech recognition **not tested** (the sandbox has no microphone and no Google/Microsoft speech service) | not yet: try it in Chrome or Edge at `http://localhost:8090` |
 | Scripts under Windows PowerShell 5.1 | static checks only (ASCII-only, no 6/7-only syntax); every script parses with PowerShell 7.4's parser | 0.5.0 scripts run by the owner (install, smoke test); 0.5.1 adds prepare-build.ps1 and changes install, start, smoke, status, restore and uninstall |
 | cc-gate on EL8/EL9 (AlmaLinux/Rocky) with CWP | tested on Alpine Linux with OpenSSH, sudo 1.9 and Python 3.12; Python 3.6 compatibility checked separately | **not yet: nothing has been run on a CWP server** |
@@ -273,7 +317,7 @@ Known limits that remain (by design or not yet done):
   the exact action and target. Read-only monitoring may run automatically
   within the approved scope.
 
-## Planned 0.6.0: Messaging & Channels (after 0.5.1 is verified)
+## Planned 0.7.0: Messaging & Channels (after 0.6.0 is verified)
 
 Builds on the existing approvals, secrets store, audit log, worker and n8n;
 nothing is rebuilt. Each phase is a tested, upgradeable step.
@@ -306,7 +350,7 @@ Fixed whatever the answers below: Credit Repair data never flows through
 messaging; nothing is sent or created with real providers without the
 owner's approval; the dashboard and the n8n editor stay bound to localhost.
 
-**Decisions needed before 0.6.0 starts:**
+**Decisions needed before 0.7.0 starts:**
 
 1. Who the "authorized customers" are and how they prove who they are (today
    clients are records, not users; giving them their own reports needs a
@@ -340,33 +384,31 @@ owner's approval; the dashboard and the n8n editor stay bound to localhost.
    the version the Command Center names, and only WordPress.org's current,
    newer release, but it cannot see the approval itself. Binding it would need
    approvals signed outside the Command Center.
-7. **JARVIS migration**: separate branch `jarvis-migration`; the first
-   deliverable (design and read-only source analysis) waits for the owner's
-   approval. Nothing is imported or activated before that, and nothing runs
-   on the PC from here.
+7. **JARVIS Brain (0.6.0)**: waits for the owner's approvals (install, a
+   test-copy import of the real backup, then the live import; release notes
+   section 8). Detection of secrets and restricted data is pattern-based:
+   names and street addresses are not detected, so the owner's review in the
+   test copy is required before the live import. Nothing is imported or
+   activated before that, and nothing runs on the PC from here.
 
 ## Next steps
 
-1. Owner: upgrade from 0.5.0 to 0.5.1 with the steps in
-   docs/RELEASE_NOTES_0.5.1.md section 3 (back up, check the zip against its
-   `.sha256`, extract into `C:\InfiniteAI\v0.5.1`, copy `.env`, run
-   `install.ps1`). All **seven** smoke checks should pass, with API and
-   dashboard 0.5.1. If anything fails, send the output of `install.ps1` and
-   `.\scripts\status.ps1`.
-2. Owner: send the Windows results and a screenshot of the dashboard (the
-   screenshot sent with the 0.4.0 results did not arrive here).
-3. Owner: reject and re-request any repair, restart, email or publication
-   approvals still pending from 0.4.0, if any are left.
-4. Owner decisions: the open items in docs/REFERENCE_DESIGN_GAP.md (Intern 2,
-   PC resources, system uptime, C3-11 to C3-14); for remote access, run
-   `scripts\dns-inventory.ps1` and send the report (docs/REMOTE_ACCESS_PLAN.md);
-   the six 0.6.0 messaging decisions above.
-5. Owner: on a test server, follow SERVER_SETUP.md; on the CWP / Servers page
-   scan and compare the host key (this now works from the PC), then run Test
-   connection and a server-side check.
-6. Owner: review the JARVIS migration design and read-only source analysis
-   (branch `jarvis-migration`) and decide whether to approve a test import.
-7. Next development, after 0.5.1 is verified on the PC: whatever the owner
-   decides from items 4 and 6, an owner-acknowledged administrator baseline,
-   and the first real integration you choose (for example email through your
-   SMTP account).
+1. Owner: read docs/RELEASE_NOTES_0.6.0.md and decide on the approvals in its
+   section 8. Nothing is installed or imported before that.
+2. If approved, owner: upgrade the live installation straight from 0.5.0 to
+   0.6.0 (section 4: back up, check the zip against its `.sha256`, extract
+   into `C:\InfiniteAI\v0.6.0`, copy `.env`, run `install.ps1`). Installing
+   0.5.1 first is not needed. All **seven** smoke checks should pass, with API
+   and dashboard 0.6.0. If anything fails, send the output of `install.ps1`
+   and `.\scripts\status.ps1`.
+3. If approved, owner: the test copy and the import of the real JARVIS backup
+   into it (DEPLOY_WINDOWS.md, "JARVIS Brain: test copy and import"), then
+   the review there; send the import report (it lists kinds and counts, never
+   values) and rotate the credentials it names.
+4. Only after that review and a separate approval: the live import.
+5. Still open from before: the items in docs/REFERENCE_DESIGN_GAP.md, the DNS
+   inventory for remote access (docs/REMOTE_ACCESS_PLAN.md), the six 0.7.0
+   messaging decisions above, and a test server for SERVER_SETUP.md.
+6. Next development, after 0.6.0 is verified on the PC: whatever the owner
+   decides from items 3 to 5, an owner-acknowledged administrator baseline,
+   and the first real integration you choose.
