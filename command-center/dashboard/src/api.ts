@@ -738,6 +738,8 @@ export interface MemoryConflict {
   decided_at?: string | null;
   note?: string;
   created_at: string;
+  /** Keep existing / use incoming change an item whose approval needs an admin (or the kind needs one). */
+  needs_admin?: boolean;
 }
 
 /** A row of workflow_drafts: one of JARVIS's scheduled jobs. A draft never runs; converting it (admin) creates a disabled
@@ -784,7 +786,8 @@ export interface ImportReport {
   by_agent?: Record<string, number>;
   by_staff?: Record<string, number>;
   by_kind?: Record<string, number>;
-  by_sensitivity?: Record<string, number>;
+  /** Per kind of record: { messages: { general: 40, customer: 10 }, items: {...}, sessions: {...} }. */
+  by_sensitivity?: Record<string, number | Record<string, number>>;
   /** The credential rotation list: secret types and how often each was found. Never the values. */
   secrets?: { types?: Record<string, number>; where?: Partial<Record<"messages" | "files" | "drafts", number>> };
   restricted?: { types?: Record<string, number> | string[]; sessions_withheld?: number; files_excluded?: number };

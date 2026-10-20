@@ -21,8 +21,10 @@
 # --require-importer, as FAIL). Exit status: 0 all ran steps passed, 1 a step failed.
 #
 # Environment: REGISTRY and EXTRA_CA_BUNDLE as for docker compose (passed to the scripts' builds); PWSH_IMAGE;
-# KEEP_WORK=1 keeps the work folder (logs, reports) for inspection; PSSCRIPTANALYZER=<folder with the module> adds
-# its Windows PowerShell 5.1 compatibility rules. The test copy's port is 8190.
+# KEEP_WORK=1 keeps the work folder (logs, reports) for inspection; BRAIN_UI=1 (with BRAIN_UI_PYTHON, a Python with
+# Playwright) adds the Brain page in a browser after the import (testing/brain-ui-check.py);
+# PSSCRIPTANALYZER=<folder with the module> adds its Windows PowerShell 5.1 compatibility rules. The test copy's port
+# is 8190.
 set -euo pipefail
 CC=$(cd "$(dirname "$0")/.." && pwd)
 REQUIRE_IMPORTER=0
@@ -720,7 +722,7 @@ step_no_planted_values() {  # 11. no planted secret or restricted value in the b
 import sys
 sys.path.insert(0, sys.argv[1])
 from make_fixture import DETAIL_ONLY, PLANTED
-allowed = set(DETAIL_ONLY) | {"title", "message", "memory_text", "customer_name"}  # ordinary content, not secrets
+allowed = set(DETAIL_ONLY) | {"title", "message", "memory_text", "customer_name", "bad_utf8"}  # ordinary content, not secrets
 data = open(sys.argv[2], encoding="utf-8", errors="replace").read()
 print(" ".join(k for k, v in PLANTED.items() if k not in allowed and v in data))
 EOF
@@ -728,10 +730,29 @@ EOF
   [ -s "$WORK/brain-dump.sql" ] && [ -z "$found" ] && pass "no planted secret or restricted value in the brain tables" || fail "planted values stored: $found"
 }
 
+step_ui_brain() {  # BRAIN_UI=1: the Brain page in a browser (testing/brain-ui-check.py), per role; approves and edits an item
+  python3 - "$CC/migration/jarvis/tests" > "$WORK/planted.json" <<'EOF'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from make_fixture import DETAIL_ONLY, PLANTED
+allowed = set(DETAIL_ONLY) | {"title", "message", "memory_text", "customer_name", "bad_utf8"}  # ordinary content
+print(json.dumps({k: v for k, v in PLANTED.items() if k not in allowed}))
+EOF
+  local code=0
+  "${BRAIN_UI_PYTHON:-python3}" "$CC/testing/brain-ui-check.py" "http://127.0.0.1:$PORT" "$(envval ADMIN_EMAIL)" \
+    "$(envval ADMIN_PASSWORD)" "$WORK/planted.json" > "$WORK/brain-ui.log" 2>&1 || code=$?
+  sed -n 's/^\(PASS\|FAIL\)  /\1  Brain page: /p' "$WORK/brain-ui.log"
+  grep -q '^FAIL' "$WORK/brain-ui.log" && FAILED=1
+  [ "$code" = 0 ] || { tail -5 "$WORK/brain-ui.log"; fail "brain-ui-check.py exit $code"; }
+  check_fp "Brain page in a browser"
+}
+
 step_rollback() {  # 9. Rollback (newest first), then zero rows
-  ji rollback-all "" -Mode Rollback -Run "$RUN2"
+  local discard=()
+  [ "${BRAIN_UI:-0}" = 1 ] && discard=(-DiscardReviewed)  # the browser check approved and edited an imported item
+  ji rollback-all "" -Mode Rollback -Run "$RUN2" "${discard[@]}"
   local c2=$CODE
-  ji rollback-sample "" -Mode Rollback -Run "$RUN1"
+  ji rollback-sample "" -Mode Rollback -Run "$RUN1" "${discard[@]}"
   local rows
   rows=$(tpsql -c "SELECT (SELECT count(*) FROM memory_items) + (SELECT count(*) FROM memory_item_versions) + (SELECT count(*) FROM archive_sessions)
     + (SELECT count(*) FROM archive_messages) + (SELECT count(*) FROM memory_conflicts) + (SELECT count(*) FROM workflow_drafts)" || true)
@@ -759,6 +780,7 @@ if [ "${HAVE_IMPORTER:-0}" = 1 ]; then
   step_api_brain
   step_restart_with_imports
   step_no_planted_values
+  [ "${BRAIN_UI:-0}" = 1 ] && step_ui_brain
   step_rollback
 else
   for s in "5. jarvis-import -Target Test: Plan, Import -Sample 2, Verify, Import -All, Verify" \

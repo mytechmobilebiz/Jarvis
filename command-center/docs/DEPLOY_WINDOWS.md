@@ -332,8 +332,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 
 ```
 
 It writes `import-reports\decisions-test-<time>.json`. Then run the pre-check
-of step 2 again and compare the two reports: the fingerprint and counts must
-be the same.
+of step 2 again and compare the two reports. These lines must be the same:
+the image IDs, the container IDs and names, the volume names and the applied
+migrations. Start times change after a restart of the PC or of Docker
+Desktop, and counts (tasks, approvals) change with normal use; neither means
+the test touched the live installation.
 
 **6. Approval.** Upgrading the live installation to 0.6.0 is a separate step
 that you approve: `backup.ps1`, install 0.6.0 from a **new** folder as in
@@ -362,15 +365,19 @@ Workflows converted from JARVIS's jobs are created **switched off**. Switch
 the matching job off in JARVIS first, then switch the Command Center's
 schedule on.
 
-**8. Clean-up.** Remove the test copy (type `REMOVE TEST COPY` when asked),
-then delete the restored JARVIS files (they are plain text) and the test
-copy's secrets file:
+**8. Clean-up.** Remove the test copy (type `REMOVE TEST COPY` when asked).
+Then delete the restored JARVIS files (they are plain text), the test copy's
+secrets file, the review decisions file (it holds the text of the items you
+edited) and, once the live import is verified and reviewed, the pre-import
+dump (it holds your whole live database, unencrypted):
 
 ```powershell
 Set-Location $test
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\brain-test.ps1 -Action Remove
 Remove-Item -Recurse -Force C:\InfiniteAI\JarvisMigration\restored
 Remove-Item "$test\.env.brain-test"
+Remove-Item C:\InfiniteAI\JarvisMigration\import-reports\decisions-*.json
+Remove-Item C:\InfiniteAI\JarvisMigration\import-reports\pre-import\*.dump
 ```
 
 If a step stops with `NOT RUN`, the message says why and nothing was changed;

@@ -343,6 +343,23 @@ describe("JARVIS Brain: conversations", () => {
     expect(calls.find((c) => c.path === "/api/brain/messages/102/promote")!.body).toEqual({ kind: "accomplishment", title: "Published the keyword brief.", agent: "seo_content" });
   });
 
+  it("offers operators no admin-only kind, and leaves a message a secret was removed from to an admin", async () => {
+    const withSecret = messages.map((m, i) => (i === 1 ? { ...m, redactions: { credential_assignment: 1 } } : m));
+    renderAt("/brain?tab=conversations&session=11", operator, {
+      "GET /api/brain/sessions": { sessions: [session()], total: 1 },
+      "GET /api/brain/sessions/11": { session: session(), messages: withSecret, total: 3, hidden: 0 },
+    });
+    const dialog = await screen.findByRole("dialog", { name: "Weekly SEO sweep" });
+    await within(dialog).findByText("Published the keyword brief.");
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "Promote to memory" })[1]);
+    const form = await screen.findByRole("dialog", { name: "Promote to memory" });
+    const kinds = within(within(form).getByLabelText("Kind")).getAllByRole("option").map((o) => (o as HTMLOptionElement).value);
+    expect(kinds).not.toContain("instruction");
+    expect(kinds).not.toContain("skill");
+    expect(within(form).getByText(/an admin promotes it/)).toBeInTheDocument();
+    expect(within(form).getByRole("button", { name: "Promote" })).toBeDisabled();
+  });
+
   it("keeps the conversation and the promote result open when the new item is opened", async () => {
     renderAt("/brain?tab=conversations&session=11", operator, {
       "GET /api/brain/sessions": { sessions: [session()], total: 1 },
@@ -538,7 +555,7 @@ describe("JARVIS Brain: agent knowledge and skills", () => {
     const supervisor = (await screen.findByRole("heading", { name: "AI Supervisor", level: 2 })).closest(".card") as HTMLElement;
     expect(within(supervisor).getByText("answers about JARVIS's history")).toBeInTheDocument();
     expect(within(supervisor).getByText(/Conversation archive: every imported conversation except withheld ones/)).toBeInTheDocument();
-    expect(supervisor).toHaveTextContent("30 approved items it can read");
+    expect(supervisor).toHaveTextContent("30 approved items it reads (of those visible to you)");
     const cr = screen.getByRole("heading", { name: "Credit Repair & Dispute Management" }).closest(".card") as HTMLElement;
     expect(within(cr).getByText("Counts are not shown to you.")).toBeInTheDocument();
     expect(within(cr).getByText("Not used: nothing this agent does reads memory today.")).toBeInTheDocument();
@@ -662,6 +679,22 @@ describe("JARVIS Brain: review", () => {
   });
 });
 
+describe("JARVIS Brain: conflicts that need an admin for one side", () => {
+  it("offers operators only keep both and dismiss, and says why", async () => {
+    const skill = { id: 3, run_id: 7, kind: "memory_item", title: "Keyword research", existing_table: "memory_items", existing_id: 11, incoming_item_id: 12, status: "open", created_at: now, existing: {}, incoming: {}, needs_admin: true };
+    renderAt("/brain?tab=review", operator, {
+      "GET /api/brain/items?status=pending_review&limit=100": { items: [], total: 0 },
+      "GET /api/brain/conflicts": { conflicts: [skill], total: 1 },
+    });
+    const card = (await screen.findByText("Keyword research", { selector: "strong" })).closest("li") as HTMLElement;
+    expect(within(card).getByText(/an admin decides those/)).toBeInTheDocument();
+    expect(within(card).getByRole("radio", { name: /Keep existing/ })).toBeDisabled();
+    expect(within(card).getByRole("radio", { name: /Use incoming/ })).toBeDisabled();
+    expect(within(card).getByRole("radio", { name: /Keep both/ })).toBeEnabled();
+    expect(within(card).getByRole("radio", { name: /Dismiss/ })).toBeEnabled();
+  });
+});
+
 describe("JARVIS Brain: import history", () => {
   const report = {
     totals: { sessions: 5, messages: 133, files: 20, jobs: 5, urls: 2 },
@@ -743,6 +776,23 @@ describe("JARVIS Brain: import history", () => {
     expect(await within(confirm).findByText(/^Not rolled back: 2 items of run 7/)).toBeInTheDocument();
     expect(await within(confirm).findByRole("checkbox", { name: "Discard reviewed items" })).toBeInTheDocument();
     expect(within(confirm).getByText("2 items")).toBeInTheDocument();
+  });
+
+  it("never says 'no secrets' for a run that did not finish, and lists what it found so far", async () => {
+    const stopped = { ...run7, status: "failed", report: {}, checkpoint: { phase: "sessions", index: 3, tally: { secrets: { types: { anthropic_api_key: 4 } } } } };
+    renderAt("/brain?tab=imports&run=7", admin, { "GET /api/brain/imports": { runs: [stopped] }, "GET /api/brain/imports/7": detail({ run: stopped }) });
+    const dialog = await screen.findByRole("dialog", { name: "Import run #7" });
+    expect(await within(dialog).findByText(/this list is partial/)).toBeInTheDocument();
+    expect(within(dialog).getByText("anthropic api key")).toBeInTheDocument();
+    expect(within(dialog).queryByText(/No secrets were found/)).toBeNull();
+  });
+
+  it("says there is no list yet when a run stopped before finding anything", async () => {
+    const stopped = { ...run7, status: "interrupted", report: {}, checkpoint: { phase: "files", index: 0 } };
+    renderAt("/brain?tab=imports&run=7", admin, { "GET /api/brain/imports": { runs: [stopped] }, "GET /api/brain/imports/7": detail({ run: stopped }) });
+    const dialog = await screen.findByRole("dialog", { name: "Import run #7" });
+    expect(await within(dialog).findByText(/No list yet: the run did not finish/)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/No secrets were found/)).toBeNull();
   });
 
   it("explains when a run cannot be rolled back", async () => {

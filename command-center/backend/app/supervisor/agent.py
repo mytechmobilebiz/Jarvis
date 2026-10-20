@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -26,6 +27,7 @@ from ..agents.base import (
     capability,
 )
 from ..agents.monitoring.findings import open_findings
+from ..brain import STAFF
 from ..llm.base import LLMError
 from ..models import (
     Approval,
@@ -119,6 +121,9 @@ def template_summary(message: str, digests: list[dict[str, Any]], answers: list[
     return "\n".join(lines) if lines else "No tasks ran for this request."
 
 
+HISTORY_SUBJECT = re.compile(r"\b(?:jarvis|hermes|%s)\b" % "|".join(STAFF), re.IGNORECASE)
+
+
 class SupervisorAgent(BaseAgent):
     name = "supervisor"
     title = "AI Supervisor"
@@ -141,13 +146,15 @@ class SupervisorAgent(BaseAgent):
                  r"\bhealth (review|check)\b"),
                 lambda text, urls: {} if not urls else None,
             ),
-            # Questions about JARVIS's history: answered locally from the JARVIS Brain, never by an AI model.
+            # Questions about JARVIS's history: answered locally from the JARVIS Brain, never by an AI model. Only a
+            # question that names JARVIS (or one of its staff) is one: "what problems are there?" stays a health review,
+            # "it was hacked in the past" a site check.
             Intent(
                 "recall",
                 (r"\bjarvis\b", r"\b(previously|in the past)\b",
                  r"\bwhat\s+did\b.{0,60}\b(do|accomplish(ed)?|achieve[ds]?|get done)\b",
                  r"\bwhat\s+(problems?|issues?|decisions?)\b"),
-                lambda text, urls: {"question": text.strip()[:500]} if text.strip() else None,
+                lambda text, urls: {"question": text.strip()[:500]} if HISTORY_SUBJECT.search(text) else None,
                 weight=2,
             ),
         ]

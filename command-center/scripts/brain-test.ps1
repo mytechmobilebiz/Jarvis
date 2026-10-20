@@ -41,11 +41,24 @@ function New-Secret([int]$bytes) {
 }
 
 function Write-TestEnv([string]$liveFolder) {
-  # Fresh secrets, never the live installation's; only the time zone is taken from the live .env.
+  # Fresh secrets, never the live installation's. From the live .env only the time zone and the build settings (a
+  # registry mirror, a proxy's CA bundle: not secrets) are taken, so the test copy builds where the live one builds.
   $tz = "America/New_York"
+  $build = @()
   if ($liveFolder) {
     $live = Read-EnvFile (Join-Path $liveFolder ".env")
     if ($live["TZ"] -and $live["TZ"] -match '^[A-Za-z_]+(/[A-Za-z0-9_+-]+)*$') { $tz = $live["TZ"] }
+    $registry = [string]$live["REGISTRY"]
+    if ($registry -and $registry -match '^[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._-]+)*$') { $build += "REGISTRY=$registry" }
+    $ca = [string]$live["EXTRA_CA_BUNDLE"]
+    if ($ca) {
+      if (-not [IO.Path]::IsPathRooted($ca)) { $ca = Join-Path $liveFolder $ca }
+      if (Test-Path -LiteralPath $ca -PathType Leaf) {
+        # Copied into this folder: newer Docker builds refuse a build file outside the project folder.
+        Copy-Item -LiteralPath $ca -Destination (Join-Path $root "brain-test-ca.pem") -Force
+        $build += "EXTRA_CA_BUNDLE=./brain-test-ca.pem"
+      }
+    }
   }
   $stamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
   $lines = @(
@@ -68,7 +81,7 @@ function Write-TestEnv([string]$liveFolder) {
     "TZ=$tz",
     "# The test copy's dashboard: http://127.0.0.1:<BRAIN_TEST_PORT>",
     "BRAIN_TEST_PORT=8190"
-  )
+  ) + $build
   # UTF-8 without BOM and LF line endings, which Docker Compose reads cleanly. Never .env.
   [IO.File]::WriteAllText($envFile, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding $false))
   Write-Host "Wrote $envFile (fresh secrets for the test copy)."
@@ -228,7 +241,9 @@ try {
         $failure = Invoke-Seed $compose $seedFolder
         if ($failure) { $code = 1; Write-Host "SEED FAILED: $failure. Run -Action Start -SeedFromBackup again, or -Action Remove." -ForegroundColor Red; break }
       }
-      $up = Invoke-DockerLive ($compose + @("up", "-d", "--build"))
+      # --force-recreate: with Docker's containerd image store, a rebuilt image does not always make Compose replace
+      # a stopped container, which would then keep running the previous code. The test copy's data is in volumes.
+      $up = Invoke-DockerLive ($compose + @("up", "-d", "--build", "--force-recreate"))
       Remove-Item Env:CC_RELEASE_VERSION -ErrorAction SilentlyContinue
       if ($up -ne 0) { $code = 1; Write-Host "docker compose up failed (exit $up)." -ForegroundColor Red; break }
       Write-Host "Waiting for the test copy to answer..."

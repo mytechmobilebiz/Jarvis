@@ -107,6 +107,13 @@ def test_the_scripts_are_ascii_and_never_set_compose_variables_or_write_env(name
         assert '$envFile = Join-Path $root ".env.brain-test"' in text
 
 
+@pytest.mark.parametrize("name", SCRIPTS)
+def test_no_empty_character_argument(name):
+    # ('', '/') throws at run time ("String cannot be of zero length") although the script parses: a backslash lost
+    # on the way into the file once made every jarvis-import.ps1 run stop there.
+    assert not re.search(r"\(''\s*,", script(name))
+
+
 def test_refusals_come_before_anything_and_say_nothing_changed():
     common = script("brain-common.ps1")
     stop = common[common.index("function Stop-Brain"):common.index("function Invoke-Native")]
@@ -136,8 +143,9 @@ def test_typed_confirmations():
 def test_the_test_copy_is_built_like_install_does_it():
     text = script("brain-test.ps1")
     call = text.index('& (Join-Path $PSScriptRoot "prepare-build.ps1")')
-    assert call < text.index("-not $env:CC_RELEASE_VERSION") < text.index('@("up", "-d", "--build")')
-    assert text.index('@("up", "-d", "--build")') < text.rindex("Remove-Item Env:CC_RELEASE_VERSION")
+    up = '@("up", "-d", "--build", "--force-recreate")'  # a rebuilt image is not always picked up without it
+    assert call < text.index("-not $env:CC_RELEASE_VERSION") < text.index(up)
+    assert text.index(up) < text.rindex("Remove-Item Env:CC_RELEASE_VERSION")
     common = script("brain-common.ps1")
     assert '"compose", "-p", $BrainTestProject' in common and '"--env-file", (Join-Path $root ".env.brain-test")' in common
 
@@ -154,3 +162,19 @@ def test_the_package_ships_the_operations_files_and_not_the_sandbox_check(tmp_pa
         assert f"InfiniteAI-CommandCenter/{f}" in names, f
     assert not any("/testing/" in n for n in names)
     assert b"\r\n" in brain_test and b"\n" not in brain_test.replace(b"\r\n", b"")
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_the_production_feature_check_matches_what_brain_import_status_prints(monkeypatch, capsys, installed):
+    from app import cli
+    from app.brain import importer
+
+    async def status(run=None):
+        return {"importer_version": importer.IMPORTER_VERSION, "installed": installed, "runs": []}
+
+    monkeypatch.setattr(importer, "status", status)
+    assert cli.main(["cli", "brain-import", "status"]) == 0
+    printed = capsys.readouterr().out
+    pattern = re.search(r"\$printed -notmatch '([^']+)'", script("jarvis-import.ps1")).group(1)
+    found = re.search(pattern, printed)
+    assert (found.group(1) if found else None) == (importer.IMPORTER_VERSION if installed else None), printed

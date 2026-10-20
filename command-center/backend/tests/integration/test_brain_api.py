@@ -772,7 +772,7 @@ async def test_resolutions_record_effects_and_a_rollback_reverts_them(client):
     r = await resolve(client, ids["c_src"], "use_incoming")
     assert r.status_code == 200, r.text
     assert r.json()["effects"]["items"] == [{"id": ids["p"], "status_before": "approved", "version_before": 2,
-                                             "version_after": 3}]
+                                             "version_after": 3, "flags_before": {}}]
     assert r.json()["effects"]["purged_items"] == [{"id": ids["q"], "source_key": None}]
     assert r.json()["conflict"]["incoming_item_id"] is None
     # workflow, use_incoming: the draft is replaced and needs a review again.
@@ -847,6 +847,9 @@ async def test_source_changed_keep_existing_remembers_the_rejected_version(clien
     r = await resolve(client, ids["c_src"], "keep_existing")
     assert r.status_code == 200
     assert r.json()["effects"]["items"][0]["id"] == ids["q"]
+    # The hash added to the existing item is an effect too: a rollback of run 1 takes it out again.
+    assert r.json()["effects"]["items"][1] == {"id": ids["p"], "status_before": "approved", "version_before": 2,
+                                               "version_after": 2, "rejected_source_sha256": NEW_SHA}
     async with session_scope() as s:
         p, q = await s.get(MemoryItem, ids["p"]), await s.get(MemoryItem, ids["q"])
         assert p.flags["rejected_source_sha256"] == [NEW_SHA] and (p.title, p.version) == ("FAQ ROBIN", 2)
@@ -1213,3 +1216,65 @@ async def test_an_imported_jarvis_reviewed_converted_and_rolled_back_through_the
         assert await s.scalar(select(func.count()).select_from(Task)) == 0
     assert (await client.get("/api/brain/overview")).json()["imports"]["latest"]["status"] == "rolled_back"
     assert os.path.exists(fx["db"])
+
+
+# --- Tags, Credit Repair promotion, purge after a decision, whole-day dates ---------------------------------------
+
+
+async def test_tags_cannot_hold_secrets_contacts_or_restricted_data(client):
+    await as_(client, "operator")
+    token = "gh" + "p_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"  # built here: no token-shaped literal in Git
+    for tag in ("jane.doe@example.org", "SSN 219-09-9999", "+1 555 765 4321", token):
+        r = await client.post("/api/brain/items", json={"kind": "business", "title": "Tagged", "body": "Text.",
+                                                        "tags": [tag]})
+        assert r.status_code == 400 and tag not in r.text, tag
+    r = await client.post("/api/brain/items", json={"kind": "business", "title": "Tagged", "body": "Text.",
+                                                    "tags": ["pricing"]})
+    assert r.status_code == 201
+    r = await client.patch("/api/brain/items/%d" % r.json()["item"]["id"], json={"tags": ["jane.doe@example.org"]})
+    assert r.status_code == 400
+
+
+async def test_credit_repair_conversation_text_stays_in_credit_repair(client):
+    ids = await seed()
+    await as_(client, "admin+")
+    url = "/api/brain/messages/%d/promote" % ids["m6"]
+    r = await client.post(url, json={"kind": "knowledge", "title": "Portal", "agent": ""})
+    assert r.status_code == 400 and "stays in Credit Repair" in r.json()["detail"]
+    r = await client.post(url, json={"kind": "knowledge", "title": "Portal", "agent": "credit_repair"})
+    assert r.status_code == 201 and r.json()["item"]["agent"] == "credit_repair"
+
+
+async def test_purge_refuses_an_item_whose_conflict_decision_a_rollback_reverts(client):
+    ids = await seed_conflicts()
+    await as_(client, "admin")
+    assert (await resolve(client, ids["c_mem"], "use_incoming")).status_code == 200
+    assert (await client.delete("/api/brain/items/%d" % ids["y"])).status_code == 200
+    r = await client.delete("/api/brain/items/%d/purge" % ids["y"])
+    assert r.status_code == 400 and "import run %d" % ids["r1"] in r.json()["detail"]
+    r = await client.post("/api/brain/imports/%d/rollback" % ids["r1"],
+                          json={"confirm": str(ids["r1"]), "discard_reviewed": True})
+    assert r.status_code == 200, r.text
+    async with session_scope() as s:
+        assert (await s.get(MemoryItem, ids["x"])).status == "approved"  # the decision was reverted
+
+
+async def test_purging_a_newer_copy_of_a_changed_file_rejects_that_copy_for_good(client):
+    ids = await seed_conflicts()
+    await as_(client, "admin")
+    assert (await client.delete("/api/brain/items/%d" % ids["q"])).status_code == 200
+    assert (await client.delete("/api/brain/items/%d/purge" % ids["q"])).status_code == 200
+    async with session_scope() as s:
+        assert (await s.get(MemoryItem, ids["p"])).flags["rejected_source_sha256"] == [NEW_SHA]
+
+
+async def test_a_date_alone_covers_the_whole_day(client):
+    ids = await seed()
+    await as_(client, "operator")
+    day = (T0 + timedelta(days=4)).date().isoformat()
+    r = (await client.get("/api/brain/sessions", params={"since": day, "until": day})).json()
+    assert {s["source_session_id"] for s in r["sessions"]} == {"s5"}
+    r = (await client.get("/api/brain/search", params={"q": "SSL", "scope": "archive", "since": day,
+                                                       "until": day})).json()
+    assert [h["message"]["id"] for h in r["archive"]["hits"]] == [ids["m7"]]
+    assert (await client.get("/api/brain/search", params={"until": "not a date"})).status_code == 422

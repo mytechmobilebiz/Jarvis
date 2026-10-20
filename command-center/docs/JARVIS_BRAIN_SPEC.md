@@ -46,8 +46,9 @@ moves to 0.7.0.
    dates of birth and a client's credit file (`text.RESTRICTED_PATTERNS`).
    - **A session in which any message holds restricted data is withheld entirely.**
      Every message is kept as a row with `withheld = true` and no text, the title and
-     summary are empty, and the session has `sensitivity = 'restricted'`.
-   - A file holding restricted data is excluded.
+     summary are empty, and the session has `sensitivity = 'restricted'`. A row that is
+     not stored (a system prompt, a rewound or a purged row) counts too.
+   - A file holding restricted data, in its text or in its path, is excluded.
    - The data stays in the JARVIS backup. Credit Repair work belongs in the Credit
      Repair module.
 5. **Customer data.**
@@ -55,10 +56,20 @@ moves to 0.7.0.
      `[email]` and `[phone]`.
    - Text that already contains those stand-ins counts as masked.
    - These are always `sensitivity = 'customer'`:
-     - any record with a masked value;
+     - any record with a masked value, a file whose path held one included;
      - every message of Sarah's sessions (staff `sarah`);
-     - every message whose tool name looks like mail, WhatsApp, SMS, CRM or lead
-       handling (`(?i)mail|smtp|imap|whatsapp|sms|message|lead|crm|contact|proposal`);
+     - every message of a session from a customer-facing gateway channel (WhatsApp,
+       SMS, e-mail, Telegram, Messenger and similar, `source.CUSTOMER_CHANNEL`; not the
+       owner's own Slack, the CLI or cron), and the session itself
+       (`flags.customer_channel`);
+     - every message whose tool name looks like mail, WhatsApp, SMS, CRM, lead,
+       invoice or client handling
+       (`(?i)mail|smtp|imap|whatsapp|sms|message|lead|crm|contact|proposal|invoice|client|customer`);
+     - the same work done through a generic tool: a message whose tool-call arguments
+       (a terminal command, a script's options) or whose tool result's file paths name
+       it (`source.CUSTOMER_WORK`: mail, SMTP, IMAP, himalaya, WhatsApp, SMS, lead,
+       CRM, contact, proposal, invoice, client, customer as words or path parts, and
+       Sarah's files and scripts);
      - Hermes `USER.md` entries (the owner's own profile).
    - Customer records are seen by **admins only** in the dashboard. They are read by
      the Supervisor and Email & Customer Communications only, never sent to an AI
@@ -136,7 +147,7 @@ python -m app.cli brain-import rollback --run ID --yes [--discard-reviewed] [--a
 python -m app.cli brain-import status   [--run ID]
 python -m app.cli brain-import rescan   [--yes]          # re-clean every stored brain text with the current detectors
 python -m app.cli brain-import decisions-export --out FILE  # review decisions keyed by source_key (test copy)
-python -m app.cli brain-import decisions-apply  --in FILE --run ID [--yes]  # apply them after the production import
+python -m app.cli brain-import decisions-apply  --in FILE --run ID --actor ADMIN_EMAIL [--yes]  # after the production import
 ```
 
 **Selection** (`SELECTION`):
@@ -167,7 +178,10 @@ read-only, for duplicates, conflicts and tombstones. It prints counts and, with
   plus the unique index.
 - A run is "alive" only while its lock is held. Others use `pg_try_advisory_lock` to
   decide, never the heartbeat age.
-- `heartbeat_at` is refreshed by a background task every 30 seconds.
+- `heartbeat_at` is refreshed by a background task every 30 seconds. The same task
+  checks (`pg_locks`, its own backend) that the lock connection still holds the run's
+  lock; when it does not, or the connection fails, the run is cancelled and marked
+  `interrupted`, since another import could start.
 - Every status change is conditional:
   `UPDATE … WHERE id = :id AND status = :expected`. Zero rows → abort.
 - A `running` row whose lock is free is marked `interrupted` by whoever notices.
@@ -184,11 +198,14 @@ read-only, for duplicates, conflicts and tombstones. It prints counts and, with
 - On another exception: `failed`, with `error` = `<Class> in <phase> at <source_key>`.
 - On SIGTERM or SIGINT: `interrupted`. The checkpoint stays either way.
 - The finished run stores `counts`, `report` (2.8) and
-  `source = {db: {name, bytes, sha256, wal_present: false}, profile: {manifest_sha256, files}, columns_read: {...}, pre_backup_sha256}`.
+  `source = {db: {name, bytes, sha256, wal_present: false}, profile: {manifest_sha256, files}, columns_read: {...}, pre_backup_sha256, discovery_check}`
+  (`source` is written when the run starts).
 
 **`resume`:**
 - It refuses unless `source.db.sha256` and `source.profile.manifest_sha256` match.
 - It continues after the checkpoint. It is idempotent, because of the unique keys.
+  A checkpoint at `finish` is past every phase: only the report is written.
+- Its report keeps the run's `source.discovery_check` (resume takes no `--discovery`).
 
 **`verify`** recomputes the selection, then checks the following:
 
@@ -201,25 +218,37 @@ read-only, for duplicates, conflicts and tombstones. It prints counts and, with
 5. No TEXT or JSONB column of **any** brain table row created or updated by the run
    matches `SECRET_PATTERNS`, `text.RESTRICTED_PATTERNS` or the chat-secret rules, or
    holds a high-entropy token. That covers items and their versions, sessions,
-   messages and their tool calls, conflicts, drafts and the run's own report.
+   messages and their tool calls, conflicts, drafts and the run's own report, and
+   the run's `import_records`: `before`, and `reason` and `source_key` (keys made of
+   the backup's row identifiers aside), which also hold no e-mail address or phone
+   number.
 6. No withheld message or restricted session has text.
 7. `columns_read` holds no reasoning or system-prompt column.
 8. Full-text search finds a sample of the imported messages and items.
 
-It writes `report.verification`.
+It writes `report.verification` (that key alone, and only while the run is still
+`completed`: a rollback during verify refuses the write).
 
 **`rollback`.** It refuses (exit 2, listing ids) when:
 - a later run that is not rolled back has records whose targets belong to this run,
   or messages in this run's sessions. Roll back in reverse order.
+- a later run that is not rolled back has a record with the same
+  `(target_table, target_id)` or the same `source_key` as one of this run's
+  `updated` records: restoring `before` would leave that row in neither run's state.
+  Roll back in reverse order.
 - any of the run's items was reviewed or edited since (version > 1, or a status
   other than `pending_review`/`quarantined`, or deleted), unless
   `--discard-reviewed` is given. The count is shown before confirmation.
 - any of its conflicts was resolved with an effect whose target changed again
-  since (its version moved on).
+  since (its version moved on), or whose before version was redacted since (a
+  revert would make `[redacted]` the item's text): revert those by hand.
 
 Otherwise it does all of this in one transaction:
 - reverts each resolved conflict's `effects`, restoring the before version or status
-  as a new `reverted` version;
+  as a new `reverted` version, with the item's flags as they were (`flags_before`)
+  and every risk flag the restored text calls for; a restored text stays `approved`
+  only if it was approved with those risk flags, else it is `quarantined`. A hash a
+  `keep_existing` decision added to `flags.rejected_source_sha256` is taken out;
 - restores `import_records.before` for every `updated` row;
 - deletes, in order, the run's conflicts, drafts (except converted ones, which are
   reported: their disabled schedules belong to the Command Center), items, messages
@@ -246,9 +275,12 @@ current detectors:
 It reports counts and writes the audit entry `brain.rescanned`.
 
 **`decisions-export` / `decisions-apply`.**
-- Export writes `{source_key, content_hash, status, kind, agent, title, body, tags,
-  reviewed_by, review_note}` for every imported item a person reviewed or edited in
-  this database.
+- Export writes `{source_key, content_hash, status, reviewed_by, review_note,
+  deleted, edited}` for every imported item a person reviewed or edited in this
+  database. Text travels only for an edit: `title, body, tags, kind, agent` for an
+  item whose content a person changed, and never for a customer or Credit Repair
+  item, whose decision is marked `edit_not_exported` instead (apply lists it, to be
+  edited and reviewed by hand).
 - Apply, after the production import, applies a decision only where the
   production item has the same `source_key` **and** the same `content_hash` as at
   export time. The change is a version with note `decision carried over from the
@@ -264,8 +296,10 @@ It reports counts and writes the audit entry `brain.rescanned`.
 ### 2.2 Sessions and messages
 
 **Columns.** Probe with `PRAGMA table_info` and read only these:
-- sessions: `id, title, display_name, source, started_at, ended_at, end_reason,
-  parent_session_id, model_config, message_count, tool_call_count, archived`;
+- sessions: `id, title, source, started_at, ended_at, end_reason,
+  parent_session_id, model_config, message_count, tool_call_count, archived`
+  (`display_name` is not read: on a gateway it is the name of the person JARVIS
+  chatted with, never a title);
 - messages: `id, session_id, role, content, tool_name, tool_call_id, tool_calls,
   timestamp, active, compacted, message_uid`.
 
@@ -278,15 +312,15 @@ It reports counts and writes the audit entry `brain.rescanned`.
 | Channel | `sessions.source` through `kit.label()` |
 | Lineage | `_delegate_from` → `delegated`; `_branched_from` or a parent with end_reason `branched` → `branch`; a parent with `compression` → `continuation` |
 | Times | A number or numeric string → seconds if < 1e11, milliseconds if < 1e14, microseconds if < 1e17, else NULL. Naive ISO text → the customer `timezone` setting, with `flags.time_assumed_local`. Unparsable → NULL. The sort key is `(started_at IS NULL, started_at, id)`. |
-| Excluded | `active = 0` with `compacted` 0, NULL or absent → `rewound or superseded`. No content, no tool calls and no tool name → `empty`. Role `system` → `system prompt`. Orphans (`--all`) → `no session`. A tombstoned key → `purged by an admin`. |
-| Compaction | `compacted = 1` → state `compacted`. A live row whose (role, tool_name, content hash, tool_calls hash) equals a compacted row of the same session → `duplicate`, reason `carried-on copy of a compacted message`. |
+| Excluded | `active = 0` with `compacted` 0, NULL or absent → `rewound or superseded`. No content, no tool calls and no tool name → `empty`. Role `system` → `system prompt`. Orphans (`--all`) → `no session`. A tombstoned key → `purged by an admin`. An excluded row with content or tool calls is still checked for restricted data (content and arguments, as a stored row would be): if it holds any, the session is withheld (0.4); the row itself is never stored. |
+| Compaction | `compacted = 1` → state `compacted`. Hermes writes the summary and the turns it carries on as new live rows right after the compacted ones; only that block is compared. Walking the live rows that follow a run of compacted rows: a row whose (role, tool_name, tool_call_id, content hash, tool_calls hash) equals a compacted row of the session not matched yet → `duplicate`, reason `carried-on copy of a compacted message`, and that compacted row is used up (one copy per compacted row); the first row with no such counterpart is the summary (imported) and the walk goes on; the next row with none ends the block. Rows after the block are never copies, even when they say what a compacted row said. Excluded rows are skipped. |
 | Adjacent duplicates | For user and assistant rows only: (role, tool_name, tool_call_id, content hash, tool_calls hash) equal to the previous user or assistant row → `duplicate`. Tool results are never de-duplicated. |
 | Content | User and assistant: cut to 200,000 characters, `clean(…, "chat")`, cut to 50,000. Tool results: cut to 20,000, then cleaned, then cut to 4,000 (`truncated`). |
 | `tool_calls` | Parse both the OpenAI (`function.name/arguments`) and the flat (`name/arguments`) shape → `[{name, arguments}]`. Arguments are cleaned as JSON or chat and cut to 500. The message's sensitivity is the highest of its content and arguments. A restricted argument restricts the message. |
-| Customer by default | Staff `sarah`, or a tool name matching the customer pattern (0.5) → at least `customer` |
+| Customer by default | Staff `sarah`, a customer-facing channel, a tool name matching the customer pattern, or tool-call arguments or a tool result's file paths naming customer work (0.5) → at least `customer` |
 | Restricted | Any restricted message → **the whole session withheld** (0.4): every message `withheld`, no text, labels empty; title and summary `''`; action `withheld` with reason `restricted data in this conversation: <types>` |
 | Labels | `labels_for(role, cleaned, tool_names=…, tool_error=…)`; none for withheld, duplicate or excluded rows |
-| Session derived fields | Counts; `labels` as counts per label; sensitivity = highest message level (restricted > customer > general); summary = first user message (one line, 200) ` → ` last assistant message (one line, 300), from imported, non-withheld rows; title cleaned (`""` if restricted) |
+| Session derived fields | Counts; `labels` as counts per label; sensitivity = highest message level (restricted > customer > general), at least `customer` with `flags.title_masked` or `flags.customer_channel`; summary = first user message (one line, 200) ` → ` last assistant message (one line, 300), from imported, non-withheld rows; title = `sessions.title` cleaned (`""` if restricted or absent) |
 
 **Re-import (a newer backup):**
 - The same message key with the same `source_fp` → `duplicate`.
@@ -310,10 +344,19 @@ It reports counts and writes the audit entry `brain.rescanned`.
 The status is `quarantined` when any secret was redacted, or when a risk flag is set
 (instruction-like, approval conflict, script, plugin, custom, owner profile).
 - `source_system = 'jarvis'`.
-- `source_ref`: the profile-relative path, plus `#entry` or `#role <id>`.
+- `source_ref`: the profile-relative path (content files: `jarvis-content/<rel>`),
+  cleaned, plus `#entry` or `#role <id>`. A path is cleaned part by part
+  (`text.clean_path()`): contact data is masked, and restricted data is looked for in
+  the whole path too.
 - `source_key = jarvis:file:<area>/<rel>`. Memory entries get
   `#entry-<first 16 hex of sha256 of the normalised entry>`; role blocks get
-  `#role-<id>`.
+  `#role-<id>`. A path that holds contact or restricted data is never stored: its
+  key is `jarvis:file:<area>/path-sha256:<sha256 of the path>`.
+- Keys are stored unmasked (records, conflicts, tombstones), so other source text
+  stands in a key only when cleaning would leave it as it is (`text.key_part`): a
+  path, role id or job name holding a secret or anything else cleaning changes
+  stands as `sha256-<key_digest>` (32 base32 characters of its SHA-256), and
+  `source_ref` shows it cleaned.
 - `source_sha256` of the raw bytes of that part.
 - `source_at`: the file mtime, or the date in a report's file name.
 - Sensitivity is always passed from `clean()`, raised to `customer` by the rules in
@@ -325,8 +368,8 @@ The status is `quarantined` when any secret was redacted, or when a risk flag is
 - Clean Markdown and text with `"chat"`, code and shell with their kind, config with
   `"config"`.
 - Cut bodies to `store.MAX_BODY` with `flags.truncated`.
-- Titles are cut to 300 characters. An empty title falls back to
-  `<file name> entry N`.
+- Titles are cut to 300 characters. An empty title falls back to the cleaned file
+  name (`<cleaned file name> entry N` for an entry).
 
 | What | Becomes |
 |---|---|
@@ -348,7 +391,9 @@ The status is `quarantined` when any secret was redacted, or when a risk flag is
 
 **More rules for files:**
 - **Restricted data.** A file whose text is restricted is excluded with
-  `restricted data`.
+  `restricted data`; a file whose path is restricted is excluded with
+  `restricted data in its path` (and has no entries).
+- **Contact data in a path.** Every item of the file is `customer`.
 - **Instructions.** Instructions whose `instruction_flags` include `approval_bypass`
   or `autonomous_action` get `flags.approval_conflict = true` and a conflict of kind
   `instruction`, title `JARVIS rule that bypasses approval (<path>)`, with
@@ -376,7 +421,10 @@ The status is `quarantined` when any secret was redacted, or when a risk flag is
 ### 2.4 Workflow drafts
 
 There is one draft per job in `cron/jobs.json`. The key is `jarvis:job:<id>` (else
-`jarvis:job:name:<name>#<index>`). The website watchdog's key is
+`jarvis:job:name:<name, or its digest (2.3)>#<index>`). A job whose id appears
+earlier in `jobs.json` is keyed `jarvis:job:<id>#<n>` (n = 2, 3, …) and recorded as
+`duplicate`, reason `the same job id appears earlier in jobs.json`; the first job
+with that id names it for staff attribution. The website watchdog's key is
 `jarvis:watchdog:check_websites`.
 
 | Field | Value |
@@ -411,7 +459,10 @@ There is one draft per job in `cron/jobs.json`. The key is `jarvis:job:<id>` (el
 ### 2.5 Sites
 
 The URLs in `knowledge/websites.md` are normalised to `https://host/path` and
-compared with `sites.url`:
+keyed `jarvis:url:<key_digest of the normalised URL>` (never the address: its path
+can hold a webhook secret or an e-mail address). A URL that cleaning would change is
+excluded (`held a secret or personal data`); the others are compared with
+`sites.url`:
 - a URL that is already registered → recorded as `duplicate`;
 - otherwise a conflict of kind `site`, titled `JARVIS watched <host>`.
 

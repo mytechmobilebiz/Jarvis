@@ -1,4 +1,4 @@
-# Software bill of materials: Infinite AI Command Center 0.5.1
+# Software bill of materials: Infinite AI Command Center 0.6.0
 
 Generated 2026-10-19 by `scripts/generate-sbom.py`; machine-readable copy: `sbom.cdx.json` (CycloneDX 1.5).
 

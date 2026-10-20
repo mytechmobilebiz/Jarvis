@@ -149,12 +149,26 @@ def spy_prompt_block(monkeypatch) -> list[tuple[str, str]]:
 
 
 @pytest.mark.parametrize("question", ["What did JARVIS accomplish last month?", "what problems did JARVIS have with SSL",
-                                      "what decisions were made about refunds"])
+                                      "what decisions did JARVIS make about refunds", "What did Scout accomplish?"])
 def test_the_rule_planner_routes_history_questions_to_recall(question):
     agents = {n: a for n, a in all_agents().items() if not a.sensitive}
     plan = RulePlanner().plan(question, agents)
     assert [(s.agent, s.capability, s.params) for s in plan.steps] == [
         ("supervisor", "recall", {"question": question, "limit": 8})]
+
+
+@pytest.mark.parametrize("request_text, routed", [
+    ("Run a health review: what issues do the workers have?", ("supervisor", "health_review")),
+    ("Is the system healthy? What problems are there?", ("supervisor", "health_review")),
+    ("Give me the daily briefing: what problems happened today?", ("supervisor", "daily_briefing")),
+    ("What's happening? What issues came up?", ("supervisor", "daily_briefing")),
+    ("Check https://acme.example - it was previously down", ("monitoring", "check_url")),
+    ("Run a security scan of https://acme.example, it was hacked in the past", ("monitoring", "check_url")),
+    ("Write a blog post about what problems small businesses had in the past", ("seo_content", "draft_blog_post")),
+])
+def test_requests_that_do_not_name_jarvis_route_as_before(request_text, routed):
+    agents = {n: a for n, a in all_agents().items() if not a.sensitive}
+    assert [(s.agent, s.capability) for s in RulePlanner().plan(request_text, agents).steps] == [routed]
 
 
 def test_the_registry_is_unchanged_but_for_the_recall_capability():
@@ -506,3 +520,86 @@ async def test_a_viewer_sees_ordinary_request_summaries(admin, app_client, make_
     assert got["request"]["summary"] == detail["request"]["summary"] and "visible to operators" not in got["request"]["summary"]
     async with session_scope() as s:
         assert (await s.get(SupervisorRequest, detail["request"]["id"])).plan.get("local_only") is None
+
+
+# --- Copies of brain text outside the brain ------------------------------------------------------------------------
+
+
+async def test_withholding_a_quoted_message_removes_every_copy_of_its_text(admin, make_worker):
+    from app.brain import review
+    from app.brain.quotes import REMOVED
+
+    await seed_history()
+    detail = await ask_supervisor(admin, make_worker, SSL_QUESTION)
+    assert "renewed it with AutoSSL" in detail["request"]["summary"]
+    recall = next(t for t in detail["tasks"] if t["capability"] == "recall")
+    data = recall["result"]["data"]
+    assert len(data["sources"]) == len(data["answer"])
+    quoted = next(src["message"] for line, src in zip(data["answer"], data["sources"])
+                  if src and "message" in src and "AutoSSL" in line)
+    async with session_scope() as s:
+        await review.withhold_message(s, await s.get(ArchiveMessage, quoted), actor=ADMIN[0])
+    detail = (await admin.get(f"/api/supervisor/requests/{detail['request']['id']}")).json()
+    assert "renewed it with AutoSSL" not in detail["request"]["summary"] and REMOVED in detail["request"]["summary"]
+    async with session_scope() as s:
+        task = await s.get(Task, recall["id"])
+        assert "renewed it with AutoSSL" not in json.dumps(task.result) and REMOVED in task.result["data"]["answer"]
+
+
+async def test_deleting_an_item_removes_its_quotes_and_notes():
+    from app.brain.quotes import REMOVED
+
+    ids = await seed_history()
+    async with session_scope() as s:
+        task = Task(agent="supervisor", capability="recall", params={}, status="succeeded", risk="read",
+                    result={"summary": "x", "data": {"local_only": True,
+                                                     "answer": ["### Problems", "- AutoSSL failed on acme: quoted"],
+                                                     "sources": [None, {"item": ids["problem_item"]}]}})
+        noted = Task(agent="monitoring", capability="check_url", params={}, status="succeeded", risk="read",
+                     result={"summary": "y", "data": {"memory_notes": [{"id": ids["problem_item"], "kind": "problem",
+                                                                         "title": "AutoSSL failed on acme"}]}})
+        s.add_all([task, noted])
+        await s.flush()
+        await store.delete_item(s, await s.get(MemoryItem, ids["problem_item"]), actor=ADMIN[0])
+    async with session_scope() as s:
+        assert (await s.get(Task, task.id)).result["data"]["answer"] == ["### Problems", REMOVED]
+        assert (await s.get(Task, noted.id)).result["data"]["memory_notes"] == []
+
+
+# --- Recall: hosts, staff, prompts without topic words ----------------------------------------------------------------
+
+
+async def test_recall_matches_a_domain_and_ignores_the_words_of_its_path():
+    async with session_scope() as s:
+        sess = _session("d1", title="Dental site work", started=T0)
+        s.add(sess)
+        await s.flush()
+        s.add_all([_message(sess, 1, "The SSL certificate on brightsmiles.example expired; I renewed it.",
+                            ["problem", "accomplishment"]),
+                   _message(sess, 2, "Fixed the contact form on www.brightsmiles.example", ["accomplishment"],
+                            at=T0 + timedelta(hours=1)),
+                   _message(sess, 3, "Published a blog post about dental marketing and its contact page.",
+                            ["accomplishment"], at=T0 + timedelta(hours=2))])
+    result = await ask("What did JARVIS do on brightsmiles.example?")
+    answer = "\n".join(result.data["answer"])
+    assert result.data["coverage"]["matched_topic_words"] and "dental marketing" not in answer
+    assert "renewed it" in answer and "contact form" in answer
+    problems = await ask("What problems did JARVIS have with https://www.brightsmiles.example/contact ?")
+    assert "### Problems (1 found)" in "\n".join(problems.data["answer"])
+
+
+async def test_recall_answers_about_the_staff_member_named():
+    await seed_history()
+    result = await ask("What did Scout accomplish?")
+    answer = "\n".join(result.data["answer"])
+    assert "keyword brief" in answer and "AutoSSL" not in answer and "Only Scout's conversations" in answer
+
+
+async def test_no_topic_words_no_memory_in_the_prompt():
+    async with session_scope() as s:
+        await _item(s, "business", "Office lease terms", "The landlord is Acme Realty.")
+    await allow_ai_context()
+    async with session_scope() as s:
+        mem = store.AgentMemory(s, "seo_content")
+        assert await mem.prompt_block("Why we do what we do") == ""
+        assert "Acme Realty" in await mem.prompt_block("office lease")

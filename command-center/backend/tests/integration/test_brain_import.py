@@ -21,6 +21,7 @@ from sqlalchemy import func, select, text, update
 
 from app.brain import importer as imp
 from app.brain import jarvis_kit as kit
+from app.brain import mapping
 from app.brain import source as src
 from app.brain import store
 from app.db import session_scope
@@ -412,6 +413,147 @@ async def test_an_incremental_reimport_from_a_modified_copy(fx):
     assert await bj.table_counts(exclude=bj.HISTORY_TABLES) == rows
 
 
+# --- Sessions and files the planted set does not hold -----------------------------------------------------------
+
+
+def add_session(fx: dict[str, str], sid: str, rows: list[dict], *, source: str = "cli", title: str = "",
+                display_name: str | None = None) -> None:
+    """A session added to this copy of the backup; each row is {role, content, tool_calls, tool_name, tool_call_id,
+    active, compacted}."""
+    con = bj.sqlite(fx["db"])
+    try:
+        con.execute("INSERT INTO sessions (id, source, started_at, end_reason, title, display_name) "
+                    "VALUES (?, ?, 1793900000, 'completed', ?, ?)", (sid, source, title, display_name))
+        for n, r in enumerate(rows):
+            con.execute("INSERT INTO messages (session_id, role, content, tool_calls, tool_name, tool_call_id, "
+                        "timestamp, active, compacted, message_uid) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (sid, r["role"], r.get("content", ""), r.get("tool_calls"), r.get("tool_name"),
+                         r.get("tool_call_id"), 1793900000 + n, r.get("active", 1), r.get("compacted", 0),
+                         "%s-%d" % (sid, n)))
+        con.commit()
+    finally:
+        con.close()
+
+
+def call(call_id: str, name: str, arguments: dict) -> str:
+    return json.dumps([{"id": call_id, "type": "function",
+                        "function": {"name": name, "arguments": json.dumps(arguments)}}])
+
+
+async def test_only_the_rows_hermes_carried_on_are_copies_of_compacted_ones(fx):
+    """A later turn that says what a compacted one said is kept: copies are matched one to one, by tool call id
+    too, and only in the block Hermes wrote right after the compaction."""
+    gone = {"active": 0, "compacted": 1}
+    add_session(fx, "20261106_0106", [
+        dict(role="user", content="Send the invoice to the first client.", **gone),
+        dict(role="assistant", tool_calls=call("call_a", "terminal", {"command": "send-invoice --to first"}), **gone),
+        dict(role="tool", content="sent", tool_name="terminal", tool_call_id="call_a", **gone),
+        dict(role="assistant", content="Sent the invoice.", **gone),
+        dict(role="user", content="yes", **gone),
+        dict(role="assistant", content="Summary of earlier turns: the first client's invoice was sent."),
+        dict(role="assistant", tool_calls=call("call_b", "terminal", {"command": "send-invoice --to second"})),
+        dict(role="tool", content="sent", tool_name="terminal", tool_call_id="call_b"),
+        dict(role="assistant", content="Sent the invoice."),
+        dict(role="user", content="yes")])
+    # Hermes's documented order: the summary, then the turns it carries on, then new turns.
+    add_session(fx, "20261107_0107", [
+        dict(role="user", content="Plan the week.", **gone),
+        dict(role="assistant", content="Here is the plan.", **gone),
+        dict(role="assistant", content="Summary of earlier turns: a plan for the week."),
+        dict(role="user", content="Plan the week."),
+        dict(role="assistant", content="Here is the plan."),
+        dict(role="user", content="Plan the week."),
+        dict(role="assistant", content="Here is the plan.")])
+    done = await imp.run(bj.paths(fx), ALL)
+    recs = await records(done["run_id"])
+    invoices = source_messages(fx, "20261106_0106")
+    assert [recs[m.key].action for m in invoices] == ["imported"] * 10
+    assert [m.state for m in await messages_of("20261106_0106")] == ["compacted"] * 5 + ["live"] * 5
+    week = source_messages(fx, "20261107_0107")
+    assert [(recs[m.key].action, recs[m.key].reason) for m in week[2:]] == [
+        ("imported", ""), ("duplicate", imp.CARRIED), ("duplicate", imp.CARRIED), ("imported", ""), ("imported", "")]
+    stored = {m.position: m.id for m in await messages_of("20261107_0107")}
+    assert [recs[m.key].target_id for m in week[3:5]] == [stored[0], stored[1]]
+    assert (await imp.verify(done["run_id"], bj.paths(fx)))["passed"]
+
+
+async def test_restricted_data_in_a_row_that_is_not_stored_withholds_the_conversation(fx):
+    ssn = "219-09-9999"
+    add_session(fx, "20261108_0108", [
+        dict(role="system", content="Client file: SSN %s, disputing the Capital One collection." % ssn),
+        dict(role="user", content="Where are we with her file?"),
+        dict(role="assistant", content="The letters went out on Monday.")])
+    add_session(fx, "20261109_0109", [
+        dict(role="user", content="Fill in the onboarding form."),
+        dict(role="assistant", active=0, tool_calls=call("call_r", "fill_form", {
+            "field": "date of birth", "value": bj.BRAIN_PLANTED["dob"]})),
+        dict(role="assistant", content="Done, the form is in.")])
+    done = await imp.run(bj.paths(fx), ALL)
+    recs = await records(done["run_id"])
+    for sid, kind in (("20261108_0108", "us_ssn"), ("20261109_0109", "date_of_birth")):
+        sess = await session_of(sid)
+        assert (sess.sensitivity, sess.title, sess.summary, sess.imported_messages) == ("restricted", "", "", 0)
+        assert recs[sess.source_key].action == "withheld" and kind in recs[sess.source_key].reason
+        msgs = await messages_of(sid)
+        assert len(msgs) == 2 and all(m.withheld and m.content == "" and m.tool_calls == [] for m in msgs)
+    excluded = [recs[m.key].reason for m in source_messages(fx, "20261108_0108") + source_messages(fx, "20261109_0109")
+                if recs[m.key].action == "excluded"]
+    assert excluded == ["system prompt", imp.REWOUND]
+    dump = "\n".join((await bj.stored_text()).values())
+    assert ssn not in dump and "Capital One" not in dump and "letters went out" not in dump
+    assert (await imp.verify(done["run_id"], bj.paths(fx)))["passed"]
+
+
+async def test_customer_work_through_a_generic_tool_or_a_customer_channel_is_customer_data(fx):
+    lead = "Jane Roe, Roe Dental, 12 Main St"
+    add_session(fx, "20261110_0110", source="slack", rows=[
+        dict(role="user", content="Send the website proposal to the dentist who wrote in."),
+        dict(role="assistant", tool_calls=call("call_p", "terminal", {
+            "command": "python scripts/send_proposal.py --lead \"%s\"" % lead})),
+        dict(role="tool", tool_name="terminal", tool_call_id="call_p",
+             content=json.dumps({"status": "sent", "pdf": "workspace/proposals/Roe-Dental.pdf"})),
+        dict(role="assistant", content="Done: Roe Dental got the five-page package at 2,400.")])
+    add_session(fx, "20261111_0111", source="whatsapp", display_name="Jane Roe", rows=[
+        dict(role="user", content="Hi, how much is a five-page website?"),
+        dict(role="assistant", content="Our five-page package is 2,400.")])
+    planned = await imp.plan(bj.paths(fx), ALL)
+    done = await imp.run(bj.paths(fx), ALL)
+    assert done["report"]["by_sensitivity"] == planned["by_sensitivity"]
+    slack = await session_of("20261110_0110")
+    assert slack.sensitivity == "customer" and "customer_channel" not in slack.flags
+    by_role = {(m.role, bool(m.tool_calls)): m.sensitivity for m in await messages_of("20261110_0110")}
+    assert by_role[("assistant", True)] == "customer"  # the command names a proposal and a lead
+    assert by_role[("tool", False)] == "customer"  # the result names a proposal's file
+    gateway = await session_of("20261111_0111")
+    assert (gateway.channel, gateway.sensitivity, gateway.title, gateway.flags["customer_channel"]) == (
+        "whatsapp", "customer", "", True)
+    assert {m.sensitivity for m in await messages_of("20261111_0111")} == {"customer"}
+    assert "Jane Roe" not in (await bj.stored_text(("archive_sessions",)))["archive_sessions"]
+    assert (await session_of("20261011_0011")).sensitivity == "general"  # the owner's own Slack stays general
+
+
+async def test_a_file_path_that_names_a_person_or_holds_restricted_data(fx):
+    email, ssn_name = "jane.roe@example.com", "jane-roe-ssn-078-05-1120"
+    os.makedirs(os.path.join(fx["content"], "leads"), exist_ok=True)
+    os.makedirs(os.path.join(fx["content"], "clients"), exist_ok=True)
+    with open(os.path.join(fx["content"], "leads", email + ".md"), "w", encoding="utf-8") as f:
+        f.write("---\nstatus: new\n---\n")
+    with open(os.path.join(fx["content"], "clients", ssn_name + ".md"), "w", encoding="utf-8") as f:
+        f.write("---\nstatus: new\n---\n")
+    done = await imp.run(bj.paths(fx), ALL)
+    report, recs = done["report"], await records(done["run_id"])
+    async with session_scope() as s:
+        item = await s.scalar(select(MemoryItem).where(MemoryItem.source_ref == "jarvis-content/leads/[email]"))
+    assert item is not None and (item.title, item.sensitivity) == ("[email]", "customer")
+    assert item.source_key.startswith("jarvis:file:content/path-sha256:")
+    restricted = [r for r in recs.values() if r.reason == "restricted data in its path"]
+    assert len(restricted) == 1 and restricted[0].action == "excluded"
+    assert report["restricted"]["files_excluded"] == 2 and report["restricted"]["types"]["us_ssn"] >= 1
+    for table, dump in (await bj.stored_text()).items():
+        assert email not in dump and ssn_name not in dump and "078-05-1120" not in dump, table
+    assert (await imp.verify(done["run_id"], bj.paths(fx)))["passed"]
+
+
 # --- Failures, interruptions, liveness -------------------------------------------------------------------------
 
 
@@ -451,6 +593,74 @@ async def test_resume_after_a_failure_in_the_middle_of_a_batch(built, monkeypatc
     assert (await imp.verify(row.id, bj.paths(built)))["passed"]
     with pytest.raises(imp.Refused, match="completed"):
         await imp.resume(row.id, bj.paths(built))
+
+
+async def test_a_job_id_used_twice_in_jobs_json_is_a_duplicate(fx):
+    jobs_path = os.path.join(fx["profile"], "cron", "jobs.json")
+    with open(jobs_path, encoding="utf-8") as f:
+        jobs = json.load(f)
+    jobs["jobs"].append(dict(jobs["jobs"][0], name="own-job", prompt="Another job that reuses the id."))
+    with open(jobs_path, "w", encoding="utf-8") as f:
+        json.dump(jobs, f)
+    done = await imp.run(bj.paths(fx), ALL)
+    recs = await records(done["run_id"])
+    assert recs["jarvis:job:a1b2c3"].action == "imported"
+    assert (recs["jarvis:job:a1b2c3#2"].action, recs["jarvis:job:a1b2c3#2"].reason) == (
+        "duplicate", "the same job id appears earlier in jobs.json")
+    async with session_scope() as s:
+        draft = await s.scalar(select(WorkflowDraft).where(WorkflowDraft.source_key == "jarvis:job:a1b2c3"))
+        assert draft.name == "morning-brief" and "reuses the id" not in draft.spec
+        assert await s.scalar(select(func.count()).select_from(WorkflowDraft)) == 4
+    assert (await session_of("cron_a1b2c3_20261001_080000")).job_name == "morning-brief"
+    assert (await imp.verify(done["run_id"], bj.paths(fx)))["passed"]
+
+
+async def test_a_source_key_recorded_twice_fails_the_run_at_that_record(built, monkeypatch):
+    original = imp.Processor.do_draft
+
+    async def twice(self, d, index):
+        await original(self, d, index)
+        if d.key == "jarvis:job:a1b2c3":
+            self.record(d.key, d.record_type, "duplicate", "recorded twice")  # refused when the batch is flushed
+
+    monkeypatch.setattr(imp.Processor, "do_draft", twice)
+    with pytest.raises(imp.ImportFailed):
+        await imp.run(bj.paths(built), ALL)
+    async with session_scope() as s:
+        row = await s.scalar(select(ImportRun))
+    # The batch's last record is the watchdog's; the error names the record that was recorded twice.
+    assert row.status == "failed" and row.error == "IntegrityError in jobs at jarvis:job:a1b2c3"
+    monkeypatch.setattr(imp.Processor, "do_draft", original)
+    assert (await imp.resume(row.id, bj.paths(built)))["status"] == "completed"
+
+
+async def test_a_run_that_stopped_after_its_last_checkpoint_resumes_to_its_report(built, tmp_path, monkeypatch):
+    """The finish checkpoint is past every phase: resume only writes the report, with the discovery check the run
+    started with (resume takes no --discovery)."""
+    backup = src.Backup(built["db"], src.ZoneInfo("UTC"), {}, {})
+    try:
+        counts = backup.counts()
+    finally:
+        backup.close()
+    discovery = tmp_path / "discovery-summary.json"
+    discovery.write_text(json.dumps({"database_backup": {"sessions": {"total": counts["sessions"]},
+                                                         "messages": {"total": counts["messages"]}}}))
+    original, calls = imp.missing_from_source, []
+
+    async def fails_once(session, sources):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("after the finish checkpoint")
+        return await original(session, sources)
+
+    monkeypatch.setattr(imp, "missing_from_source", fails_once)
+    with pytest.raises(imp.ImportFailed):
+        await imp.run(bj.paths(built, discovery=str(discovery)), ALL)
+    row = (await _all_runs())[0]
+    assert row.status == "failed" and row.checkpoint["phase"] == "finish"
+    done = await imp.resume(row.id, bj.paths(built))
+    assert done["status"] == "completed" and done["report"]["discovery_check"]["ok"] is True
+    assert (await imp.verify(row.id, bj.paths(built)))["passed"]
 
 
 async def _paused_run(built, monkeypatch, at_index: int, selection=ALL):
@@ -505,6 +715,27 @@ async def test_one_import_at_a_time_and_rollback_waits_for_the_lock(built, monke
     assert (await task)["status"] == "completed"
     assert not await imp.run_alive(1)
     assert [r.id for r in await _all_runs()] == [1]
+
+
+async def test_a_run_whose_lock_connection_is_lost_stops_and_is_marked_interrupted(built, monkeypatch):
+    task, gate = await _paused_run(built, monkeypatch, 1, imp.Selection(sample=3))
+    try:
+        async with session_scope() as s:  # the run's own lock connection goes away (a network or server fault)
+            killed = await s.scalar(text(
+                "SELECT count(pg_terminate_backend(pid)) FROM pg_locks WHERE locktype = 'advisory' AND database = "
+                "(SELECT oid FROM pg_database WHERE datname = current_database()) AND classid::bigint = :k "
+                "AND objid::bigint = 1 AND objsubid = 2"), {"k": imp.LOCK_KEY % 2 ** 32})
+        assert killed == 1
+        # The heartbeat notices: the run stops (another import could start now) instead of writing on. The run is
+        # still held in do_session, so nothing else could end it.
+        await asyncio.wait({task}, timeout=30)
+        assert task.done()
+        with pytest.raises(imp.ImportFailed, match="interrupted"):
+            await task
+    finally:
+        gate.set()
+    assert (await run_row(1)).status == "interrupted" and not await imp.run_alive(1)
+    assert (await imp.resume(1, bj.paths(built)))["status"] == "completed"
 
 
 async def _all_runs() -> list[ImportRun]:
@@ -598,6 +829,22 @@ async def test_verify_fails_on_a_planted_secret_an_orphan_row_and_a_count_mismat
     assert await failed_checks() == {"every_record_once", "no_unrecorded_rows", "session_counts", "all_messages"}
 
 
+async def test_a_rollback_while_verify_scans_keeps_its_report_section(built, monkeypatch):
+    done = await imp.run(bj.paths(built), imp.Selection(sample=2))
+    original = imp._search_check
+
+    async def rolled_back_meanwhile(s, run_id):
+        result = await original(s, run_id)
+        await imp.rollback(run_id, confirm=True)
+        return result
+
+    monkeypatch.setattr(imp, "_search_check", rolled_back_meanwhile)
+    with pytest.raises(imp.Refused, match="rolled back while it was being verified"):
+        await imp.verify(done["run_id"], bj.paths(built))
+    row = await run_row(done["run_id"])
+    assert row.status == "rolled_back" and row.report["rollback"] and "verification" not in row.report
+
+
 # --- Conflicts, tombstones, refusals ----------------------------------------------------------------------------
 
 
@@ -609,8 +856,8 @@ async def test_every_conflict_kind_and_its_dedupe(fx):
                                              body="Something else entirely.", actor="admin@test.local")
     first = await imp.run(bj.paths(fx), ALL)
     recs = await records(first["run_id"])
-    assert recs["jarvis:url:" + bj.SITE_REGISTERED].action == "duplicate"
-    assert recs["jarvis:url:" + bj.SITE_NEW].action == "conflict"
+    assert recs[mapping.url_key(bj.SITE_REGISTERED)].action == "duplicate"
+    assert recs[mapping.url_key(bj.SITE_NEW)].action == "conflict"
     modify_copy(fx)
     second = await imp.run(bj.paths(fx), ALL)
     async with session_scope() as s:
@@ -655,7 +902,7 @@ async def test_every_conflict_kind_and_its_dedupe(fx):
 async def test_tombstoned_records_are_not_imported_again(built):
     times = source_messages(built, bj.S_TIMES)
     purged = ["jarvis:session:" + bj.S_CARRIED, times[1].key, "jarvis:file:profile/workspace/reports/scout-2026-10-05.md",
-              "jarvis:job:a1b2c3", "jarvis:url:" + bj.SITE_NEW]
+              "jarvis:job:a1b2c3", mapping.url_key(bj.SITE_NEW)]
     async with session_scope() as s:
         for key in purged:
             s.add(BrainTombstone(source_key=key, purged_by="admin@test.local"))
@@ -668,9 +915,63 @@ async def test_tombstoned_records_are_not_imported_again(built):
     async with session_scope() as s:
         assert await s.scalar(select(ArchiveSession).where(ArchiveSession.source_session_id == bj.S_CARRIED)) is None
         assert await s.scalar(select(WorkflowDraft).where(WorkflowDraft.source_key == "jarvis:job:a1b2c3")) is None
-        assert not (await s.scalars(select(MemoryConflict).where(MemoryConflict.source_key == "jarvis:url:" + bj.SITE_NEW))).all()
+        assert not (await s.scalars(select(MemoryConflict).where(
+            MemoryConflict.source_key == mapping.url_key(bj.SITE_NEW)))).all()
     assert [m.position for m in await messages_of(bj.S_TIMES)] == [0, 2, 3]
     assert (await imp.verify(done["run_id"], bj.paths(built)))["passed"]
+
+
+async def test_source_keys_and_reasons_never_hold_a_secret_or_contact_data(fx):
+    """Keys are stored unmasked (records, conflicts, tombstones): a website line, a file name, a role id or a job name
+    holding a webhook secret or contact data is keyed by a digest. verify reads keys and reasons too."""
+    planted = {"hook": "PlantedHook" + "Secret42", "email": "jane.planted" + "@planted-client.example",
+               "phone": "555-765-" + "4321"}
+    hook = "https://hooks.slack.com/services/" + "/".join(("T0" + "PLANTED9", "B0" + "PLANTED9", planted["hook"]))
+    prof = fx["profile"]
+    with open(os.path.join(prof, "knowledge", "websites.md"), "a", encoding="utf-8") as f:
+        f.write("- %s\n- https://planted-site-four.example/u/%s\n" % (hook, planted["email"]))
+    with open(os.path.join(prof, "knowledge", "%s.md" % planted["email"]), "w", encoding="utf-8") as f:
+        f.write("Notes about the customer's website.\n")
+    with open(os.path.join(prof, "operations.md"), "a", encoding="utf-8") as f:
+        f.write("<!-- jarvis-setup:role:%s:start -->\nCall them back on Mondays.\n<!-- jarvis-setup:role:%s:end -->\n"
+                % (planted["phone"], planted["phone"]))
+    jobs_path = os.path.join(prof, "cron", "jobs.json")
+    with open(jobs_path, encoding="utf-8") as f:
+        jobs = json.load(f)
+    jobs["jobs"].append({"name": "watch the inbox of " + planted["email"], "prompt": "Check the inbox.",
+                         "schedule": {"kind": "cron", "expr": "0 9 * * *"}, "enabled": False})
+    with open(jobs_path, "w", encoding="utf-8") as f:
+        json.dump(jobs, f)
+
+    done = await imp.run(bj.paths(fx), ALL)
+    assert (await imp.verify(done["run_id"], bj.paths(fx)))["passed"]
+    recs = await records(done["run_id"])
+    for url in (hook, "https://planted-site-four.example/u/" + planted["email"]):
+        assert (recs[mapping.url_key(url)].action, recs[mapping.url_key(url)].reason) == (
+            "excluded", "held a secret or personal data")
+    assert any(k.startswith("jarvis:file:profile/path-sha256:") for k in recs)  # a path naming a person (source.py)
+    assert any(k.startswith("jarvis:file:profile/operations.md#role-sha256-") for k in recs)
+    assert any(k.startswith("jarvis:job:name:sha256-") for k in recs)
+    for table, dump in (await bj.stored_text(bj.BRAIN_TABLES + ("audit_log",))).items():
+        assert bj.planted_in(dump, planted) == [], table
+    async with session_scope() as s:
+        item = await s.scalar(select(MemoryItem).where(MemoryItem.title == "Notes about the customer's website."))
+        assert item.source_ref == "knowledge/[email]"  # the address runs to the end of the name (.md is a TLD)
+
+    # A key or a reason that holds one fails verify.
+    async with session_scope() as s:
+        record = await s.scalar(select(ImportRecord).where(ImportRecord.run_id == done["run_id"],
+                                                           ImportRecord.record_type == "file").limit(1))
+        reason = record.reason
+        record.reason = "invalid record: " + planted["email"]
+    result = await imp.verify(done["run_id"], bj.paths(fx))
+    assert {k for k, c in result["verification"]["checks"].items() if not c["ok"]} == {"no_secrets_or_restricted_data"}
+    async with session_scope() as s:
+        await s.execute(update(ImportRecord).where(ImportRecord.id == record.id).values(
+            reason=reason, source_key="jarvis:url:" + hook))
+    where = (await imp.verify(done["run_id"], bj.paths(fx)))["verification"]["checks"][
+        "no_secrets_or_restricted_data"]["where"]
+    assert where == [{"table": "import_records", "id": record.id, "column": "source_key", "types": ["webhook_url"]}]
 
 
 async def test_a_wal_file_or_a_different_discovery_count_is_refused_before_any_change(fx, tmp_path):
@@ -750,20 +1051,32 @@ async def test_review_decisions_carry_over_from_the_test_copy(built, tmp_path):
         items = list((await s.scalars(select(MemoryItem).where(MemoryItem.import_run_id == test_copy["run_id"],
                                                                MemoryItem.source_key.is_not(None))
                                       .order_by(MemoryItem.id))).all())
-        plain = [i for i in items if i.status == "pending_review"]
+        plain = [i for i in items if i.status == "pending_review" and i.sensitivity == "general"]
         quarantined = next(i for i in items if i.status == "quarantined")
+        customer = next(i for i in items if i.status == "pending_review" and i.sensitivity == "customer")
+        unedited_text = [i.body for i in (plain[0], plain[2], quarantined, customer)]
         await store.review_item(s, plain[0], decision="approve", actor="admin@test.local")
         await store.edit_item(s, plain[1], actor="admin@test.local", title="Edited on the test copy")
         await store.review_item(s, plain[1], decision="approve", actor="admin@test.local")
         await store.review_item(s, plain[2], decision="reject", actor="admin@test.local", note="not ours")
         await store.delete_item(s, plain[3], actor="admin@test.local")
         await store.review_item(s, quarantined, decision="approve", actor="admin@test.local")
+        await store.edit_item(s, customer, actor="admin@test.local", body="Customer text edited on the test copy.")
+        await store.review_item(s, customer, decision="approve", actor="admin@test.local")
         decided = {i.source_key: i.status for i in (plain[0], plain[1], plain[2], quarantined)}
-        edited_key, deleted_key = plain[1].source_key, plain[3].source_key
+        edited_key, deleted_key, customer_key = plain[1].source_key, plain[3].source_key, customer.source_key
     out = tmp_path / "decisions.json"
-    assert (await imp.decisions_export(str(out)))["exported"] == 5
+    assert await imp.decisions_export(str(out)) == {"exported": 6, "skipped_without_source_key": 0,
+                                                    "edits_not_exported": 1}
     exported = json.loads(out.read_text())
-    assert exported["format"] == "jarvis-brain-decisions" and len(exported["decisions"]) == 5
+    assert exported["format"] == "jarvis-brain-decisions" and len(exported["decisions"]) == 6
+    # Decisions, not memory: only the text a person edited travels, and never a customer item's.
+    decision = {d["source_key"]: d for d in exported["decisions"]}
+    assert decision[edited_key]["title"] == "Edited on the test copy" and decision[edited_key]["edited"] is True
+    assert {k for k, d in decision.items() if "body" in d or "title" in d} == {edited_key}
+    assert decision[customer_key]["edited"] is True and decision[customer_key]["edit_not_exported"]
+    flat = out.read_text()
+    assert "Customer text edited" not in flat and not [t for t in unedited_text if json.dumps(t)[1:-1] in flat]
     with pytest.raises(imp.Refused, match="exists"):
         await imp.decisions_export(str(out))
 
@@ -781,7 +1094,11 @@ async def test_review_decisions_carry_over_from_the_test_copy(built, tmp_path):
     assert dry["would_apply"] == 4
     result = await imp.decisions_apply(str(out), run_id, actor="admin@test.local", apply=True)
     assert result["applied"] == 4
-    assert result["not_applied"] == {"the item differs from the test copy's import, or was changed since": [1]}
+    number = {d["source_key"]: n for n, d in enumerate(exported["decisions"], 1)}
+    assert result["not_applied"] == {
+        "the item differs from the test copy's import, or was changed since": [number[next(iter(decided))]],
+        "edited on the test copy, but customer and Credit Repair text is never exported: edit and review it by hand":
+            [number[customer_key]]}
     async with session_scope() as s:
         by_key = {i.source_key: i for i in (await s.scalars(select(MemoryItem).where(
             MemoryItem.import_run_id == run_id, MemoryItem.source_key.is_not(None)))).all()}
@@ -791,6 +1108,7 @@ async def test_review_decisions_carry_over_from_the_test_copy(built, tmp_path):
             assert notes == {imp.DECISION_NOTE}
         assert by_key[edited_key].title == "Edited on the test copy"
         assert by_key[deleted_key].deleted_at is not None
+        assert (by_key[customer_key].status, by_key[customer_key].version) == ("pending_review", 1)
         assert await s.scalar(select(AuditLog).where(AuditLog.action == "brain.decisions_applied")) is not None
     again = await imp.decisions_apply(str(out), run_id, actor="admin@test.local", apply=True)
     assert again["applied"] == 0

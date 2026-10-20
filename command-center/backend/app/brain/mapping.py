@@ -6,7 +6,8 @@
 - URLs in knowledge/websites.md are compared with the registered sites.
 
 Every text goes through text.clean() here before anything else looks at it. Titles come from the cleaned text, so a
-title never holds what the body could not.
+title never holds what the body could not. File paths are cleaned too (text.clean_path()) before a source_ref or a
+title shows them.
 """
 
 from __future__ import annotations
@@ -54,6 +55,7 @@ DUPLICATE_RULE = ("The draft never runs. Converting it creates a disabled schedu
 TIMEZONE_NOTE = "JARVIS ran cron in the PC's local time; Command Center schedules run in UTC"
 WATCHDOG_KEY = "jarvis:watchdog:check_websites"
 WATCHDOG_SCRIPT = "scripts/check_websites.py"
+RESTRICTED_PATH = "restricted data in its path"
 
 
 # --- Cleaning -------------------------------------------------------------------------------------------------
@@ -149,6 +151,7 @@ class Part:
     source_at: datetime | None = None
     url: str = ""  # record_type url: the normalised URL
     duplicate_of_earlier: bool = False  # the same entry earlier in the same file
+    restricted: list[str] = field(default_factory=list)  # excluded for restricted data in the file's path: its kinds
 
 
 def _sha(data: str | bytes) -> str:
@@ -202,8 +205,22 @@ def _staff_of_template(f: SourceFile) -> str:
 
 
 def file_parts(f: SourceFile, tz: ZoneInfo) -> list[Part]:
-    """The file's own record first, then its entries, role blocks or URLs."""
-    base = Part(key=f.key, record_type="file", source_ref=f.rel if f.area == "profile" else "jarvis-content/" + f.rel)
+    """The file's own record first, then its entries, role blocks or URLs.
+
+    A path that holds restricted data excludes the file; one that holds contact data (masked in what is shown) makes
+    every part customer data. Either way the records are keyed by the path's digest (SourceFile.key)."""
+    if f.path.restricted:
+        return [Part(key=f.key, record_type="file", source_ref="", excluded=RESTRICTED_PATH,
+                     restricted=list(f.path.restricted))]
+    source_ref = f.shown_rel if f.area == "profile" else "jarvis-content/" + f.shown_rel
+    parts = _file_parts(f, tz, Part(key=f.key, record_type="file", source_ref=source_ref))
+    if f.path.masked:
+        for p in parts:
+            p.customer = True
+    return parts
+
+
+def _file_parts(f: SourceFile, tz: ZoneInfo, base: Part) -> list[Part]:
     lower = f.rel.lower()
     parts = lower.split("/")
     ext = os.path.splitext(lower)[1]
@@ -291,7 +308,7 @@ def _item(base: Part, f: SourceFile, tz: ZoneInfo, *, kind: str, agent: str, fla
     base.text_kind = clean_kind(f.rel)
     base.flags = {**template_flags, **(flags or {})}
     base.customer = customer
-    base.fallback_title = f.name
+    base.fallback_title = f.shown_name
     base.source_at = source_at or file_time(f, tz)
     return [base]
 
@@ -308,7 +325,7 @@ def _entries(base: Part, f: SourceFile, tz: ZoneInfo, *, user: bool) -> list[Par
                     source_ref=base.source_ref + "#entry", raw=entry.strip("\n"), sha256=_sha(entry),
                     kind="business" if user else "knowledge", agent="", text_kind="chat",
                     flags={"owner_profile": True} if user else {}, customer=user,
-                    fallback_title="%s entry %d" % (f.name, n), source_at=file_time(f, tz),
+                    fallback_title="%s entry %d" % (f.shown_name, n), source_at=file_time(f, tz),
                     duplicate_of_earlier=seen[digest] > 1)
         out.append(part)
     return out
@@ -323,11 +340,12 @@ def _operations(base: Part, f: SourceFile, tz: ZoneInfo) -> list[Part]:
         seen[role] = seen.get(role, 0) + 1
         suffix = "" if seen[role] == 1 else "-%d" % seen[role]
         agent = STAFF_AGENT.get(role, "supervisor")
-        blocks.append(Part(key="%s#role-%s%s" % (f.key, role, suffix), record_type="role_block",
-                           source_ref="%s#role %s" % (base.source_ref, role), raw=m.group("body").strip("\n"),
+        shown = brain_text.key_part(role)
+        blocks.append(Part(key="%s#role-%s%s" % (f.key, shown, suffix), record_type="role_block",
+                           source_ref="%s#role %s" % (base.source_ref, shown), raw=m.group("body").strip("\n"),
                            sha256=_sha(m.group(0)), kind="instruction", agent=agent, text_kind="chat",
                            flags={} if role in STAFF else {"unknown_role": True},
-                           fallback_title="%s role %s" % (f.name, role), source_at=file_time(f, tz),
+                           fallback_title="%s role %s" % (f.shown_name, shown), source_at=file_time(f, tz),
                            duplicate_of_earlier=seen[role] > 1))
     rest = ROLE_BLOCK.sub("", text)
     if not rest.strip():
@@ -340,7 +358,7 @@ def _operations(base: Part, f: SourceFile, tz: ZoneInfo) -> list[Part]:
 
 
 def _skill(base: Part, f: SourceFile, tz: ZoneInfo) -> list[Part]:
-    name = f.rel.split("/")[1]
+    name, shown_name = f.rel.split("/")[1], f.shown_rel.split("/")[1]
     front = kit.frontmatter(f.text or "")
     shown = {}
     for k in ("name", "description", "version"):
@@ -354,11 +372,11 @@ def _skill(base: Part, f: SourceFile, tz: ZoneInfo) -> list[Part]:
                                  "compatibility": compatibility, "note": note, "frontmatter": shown}
     else:
         agent = "supervisor"
-        flags = {"skill": name, "staff": "jarvis", "capabilities": [], "compatibility": "reference_only",
+        flags = {"skill": shown_name, "staff": "jarvis", "capabilities": [], "compatibility": "reference_only",
                  "note": "No Command Center counterpart; kept as text.", "frontmatter": shown, "custom": True}
     items = _item(base, f, tz, kind="skill", agent=agent, flags=flags)
     if not items[0].excluded:
-        items[0].title = shown.get("name") or name
+        items[0].title = shown.get("name") or shown_name
     return items
 
 
@@ -413,6 +431,13 @@ def normalize_url(url: str) -> str | None:
     return "https://%s%s" % (host, p.path.rstrip("/"))
 
 
+def url_key(url: str) -> str:
+    """A normalised URL's source key: a digest, never the address itself (its path can hold a webhook secret or an
+    e-mail address, and keys are stored unmasked). The importer's first version keyed URLs as jarvis:url:<address>;
+    such keys exist only in test databases, so nothing migrates them."""
+    return "jarvis:url:" + brain_text.key_digest(url)
+
+
 def _urls(f: SourceFile) -> list[Part]:
     out, seen = [], set()
     for m in URL.finditer(f.text or ""):
@@ -420,10 +445,11 @@ def _urls(f: SourceFile) -> list[Part]:
         if not url or url in seen:
             continue
         seen.add(url)
-        part = Part(key="jarvis:url:%s" % url, record_type="url", source_ref=f.rel, url=url, sha256=_sha(url))
+        part = Part(key=url_key(url), record_type="url", source_ref=f.shown_rel, url=url, sha256=_sha(url))
         cleaned = brain_text.clean(url, "chat")
         if cleaned.withheld or cleaned.secret_types or cleaned.text != url:
             part.excluded = "held a secret or personal data"
+            part.url = ""  # nothing below may use it
         out.append(part)
     return out
 
@@ -483,6 +509,7 @@ class DraftPlan:
     secret_types: dict[str, int]
     restricted: list[str]
     overlaps: str
+    duplicate_of_earlier: bool = False  # a job whose id appears earlier in jobs.json
 
 
 def draft_for_job(job: JobSpec, *, skill_texts: dict[str, str], cron_mode: str, tz_name: str,
@@ -524,7 +551,7 @@ def draft_for_job(job: JobSpec, *, skill_texts: dict[str, str], cron_mode: str, 
         "source_fp": sha256_text(job.name, job.expr, job.enabled, job.deliver, job.prompt),
     }
     return DraftPlan(job.key, "job", fields, job.report_name, dict(cleaned.secret_types), list(cleaned.restricted),
-                     overlaps)
+                     overlaps, duplicate_of_earlier=job.occurrence > 1)
 
 
 def draft_for_watchdog(script: SourceFile, *, cron_mode: str, tz_name: str,

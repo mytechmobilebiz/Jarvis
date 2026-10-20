@@ -299,8 +299,9 @@ async def _brain_command(args: argparse.Namespace) -> int:
             return 0
         if args.command == "decisions-export":
             out = await imp.decisions_export(args.out)
-            print("decisions exported: %d (items without a source key skipped: %d)"
-                  % (out["exported"], out["skipped_without_source_key"]))
+            print("decisions exported: %d (items without a source key skipped: %d; edits of customer or Credit "
+                  "Repair items not exported, to redo by hand: %d)"
+                  % (out["exported"], out["skipped_without_source_key"], out["edits_not_exported"]))
             return 0
         if args.command == "decisions-apply":
             out = await imp.decisions_apply(args.in_path, args.run, actor=args.actor, apply=args.yes)

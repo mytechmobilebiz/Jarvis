@@ -25,14 +25,17 @@ import stat
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import cached_property
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import STAFF, STAFF_AGENT
 from . import jarvis_kit as kit
+from . import text as brain_text
 
-SESSION_COLUMNS = ("id", "title", "display_name", "source", "started_at", "ended_at", "end_reason",
-                   "parent_session_id", "model_config", "message_count", "tool_call_count", "archived")
+# display_name is not read: on a gateway it is the name of the person JARVIS chatted with, never a title.
+SESSION_COLUMNS = ("id", "title", "source", "started_at", "ended_at", "end_reason", "parent_session_id",
+                   "model_config", "message_count", "tool_call_count", "archived")
 MESSAGE_COLUMNS = ("id", "session_id", "role", "content", "tool_name", "tool_call_id", "tool_calls", "timestamp",
                    "active", "compacted", "message_uid")
 REQUIRED = {"sessions": ("id",), "messages": ("id", "session_id", "role", "content")}
@@ -40,7 +43,19 @@ REQUIRED = {"sessions": ("id",), "messages": ("id", "session_id", "role", "conte
 FORBIDDEN_COLUMN = re.compile(r"(?i)^(?:system_prompt|model|.*(?:cost|token).*)$")
 
 # Tool names of customer-facing work: their messages are customer data by default (spec 0.5).
-CUSTOMER_TOOL = re.compile(r"(?i)mail|smtp|imap|whatsapp|sms|message|lead|crm|contact|proposal")
+CUSTOMER_TOOL = re.compile(r"(?i)mail|smtp|imap|whatsapp|sms|message|lead|crm|contact|proposal|invoice|client|customer")
+# The same work done through a generic tool: a tool call's arguments (a terminal command, a script's options) or a
+# file path in a tool result that names it, as a word or a path part, or names Sarah's files and scripts.
+CUSTOMER_WORK = re.compile(
+    r"(?i)(?<![a-z])(?:(?:e-?|g)?mails?|mailbox(?:es)?|smtp|imap|himalaya|whatsapp|sms|leads?|crm|contacts?"
+    r"|proposals?|invoices?|clients?|customers?|sarah)(?![a-z])")
+PATH = re.compile(r"[^\s\"'`<>|]*[/\\][^\s\"'`<>|]+")
+# Gateway channels where JARVIS talked with people outside the business: every message of their sessions is customer
+# data by default. The owner's own Slack, the CLI and scheduled runs are not; "(other)" is a source value that held
+# personal data (kit.label()).
+CUSTOMER_CHANNEL = re.compile(
+    r"(?i)^\(other\)$|whatsapp|sms|mms|mail|telegram|messenger|facebook|instagram|signal|imessage|wechat|viber"
+    r"|discord|webchat|livechat|twilio|voice|phone")
 NUMERIC = re.compile(r"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$")
 # Profile categories that are never imported, so never opened (the live state.db, secrets, caches...).
 NOT_OPENED = {"secret", "database", "cache", "program", "temporary", "log", "session_transcript"}
@@ -171,6 +186,20 @@ def customer_tool(name: str) -> bool:
     return bool(name) and bool(CUSTOMER_TOOL.search(name))
 
 
+def customer_work(text: str) -> bool:
+    """Arguments or a command that name customer work ("scripts/send_proposal.py --lead ...")."""
+    return bool(text) and bool(CUSTOMER_WORK.search(text))
+
+
+def customer_path(text: str) -> bool:
+    """A tool result that names a file of customer work ("workspace/proposals/...", "content/leads/...")."""
+    return any(CUSTOMER_WORK.search(path) for path in PATH.findall(text or ""))
+
+
+def customer_channel(channel: str) -> bool:
+    return bool(channel) and bool(CUSTOMER_CHANNEL.search(channel))
+
+
 # --- The scheduled jobs (cron/jobs.json and the setup marker) ----------------------------------------------------
 
 
@@ -186,10 +215,15 @@ class JobSpec:
     enabled: bool | None
     deliver: str  # platform prefix only
     template_job: bool
+    occurrence: int = 1  # the n-th job in jobs.json with this id: a later one is a duplicate, keyed apart
 
     @property
     def key(self) -> str:
-        return "jarvis:job:%s" % self.id if self.id else "jarvis:job:name:%s#%d" % (self.name, self.index)
+        """By the job's id (a repeated id gets #<n>); a job without a safe id by its name (or a digest of it,
+        text.key_part) and position."""
+        if not self.id:
+            return "jarvis:job:name:%s#%d" % (brain_text.key_part(self.name), self.index)
+        return "jarvis:job:%s" % self.id if self.occurrence == 1 else "jarvis:job:%s#%d" % (self.id, self.occurrence)
 
     @property
     def report_name(self) -> str:
@@ -208,6 +242,7 @@ def read_jobs(text: str | None, template_jobs: dict[str, Any]) -> list[JobSpec]:
     if not isinstance(jobs, list):
         return []
     out = []
+    seen: dict[str, int] = {}
     for n, job in enumerate(j for j in jobs if isinstance(j, dict)):
         name = job.get("name") if isinstance(job.get("name"), str) else ""
         schedule = job.get("schedule")
@@ -222,19 +257,24 @@ def read_jobs(text: str | None, template_jobs: dict[str, Any]) -> list[JobSpec]:
         deliver = job.get("deliver")
         deliver = kit.label(deliver.split(":")[0], "(other)") if isinstance(deliver, str) and deliver else ""
         job_id = job.get("id") if isinstance(job.get("id"), str) and kit.SAFE_JOB_ID.match(job["id"]) else None
+        if job_id:
+            seen[job_id] = seen.get(job_id, 0) + 1
         out.append(JobSpec(
             index=n, id=job_id, name=name, prompt=job.get("prompt") if isinstance(job.get("prompt"), str) else "",
             skills=[s for s in job.get("skills") or [] if isinstance(s, str)] if isinstance(job.get("skills"), list)
             else [], expr=expr if isinstance(expr, str) else "", display=display if isinstance(display, str) else "",
             enabled=job.get("enabled") if isinstance(job.get("enabled"), bool) else None, deliver=deliver,
-            template_job=name in template_jobs))
+            template_job=name in template_jobs, occurrence=seen[job_id] if job_id else 1))
     return out
 
 
 def job_names_by_id(jobs: list[JobSpec], marker_text: str | None) -> dict[str, str]:
     """Job id -> job name, from jobs.json and from the setup marker (cron/jarvis-setup-registered.json, which maps
-    names to ids, or holds {"jobs": [...]})."""
-    names = {j.id: j.name for j in jobs if j.id}
+    names to ids, or holds {"jobs": [...]}). A job id used twice in jobs.json names its first job."""
+    names: dict[str, str] = {}
+    for j in jobs:
+        if j.id:
+            names.setdefault(j.id, j.name)
     if marker_text:
         try:
             marker = json.loads(marker_text)
@@ -432,7 +472,7 @@ class Backup:
             counts = {k: int(r[k]) for k in ("message_count", "tool_call_count")
                       if isinstance(r.get(k), (int, float)) and not isinstance(r.get(k), bool)}
             out.append(SourceSession(
-                id=sid, title=_as_text(r.get("title")) or _as_text(r.get("display_name")),
+                id=sid, title=_as_text(r.get("title")),
                 channel=kit.label(r.get("source"), "(other)") if r.get("source") is not None else "",
                 started_at=started, ended_at=ended, end_reason=kit.label(r.get("end_reason"), "(other)")
                 if r.get("end_reason") else "", parent_id=parent, lineage=lineage,
@@ -540,13 +580,34 @@ class SourceFile:
     template: dict[str, Any] = field(default_factory=dict)
     placeholders: int = 0
 
-    @property
+    @cached_property
     def key(self) -> str:
-        return "jarvis:file:%s/%s" % (self.area, self.rel)
+        """jarvis:file:<area>/<rel>; the path's digest when the path names a person or holds restricted data, or holds
+        anything else a key may not (text.key_part), so no record stores it."""
+        if self.private_path:
+            return "jarvis:file:%s/path-sha256:%s" % (self.area, sha256_text(self.rel))
+        return "jarvis:file:%s/%s" % (self.area, brain_text.key_part(self.rel))
 
     @property
     def name(self) -> str:
         return self.rel.rsplit("/", 1)[-1]
+
+    @cached_property
+    def path(self) -> brain_text.Cleaned:
+        """The path, cleaned (text.clean_path()): what a source_ref or a title may show of it."""
+        return brain_text.clean_path(self.rel)
+
+    @property
+    def private_path(self) -> bool:
+        return bool(self.path.restricted or self.path.masked)
+
+    @property
+    def shown_rel(self) -> str:
+        return self.path.text
+
+    @property
+    def shown_name(self) -> str:
+        return self.path.text.rsplit("/", 1)[-1]
 
     @property
     def is_text(self) -> bool:

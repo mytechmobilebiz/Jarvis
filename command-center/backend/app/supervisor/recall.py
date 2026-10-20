@@ -30,6 +30,7 @@ from sqlalchemy import and_, func, select
 
 from .. import customer_settings
 from ..agents.base import AgentContext, AgentResult, Params
+from ..brain import STAFF, STAFF_AGENT
 from ..brain import text as brain_text
 from ..brain.policy import agent_archive, agent_items, agent_messages
 from ..brain.store import AgentMemory, MessageHit, search_archive, search_terms, search_was_filtered
@@ -154,10 +155,26 @@ def find_period(question: str, today: date) -> Period | None:
     return None
 
 
+# A web address in a question: its host is the topic (with and without www.), not the words of its path.
+URL_OR_HOST = re.compile(r"(?i)\b(?:https?://)?((?:[a-z0-9][a-z0-9-]{0,62}\.)+[a-z]{2,24})\b(?:[/?#][^\s]*)?")
+# JARVIS's staff by name ("What did Scout accomplish?"): their conversations only. "jarvis" names the whole assistant.
+STAFF_NAMED = re.compile(r"(?i)\b(%s)\b" % "|".join(s for s in STAFF if s != "jarvis"))
+
+
+def staff_named(question: str) -> str | None:
+    m = STAFF_NAMED.search(question)
+    return m.group(1).lower() if m else None
+
+
 def topic_terms(question: str, period: Period | None) -> list[str]:
-    """The question's topic words: no question words, no period words."""
+    """The question's topic words: hosts first, no question words, no period words, no staff name."""
     text = question.replace(period.words, " ") if period else question
-    return [w for w in search_terms(text) if w.lower() not in RECALL_WORDS]
+    hosts: list[str] = []
+    for m in URL_OR_HOST.finditer(text):
+        host = m.group(1).lower().removeprefix("www.")
+        hosts += [h for h in (host, "www." + host) if h not in hosts]
+    text = STAFF_NAMED.sub(" ", URL_OR_HOST.sub(" ", text))
+    return (hosts + [w for w in search_terms(text) if w.lower() not in RECALL_WORDS])[:12]
 
 
 # --- The search --------------------------------------------------------------------------------------------------
@@ -192,11 +209,14 @@ def _item_line(item: MemoryItem, terms: list[str], tz: ZoneInfo) -> str:
 
 
 async def _items(memory: AgentMemory, kinds: tuple[str, ...], terms: list[str], filtered: bool,
-                 since: datetime | None, until: datetime | None, limit: int) -> tuple[list[MemoryItem], int]:
+                 since: datetime | None, until: datetime | None, limit: int,
+                 agent: str | None = None) -> tuple[list[MemoryItem], int]:
     """Approved, general items of these kinds in the Supervisor's scope that match any topic word (the newest when
-    the question has none), and how many match."""
+    the question has none), and how many match; only one agent's items when a staff member is named."""
     session = memory.session
     clauses = [agent_items(memory.policy, general_only=True), MemoryItem.kind.in_(kinds)]
+    if agent is not None:
+        clauses.append(MemoryItem.agent == agent)
     when = func.coalesce(MemoryItem.source_at, MemoryItem.created_at)
     if since is not None and until is not None:
         clauses += [when >= since, when < until]
@@ -212,17 +232,20 @@ async def _items(memory: AgentMemory, kinds: tuple[str, ...], terms: list[str], 
 
 
 async def _archive(memory: AgentMemory, terms: list[str], since: datetime | None, until: datetime | None,
-                   limit: int) -> dict[str, tuple[list[MessageHit], int]]:
+                   limit: int, staff: str | None = None) -> dict[str, tuple[list[MessageHit], int]]:
     found: dict[str, tuple[list[MessageHit], int]] = {}
     for label, _ in LABELS:
         found[label] = await search_archive(
             memory.session, session_where=agent_archive(memory.policy, general_only=True),
             message_where=agent_messages(memory.policy, general_only=True), q=" ".join(terms), any_terms=True,
-            labels=[label], since=since, until=until, limit=limit)
+            labels=[label], staff=staff, since=since, until=until, limit=limit)
     return found
 
 
-def _allocate(candidates: dict[str, list[str]], order: list[str], budget: int) -> dict[str, int]:
+Line = tuple[str, dict[str, int] | None]  # a line of the answer and the record it quotes ({"message": id}, {"item": id})
+
+
+def _allocate(candidates: dict[str, list[Line]], order: list[str], budget: int) -> dict[str, int]:
     """How many lines each section shows: one "nothing found" line for an empty section, the rest round-robin."""
     shown = {label: 0 for label in order}
     budget -= sum(1 for label in order if not candidates[label])
@@ -238,8 +261,8 @@ def _allocate(candidates: dict[str, list[str]], order: list[str], budget: int) -
     return shown
 
 
-def _interleave(items: list[str], messages: list[str]) -> list[str]:
-    out: list[str] = []
+def _interleave(items: list[Line], messages: list[Line]) -> list[Line]:
+    out: list[Line] = []
     for i in range(max(len(items), len(messages))):
         out += items[i:i + 1] + messages[i:i + 1]
     return out
@@ -254,19 +277,23 @@ async def recall_history(ctx: AgentContext, params: RecallParams) -> AgentResult
     since, until = period.bounds(tz) if period else (None, None)
     terms = topic_terms(params.question, period)
     filtered = bool(terms) and await search_was_filtered(session, " OR ".join(terms))
+    staff = staff_named(params.question)
 
     scope = agent_archive(memory.policy, general_only=True)
+    if staff:
+        scope = and_(scope, ArchiveSession.staff == staff)
     searched, first, last = (await session.execute(
         select(func.count(), func.min(ArchiveSession.started_at), func.max(ArchiveSession.started_at)).where(scope))).one()
     imported_sessions = await session.scalar(select(func.count()).select_from(ArchiveSession)) or 0
     imported_items = await session.scalar(
         select(func.count()).select_from(MemoryItem).where(MemoryItem.origin == "import")) or 0
 
-    archive = await _archive(memory, terms if filtered else [], since, until, params.limit)
+    archive = await _archive(memory, terms if filtered else [], since, until, params.limit, staff)
     fallback = filtered and not any(total for _, total in archive.values())
     if fallback:
-        archive = await _archive(memory, [], since, until, params.limit)
-    items = {label: await _items(memory, SECTION_KINDS[label], terms, filtered, since, until, params.limit)
+        archive = await _archive(memory, [], since, until, params.limit, staff)
+    items = {label: await _items(memory, SECTION_KINDS[label], terms, filtered, since, until, params.limit,
+                                 STAFF_AGENT.get(staff) if staff else None)
              for label, _ in LABELS}
     items_total = sum(total for _, total in items.values())
 
@@ -288,15 +315,15 @@ async def recall_history(ctx: AgentContext, params: RecallParams) -> AgentResult
     # message with several labels is shown once, in the first section that lists it.
     focused = [label for label, _ in LABELS if FOCUS[label].search(params.question)]
     order = focused + [label for label, _ in LABELS if label not in focused]
-    by_section: dict[str, list[str]] = {}
+    by_section: dict[str, list[Line]] = {}
     listed_above: dict[str, int] = {}
     shown_messages: set[int] = set()
     for label in order:
         messages = [h for h in archive[label][0] if h.message.id not in shown_messages]
         listed_above[label] = len(archive[label][0]) - len(messages)
         shown_messages.update(h.message.id for h in messages)
-        by_section[label] = _interleave([_item_line(i, terms, tz) for i in items[label][0]],
-                                        [_message_line(h, terms, tz) for h in messages])
+        by_section[label] = _interleave([(_item_line(i, terms, tz), {"item": i.id}) for i in items[label][0]],
+                                        [(_message_line(h, terms, tz), {"message": h.message.id}) for h in messages])
     if fallback:
         notes = [FALLBACK_ITEMS_NOTE if items_total else FALLBACK_NOTE]
     else:
@@ -307,34 +334,39 @@ async def recall_history(ctx: AgentContext, params: RecallParams) -> AgentResult
         cover = (f"Searched {searched} imported JARVIS session(s) from {coverage['first']} to {coverage['last']} "
                  "(general conversations only; customer and withheld conversations are never quoted).")
     elif imported_sessions:
-        cover = ("Searched 0 imported JARVIS sessions: none of them is a general conversation (customer and withheld "
-                 "conversations are never quoted).")
+        cover = ("Searched 0 imported JARVIS sessions: none of %s is a general conversation (customer and withheld "
+                 "conversations are never quoted)." % (f"{staff.title()}'s" if staff else "them"))
     else:
         cover = "No JARVIS conversations have been imported yet; only approved memory was searched."
+    if staff and searched:
+        cover += f" Only {staff.title()}'s conversations were searched (staff names are inferred)."
     if period:
         cover += f" Period asked: {period.start.isoformat()} to {period.end.isoformat()} ({tz})."
     fixed = len(notes) + len(LABELS) + 2  # notes, section headings, coverage and the label note
     shown = _allocate(by_section, order, MAX_LINES - fixed)
 
     titles = dict(LABELS)
-    lines = list(notes)
+    answer: list[Line] = [(n, None) for n in notes]
     for label in order:
         found = totals[label] + items[label][1]
         listed = min(shown[label], len(by_section[label]))
-        lines.append(f"### {titles[label]} ({found} found" + (f", {listed} shown)" if 0 < listed < found else ")"))
+        answer.append((f"### {titles[label]} ({found} found" + (f", {listed} shown)" if 0 < listed < found else ")"),
+                       None))
         if by_section[label]:
-            lines += by_section[label][:shown[label]]
+            answer += by_section[label][:shown[label]]
         elif listed_above[label]:
-            lines.append("- The matching messages are listed above (they carry more than one label).")
+            answer.append(("- The matching messages are listed above (they carry more than one label).", None))
         else:
-            lines.append("- Nothing found" + (" in that period." if period else "."))
-    lines += [cover, LABEL_NOTE]
-    lines = lines[:MAX_LINES]
+            answer.append(("- Nothing found" + (" in that period." if period else "."), None))
+    answer = (answer + [(cover, None), (LABEL_NOTE, None)])[:MAX_LINES]
+    # The sources travel with the answer: when one is withheld, deleted or changed in the JARVIS Brain, the line that
+    # quotes it is removed from this result and from the request's summary (app/brain/quotes.py).
+    lines, sources = [line for line, _ in answer], [source for _, source in answer]
 
     count_shown = sum(shown.values())
     counts = {**totals, "items": items_total, "shown": count_shown, "sessions_searched": searched}
     summary = (f"JARVIS history: {totals['accomplishment']} accomplishment, {totals['problem']} problem and "
                f"{totals['decision']} decision message(s) in {searched} searched session(s); {items_total} approved "
                f"memory item(s); {count_shown} shown.")
-    return AgentResult(summary=summary,
-                       data={"local_only": True, "answer": lines, "counts": counts, "coverage": coverage})
+    return AgentResult(summary=summary, data={"local_only": True, "answer": lines, "sources": sources, "counts": counts,
+                                              "coverage": coverage})

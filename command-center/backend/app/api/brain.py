@@ -17,7 +17,7 @@ statuses and counts only, never titles or text.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -175,6 +175,19 @@ def _aware(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=UTC) if value is not None and value.tzinfo is None else value
 
 
+def _when(value: str | None, *, until: bool = False) -> datetime | None:
+    """A date filter: a date alone ('2026-03-02', as the dashboard's date fields send it) covers that whole day, so
+    'until' a day includes it; a full ISO time is used as it is."""
+    if not value:
+        return None
+    try:
+        when = _aware(datetime.fromisoformat(value.strip().replace("Z", "+00:00")))
+    except ValueError:
+        raise HTTPException(422, "dates are YYYY-MM-DD or ISO 8601 times") from None
+    assert when is not None
+    return when + timedelta(days=1) if until and len(value.strip()) == 10 else when
+
+
 async def _item(session: AsyncSession, caller: Caller, item_id: int, *, lock: bool = False) -> MemoryItem:
     """An item in the caller's scope (admins also reach deleted ones), else 404."""
     stmt = select(MemoryItem).where(MemoryItem.id == item_id,
@@ -220,6 +233,7 @@ def _visible_version(caller: Caller, v: Any) -> bool:
 @router.get("/overview")
 async def overview(caller: Caller = Depends(any_user), session: AsyncSession = Depends(get_db),
                    settings: Settings = Depends(get_settings)) -> dict:
+    await importer.mark_dead_runs(session)  # "Last import: Running" only while its process is alive
     values = await customer_settings.load(session, settings)
     return await review.overview(session, caller.scope, ai_context=str(values.get(store.AI_CONTEXT_KEY) or "off"),
                                  instance_label=str(getattr(settings, "instance_label", "") or ""))
@@ -354,18 +368,18 @@ async def search(
     q: str = Query("", max_length=500), search_scope: str = Query("all", alias="scope",
                                                                 pattern="^(all|memory|archive)$"),
     kind: str | None = None, agent: str | None = None, staff: str | None = None, label: str | None = None,
-    since: datetime | None = None, until: datetime | None = None, limit: int = Query(20, ge=1, le=50),
+    since: str | None = None, until: str | None = None, limit: int = Query(20, ge=1, le=50),
 ) -> dict:
-    since, until = _aware(since), _aware(until)
+    since_at, until_at = _when(since), _when(until, until=True)
     agent_filter = _agent(agent)
     memory: dict[str, Any] = {"hits": [], "total": 0}
     if search_scope in ("all", "memory"):
         when = func.coalesce(MemoryItem.source_at, MemoryItem.created_at)
         clauses: list[ColumnElement[bool]] = [person_items(caller.scope)]
-        if since is not None:
-            clauses.append(when >= since)
-        if until is not None:
-            clauses.append(when < until)
+        if since_at is not None:
+            clauses.append(when >= since_at)
+        if until_at is not None:
+            clauses.append(when < until_at)
         hits, total = await store.search_memory(session, where=and_(*clauses), q=q, kinds=_kinds(kind),
                                                 agent=agent_filter, limit=limit)
         memory = {"hits": [review.item_out(h.item, excerpt=h.excerpt, rank=h.rank) for h in hits], "total": total}
@@ -373,7 +387,7 @@ async def search(
     if search_scope in ("all", "archive") and caller.scope.sees_archive:
         found, n = await store.search_archive(
             session, session_where=person_sessions(caller.scope), message_where=person_messages(caller.scope), q=q,
-            labels=_list(label) or None, agent=agent_filter, staff=staff or None, since=since, until=until,
+            labels=_list(label) or None, agent=agent_filter, staff=staff or None, since=since_at, until=until_at,
             limit=limit)
         archive = {"hits": [{"message": review.message_out(h.message),
                              "session": {"id": h.session.id, "title": h.session.title, "staff": h.session.staff,
@@ -388,7 +402,7 @@ async def list_sessions(
     caller: Caller = Depends(operator), session: AsyncSession = Depends(get_db),
     q: str = Query("", max_length=500), staff: str | None = None, agent: str | None = None,
     origin: str | None = Query(None, pattern="^(chat|scheduled)?$"), label: str | None = None,
-    since: datetime | None = None, until: datetime | None = None,
+    since: str | None = None, until: str | None = None,
     limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
 ) -> dict:
     clauses: list[ColumnElement[bool]] = [person_sessions(caller.scope)]
@@ -400,10 +414,11 @@ async def list_sessions(
         clauses.append(ArchiveSession.origin == origin)
     for one in _list(label):
         clauses.append(ArchiveSession.labels.has_key(one))
-    if since is not None:
-        clauses.append(ArchiveSession.started_at >= _aware(since))
-    if until is not None:
-        clauses.append(ArchiveSession.started_at < _aware(until))
+    since_at, until_at = _when(since), _when(until, until=True)
+    if since_at is not None:
+        clauses.append(ArchiveSession.started_at >= since_at)
+    if until_at is not None:
+        clauses.append(ArchiveSession.started_at < until_at)
     if await store.search_was_filtered(session, q):
         clauses.append(ArchiveSession.search.op("@@")(func.websearch_to_tsquery("english", q)))
     where = and_(*clauses)
@@ -434,7 +449,7 @@ async def get_session(session_id: int, caller: Caller = Depends(operator), sessi
 async def withhold_message(message_id: int, request: Request, caller: Caller = Depends(admin),
                            session: AsyncSession = Depends(get_db)) -> dict:
     message, _ = await _message(session, caller, message_id, lock=True)
-    sess = await review.withhold_message(session, message)
+    sess = await review.withhold_message(session, message, actor=caller.name)
     assert sess is not None
     await audit.record(session, caller.name, "archive.message_withheld", "archive_message", message.id,
                        {"message": message.id, "session": sess.id, "imported_messages": sess.imported_messages,
@@ -581,12 +596,14 @@ async def skills(caller: Caller = Depends(any_user), session: AsyncSession = Dep
 
 @router.get("/imports")
 async def list_imports(caller: Caller = Depends(operator), session: AsyncSession = Depends(get_db)) -> dict:
+    await importer.mark_dead_runs(session)  # an import whose process is gone shows as interrupted, not running
     runs = (await session.scalars(select(ImportRun).order_by(ImportRun.id.desc()))).all()
     return {"runs": [review.run_out(r) for r in runs]}
 
 
 @router.get("/imports/{run_id}")
 async def get_import(run_id: int, caller: Caller = Depends(operator), session: AsyncSession = Depends(get_db)) -> dict:
+    await importer.mark_dead_runs(session)
     run = await session.get(ImportRun, run_id)
     if run is None:
         raise HTTPException(404, "no such import run")

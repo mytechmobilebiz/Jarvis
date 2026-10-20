@@ -7,7 +7,7 @@
 #     -BackupDb C:\InfiniteAI\JarvisMigration\backups\jarvis-state-<time>.db -Restored C:\InfiniteAI\JarvisMigration\restored
 #   ... -Mode Import -Sample 5        then review, then -Sample <about 10 % of the sessions>, then review, then -All
 #   ... -Mode Verify -Run <id>        -Mode Status [-Run <id>]        -Mode Rollback -Run <id> [-DiscardReviewed]
-#   ... -Mode ExportDecisions (test copy)     -Mode ApplyDecisions -Decisions <file> -Run <id> (live installation)
+#   ... -Mode ExportDecisions (test copy)     -Mode ApplyDecisions -Decisions <file> -Run <id> -Actor <admin email> (live)
 #   ... -Mode Resume -Run <id>        -Mode Rescan
 #
 # -Target Test uses the test copy of THIS folder (project cc-brain-test, .env.brain-test). -Target Production must be
@@ -82,6 +82,7 @@ if ($Mode -eq "Plan" -or $Mode -eq "Import") {
   Stop-Brain "-Sample, -FilesSample, -All, -Since, -Until and -NoFiles go with -Mode Plan or Import"
 }
 if ($Mode -eq "ApplyDecisions" -and -not $Decisions) { Stop-Brain "-Mode ApplyDecisions needs -Decisions <decisions file exported from the test copy>" }
+if ($Mode -eq "ApplyDecisions" -and -not $Actor) { Stop-Brain "-Mode ApplyDecisions needs -Actor <your admin email> (recorded as the reviewer of each decision)" }
 
 # --- Checks before anything runs ----------------------------------------------------------------------------------
 Assert-Docker
@@ -93,6 +94,10 @@ $hermes = ""
 if ($env:LOCALAPPDATA) { $hermes = Get-FullPath (Join-Path $env:LOCALAPPDATA "hermes") }
 $Reports = Get-FullPath $Reports
 if ($hermes -and (Test-Inside $Reports $hermes)) { Stop-Brain "the reports folder $Reports is inside JARVIS's folders ($hermes); choose a folder outside them" }
+# The importer can write to the reports folder: it must not hold JARVIS, the Command Center or a whole drive.
+if ($hermes -and (Test-Inside $hermes $Reports)) { Stop-Brain "the reports folder $Reports contains JARVIS's folders ($hermes); choose a dedicated folder for the reports" }
+if ($Reports.TrimEnd('\', '/') -eq ([IO.Path]::GetPathRoot($Reports)).TrimEnd('\', '/')) { Stop-Brain "the reports folder cannot be a whole drive ($Reports); choose a dedicated folder" }
+if ((Test-Inside $root $Reports) -or (Test-Inside $Reports $root)) { Stop-Brain "the reports folder $Reports must be outside the Command Center's folder ($root) and must not contain it" }
 
 $profileDir = ""
 $contentDir = ""
@@ -102,6 +107,10 @@ if ($readsSource) {
   $BackupDb = Get-FullPath $BackupDb
   $Restored = Get-FullPath $Restored
   if (-not (Test-Path -LiteralPath $BackupDb -PathType Leaf)) { Stop-Brain "database backup not found: $BackupDb" }
+  foreach ($path in @($BackupDb, $Restored)) {
+    if (Test-Inside $path $Reports) { Stop-Brain "$path is inside the reports folder $Reports, which the importer can write to; keep the backup and the restored files outside it" }
+  }
+  if (Test-Inside $Reports $Restored) { Stop-Brain "the reports folder $Reports is inside the restored files ($Restored); choose a folder outside them" }
   if (-not (Test-Path -LiteralPath $Restored -PathType Container)) { Stop-Brain "folder not found: $Restored" }
   $profileDir = Join-Path $Restored "profile"
   if (-not (Test-Path -LiteralPath $profileDir -PathType Container)) { Stop-Brain "folder not found: $profileDir (-Restored must hold profile\ and, if it was backed up, content\)" }
@@ -202,16 +211,21 @@ $importVars = @("BRAIN_IMPORT_IMAGE", "BRAIN_IMPORT_DB", "BRAIN_IMPORT_PROFILE",
 foreach ($name in $importVars) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
 function Clear-ImportVars { foreach ($name in $importVars) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue } }
 # The importer runs the code the running api runs. Compose is given the image NAME the api was created from (with
-# Docker's containerd image store an image cannot be run by its ID), after checking that this name still points to
-# the exact image the api is running: if it was rebuilt since, the importer would run other code.
+# Docker's containerd image store an image cannot be run by its ID, and image IDs read from a container and from a
+# name are not comparable). What is compared is the code itself: the Command Center and importer versions the running
+# api reports (read-only docker exec) must equal those of the image the name points to now.
 $imageRef = [string]$api.ImageRef
 if (-not $imageRef -or $imageRef.StartsWith("sha256:")) { Stop-Brain "could not read the image name of the running api of $project" }
-$refId = ""
-$r = Invoke-Docker @("image", "inspect", "--format", "{{.Id}}", $imageRef)
-if ($r.Code -eq 0 -and $r.Out.Count -gt 0) { $refId = $r.Out[0].Trim() }
-if ($refId -ne $api.Image) {
-  Stop-Brain ("the image $imageRef was rebuilt after the api of $project started (the api runs " + $api.Image.Substring(0, 19) +
-    "); restart that installation first, so the importer runs the same code as the api")
+$versionCode = "import app, app.brain; print(app.__version__ + ' ' + app.brain.IMPORTER_VERSION)"
+$running = Invoke-Docker @("exec", $api.Id, "python", "-c", $versionCode)
+$named = Invoke-Docker @("run", "--rm", "--network", "none", "--read-only", "--entrypoint", "python", $imageRef, "-c", $versionCode)
+$runningVersion = ""; $namedVersion = ""
+if ($running.Code -eq 0 -and $running.Out.Count -gt 0) { $runningVersion = ([string]$running.Out[-1]).Trim() }
+if ($named.Code -eq 0 -and $named.Out.Count -gt 0) { $namedVersion = ([string]$named.Out[-1]).Trim() }
+if (-not $runningVersion) { Stop-Brain "the running api of $project has no JARVIS Brain importer (it is older than 0.6.0)" }
+if ($runningVersion -ne $namedVersion) {
+  Stop-Brain ("the image $imageRef holds other code ($namedVersion) than the running api of $project ($runningVersion);" +
+    " restart that installation first, so the importer runs the same code as the api")
 }
 $env:BRAIN_IMPORT_IMAGE = $imageRef
 $reportsExisted = Test-Path -LiteralPath $Reports
@@ -301,11 +315,13 @@ if ($Target -eq "Production") {
   $r = Invoke-Importer @("status") -Capture
   $service = $saved
   $printed = ($r.Out -join "`n")
-  if ($r.Code -ne 0 -or $printed -notmatch '(?i)importer[_ ]version\W{0,4}(\d+\.\d+\.\d+)') {
+  # brain-import status prints "importer <version>; JARVIS Brain tables installed" (tests/unit/test_brain_ops.py runs this
+  # pattern against the CLI's own output).
+  if ($r.Code -ne 0 -or $printed -notmatch '(?m)^importer (\d+\.\d+\.\d+); JARVIS Brain tables installed\b') {
     Clear-ImportVars
     Stop-Brain "the running api's image has no working brain-import (status exit $($r.Code)); install 0.6.0 on the live installation first"
   }
-  Write-Host "Live installation: importer $($Matches[1]), migration 0006_brain present, importer image = running api image ($($api.Image.Substring(0, 19)))."
+  Write-Host "Live installation: importer $($Matches[1]), migration 0006_brain present, importer image = running api code ($runningVersion)."
 }
 
 # --- Run ----------------------------------------------------------------------------------------------------------

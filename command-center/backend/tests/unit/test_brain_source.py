@@ -73,10 +73,26 @@ def test_tool_calls_that_are_not_json_are_kept_as_text_arguments():
 
 
 def test_customer_tools():
-    for name in ("gmail_send_message", "mcp_whatsapp_send", "smtp", "crm_update_lead", "send_proposal", "SMS"):
+    for name in ("gmail_send_message", "mcp_whatsapp_send", "smtp", "crm_update_lead", "send_proposal", "SMS",
+                 "create_invoice"):
         assert source.customer_tool(name)
     for name in ("", "terminal", "web_search", "read_file"):
         assert not source.customer_tool(name)
+
+
+def test_customer_work_done_through_a_generic_tool():
+    for text in ('{"command": "python scripts/send_proposal.py --lead \\"Jane Roe, Roe Dental\\""}',
+                 "himalaya envelope list", "crm export", "cat content/leads/new.md", "invoices/2026-10.pdf",
+                 "type C:\\profile\\knowledge\\sarah\\tone.md"):
+        assert source.customer_work(text), text
+    for text in ("", "ls -la", "git commit --message 'fix misleading spacing'", "wp plugin update --all"):
+        assert not source.customer_work(text), text
+    assert source.customer_path('{"status": "sent", "pdf": "workspace/proposals/Roe-Dental.pdf"}')
+    assert not source.customer_path("The proposal was sent to the lead.")  # words in a result are not a path
+    for channel in ("whatsapp", "sms", "email", "telegram", "messenger", "(other)"):
+        assert source.customer_channel(channel), channel
+    for channel in ("", "slack", "cli", "cron"):
+        assert not source.customer_channel(channel), channel
 
 
 # --- Jobs and staff attribution -----------------------------------------------------------------------------------
@@ -101,6 +117,16 @@ def test_jobs_are_read_from_both_shapes():
     assert [j.report_name for j in jobs] == ["morning-brief", "custom job 2", "triage-inbox"]
     assert source.read_jobs(json.dumps(json.loads(JOBS_JSON)["jobs"]), TEMPLATE_JOBS)[0].key == "jarvis:job:a1b2c3"
     assert source.read_jobs("{not json", TEMPLATE_JOBS) == [] and source.read_jobs(None, TEMPLATE_JOBS) == []
+
+
+def test_a_job_id_used_twice_is_keyed_apart_and_names_its_first_job():
+    jobs = source.read_jobs(json.dumps({"jobs": [{"id": "a1b2c3", "name": "morning-brief"},
+                                                 {"id": "a1b2c3", "name": "own-job"},
+                                                 {"id": "x9", "name": "other"}, {"id": "a1b2c3", "name": "third"}]}),
+                            TEMPLATE_JOBS)
+    assert [j.key for j in jobs] == ["jarvis:job:a1b2c3", "jarvis:job:a1b2c3#2", "jarvis:job:x9",
+                                     "jarvis:job:a1b2c3#3"]
+    assert source.job_names_by_id(jobs, None) == {"a1b2c3": "morning-brief", "x9": "other"}
 
 
 def test_job_names_come_from_jobs_json_and_both_marker_shapes():
@@ -283,6 +309,28 @@ def test_memory_entries_split_on_the_section_sign_else_list_items():
     assert mapping.split_entries("# Notes\n- one\n  more\n- two\n") == ["- one\n  more", "- two"]
     assert mapping.split_entries("Intro text\n- one\n") == ["Intro text", "- one"]
     assert mapping.split_entries("Just a paragraph.\n") == ["Just a paragraph.\n"] and mapping.split_entries(" \n") == []
+
+
+def test_a_path_that_names_a_person_or_holds_restricted_data_is_never_shown_or_kept(tmp_path):
+    root = tmp_path / "content"
+    for rel, text in (("leads/jane.roe@example.com.md", "---\nstatus: new\n---\n"),
+                      ("clients/jane-roe-ssn-078-05-1120.md", "---\nstatus: new\n---\n"),
+                      ("clients/ssn/078051120.md", "Notes.\n"), ("notes/onboarding-2026-10-05.md", "Onboarding.\n")):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    files = {f.rel: f for f in source.walk_area("content", str(root), kit.load_templates())[0]}
+    lead = files["leads/jane.roe@example.com.md"]
+    assert lead.shown_rel == "leads/[email]" and lead.key.startswith("jarvis:file:content/path-sha256:")
+    [part] = mapping.file_parts(lead, NY)
+    assert (part.source_ref, part.fallback_title, part.customer) == ("jarvis-content/leads/[email]", "[email]", True)
+    assert "jane" not in part.key
+    for rel in ("clients/jane-roe-ssn-078-05-1120.md", "clients/ssn/078051120.md"):
+        [part] = mapping.file_parts(files[rel], NY)
+        assert (part.excluded, part.restricted, part.source_ref) == ("restricted data in its path", ["us_ssn"], "")
+        assert rel not in part.key and part.key.startswith("jarvis:file:content/path-sha256:")
+    ordinary = files["notes/onboarding-2026-10-05.md"]  # an ordinary path keeps its key and is shown as it is
+    assert ordinary.key == "jarvis:file:content/notes/onboarding-2026-10-05.md"
+    assert mapping.file_parts(ordinary, NY)[0].source_ref == "jarvis-content/notes/onboarding-2026-10-05.md"
 
 
 def test_titles_skip_front_matter_blank_lines_and_markers():

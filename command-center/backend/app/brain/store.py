@@ -7,6 +7,7 @@ Callers commit. Audit-log entries are written by the API routes (app/api/brain.p
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -17,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import AppSetting, ArchiveMessage, ArchiveSession, MemoryItem, MemoryItemVersion
 from . import AGENTS, KINDS
 from . import text as brain_text
+from .quotes import scrub_quotes
 from .policy import PROMPT_KINDS, RISK_FLAGS, AgentPolicy, agent_archive, agent_items, agent_messages, policy_for
 
 MAX_TITLE = 300
@@ -37,7 +39,8 @@ QUESTION_WORDS = {
     "he", "she", "him", "her", "his", "its", "my", "mine", "there", "here", "now", "ago", "recently", "recent",
     "lately", "time", "times", "anything", "something", "everything", "please", "summary", "summarize", "give",
 }
-WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'\-]{1,40}")
+# A host name stays one word ("brightsmiles.com"): PostgreSQL indexes it as one token, so its parts would match nothing.
+WORD = re.compile(r"(?:[A-Za-z0-9][A-Za-z0-9\-]{0,62}\.)+[A-Za-z]{2,24}\b|[A-Za-z0-9][A-Za-z0-9'\-]{1,40}")
 
 
 class BrainError(ValueError):
@@ -83,6 +86,18 @@ def _check(kind: str, agent: str, title: str, body: str, tags: list[str]) -> Non
         raise BrainError(f"at most {MAX_TAGS} tags of 1 to 40 characters")
 
 
+MARKER = re.compile(r"\[REDACTED:([a-z_]+)\]")
+
+
+def clean_tags(tags: list[str]) -> list[str]:
+    """Tags are shown to every reader: one that holds a secret, contact details or restricted data is refused."""
+    for tag in tags:
+        cleaned = brain_text.clean(tag, "chat")
+        if cleaned.withheld or cleaned.text != tag:
+            raise BrainError("a tag cannot hold a secret, contact details or restricted data")
+    return tags
+
+
 def clean_for_memory(title: str, body: str) -> tuple[str, str, str, dict[str, Any]]:
     """(title, body, sensitivity, flags) for text a person or an agent writes. Restricted data is refused."""
     t = brain_text.clean(title, "chat")
@@ -95,6 +110,9 @@ def clean_for_memory(title: str, body: str) -> tuple[str, str, str, dict[str, An
     secrets = {**t.secret_types}
     for k, v in b.secret_types.items():
         secrets[k] = secrets.get(k, 0) + v
+    # A marker already in the text (a promoted message, text pasted from the archive) still names a secret that was there.
+    for k, v in Counter(MARKER.findall(t.text + "\n" + b.text)).items():
+        secrets[k] = max(secrets.get(k, 0), v)
     if secrets:
         flags["secrets_redacted"] = secrets
     masked = {**t.masked}
@@ -142,6 +160,7 @@ async def create_item(
     tags = [t.strip() for t in tags]
     all_flags = dict(flags or {})
     if not already_clean:
+        clean_tags(tags)
         title, body, detected, cleaned_flags = clean_for_memory(title, body)
         all_flags.update(cleaned_flags)
         sensitivity = brain_text.most_sensitive(sensitivity or "general", detected)
@@ -191,6 +210,8 @@ async def edit_item(
                 flags[key] = cleaned[key]
         item.sensitivity = brain_text.most_sensitive(item.sensitivity, detected)
     new_tags = [t.strip() for t in (item.tags if tags is None else tags)]
+    if tags is not None:
+        clean_tags(new_tags)
     new_kind = item.kind if kind is None else kind
     new_agent = item.agent if agent is None else agent
     _check(new_kind, new_agent, new_title, new_body, new_tags)
@@ -241,6 +262,19 @@ async def delete_item(session: AsyncSession, item: MemoryItem, *, actor: str, no
     item.version += 1
     item.updated_at, item.updated_by = now(), actor
     session.add(_snapshot(item, "deleted", actor, note))
+    await session.flush()
+    await scrub_quotes(session, item_ids=[item.id])  # no history answer or reference note keeps quoting it
+    return item
+
+
+async def quarantine_item(session: AsyncSession, item: MemoryItem, *, actor: str, flag: str, note: str) -> MemoryItem:
+    """Back to admin review (and out of every agent's reach), with a flag that says why."""
+    item.flags = {**(item.flags or {}), flag: True}
+    if item.status != "quarantined":
+        item.status = "quarantined"
+        item.version += 1
+        item.updated_at, item.updated_by = now(), actor
+        session.add(_snapshot(item, "quarantined", actor, note))
     await session.flush()
     return item
 
@@ -438,6 +472,9 @@ class AgentMemory:
         """
         if not await ai_context_allowed(self.session):
             return ""
+        terms = search_terms(query)
+        if not await _usable(self.session, _or_query(terms) if terms else None):
+            return ""  # no topic words: the newest items would be unrelated to the task
         candidates = await self.relevant(query, limit=limit * 3, kinds=PROMPT_KINDS, general_only=True)
         items = [i for i in candidates if not any((i.flags or {}).get(f) for f in RISK_FLAGS)][:limit]
         if not items:

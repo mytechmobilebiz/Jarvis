@@ -112,7 +112,7 @@ function words(key: string): string {
 }
 
 function agentTitle(agent: string): string {
-  return agent ? (AGENT_TITLES[agent] ?? agent) : "Shared (every agent)";
+  return agent && agent !== "(shared)" ? (AGENT_TITLES[agent] ?? agent) : "Shared (every agent)";
 }
 
 function staffName(staff: string): string {
@@ -254,7 +254,10 @@ const FLAG_TEXT: Record<string, string | ((v: unknown) => string)> = {
   withheld: "withheld by an admin",
 };
 /** Flags that describe rather than warn (a skill's mapping, the masking shown by the customer pill). */
-const NOT_CHIPS = new Set(["skill", "staff", "capabilities", "compatibility", "note", "frontmatter", "language", "executable", "masked", "attribution", "reference_only", "source_session"]);
+const NOT_CHIPS = new Set([
+  "skill", "staff", "capabilities", "compatibility", "note", "frontmatter", "language", "executable", "masked", "attribution", "reference_only",
+  "source_session", "text_kind", "message_id", "archive_session_id", "unknown_role",
+]);
 
 function secretTypes(v: unknown): string {
   if (!v || typeof v !== "object") return "";
@@ -818,9 +821,16 @@ function PromoteModal({
   onChanged?: () => void;
 }) {
   const firstLine = (message.content || "").split("\n").find((l) => l.trim()) ?? "";
+  const { user } = useAuth();
+  const isAdmin = user.role === "admin";
+  // A message a secret was removed from becomes a quarantined item, which only an admin may create.
+  const needsAdmin = !isAdmin && Object.keys(message.redactions ?? {}).length > 0;
+  const kinds = isAdmin ? KINDS : KINDS.filter((k) => !ADMIN_KINDS.includes(k));
   const [kind, setKind] = useState<MemoryKind>("knowledge");
   const [title, setTitle] = useState(firstLine.trim().slice(0, 120));
-  const [agent, setAgent] = useState(session.agent === "credit_repair" ? "" : session.agent);
+  // Text from a Credit Repair conversation stays in Credit Repair (the API refuses any other agent).
+  const creditRepair = session.agent === "credit_repair";
+  const [agent, setAgent] = useState(session.agent);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<MemoryItem | null>(null);
@@ -844,7 +854,11 @@ function PromoteModal({
     <Modal title="Promote to memory" onClose={onClose}>
       {created ? (
         <>
-          <div className="alert alert-good">Saved as memory item #{created.id}, waiting for review. Nothing reads it until it is approved.</div>
+          <div className="alert alert-good">
+            {created.status === "quarantined"
+              ? `Saved as memory item #${created.id}, quarantined: a secret was removed from this message, so an admin reviews it. Nothing reads it until it is approved.`
+              : `Saved as memory item #${created.id}, waiting for review. Nothing reads it until it is approved.`}
+          </div>
           <div className="row-actions">
             <button className="btn primary" type="button" onClick={() => onOpenItem(created.id)}>
               Open item #{created.id}
@@ -868,7 +882,7 @@ function PromoteModal({
             <label>
               Kind
               <select value={kind} onChange={(e) => setKind(e.target.value as MemoryKind)}>
-                {KINDS.map((k) => (
+                {kinds.map((k) => (
                   <option key={k} value={k}>
                     {KIND_LABELS[k]}
                   </option>
@@ -877,21 +891,32 @@ function PromoteModal({
             </label>
             <label>
               Agent
-              <select value={agent} onChange={(e) => setAgent(e.target.value)}>
-                <option value="">Shared (every agent)</option>
-                {Object.entries(AGENT_TITLES)
-                  .filter(([k]) => k !== "credit_repair")
-                  .map(([k, t]) => (
-                    <option key={k} value={k}>
-                      {t}
-                    </option>
-                  ))}
-              </select>
+              {creditRepair ? (
+                <select value="credit_repair" disabled>
+                  <option value="credit_repair">{AGENT_TITLES.credit_repair} (stays in Credit Repair)</option>
+                </select>
+              ) : (
+                <select value={agent} onChange={(e) => setAgent(e.target.value)}>
+                  <option value="">Shared (every agent)</option>
+                  {Object.entries(AGENT_TITLES)
+                    .filter(([k]) => k !== "credit_repair")
+                    .map(([k, t]) => (
+                      <option key={k} value={k}>
+                        {t}
+                      </option>
+                    ))}
+                </select>
+              )}
             </label>
           </div>
+          {needsAdmin ? (
+            <p className="br-locked small">
+              <Icon name="lock" size={14} /> A secret was removed from this message, so its item is quarantined: an admin promotes it.
+            </p>
+          ) : null}
           <ErrorNote error={error} />
           <div className="row-actions">
-            <button className="btn primary" type="submit" disabled={busy || !title.trim()}>
+            <button className="btn primary" type="submit" disabled={busy || !title.trim() || needsAdmin}>
               Promote
             </button>
             <button className="btn" type="button" onClick={onClose}>
@@ -999,6 +1024,7 @@ export function SessionModal({
   const isAdmin = user.role === "admin";
   const [offset, setOffset] = useState(0);
   const tries = useRef(0);
+  const located = useRef(false);
   const detail = usePoll(
     () => api.get<SessionDetail>(`${BASE}/sessions/${id}${qs({ limit: MESSAGE_PAGE, offset })}`).then((r) => ({ ...r, offset })),
     0,
@@ -1013,8 +1039,9 @@ export function SessionModal({
 
   // Opened at one message (from Search): page forward until it is in view, then scroll to it.
   useEffect(() => {
-    if (!focus || !current) return;
+    if (!focus || !current || located.current) return;
     if (current.messages.some((m) => m.id === focus)) {
+      located.current = true;
       document.getElementById(`br-msg-${focus}`)?.scrollIntoView?.({ block: "center" });
       return;
     }
@@ -1126,10 +1153,26 @@ export function SessionModal({
               <span className="small">
                 Showing messages {shownFrom.toLocaleString()}–{shownTo.toLocaleString()} of {current.total.toLocaleString()}
               </span>
-              <button className="btn small" type="button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - MESSAGE_PAGE))}>
+              <button
+                className="btn small"
+                type="button"
+                disabled={offset === 0}
+                onClick={() => {
+                  located.current = true;
+                  setOffset(Math.max(0, offset - MESSAGE_PAGE));
+                }}
+              >
                 Previous
               </button>
-              <button className="btn small" type="button" disabled={shownTo >= current.total} onClick={() => setOffset(offset + MESSAGE_PAGE)}>
+              <button
+                className="btn small"
+                type="button"
+                disabled={shownTo >= current.total}
+                onClick={() => {
+                  located.current = true;
+                  setOffset(offset + MESSAGE_PAGE);
+                }}
+              >
                 Next
               </button>
             </div>
@@ -1162,6 +1205,7 @@ export function SessionModal({
 
 function Overview({ rev }: { rev: number }) {
   const { user, canOperate } = useAuth();
+  const isAdmin = user.role === "admin";
   const ov = usePoll(() => api.get<BrainOverview>(`${BASE}/overview`), 30_000, [rev]);
   const d = ov.data;
   const failed = !d && !!ov.error;
@@ -1190,7 +1234,9 @@ function Overview({ rev }: { rev: number }) {
             label="Waiting for review"
             to="/brain?tab=review"
             hint={
-              d?.review
+              d?.review && !isAdmin
+                ? "Quarantined items are reviewed by admins (not counted for you)"
+                : d?.review
                 ? d.review.quarantined_items
                   ? `${plural(d.review.quarantined_items, "quarantined item")}: an admin must review ${d.review.quarantined_items === 1 ? "it" : "them"}`
                   : "No quarantined items"
@@ -1858,6 +1904,8 @@ const ARCHIVE_SCOPE: Record<string, string> = {
 };
 
 function AgentKnowledge({ rev }: { rev: number }) {
+  const { user } = useAuth();
+  const isAdmin = user.role === "admin";
   const list = usePoll(() => api.get<{ agents: BrainAgent[] }>(`${BASE}/agents`), 0, [rev]);
   const agents = list.data?.agents ?? null;
   return (
@@ -1895,7 +1943,8 @@ function AgentKnowledge({ rev }: { rev: number }) {
               )}
               {a.items ? (
                 <p className="small br-agent-counts">
-                  <strong className="tabular">{a.items.approved.toLocaleString()}</strong> approved {a.items.approved === 1 ? "item" : "items"} it can read
+                  <strong className="tabular">{a.items.approved.toLocaleString()}</strong> approved {a.items.approved === 1 ? "item" : "items"} it reads
+                  {isAdmin && user.can_access_sensitive ? "" : " (of those visible to you)"}
                   {entries(a.items.by_kind).length ? <span className="muted"> ({breakdown(a.items.by_kind, (k) => kindLabel(k).toLowerCase())})</span> : null}
                   {a.sessions != null ? (
                     <>
@@ -2104,7 +2153,7 @@ function DraftModal({ id, onClose, onChanged }: { id: number; onClose: () => voi
           <dl className="kv br-kv">
             <dt>Would run</dt>
             <dd>
-              {d.capability ? <code>{`${d.agent}.${d.capability}`}</code> : <span className="muted">nothing (reference only)</span>}
+              {d.capability && d.compatibility !== "reference_only" ? <code>{`${d.agent}.${d.capability}`}</code> : <span className="muted">nothing (reference only)</span>}
               {Object.keys(d.params ?? {}).length ? <span className="muted small"> with {JSON.stringify(d.params)}</span> : null}
             </dd>
             <dt>Trigger</dt>
@@ -2353,7 +2402,9 @@ function Workflows({ rev, openDraft }: { rev: number; openDraft: (id: number) =>
                       {staffName(d.staff)} → {agentTitle(d.agent)}
                     </div>
                   </td>
-                  <td data-label="Would run">{d.capability ? <code className="br-cap">{d.capability}</code> : <span className="muted">nothing</span>}</td>
+                  <td data-label="Would run">
+                    {d.capability && d.compatibility !== "reference_only" ? <code className="br-cap">{d.capability}</code> : <span className="muted">nothing (reference only)</span>}
+                  </td>
                   <td data-label="JARVIS schedule">
                     {d.cron ? <code>{d.cron}</code> : <span className="text-warn small">no valid cron</span>}
                     {d.schedule_display ? <div className="muted small">{d.schedule_display}</div> : null}
@@ -2405,7 +2456,7 @@ function resolutionText(kind: ConflictKind, r: ConflictResolution): string {
       if (kind === "source_changed") return "Keep the current item; the changed file is rejected and is not offered again.";
       if (kind === "site") return "Do not register the site.";
       if (kind === "workflow") return "Keep the current draft; the changed job is ignored.";
-      if (kind === "schedule") return "Keep the existing automation; nothing changes.";
+      if (kind === "schedule") return "Keep the existing automation; the JARVIS draft is rejected (it can be reopened on Workflows).";
       return "Keep what the Command Center has; the incoming item is rejected.";
     case "use_incoming":
       if (kind === "memory_item") return "Archive the existing item; the incoming item stays pending for review.";
@@ -2428,6 +2479,8 @@ function resolutionsFor(kind: ConflictKind): ConflictResolution[] {
 function ConflictCard({ c, onOpenItem, onResolved }: { c: MemoryConflict; onOpenItem: (id: number) => void; onResolved: () => void }) {
   const { user } = useAuth();
   const locked = ADMIN_CONFLICTS.has(c.kind) && user.role !== "admin";
+  // Keeping one side changes an item whose approval needs an admin: keep both and dismiss stay open to operators.
+  const adminOnly = !locked && !!c.needs_admin && user.role !== "admin";
   const [choice, setChoice] = useState<ConflictResolution | "">("");
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -2494,11 +2547,24 @@ function ConflictCard({ c, onOpenItem, onResolved }: { c: MemoryConflict; onOpen
             <Icon name="lock" size={14} /> Only an admin can resolve this kind of conflict (JARVIS rules, changed source files and changed jobs).
           </p>
         ) : null}
+        {adminOnly ? (
+          <p className="br-locked small">
+            <Icon name="lock" size={14} /> Keep existing and Use incoming change an item only an admin may approve: an admin decides those. Keep both and Dismiss
+            are open to you.
+          </p>
+        ) : null}
         <fieldset className="br-choices" disabled={locked || busy}>
           <legend className="sr-only">Resolution for conflict {c.id}</legend>
           {resolutionsFor(c.kind).map((r) => (
             <label key={r} className="br-choice">
-              <input type="radio" name={`conflict-${c.id}`} value={r} checked={choice === r} onChange={() => setChoice(r)} />
+              <input
+                type="radio"
+                name={`conflict-${c.id}`}
+                value={r}
+                checked={choice === r}
+                onChange={() => setChoice(r)}
+                disabled={adminOnly && (r === "keep_existing" || r === "use_incoming")}
+              />
               <span>
                 <strong>{RESOLUTION_LABEL[r]}</strong> <span className="muted small">{resolutionText(c.kind, r)}</span>
               </span>
@@ -2866,6 +2932,9 @@ function RunModal({ id, onClose, onChanged }: { id: number; onClose: () => void;
   const run = d?.run;
   const report: ImportReport = run?.report ?? {};
   const secrets = entries(report.secrets?.types).sort((a, b) => b[1] - a[1]);
+  // A run that stopped keeps its counts so far in the checkpoint (the report is written at the end).
+  const tally = (run?.checkpoint as { tally?: { secrets?: { types?: Record<string, number> } } } | undefined)?.tally;
+  const partialSecrets = entries(tally?.secrets?.types).sort((a, b) => b[1] - a[1]);
   const restrictedTypes = report.restricted?.types;
   const source = (run?.source ?? {}) as { db?: { name?: string; bytes?: number } };
 
@@ -2922,10 +2991,14 @@ function RunModal({ id, onClose, onChanged }: { id: number; onClose: () => void;
                 </dd>
               </>
             ) : null}
-            {entries(report.by_sensitivity).length ? (
+            {Object.keys(report.by_sensitivity ?? {}).length ? (
               <>
                 <dt>By sensitivity</dt>
-                <dd>{breakdown(report.by_sensitivity)}</dd>
+                <dd>
+                  {Object.entries(report.by_sensitivity ?? {})
+                    .map(([k, v]) => (typeof v === "number" ? `${v.toLocaleString()} ${words(k)}` : `${words(k)}: ${breakdown(v) || "none"}`))
+                    .join("; ")}
+                </dd>
               </>
             ) : null}
             {report.masked ? (
@@ -3001,8 +3074,24 @@ function RunModal({ id, onClose, onChanged }: { id: number; onClose: () => void;
 
           <section className="br-rotation" aria-label="Credential rotation">
             <h3>Rotate these kinds of credential</h3>
-            {!run.report ? (
-              <p className="muted small">No report yet: the run has not finished.</p>
+            {!report.secrets ? (
+              partialSecrets.length ? (
+                <>
+                  <p className="small">
+                    The run did not finish, so this list is partial: up to where it stopped, JARVIS's files or conversations held these secrets. Change them
+                    where they are used, and check the rest after a complete run.
+                  </p>
+                  <ul className="br-counts">
+                    {partialSecrets.map(([k, n]) => (
+                      <li key={k}>
+                        <strong>{words(k)}</strong> <span className="muted">found {n === 1 ? "once" : `${n.toLocaleString()} times`} so far</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p className="muted small">No list yet: the run did not finish. Secrets found by a complete run are listed here.</p>
+              )
             ) : secrets.length ? (
               <>
                 <p className="small">

@@ -139,3 +139,174 @@ def test_archive_summaries_never_end_inside_a_redaction_marker():
     cut = _line(cleaned, 40)
     assert cut == "the password is…" and text.clean(cut, "chat").text == cut
     assert _line(cleaned, 200) == cleaned
+
+
+PW = "Pl4nted" + "#Pw9"  # built here: no password-shaped literal in Git
+
+
+@pytest.mark.parametrize("raw", [
+    "mysql -u root -p%s wordpress" % PW,
+    "mysqldump --password=%s --user=root shop" % PW,
+    "the root PGPASSWORD=%s works." % PW,
+    "curl -u admin:%s https://shop.example.test/wp-json" % PW,
+    "sshpass -p '%s' ssh deploy@host.example.test" % PW,
+    "echo '%s' | sudo -S systemctl restart nginx" % PW,
+    "htpasswd -bc .htpasswd admin %s" % PW,
+    "wp config set DB_PASSWORD '%s' --type=constant" % PW,
+    "wp user update 1 --user_pass=%s" % PW,
+])
+def test_passwords_on_command_lines_are_redacted(raw):
+    cleaned = text.clean(raw, "chat")
+    assert PW not in cleaned.text and cleaned.secret_types == {"credential_assignment": 1}
+    assert text.clean(cleaned.text, "chat").text == cleaned.text
+
+
+@pytest.mark.parametrize("raw", ["mysql -u root -p wordpress", "export MYSQL_PWD=$MYSQL_PWD", "the token count was 4096",
+                                 "run it with --pass 2 for a second pass"])
+def test_command_lines_without_a_literal_password_stay(raw):
+    assert text.clean(raw, "chat").text == raw
+
+
+@pytest.mark.parametrize("url, secret", [("https://hook.us1.make.com/abcdefghijklmnop12345", "abcdefghijklmnop"),
+                                         ("https://hooks.zapier.com/hooks/catch/123456/abcdefg/", "123456/abcdefg"),
+                                         ("https://n8n.example.test/webhook/7f3e2a10-1b2c-4d5e-8f90-123456789abc",
+                                          "7f3e2a10")])
+def test_webhook_addresses_are_redacted(url, secret):
+    cleaned = text.clean("POST it to %s now" % url, "chat")
+    assert cleaned.secret_types == {"webhook_url": 1} and secret not in cleaned.text
+
+
+@pytest.mark.parametrize("raw, kind", [
+    ("Done: lead found. Her credit score: 612 and rising", "credit_file"),
+    ("FICO score 580 after the dispute", "credit_file"),
+    ("a 540 credit score", "credit_file"),
+    ("SS# 078051120", "us_ssn"),
+])
+def test_credit_scores_and_ss_numbers_written_the_usual_ways_are_restricted(raw, kind):
+    cleaned = text.clean(raw, "chat")
+    assert cleaned.withheld and kind in cleaned.restricted
+
+
+@pytest.mark.parametrize("raw", ["boost your credit score by 100 points", "Lighthouse score: 95"])
+def test_scores_that_are_not_a_credit_score_stay(raw):
+    assert text.clean(raw, "chat").text == raw
+
+
+@pytest.mark.parametrize("value, kind", [
+    ({"lead": {"name": "Jane Roe", "ssn": "123456789"}}, "us_ssn"),
+    ({"dateOfBirth": "1980-01-02"}, "date_of_birth"),
+    ({"bank": {"account_number": "123456789012"}}, "bank_details"),
+    ({"routing_number": "021000021"}, "bank_details"),
+    ({"card_number": 4111111111111111}, "payment_card"),
+    ({"credit_score": 612}, "credit_file"),
+])
+def test_json_values_are_judged_with_their_key(value, kind):
+    cleaned = text.clean(json.dumps(value), "chat")
+    assert cleaned.withheld and kind in cleaned.restricted and cleaned.text == ""
+
+
+def test_json_phone_numbers_and_numeric_secrets_by_key():
+    cleaned = text.clean(json.dumps({"phone": 15551234567, "pin": 4821, "password": 98765432}), "chat")
+    assert json.loads(cleaned.text) == {"phone": "[phone]", "pin": "[REDACTED:credential_assignment]",
+                                        "password": "[REDACTED:credential_assignment]"}
+    assert cleaned.masked == {"phone_number": 1} and cleaned.secret_types == {"credential_assignment": 2}
+
+
+def test_counts_keyed_by_a_detector_name_stay():
+    # The import report and flags count findings by type: those keys hold counts, not the data.
+    value = {"us_ssn": 2, "date_of_birth": 1, "pin": 1, "credential_assignment": 1500, "phone_number": 3,
+             "secrets_redacted": {"pin": 1}, "restricted": ["date_of_birth", "us_ssn"]}
+    cleaned = text.clean(json.dumps(value), "chat")
+    assert json.loads(cleaned.text) == value and not cleaned.withheld and not cleaned.secret_types
+
+
+@pytest.mark.parametrize("raw", [
+    "Reasoning about the user...\n</think>\nHere is the answer",
+    "<think >private plan</think>Here is the answer",
+    "<reasoning>private plan</reasoning>Here is the answer",
+    "<THOUGHT>private plan</THOUGHT>Here is the answer",
+    "<REASONING_SCRATCHPAD>private plan</REASONING_SCRATCHPAD>Here is the answer",
+    "◁think▷private plan◁/think▷Here is the answer",
+])
+def test_every_form_of_reasoning_is_removed(raw):
+    cleaned = text.clean(raw, "chat")
+    assert cleaned.text.strip() == "Here is the answer" and cleaned.think_removed == 1
+
+
+def test_a_password_word_before_a_redaction_marker_finds_nothing_new():
+    first = text.clean("The VPS pw: %s for host-1." % PW, "chat")
+    assert first.text == "The VPS pw: [REDACTED:credential_assignment] for host-1."
+    assert text.clean(first.text, "chat").text == first.text
+    contact = text.clean("password for bob@example.test is %s" % PW, "chat")
+    assert contact.text == "password for [email] is [REDACTED:credential_assignment]"
+
+
+@pytest.mark.parametrize("raw", [
+    "smbclient -U user%%%s //srv/share" % PW,
+    "Invoke-Sqlcmd -ServerInstance db01 -Username sa -Password %s" % PW,
+    "psexec -u admin -p %s cmd" % PW,
+    "docker login -u bob -p %s" % PW,
+    "redis-cli -a %s ping" % PW,
+    "lftp -u admin,%s ftp.example.test" % PW,
+    "net use \\\\srv\\share /user:admin %s" % PW,
+    "Set-Item env:API_TOKEN %s" % PW,
+])
+def test_more_command_line_password_forms_are_redacted(raw):
+    cleaned = text.clean(raw, "chat")
+    assert PW not in cleaned.text and cleaned.secret_types == {"credential_assignment": 1}
+
+
+@pytest.mark.parametrize("raw", ["Instagram login: +1 404 555 0199 / %s" % PW, "WhatsApp Business login: (404) 555-0199 / %s" % PW,
+                                 "login: 4045550199 / %s" % PW])
+def test_a_password_after_a_phone_number_login_is_redacted(raw):
+    cleaned = text.clean(raw, "chat")
+    assert PW not in cleaned.text and text.clean(cleaned.text, "chat").text == cleaned.text
+
+
+@pytest.mark.parametrize("raw, kind", [
+    ("birth_date: 1980-01-02", "date_of_birth"),
+    ("DateOfBirth 01/02/1980", "date_of_birth"),
+    ("account_no: 123456789012", "bank_details"),
+    ("bankAccount: 123456789012", "bank_details"),
+    ("her scores: TU 612, EQ 598", "credit_file"),
+    ("FICO 8: 640", "credit_file"),
+    ("name,ssn,city\nJane,123456789,Austin", "us_ssn"),
+    ("| name | dob |\n|---|---|\n| Jane | 1980-01-02 |", "date_of_birth"),
+    ('{"credit": {"score": 612}}', "credit_file"),
+])
+def test_restricted_data_in_key_spellings_tables_and_nested_keys(raw, kind):
+    cleaned = text.clean(raw, "chat")
+    assert cleaned.withheld and kind in cleaned.restricted
+
+
+def test_json_a_tool_read_from_a_file_is_cleaned_key_by_key():
+    file_text = '{\n  "lead": "Jane",\n  "date_of_birth": "1980-01-02"\n}'
+    numbered = "\n".join("%6d|%s" % (i + 1, line) for i, line in enumerate(file_text.splitlines()))
+    for raw in (json.dumps({"content": numbered, "total_lines": 4}), numbered):
+        cleaned = text.clean(raw, "chat")
+        assert cleaned.withheld and cleaned.restricted == ["date_of_birth"]
+
+
+@pytest.mark.parametrize("raw", ["the restricted types were date_of_birth and us_ssn", "name,score\nseo audit,95",
+                                 '{"by_type": {"credit_file": 3, "bank_details": 2}, "types": {"us_ssn": 1}}'])
+def test_type_names_and_ordinary_tables_stay(raw):
+    assert text.clean(raw, "chat").text == raw
+
+
+def test_hermes_cjk_reasoning_tags_are_removed():
+    cleaned = text.clean("<思考>private plan</思考>Here is the answer", "chat")
+    assert cleaned.text == "Here is the answer" and cleaned.think_removed == 1
+
+
+def test_source_text_stands_in_a_key_as_it_is_or_as_a_digest():
+    # Keys are stored unmasked (import records, conflicts, tombstones): text cleaning would change becomes a digest.
+    assert text.key_part("knowledge/sarah/faq.md") == "knowledge/sarah/faq.md" and text.key_part("") == ""
+    hook = "https://hooks.slack.com/services/" + "/".join(("T0" + "PLANTED1", "B0" + "PLANTED2",
+                                                            "PlantedHook" + "Sec42"))
+    for raw in ("notes-jane" + "@client.example.md", hook, "555-765-" + "4321", "two\nlines", "ssn 219-09-" + "9999"):
+        part = text.key_part(raw)
+        assert part == "sha256-" + text.key_digest(raw) and len(part) == 39 and text.key_part(part) == part
+    # A digest never reads as a card or a phone number (a hex digest would, about once in 500).
+    for n in range(1000):
+        digest = text.key_digest(str(n))
+        assert text.key_part(digest) == digest

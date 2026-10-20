@@ -28,16 +28,22 @@ Conflict effects (memory_conflicts.effects): what a person's resolution changed 
 rollback of the run that raised the conflict can put them back. The API writes it when a conflict is resolved;
 rollback_run() reverts it. The format is exactly:
 
-    {"items":  [{"id": int, "status_before": str, "version_before": int, "version_after": int}],
+    {"items":  [{"id": int, "status_before": str, "version_before": int, "version_after": int,
+                 "flags_before"?: {<memory_items.flags before the change>}, "rejected_source_sha256"?: str}],
      "sites":  [{"id": int, "updated_at_after": "<ISO 8601 time>"}],
      "drafts": [{"id": int, "before": {<workflow_drafts fields before the change>}, "fp_after": str}],
      "purged_items": [{"id": int, "source_key": str | null}]}
 
 - items: the item's version after the resolution (version_after) and before it (version_before). Rollback reverts an
-  item only while its current version is still version_after: it restores status_before and, when the content
-  differs, the title, body, tags, kind and agent of version_before (and, for a source_changed conflict, the
-  source_sha256 and source_at the importer recorded in the conflict's "existing"), as a new version with change
-  "reverted".
+  item only while its current version is still version_after and version_before was not redacted since: it restores
+  status_before, flags_before (recorded when the resolution replaced the flags) and, when the content differs, the
+  title, body, tags, kind and agent of version_before (and, for a source_changed conflict, the source_sha256 and
+  source_at the importer recorded in the conflict's "existing"), as a new version with change "reverted". A restored
+  text gets the risk flags it calls for (text_risk_flags), and it stays approved only when it was approved with every
+  risk flag it now has; otherwise it is quarantined.
+  An entry with rejected_source_sha256 records only that the resolution added that hash to the item's
+  flags.rejected_source_sha256, without a new version: rollback takes the hash out again and changes nothing else,
+  whatever happened to the item since.
 - sites: a site the resolution registered. Rollback deletes it only while its updated_at still equals
   updated_at_after.
 - drafts: a draft the resolution replaced. Rollback restores "before" only while the draft's source_fp still equals
@@ -59,6 +65,7 @@ import json
 import os
 import re
 import urllib.parse
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
@@ -94,7 +101,8 @@ from . import mapping
 from . import source as src
 from . import store
 from . import text as brain_text
-from .archive import recompute_session
+from .archive import WITHHELD_BY_ADMIN, WITHHELD_ROW, blank_before, recompute_session, scrub_before, withheld_later
+from .quotes import refresh_quotes, scrub_quotes
 from .policy import RISK_FLAGS, SENSITIVE_AGENT
 
 LOCK_CLASS = 7_314_002_213
@@ -295,7 +303,8 @@ class Sources:
             raise Refused("--pre-backup-sha256 must be a SHA-256 (64 hexadecimal characters)")
         return {"db": self.db_info, "profile": {"manifest_sha256": self.manifest, "files": len(self.files),
                                                 "content_folder": bool(self.paths.content)},
-                "columns_read": self.backup.columns_read, "pre_backup_sha256": pre_backup_sha256.lower()}
+                "columns_read": self.backup.columns_read, "pre_backup_sha256": pre_backup_sha256.lower(),
+                "discovery_check": self.discovery}  # a resumed run reports it too (resume takes no --discovery)
 
     def same_source(self, recorded: dict[str, Any]) -> bool:
         return ((recorded.get("db") or {}).get("sha256") == self.db_info["sha256"]
@@ -477,12 +486,28 @@ class LockConnection:
         return int(run_id)
 
     def start_heartbeat(self, run_id: int, seconds: float) -> None:
+        """Refreshes heartbeat_at, and checks that this connection still holds the run's lock. Once it does not (the
+        connection was lost), another import could start, so the run is stopped: the calling task is cancelled, which
+        marks the run interrupted."""
+        main = asyncio.current_task()
+
         async def beat() -> None:
             while True:
                 await asyncio.sleep(seconds)
-                async with self._io:
-                    await self.conn.execute(
-                        "UPDATE import_runs SET heartbeat_at = now() WHERE id = $1 AND status = 'running'", run_id)
+                try:
+                    async with self._io:
+                        held = await self.conn.fetchval(
+                            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid() "
+                            "AND granted AND classid::bigint = $1 AND objid::bigint = $2 AND objsubid = 2",
+                            LOCK_KEY % 2 ** 32, run_id)
+                        await self.conn.execute(
+                            "UPDATE import_runs SET heartbeat_at = now() WHERE id = $1 AND status = 'running'", run_id)
+                except Exception:  # the connection is gone, and its locks with it
+                    held = 0
+                if not held:
+                    if main is not None:
+                        main.cancel()
+                    return
         self._heartbeat = asyncio.ensure_future(beat())
 
     async def close(self) -> None:
@@ -610,8 +635,10 @@ class Processor:
         self.location = ""
         self.phase = ""
         self.pending: list[dict[str, Any]] = []
+        self.pending_at: list[str] = []  # the location of each pending record, for an error at the flush
         self._fake = 0
         self.tombstones: set[str] = set()
+        self.admin_withheld: set[str] = set()  # messages an admin withheld: imported with no text
         self.site_urls: dict[str, int] = {}
         self.schedules: list[dict[str, Any]] = []
         self.new_hashes: dict[str, int] = {}
@@ -620,7 +647,9 @@ class Processor:
         self.drafts: list[mapping.DraftPlan] = []
 
     async def load(self, work: Work) -> None:
-        self.tombstones = set((await self.s.scalars(select(BrainTombstone.source_key))).all())
+        rows = (await self.s.execute(select(BrainTombstone.source_key, BrainTombstone.reason))).all()
+        self.tombstones = {key for key, reason in rows if reason != WITHHELD_BY_ADMIN}
+        self.admin_withheld = {key for key, reason in rows if reason == WITHHELD_BY_ADMIN}
         for site_id, url in (await self.s.execute(select(Site.id, Site.url))).all():
             normalized = mapping.normalize_url(url or "")
             if normalized:
@@ -651,11 +680,33 @@ class Processor:
             self.pending.append({"run_id": self.run_id, "source_key": key, "record_type": record_type,
                                  "action": action, "reason": reason[:500], "target_table": table,
                                  "target_id": target if target and target > 0 else None, "before": before or {}})
+            self.pending_at.append(self.location)
 
     async def flush(self) -> None:
-        if self.pending:
-            await self.s.execute(insert(ImportRecord), self.pending)
-            self.pending = []
+        """The batch's import records. A source key recorded twice in one run is refused (UNIQUE (run_id,
+        source_key)): the run then fails at the record that repeated it, not at the batch's last one."""
+        if not self.pending:
+            return
+        try:
+            async with self.s.begin_nested():
+                await self.s.execute(insert(ImportRecord), self.pending)
+        except IntegrityError:
+            self.location = await self._repeated_record() or self.location
+            raise
+        self.pending, self.pending_at = [], []
+
+    async def _repeated_record(self) -> str:
+        """The location of the first pending record whose key this run has recorded already."""
+        keys = [r["source_key"] for r in self.pending]
+        done: set[str] = set()
+        for i in range(0, len(keys), 1000):
+            done.update((await self.s.scalars(select(ImportRecord.source_key).where(
+                ImportRecord.run_id == self.run_id, ImportRecord.source_key.in_(keys[i:i + 1000])))).all())
+        for key, at in zip(keys, self.pending_at, strict=True):
+            if key in done:
+                return at
+            done.add(key)
+        return ""
 
     async def guarded(self, fn: Callable[[], Awaitable[Any]]) -> tuple[bool, Any]:
         """fn inside a SAVEPOINT: a record the database or the memory service refuses is rolled back alone."""
@@ -727,6 +778,8 @@ class Processor:
         if p.key in self.tombstones:
             return rec("excluded", "purged by an admin")
         if p.excluded:
+            if p.restricted:
+                self.t.restricted(p.restricted, file=True)
             return rec("excluded", p.excluded)
         if p.duplicate_of_earlier:
             return rec("duplicate", "the same text appears earlier in the file")
@@ -858,6 +911,8 @@ class Processor:
         self.location = safe_location(d.key, d.record_type, index)
         if d.key in self.tombstones:
             return self.record(d.key, d.record_type, "excluded", "purged by an admin")
+        if d.duplicate_of_earlier:
+            return self.record(d.key, d.record_type, "duplicate", "the same job id appears earlier in jobs.json")
         existing = await self.s.scalar(select(WorkflowDraft).where(WorkflowDraft.source_key == d.key))
         fp = d.fields["source_fp"]
         if existing is not None:
@@ -931,25 +986,29 @@ class Processor:
             calls = raw
         return src.sha256_text(m.role, m.tool_name, brain_text.content_hash(m.content), calls)
 
-    def clean_message(self, m: src.SourceMessage, staff: str) -> MessageClean:
+    def clean_message(self, m: src.SourceMessage, customer: bool) -> MessageClean:
+        """customer: every message of this session is customer data (Sarah's sessions, customer-facing channels)."""
         tool = m.role == "tool"
         c = mapping.clean(m.content[:TOOL_IN if tool else CHAT_IN], "chat")
         content, cut_ = mapping.cut(c.text, TOOL_OUT if tool else CHAT_OUT)
         truncated = cut_ or len(m.content) > (TOOL_IN if tool else CHAT_IN)
         total = brain_text.Cleaned("", dict(c.secret_types), list(c.restricted), dict(c.masked), c.think_removed)
         calls = []
+        # Customer work done through a generic tool: a command or arguments that name it, a file path in a result.
+        work = tool and src.customer_path(c.text)
         for call in src.parse_tool_calls(m.tool_calls_raw):
             args = call["arguments"]
             args_text = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
             ac = mapping.clean(args_text[:TOOL_IN], "chat")
             total.merge(ac)
+            work = work or src.customer_work(ac.text)
             name = brain_text.sanitize(call["name"])[:200]
             calls.append({"name": name, "arguments": mapping.cut(ac.text, ARG_OUT)[0]})
         restricted = sorted(set(total.restricted))
         names = [c["name"] for c in calls]
         if restricted:
             sensitivity = "restricted"
-        elif (total.masked or staff == "sarah" or src.customer_tool(m.tool_name)
+        elif (total.masked or customer or work or src.customer_tool(m.tool_name)
               or any(src.customer_tool(n) for n in names)):
             sensitivity = "customer"
         else:
@@ -966,28 +1025,51 @@ class Processor:
                             redactions=dict(total.secret_types), masked=dict(total.masked), flags=flags,
                             labels=labels, restricted=restricted)
 
-    def plan_messages(self, msgs: list[src.SourceMessage], staff: str, unchanged: frozenset[str] = frozenset()
+    def carried_copies(self, msgs: list[src.SourceMessage]) -> dict[str, str]:
+        """Live rows that are carried-on copies of compacted rows: their key -> the key of the compacted row copied.
+
+        Hermes's compaction archives the original turns (compacted = 1), then writes the summary and the turns it
+        carries on as new live rows right after them. Only that block is looked at, one to one: a row there whose
+        (role, tool_name, tool_call_id, content, tool_calls) equals a compacted row not matched yet is a copy of it;
+        the first row without one is the summary, and the next row without one ends the block. A later turn that
+        says the same thing again ("Sent the invoice.", "yes") is never a copy."""
+        waiting: dict[tuple[str, str], list[str]] = {}
+        copies: dict[str, str] = {}
+        block = ""  # "open" right after compacted rows, "summary" once the summary was passed, "" outside a block
+        for m in msgs:
+            if self.exclusion(m):
+                continue
+            key = (self.dup_fp(m), m.tool_call_id)
+            if m.compacted == 1:
+                waiting.setdefault(key, []).append(m.key)
+                block = "open"
+            elif block and waiting.get(key):
+                copies[m.key] = waiting[key].pop(0)
+            elif block:
+                block = "summary" if block == "open" else ""
+        return copies
+
+    def plan_messages(self, msgs: list[src.SourceMessage], customer: bool, unchanged: frozenset[str] = frozenset()
                       ) -> tuple[list[MessagePlan], set[str]]:
         """What each source row becomes, from the source alone (so a re-import takes the same decisions).
 
+        customer: every message is customer data (clean_message()).
         unchanged: keys of rows an earlier run stored in this session from the very same source row (same source_fp).
         They are not cleaned again (cleaning is most of an import's time): the stored row already holds what the
         detectors found then, and `rescan` is how stored text meets newer detectors."""
         restricted: set[str] = set()
-        compacted: dict[str, str] = {}
-        for m in msgs:
-            if m.compacted == 1 and not self.exclusion(m):
-                compacted.setdefault(self.dup_fp(m), m.key)
+        copies = self.carried_copies(msgs)
         plans: list[MessagePlan] = []
         prev: tuple[str, str] | None = None
         prev_key = ""
         for m in msgs:
             reason = self.exclusion(m)
             if reason:
-                if reason == REWOUND and m.content.strip():
-                    # Not stored, but a conversation that held restricted data is withheld whole.
+                if m.content.strip() or src.parse_tool_calls(m.tool_calls_raw):
+                    # Not stored, but a conversation that held restricted data (in its system prompt, a rewound turn
+                    # or a purged row) is withheld whole.
                     try:
-                        restricted |= set(brain_text.clean(m.content[:CHAT_IN], "chat").restricted)
+                        restricted |= set(self.clean_message(m, customer).restricted)
                     except Exception:  # the row is excluded anyway
                         pass
                 plans.append(MessagePlan(m, "excluded", reason))
@@ -999,8 +1081,8 @@ class Processor:
                 same_prev = current == prev
                 if not same_prev:
                     prev, prev_key = current, m.key
-            if m.compacted != 1 and fp in compacted:
-                plans.append(MessagePlan(m, "duplicate", CARRIED, duplicate_of=compacted[fp]))
+            if m.key in copies:
+                plans.append(MessagePlan(m, "duplicate", CARRIED, duplicate_of=copies[m.key]))
                 continue
             if same_prev:
                 plans.append(MessagePlan(m, "duplicate", "same as the previous message", duplicate_of=prev_key))
@@ -1009,7 +1091,7 @@ class Processor:
                 plans.append(MessagePlan(m, "import"))  # reconciled as "already imported"; never cleaned again
                 continue
             try:
-                cleaned = self.clean_message(m, staff)
+                cleaned = self.clean_message(m, customer)
             except Exception as exc:  # a cleaning failure excludes this record only
                 plans.append(MessagePlan(m, "excluded", "invalid record: %s" % exc.__class__.__name__))
                 continue
@@ -1029,6 +1111,9 @@ class Processor:
         if withheld:
             values.update(content="", truncated=False, tool_calls=[], sensitivity="restricted", withheld=True,
                           labels=[], flags={**c.flags, "withheld": "restricted data in this conversation"})
+        elif m.key in self.admin_withheld:  # an admin withheld it (BrainTombstone): it comes back with no text
+            values.update(content="", truncated=False, tool_calls=[], sensitivity=c.sensitivity, withheld=True,
+                          labels=[], flags={**c.flags, "withheld_by_admin": {"note": WITHHELD_BY_ADMIN}})
         else:
             values.update(content=c.content, truncated=c.truncated, tool_calls=c.calls, sensitivity=c.sensitivity,
                           withheld=False, labels=c.labels, flags=c.flags)
@@ -1058,7 +1143,8 @@ class Processor:
             title_c = brain_text.Cleaned("")
         unchanged = frozenset(m.key for m in msgs if sess is not None and m.key in rows
                               and rows[m.key]["session_id"] == sess.id and rows[m.key]["source_fp"] == m.fp)
-        plans, restricted = self.plan_messages(msgs, staff, unchanged)
+        customer_channel = src.customer_channel(ss.channel)
+        plans, restricted = self.plan_messages(msgs, staff == "sarah" or customer_channel, unchanged)
         restricted |= set(title_c.restricted)
         withheld = bool(restricted) or (sess is not None and sess.sensitivity == "restricted")
         why = ("restricted data in this conversation: %s" % ", ".join(sorted(restricted)) if restricted
@@ -1067,8 +1153,12 @@ class Processor:
         flags: dict[str, Any] = {"attribution": ss.attribution.how, "inferred": ["staff", "labels"]}
         if ss.time_assumed_local:
             flags["time_assumed_local"] = True
+        if withheld:
+            flags["withheld_by_import"] = True
         if title_c.masked and not withheld:
             flags["title_masked"] = True
+        if customer_channel:
+            flags["customer_channel"] = True  # customer data by default, the session itself included
         if title_c.secret_types:
             flags["title_redactions"] = dict(title_c.secret_types)
         if ss.hermes_counts:
@@ -1106,7 +1196,7 @@ class Processor:
             sess_id = sess.id
             before = jsonable({f: getattr(sess, f) for f in SESSION_SOURCE_FIELDS})
             current = {**fields, "flags": {**(sess.flags or {}), **flags}}
-            for k in ("title_masked", "title_redactions", "time_assumed_local"):
+            for k in ("title_masked", "title_redactions", "time_assumed_local", "customer_channel"):
                 if k not in flags:
                     current["flags"].pop(k, None)
             source_changed = jsonable(current) != jsonable({f: getattr(sess, f) for f in SESSION_SOURCE_FIELDS})
@@ -1115,6 +1205,10 @@ class Processor:
                     setattr(sess, k, v)
                 await self.s.flush()
         changed = await self.write_messages(plans, rows, sess_id, withheld, why)
+        if withheld and not created and not was_restricted and self.write:
+            # Newly restricted: no copy of its earlier text is kept for a rollback either (the source keeps it).
+            await self.flush()
+            await scrub_before(self.s, archive_session_id=sess_id)
         level = "general"
         if created or changed or source_changed:
             if self.write:
@@ -1122,7 +1216,7 @@ class Processor:
                 level = after.sensitivity if after else level
             else:
                 levels = [p.cleaned.sensitivity for p in plans if p.cleaned] + (
-                    ["customer"] if title_c.masked else [])
+                    ["customer"] if title_c.masked or customer_channel else [])
                 level = "restricted" if withheld else brain_text.most_sensitive(*levels) if levels else "general"
         if created:
             self.t.created(agent=ss.attribution.agent, staff=staff, sensitivity=("sessions", level))
@@ -1135,7 +1229,7 @@ class Processor:
             if withheld and not was_restricted:
                 self.t.restricted(restricted, session=True)
             self.record(ss.key, "session", "updated", "grew or changed since an earlier import", "archive_sessions",
-                        sess_id, before)
+                        sess_id, blank_before(before) if withheld and not was_restricted else before)
         else:
             self.record(ss.key, "session", "duplicate", "already imported", "archive_sessions", sess_id)
         return len(msgs), size
@@ -1216,8 +1310,12 @@ class Processor:
         self.t.masked(c.masked)
 
     async def _reconcile(self, p: MessagePlan, row: dict[str, Any], withheld: bool, why: str) -> int:
-        """A message an earlier run imported: unchanged, now withheld, changed, compacted or rewound."""
+        """A message an earlier run imported: unchanged, now withheld, changed, compacted or rewound. A row withheld
+        before (by an import, an admin or a rescan) stays withheld: a newer copy of the source never brings its text
+        back."""
         m = p.m
+        kept = {k: v for k, v in (row["flags"] or {}).items() if k.startswith("withheld")} if row["withheld"] else {}
+        session_withheld, withheld = withheld, withheld or bool(row["withheld"])
         if row["source_fp"] == m.fp:
             if withheld and not row["withheld"]:
                 values = {"content": "", "truncated": False, "tool_calls": [], "sensitivity": "restricted",
@@ -1238,6 +1336,10 @@ class Processor:
                         {"deleted_row": jsonable(row)})
             return 1
         values = self.message_values(p, withheld)
+        if kept:
+            values["flags"] = {**values["flags"], **kept}
+            if not session_withheld:  # withheld by an admin or a rescan: the conversation itself stays as it was
+                values["sensitivity"] = row["sensitivity"]
         ok, result = await self.guarded(lambda: self._update_row(row, values))
         if not ok:
             self.record(m.key, "message", "excluded", "invalid record: %s" % result)
@@ -1261,9 +1363,9 @@ class Processor:
 
     async def run_phases(self, work: Work, start_phase: str | None, start_index: int,
                          checkpoint: Callable[[str, int], Awaitable[None]]) -> None:
-        for phase in PHASES:
-            if start_phase and start_phase in PHASES and PHASES.index(phase) < PHASES.index(start_phase):
-                continue
+        # The checkpoint names the phase to continue with; "finish" comes after every phase (only the report is left).
+        order = (*PHASES, "finish")
+        for phase in PHASES[order.index(start_phase) if start_phase in order else 0:]:
             start = start_index if phase == start_phase else 0
             self.phase = phase
             if phase == "files":
@@ -1392,7 +1494,8 @@ async def run(paths: SourcePaths, selection: Selection, *, label: str = "", acto
             run_id = await locks.start_run(label=brain_text.one_line(label, 200), actor=actor, scope=scope,
                                            source=source)
             locks.start_heartbeat(run_id, heartbeat_seconds)
-            return await _execute(run_id, sources, selection, {}, actor, report_file, resumed=False)
+            return await _execute(run_id, sources, selection, {}, actor, report_file, sources.discovery,
+                                  resumed=False)
         finally:
             await locks.close()
     finally:
@@ -1432,6 +1535,8 @@ async def resume(run_id: int, paths: SourcePaths, *, report_file: str | None = N
                                   "resume needs the very same sources" % run_id)
                 selection = Selection.from_json((run_row.scope or {}).get("selection") or {})
                 checkpoint = dict(run_row.checkpoint or {})
+                discovery = sources.discovery if sources.discovery.get("checked") else (
+                    (run_row.source or {}).get("discovery_check") or sources.discovery)
                 try:
                     await set_status(s, run_id, run_row.status, status="running", error="", finished_at=None,
                                      heartbeat_at=now())
@@ -1439,7 +1544,7 @@ async def resume(run_id: int, paths: SourcePaths, *, report_file: str | None = N
                 except (RunLost, IntegrityError):
                     raise Refused("run %d could not be resumed: another import is running" % run_id) from None
             locks.start_heartbeat(run_id, heartbeat_seconds)
-            return await _execute(run_id, sources, selection, checkpoint, actor, report_file, resumed=True)
+            return await _execute(run_id, sources, selection, checkpoint, actor, report_file, discovery, resumed=True)
         finally:
             await locks.close()
     finally:
@@ -1447,7 +1552,7 @@ async def resume(run_id: int, paths: SourcePaths, *, report_file: str | None = N
 
 
 async def _execute(run_id: int, sources: Sources, selection: Selection, checkpoint: dict[str, Any], actor: str,
-                   report_file: str | None, *, resumed: bool) -> dict[str, Any]:
+                   report_file: str | None, discovery: dict[str, Any], *, resumed: bool) -> dict[str, Any]:
     tally = Tally(checkpoint.get("tally"))
     work = select_work(sources, selection)
     async with sessionmaker()() as s:
@@ -1465,7 +1570,7 @@ async def _execute(run_id: int, sources: Sources, selection: Selection, checkpoi
                 await s.commit()
                 s.expunge_all()
             await proc.run_phases(work, checkpoint.get("phase"), int(checkpoint.get("index") or 0), save)
-            report = tally.report(selection, work.totals, sources.discovery, await missing_from_source(s, sources))
+            report = tally.report(selection, work.totals, discovery, await missing_from_source(s, sources))
             counts = {"records": sum(report["by_action"].values()), "by_action": report["by_action"],
                       "by_type": report["by_type"]}
             await set_status(s, run_id, "running", status="completed", finished_at=now(), counts=counts,
@@ -1514,6 +1619,10 @@ async def _stop(run_id: int, status: str, error: str, actor: str, s: AsyncSessio
 ID_COLUMNS = {"id", "source_key", "source_message_id", "source_session_id", "parent_source_session_id", "source_fp",
               "content_hash", "source_sha256", "dedupe_key", "tool_call_id", "job_id", "import_run_id", "session_id",
               "run_id", "item_id", "existing_id", "incoming_item_id", "schedule_id", "existing_table", "source_system"}
+# Records keyed by the backup's own row identifiers (read like the ID columns), and the digest that ends a memory
+# entry's key: neither is text from the sources.
+IDENTIFIER_RECORDS = ("session", "message", "orphan")
+ENTRY_DIGEST = re.compile(r"#entry-[0-9a-f]{16}(?:-[0-9]+)?$")
 
 
 def leak_types(value: Any, kind: str = "chat") -> list[str]:
@@ -1530,6 +1639,12 @@ def leak_types(value: Any, kind: str = "chat") -> list[str]:
         return []
     cleaned = mapping.clean(text, kind)
     return sorted(set(cleaned.secret_types) | set(cleaned.restricted))
+
+
+def unmasked_leak_types(value: str) -> list[str]:
+    """leak_types() for text stored unmasked (a source key, a reason): an e-mail address or a phone number counts."""
+    cleaned = mapping.clean(value, "chat")
+    return sorted(set(cleaned.secret_types) | set(cleaned.restricted) | set(cleaned.masked))
 
 
 def _row_leaks(table: str, row: dict[str, Any], kinds: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -1658,8 +1773,16 @@ async def verify(run_id: int, paths: SourcePaths, *, report_file: str | None = N
             passed = all(c["ok"] for c in checks.values())
             verification = {"passed": passed, "checked_at": now().isoformat(), "checks": checks}
             report["verification"] = verification
-            await s.execute(update(ImportRun).where(ImportRun.id == run_id).values(report=report))
+            # Only report.verification is written, and only while the run is still completed: a rollback that
+            # happened while verify was scanning keeps its own section (and a rolled-back run gets no verification).
+            written = (await s.execute(sql(
+                "UPDATE import_runs SET report = jsonb_set(COALESCE(report, '{}'::jsonb), '{verification}', "
+                "CAST(:v AS jsonb)) WHERE id = :r AND status = 'completed'"),
+                {"v": json.dumps(verification), "r": run_id})).rowcount
             await s.commit()
+            if not written:
+                raise Refused("run %d was rolled back while it was being verified: the verification was not written"
+                              % run_id)
     finally:
         sources.close()
     write_report(report_file, report)
@@ -1699,6 +1822,19 @@ async def _scan_leaks(s: AsyncSession, run_id: int, report: dict[str, Any]) -> l
         leaks += _row_leaks("memory_conflicts", row)
     for row in await rows(select(WorkflowDraft.__table__).where(WorkflowDraft.import_run_id == run_id)):
         leaks += _row_leaks("workflow_drafts", row)
+    for row in await rows(select(ImportRecord.id, ImportRecord.before).where(ImportRecord.run_id == run_id,
+                                                                              ImportRecord.before != {})):
+        leaks += _row_leaks("import_records", row)
+    # Keys and reasons are shown unmasked wherever records are listed: they hold no contact data either.
+    for name in ("source_key", "reason"):
+        column = getattr(ImportRecord, name)
+        query = select(func.min(ImportRecord.id), column).where(ImportRecord.run_id == run_id, column != "")
+        if name == "source_key":
+            query = query.where(ImportRecord.record_type.not_in(IDENTIFIER_RECORDS))
+        for record_id, value in (await s.execute(query.group_by(column))).all():
+            found = unmasked_leak_types(ENTRY_DIGEST.sub("", value) if name == "source_key" else value)
+            if found:
+                leaks.append({"table": "import_records", "id": record_id, "column": name, "types": found})
     leaks += _row_leaks("import_runs", {"id": run_id, "report": report})
     return leaks
 
@@ -1737,8 +1873,9 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
     """Undo one import run exactly (spec 2.1), in the caller's transaction; the caller commits.
 
     Refuses (Refused, with the ids) while the run or another import is running, when a later run that is not
-    rolled back depends on this one, when any of the run's items was reviewed or edited (unless discard_reviewed),
-    and when a conflict resolution's target was changed again since. Also called by the API.
+    rolled back depends on this one (or recorded a row or source record this run updated), when any of the run's
+    items was reviewed or edited (unless discard_reviewed), and when a conflict resolution's target was changed again
+    (or its earlier version redacted) since. Also called by the API.
 
     The locks are transaction-level advisory locks taken in the caller's transaction: the one-at-a-time lock
     (LOCK_KEY, 0) and the run's own (LOCK_KEY, run id). They conflict with the session-level locks a running import
@@ -1784,6 +1921,14 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
         " (existing_table = 'memory_items' AND existing_id IN (SELECT id FROM memory_items WHERE import_run_id = :r))"
         " OR (existing_table = 'workflow_drafts' AND existing_id IN "
         "     (SELECT id FROM workflow_drafts WHERE import_run_id = :r)))" % later.text), params)).all())
+    # A later run that recorded a row or a source record this run updated: putting `before` back would undo that
+    # run's view of it too (the archive would be in neither run's state).
+    dependent |= set((await session.scalars(sql(
+        "SELECT x.run_id FROM import_records u JOIN import_records x ON x.target_table = u.target_table "
+        "AND x.target_id = u.target_id WHERE u.run_id = :r AND u.action = 'updated' AND x.run_id IN (%s) "
+        "UNION SELECT x.run_id FROM import_records u JOIN import_records x ON x.source_key = u.source_key "
+        "WHERE u.run_id = :r AND u.action = 'updated' AND x.run_id IN (%s)" % (later.text, later.text)),
+        params)).all())
     dependent.discard(None)
     if dependent:
         raise Refused("later import runs depend on run %d: roll them back first, newest first" % run_id,
@@ -1810,26 +1955,44 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
     updates = (await session.execute(select(ImportRecord.target_table, ImportRecord.target_id, ImportRecord.before)
                                      .where(ImportRecord.run_id == run_id, ImportRecord.action == "updated")
                                      .order_by(ImportRecord.id.desc()))).all()
+    # A withheld row stays withheld (whoever withheld it, and when): its text is never restored.
     for table, target, before in updates:
         if table == "archive_messages" and before:
             if "deleted_row" in before:
                 row = unjson(before["deleted_row"])
+                if withheld_later(await session.scalar(select(ArchiveSession.flags).where(
+                        ArchiveSession.id == int(row["session_id"])))):
+                    row.update(WITHHELD_ROW)
                 await session.execute(insert(ArchiveMessage).values(**row))
                 touched.add(int(row["session_id"]))
             else:
-                await session.execute(update(ArchiveMessage).where(ArchiveMessage.id == target)
-                                      .values(**unjson(before)))
-                sid = await session.scalar(select(ArchiveMessage.session_id).where(ArchiveMessage.id == target))
-                if sid:
-                    touched.add(sid)
+                values = unjson(before)
+                current = (await session.execute(select(ArchiveMessage.session_id, ArchiveMessage.flags,
+                                                        ArchiveMessage.withheld, ArchiveMessage.sensitivity).where(
+                    ArchiveMessage.id == target))).first()
+                if current is not None and current.withheld:
+                    values.update(WITHHELD_ROW, flags=current.flags, sensitivity=current.sensitivity)
+                await session.execute(update(ArchiveMessage).where(ArchiveMessage.id == target).values(**values))
+                if current is not None:
+                    touched.add(current.session_id)
             restored["archive_messages"] += 1
         elif table == "archive_sessions" and before and target:
-            await session.execute(update(ArchiveSession).where(ArchiveSession.id == target).values(**unjson(before)))
+            values = unjson(before)
+            flags = await session.scalar(select(ArchiveSession.flags).where(ArchiveSession.id == target))
+            if withheld_later(flags):
+                values.update(title="", flags={**(values.get("flags") or {}),
+                                               **{k: v for k, v in (flags or {}).items() if k.startswith("withheld_by")}})
+            await session.execute(update(ArchiveSession).where(ArchiveSession.id == target).values(**values))
             touched.add(target)
             restored["archive_sessions"] += 1
     touched |= set((await session.scalars(select(ArchiveMessage.session_id).where(
         ArchiveMessage.import_run_id == run_id).distinct())).all())
     touched -= created_sessions
+    quoted_messages = set((await session.scalars(select(ArchiveMessage.id).where(
+        ArchiveMessage.import_run_id == run_id))).all()) | {t for table, t, _ in updates if table == "archive_messages" and t}
+    quoted_items = set((await session.scalars(select(MemoryItem.id).where(MemoryItem.import_run_id == run_id))).all())
+    quoted_items |= {int(e["id"]) for c in conflicts for e in (c.effects or {}).get("items", []) if "id" in e}
+    await scrub_quotes(session, message_ids=quoted_messages, item_ids=quoted_items)
     promoted = await _mark_promoted(session, run_id)
     report = dict(run_row.report or {})
     deleted = {}
@@ -1877,17 +2040,25 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
 
 
 async def _blocked_effects(session: AsyncSession, run_id: int, conflicts: list[MemoryConflict]) -> list[int]:
-    """Conflicts whose effects can no longer be reverted: a target was changed again (or removed) since."""
+    """Conflicts whose effects can no longer be reverted: a target was changed again (or removed) since, or the
+    version a revert would bring back was redacted (it would become the item's live text)."""
+    from .review import is_redacted
+
     blocked = []
     for c in conflicts:
         effects = c.effects or {}
         ok = True
         for e in effects.get("items") or []:
+            if e.get("rejected_source_sha256"):
+                continue  # taking the hash out again is right whatever happened to the item since
             item = await session.get(MemoryItem, int(e["id"]))
             if item is None:
                 ok = False
-            elif item.import_run_id != run_id and item.version != int(e["version_after"]):
-                ok = False
+            elif item.import_run_id != run_id:
+                snap = await session.scalar(select(MemoryItemVersion).where(
+                    MemoryItemVersion.item_id == item.id, MemoryItemVersion.version == int(e["version_before"])))
+                if item.version != int(e["version_after"]) or (snap is not None and is_redacted(snap)):
+                    ok = False
         for e in effects.get("sites") or []:
             site = await session.get(Site, int(e["id"]))
             if site is not None and site.updated_at != datetime.fromisoformat(e["updated_at_after"]):
@@ -1903,6 +2074,25 @@ async def _blocked_effects(session: AsyncSession, run_id: int, conflicts: list[M
     return blocked
 
 
+REDACTED_MARKER = re.compile(r"\[REDACTED:([A-Za-z0-9_]+)\]")
+
+
+def text_risk_flags(item: MemoryItem, flags: dict[str, Any]) -> dict[str, Any]:
+    """flags, plus the risk flags the item's text calls for (as the import sets them): instruction-like rules, an
+    approval conflict, redacted secrets. A text a rollback brings back never comes back without them."""
+    text = item.title + "\n" + item.body
+    instr = brain_text.instruction_flags(text)
+    if instr:
+        known = flags.get("instruction_like")
+        flags["instruction_like"] = sorted(set(known if isinstance(known, list) else []) | set(instr))
+        if item.kind == "instruction" and {"approval_bypass", "autonomous_action"} & set(instr):
+            flags["approval_conflict"] = True
+    redacted = REDACTED_MARKER.findall(text)
+    if redacted and not flags.get("secrets_redacted"):
+        flags["secrets_redacted"] = dict(Counter(redacted))
+    return flags
+
+
 async def _revert_effects(session: AsyncSession, run_id: int, conflicts: list[MemoryConflict],
                           actor: str) -> dict[str, int]:
     counts = {"items": 0, "sites": 0, "drafts": 0, "purged_items_reported": 0}
@@ -1912,10 +2102,22 @@ async def _revert_effects(session: AsyncSession, run_id: int, conflicts: list[Me
             item = await session.get(MemoryItem, int(e["id"]))
             if item is None or item.import_run_id == run_id:
                 continue
+            if e.get("rejected_source_sha256"):
+                flags = dict(item.flags or {})
+                rejected = [h for h in flags.get("rejected_source_sha256") or [] if h != e["rejected_source_sha256"]]
+                if rejected:
+                    flags["rejected_source_sha256"] = rejected
+                else:
+                    flags.pop("rejected_source_sha256", None)
+                item.flags = flags
+                counts["items"] += 1
+                continue
             snap = await session.scalar(select(MemoryItemVersion).where(
                 MemoryItemVersion.item_id == item.id, MemoryItemVersion.version == int(e["version_before"])))
-            if snap is not None and (snap.title, snap.body, list(snap.tags or []), snap.kind, snap.agent) != (
-                    item.title, item.body, list(item.tags or []), item.kind, item.agent):
+            changed = snap is not None and (snap.title, snap.body, list(snap.tags or []), snap.kind, snap.agent) != (
+                item.title, item.body, list(item.tags or []), item.kind, item.agent)
+            if changed:
+                assert snap is not None
                 item.title, item.body, item.tags = snap.title, snap.body, list(snap.tags or [])
                 item.kind, item.agent = snap.kind, snap.agent
                 item.content_hash = brain_text.content_hash(item.kind, item.agent, item.title, item.body)
@@ -1923,7 +2125,18 @@ async def _revert_effects(session: AsyncSession, run_id: int, conflicts: list[Me
                     item.source_sha256 = c.existing["source_sha256"]
                     at = c.existing.get("source_at")
                     item.source_at = datetime.fromisoformat(at) if at else None
+            # The flags go back with the text, and a restored text never lacks the risk flags it calls for.
+            flags_before = e.get("flags_before")
+            if flags_before is not None:
+                item.flags = dict(flags_before)
+            if changed:
+                item.flags = text_risk_flags(item, dict(item.flags or {}))
             item.status = str(e["status_before"])
+            # Approved with a risk flag only when it was approved with that very flag (an effect recorded without
+            # flags_before cannot tell).
+            if changed and item.status == "approved" and any(
+                    item.flags.get(f) and not (flags_before or {}).get(f) for f in RISK_FLAGS):
+                item.status = "quarantined"
             item.version += 1
             item.updated_at, item.updated_by = now(), actor[:200]
             session.add(store._snapshot(item, "reverted", actor, "import run %d rolled back: conflict %d reverted"
@@ -2055,6 +2268,7 @@ async def rescan(*, apply: bool, actor: str = DEFAULT_ACTOR) -> dict[str, Any]:
             await _rescan_sessions(s, counts, apply, withhold, touched)
             await _rescan_json(s, counts, apply)
             if apply:
+                counts["answers_changed"] = await refresh_quotes(s)
                 await audit.record(s, actor, "brain.rescanned", "brain", "", dict(counts))
                 await s.commit()
             else:
@@ -2183,12 +2397,17 @@ async def _rescan_sessions(s: AsyncSession, counts: dict[str, int], apply: bool,
             changed.add(sid)
             if apply:
                 await s.execute(update(ArchiveSession).where(ArchiveSession.id == sid).values(title=c.text))
+    by_rescan = {"withheld_by_rescan": {"at": datetime.now(UTC).isoformat(),
+                                        "note": "restricted data found by a rescan; the text was removed"}}
     for sid in sorted(withhold):
         counts["sessions_withheld"] += 1
         if apply:
             await s.execute(update(ArchiveMessage).where(ArchiveMessage.session_id == sid).values(
-                content="", tool_calls=[], labels=[], sensitivity="restricted", withheld=True))
-            await s.execute(update(ArchiveSession).where(ArchiveSession.id == sid).values(title="", summary=""))
+                content="", tool_calls=[], labels=[], sensitivity="restricted", withheld=True,
+                flags=ArchiveMessage.flags.op("||")(by_rescan)))
+            await s.execute(update(ArchiveSession).where(ArchiveSession.id == sid).values(
+                title="", summary="", flags=ArchiveSession.flags.op("||")(by_rescan)))
+            await scrub_before(s, archive_session_id=sid)  # a rollback must not bring the text back
     counts["sessions_changed"] = len((changed | touched) - withhold)
     if apply:
         s.expire_all()
@@ -2252,10 +2471,14 @@ DECISION_STATUS = {"approved": "approve", "rejected": "reject", "archived": "arc
 
 async def decisions_export(out_path: str) -> dict[str, Any]:
     """Every imported item a person reviewed or edited in this database, keyed by source_key and by the content hash
-    of the imported version (so production applies a decision only to the very same import)."""
+    of the imported version (so production applies a decision only to the very same import).
+
+    The file holds decisions, not memory: an item's text is written only when a person edited it (production needs
+    the edit), and never for a customer or Credit Repair item. Such an edit is marked edit_not_exported, and
+    decisions-apply lists it to be redone by hand."""
     if os.path.exists(out_path):
         raise Refused("the output file already exists; nothing is overwritten")
-    decisions, skipped = [], 0
+    decisions, skipped, not_exported = [], 0, 0
     async with sessionmaker()() as s:
         await require_schema(s)
         items = (await s.scalars(select(MemoryItem).where(
@@ -2271,16 +2494,26 @@ async def decisions_export(out_path: str) -> dict[str, Any]:
             if first is None:
                 skipped += 1
                 continue
-            decisions.append({
+            edited = (item.title, item.body, list(item.tags or []), item.kind, item.agent) != (
+                first.title, first.body, list(first.tags or []), first.kind, first.agent)
+            decision: dict[str, Any] = {
                 "source_key": item.source_key,
                 "content_hash": brain_text.content_hash(first.kind, first.agent, first.title, first.body),
-                "status": item.status, "kind": item.kind, "agent": item.agent, "title": item.title,
-                "body": item.body, "tags": list(item.tags or []), "reviewed_by": item.reviewed_by,
-                "review_note": item.review_note, "deleted": item.deleted_at is not None})
+                "status": item.status, "reviewed_by": item.reviewed_by, "review_note": item.review_note,
+                "deleted": item.deleted_at is not None, "edited": edited}
+            if edited and item.deleted_at is None:
+                if item.sensitivity != "general" or SENSITIVE_AGENT in (item.agent, first.agent):
+                    decision["edit_not_exported"] = ("customer or Credit Repair text: redo this edit and its review "
+                                                     "by hand")
+                    not_exported += 1
+                else:
+                    decision.update(title=item.title, body=item.body, tags=list(item.tags or []), kind=item.kind,
+                                    agent=item.agent)
+            decisions.append(decision)
     with open(out_path, "x", encoding="utf-8") as f:
-        json.dump({"format": "jarvis-brain-decisions", "version": 1, "exported_at": now().isoformat(),
+        json.dump({"format": "jarvis-brain-decisions", "version": 2, "exported_at": now().isoformat(),
                    "importer_version": IMPORTER_VERSION, "decisions": decisions}, f, indent=2, sort_keys=True)
-    return {"exported": len(decisions), "skipped_without_source_key": skipped}
+    return {"exported": len(decisions), "skipped_without_source_key": skipped, "edits_not_exported": not_exported}
 
 
 async def decisions_apply(in_path: str, run_id: int, *, actor: str, apply: bool) -> dict[str, Any]:
@@ -2331,6 +2564,10 @@ async def _apply_decision(s: AsyncSession, d: Any, run_id: int, user: User, appl
         return "the item differs from the test copy's import, or was changed since"
     if SENSITIVE_AGENT in (item.agent, d.get("agent")) and not user.can_access_sensitive:
         return "needs the sensitive-data permission"
+    if d.get("edit_not_exported") and not d.get("deleted"):
+        # The decision was taken on the edited text, which was not exported: applying it alone would be wrong.
+        return ("edited on the test copy, but customer and Credit Repair text is never exported: edit and review it "
+                "by hand")
     actor = user.email
 
     async def change() -> None:

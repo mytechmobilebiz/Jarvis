@@ -5,7 +5,8 @@
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\brain-precheck.ps1 [-OutDir C:\InfiniteAI\JarvisMigration]
 #
-# Run it before the test and again after it: the two reports must show the same fingerprint and counts.
+# Run it before the test and again after it. The image IDs, container IDs and names, volume names and applied
+# migrations must be the same; start times change after a restart, and counts change with normal use.
 # Exit codes: 0 report written and the live installation answers; 1 report written, but something is not healthy;
 # 2 not run (nothing was changed or written).
 param(
