@@ -1,0 +1,86 @@
+# OPTIONAL Research Gateway search service (SearXNG). Not used unless research is switched on with
+#   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\research.ps1 -Enable
+# which adds this file to COMPOSE_FILE in .env (entries separated by ';'; other entries, such as the
+# tunnel, are kept).
+#
+# What SearXNG can and cannot reach:
+# - "research" (internal: true) is shared only with the worker, which calls http://searxng:8080/search.
+#   PostgreSQL, the API, n8n and the dashboard are not on it.
+# - "research_egress" is a plain bridge used by SearXNG alone, for its calls to the search engines.
+#   Like any bridge it can also reach the home network and this PC's LAN address; the extra_hosts
+#   lines below only blank out Docker Desktop's host names. Never switch on a SearXNG engine or
+#   plugin that fetches a URL supplied by a caller (image proxy, URL-type engines).
+# - No published port: nothing on this PC or the local network can open SearXNG.
+# start.ps1 starts every other service first and this one on its own: if SearXNG cannot start,
+# everything else runs as before.
+# The official image is used unmodified (AGPL-3.0-or-later). Each installation pulls it from the
+# registry; it is never bundled or re-hosted. It is configured only by the read-only folder
+# research/searxng and the environment below. SEARXNG_LIMITER, SEARXNG_PUBLIC_INSTANCE,
+# SEARXNG_IMAGE_PROXY and SEARXNG_METHOD would override settings.yml: never set them.
+
+services:
+  searxng:
+    # Pinned by tag AND digest (Docker uses the digest). Tested in the sandbox on 2026-10-20.
+    image: ${REGISTRY:-docker.io}/searxng/searxng:2026.10.4-d48c4b555@sha256:76b0bf285aca014c7191fc4d9234c4bfb358624ac33d8883833d496c059ec072
+    restart: unless-stopped
+    user: "977:977"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      # Keep ':?' : an empty value would be accepted as an empty key.
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?run scripts/init-env.ps1 -AddMissing}
+      FORCE_OWNERSHIP: "false"
+      # The image listens on "::" (IPv6) by default and crashed at start without IPv6.
+      GRANIAN_HOST: "0.0.0.0"
+      GRANIAN_PORT: "8080"
+      # No request lines (and so no query text) in the container log.
+      GRANIAN_LOG_ACCESS_ENABLED: "false"
+    volumes:
+      # The whole folder, read-only: a single-file mount leaves /etc/searxng writable,
+      # because the image declares it a VOLUME. Fails instead of creating an empty folder.
+      - type: bind
+        source: ./research/searxng
+        target: /etc/searxng
+        read_only: true
+        bind:
+          create_host_path: false
+      - searxng_cache:/var/cache/searxng
+    tmpfs:
+      - /tmp:size=64m
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
+    # Docker Desktop's names for the Windows host point nowhere here (same as the tunnel overlay).
+    # This blocks the names only, not the host's IP addresses.
+    extra_hosts:
+      - "host.docker.internal:192.0.2.1"
+      - "gateway.docker.internal:192.0.2.1"
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+    healthcheck:
+      # The image's own Python; no reliance on wget or curl being present.
+      test: ["CMD", "/usr/local/searxng/.venv/bin/python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    labels:
+      cc.research: "searxng"
+    networks: [research, research_egress]
+
+  worker:
+    # Adds one network to the worker; its other networks stay (the same merge the tunnel overlay uses).
+    networks:
+      research: {}
+
+networks:
+  research:
+    internal: true
+  research_egress: {}
+
+volumes:
+  searxng_cache: {}

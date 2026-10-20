@@ -333,6 +333,24 @@ Known limits that remain (by design or not yet done):
   the exact action and target. Read-only monitoring may run automatically
   within the approved scope.
 
+## Proposed: Research Gateway (SearXNG primary, DeepSeek optional), waiting for approval
+
+A plan only, nothing built: [docs/RESEARCH_GATEWAY_PLAN.md](docs/RESEARCH_GATEWAY_PLAN.md),
+with the proposed SearXNG files in [docs/research-gateway/](docs/research-gateway/).
+
+- **What it proposes:**
+  - one gateway in the worker; agents get READ search capabilities that need
+    no approval and can never trigger an approval-gated action;
+  - a private SearXNG container (no published port, JSON only, hardened;
+    run three times in the sandbox);
+  - DeepSeek as an optional fallback later. It is NO-GO for now: its
+    documentation was only seen through search excerpts, and its policies
+    store data in China.
+- **Outbound screening:** secrets, contacts, Credit Repair and private JARVIS
+  text never reach a search engine.
+- **Proposed release:** 0.7.0 for Research, with Messaging moving to 0.8.0.
+  That is one of the owner decisions in the plan's section 11.
+
 ## Planned 0.7.0: Messaging & Channels (after 0.6.0 is verified)
 
 Builds on the existing approvals, secrets store, audit log, worker and n8n;

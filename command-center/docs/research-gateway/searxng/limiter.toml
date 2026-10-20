@@ -1,0 +1,2 @@
+# Empty on purpose. The limiter is off (server.limiter: false in settings.yml).
+# This file only stops a "missing limiter.toml" warning at start-up.
