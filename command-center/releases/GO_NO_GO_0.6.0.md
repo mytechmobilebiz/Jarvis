@@ -9,7 +9,7 @@ SHA-256 `a687f737de043ae6a69c4dcc3f15ae71d71a5c3688bebef62b53122e4036a8a1` · br
 | Step | Verdict | Why |
 |---|---|---|
 | 1. Install 0.6.0 on your PC (upgrade from 0.5.0) | **GO, with your approval** | Tested step by step on a copy of your history: all seven smoke checks passed, and data, keys, n8n, agents and unrelated Docker projects were unchanged. Going back to 0.5.0 was also tested. It changes no existing data and imports nothing. |
-| 2. Test copy plus import of the real JARVIS backup into it | **GO, with your approval** | Separate Docker project with its own database, no n8n and a worker without internet. Your live installation was unchanged after every step of the end-to-end check. It reads only the backup copy. |
+| 2. Test copy plus import of the real JARVIS backup into it | **GO after the 0.6.1 patch**, with your approval | Separate Docker project with its own database, no n8n and a worker without internet; your live installation was unchanged after every step of the end-to-end check. It reads only the backup copy. The 0.6.1 patch fixes the withhold defect in section 3 (item 12), which you would meet while reviewing. |
 | 3. Import into the live installation | **NO-GO for now** | The real backup has not been read by any 0.6.0 code. Secret and personal-data detection is pattern-based (names and street addresses are not detected). Your review of the real data in the test copy (step 2) must come first. After that review, this needs a separate approval. |
 | 4. Memory in AI prompts, converted schedules switched on | **Not now** | Optional, later. Both are off by default and stay off until an admin changes them. |
 
@@ -59,7 +59,7 @@ installed 0.5.0, JARVIS and your live database are untouched.
   messages you withhold and the items you purge in the test copy now carry
   over to the live import (tested).
 
-## 3. Unresolved defects and limitations (none blocks steps 1 and 2)
+## 3. Unresolved defects and limitations (none blocks step 1; item 12 is fixed before step 2)
 
 1. **Detection is pattern-based.** Names and street addresses are not
    detected, and a secret in an unusual format can be missed. This is the
@@ -87,7 +87,15 @@ installed 0.5.0, JARVIS and your live database are untouched.
     drafts reviewed or converted, promoted messages, redacted versions.
     Approvals, edits, deletions, **withheld messages and purged items** are
     carried over.
-12. Still open from earlier releases (RELEASE_NOTES_0.5.1.md section 5):
+12. **Defect found after release (2026-10-20, medium, confirmed by a test run).**
+    An admin cannot withhold an archived message once it has a promoted copy
+    that is not quarantined. The database refuses the version entry
+    `quarantined`, so the withhold fails and nothing changes.
+    - It does not affect installing 0.6.0. It matters only when reviewing
+      imported JARVIS data.
+    - Workaround: delete and purge the promoted copy first.
+    - Fix: a 0.6.1 patch, to be released before the test-copy import.
+13. Still open from earlier releases (RELEASE_NOTES_0.5.1.md section 5):
    - the gate cannot see an approval;
    - there has been no run on a real server;
    - remote access is not set up.
