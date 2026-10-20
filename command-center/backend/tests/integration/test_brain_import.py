@@ -1067,7 +1067,7 @@ async def test_review_decisions_carry_over_from_the_test_copy(built, tmp_path):
         edited_key, deleted_key, customer_key = plain[1].source_key, plain[3].source_key, customer.source_key
     out = tmp_path / "decisions.json"
     assert await imp.decisions_export(str(out)) == {"exported": 6, "skipped_without_source_key": 0,
-                                                    "edits_not_exported": 1, "removals": 0}
+                                                    "edits_not_exported": 1, "removals": 0, "releases": 0}
     exported = json.loads(out.read_text())
     assert exported["format"] == "jarvis-brain-decisions" and len(exported["decisions"]) == 6
     # Decisions, not memory: only the text a person edited travels, and never a customer item's.
@@ -1139,7 +1139,7 @@ async def test_withheld_messages_and_purged_items_carry_over_from_the_test_copy(
     out = tmp_path / "decisions.json"
     assert (await imp.decisions_export(str(out)))["removals"] == 2
     exported = json.loads(out.read_text())
-    assert exported["version"] == 3
+    assert exported["version"] == 4  # 0.6.2: a withhold carries the JARVIS row it names (keys and ids, no text)
     assert {(r["source_key"], r["reason"]) for r in exported["removals"]} == {
         (message_key, "withheld by an admin"), (item_key, imp.PURGED_BY_ADMIN)}
     flat = out.read_text()

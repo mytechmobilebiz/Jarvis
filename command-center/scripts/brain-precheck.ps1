@@ -94,7 +94,7 @@ if ($api -and $api.Status -eq "running") {
 }
 $pg = Find-Service "postgres"
 # Memory items promoted from a message that is withheld now, which still hold text: 0.6.0's withholds left them, and
-# 0.6.1 empties them when it starts (app/brain/archive.py withheld_copies() applies the same rules;
+# 0.6.1 and later empty them when they start (app/brain/archive.py withheld_copies() applies the same rules;
 # tests/integration/test_brain_withhold_copies.py runs this query against both).
 $withheldCopiesSql = @'
 SELECT count(*) FROM memory_items i WHERE i.origin = 'promoted'
@@ -111,7 +111,15 @@ AND (i.flags ? 'source_withheld'
     AND NOT EXISTS (SELECT 1 FROM archive_messages m WHERE m.id = (i.flags ->> 'message_id')::bigint)
     AND EXISTS (SELECT 1 FROM archive_messages m JOIN archive_sessions s ON s.id = m.session_id WHERE m.withheld
       AND i.source_ref IN ('JARVIS session ' || s.source_session_id || ' ' || chr(183) || ' message ' || m.position,
-        'JARVIS session ' || s.source_session_id || ' ' || chr(183) || ' message ' || m.position || ' (source removed)'))))
+        'JARVIS session ' || s.source_session_id || ' ' || chr(183) || ' message ' || m.position || ' (source removed)')))
+  OR (NOT i.flags ? 'message_source_key'
+    AND NOT EXISTS (SELECT 1 FROM archive_messages m WHERE m.id = (i.flags ->> 'message_id')::bigint)
+    AND EXISTS (SELECT 1 FROM import_records r WHERE r.record_type = 'message' AND r.target_table = 'archive_messages'
+      AND r.target_id = (i.flags ->> 'message_id')::bigint AND r.action IN ('imported', 'withheld', 'updated')
+      AND (EXISTS (SELECT 1 FROM brain_tombstones t WHERE t.reason = 'withheld by an admin' AND t.source_key = r.source_key)
+        OR EXISTS (SELECT 1 FROM archive_messages m WHERE m.withheld AND m.source_key = r.source_key))))
+  OR EXISTS (SELECT 1 FROM archive_sessions s WHERE s.sensitivity = 'restricted'
+    AND s.id = (i.flags ->> 'archive_session_id')::bigint))
 '@
 if ($pg -and $pg.Status -eq "running") {
   # A read-only transaction: the database itself refuses any change from this session.
@@ -135,11 +143,35 @@ if ($pg -and $pg.Status -eq "running") {
         "-d", "command_center", "-X", "-q", "-t", "-A", "-v", "ON_ERROR_STOP=1", "-c", $withheldCopiesSql.Replace("`r", " ").Replace("`n", " "))
       $n = @($c.Out | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' } | Select-Object -Last 1)
       if ($c.Code -eq 0 -and $n.Count -eq 1) {
-        $after = if ($n[0] -ne "0") { " (0.6.1 empties them when it starts; a production import refuses until this is 0)" } else { "" }
+        $after = if ($n[0] -ne "0") { " (0.6.1 and later empty them when they start; a production import refuses until this is 0)" } else { "" }
         Add-Line ("  promoted memory items whose source message is withheld, still holding text: " + $n[0] + $after)
       } else {
         Add-Problem ("the promoted memory items of withheld messages could not be counted: " + (($c.Err | Select-Object -First 2) -join " "))
       }
+    }
+    # 0.6.2: what the withhold identity repair would still change (read-only: brain_withhold_pending() is STABLE and
+    # only counts; 0008_brain_withhold_identity.sql).
+    if ($migrations -contains "0008_brain_withhold_identity") {
+      Add-Line "  0008_brain_withhold_identity: present"
+      $p = Invoke-Docker @("exec", "-e", "PGOPTIONS=-c default_transaction_read_only=on", $pg.Id, "psql", "-U", "postgres",
+        "-d", "command_center", "-X", "-q", "-t", "-A", "-v", "ON_ERROR_STOP=1", "-c", "SELECT brain_withhold_pending()")
+      $j = @($p.Out | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\{' } | Select-Object -Last 1)
+      if ($p.Code -eq 0 -and $j.Count -eq 1) {
+        Add-Line ("  withhold identity (counts only): " + $j[0])
+        try { $pending = $j[0] | ConvertFrom-Json } catch { $pending = $null }
+        if ($pending) {
+          # The live installation's next start (or jarvis-import.ps1 -Mode Repair) withholds the readable rows; an
+          # import repairs before it imports. Held rows wait for an admin (JARVIS Brain page, Held for review).
+          $readable = [int]$pending.readable_by_key + [int]$pending.readable_by_jarvis_row + [int]$pending.readable_in_restricted_sessions
+          $repair = if ($pending.repair_done -eq $true) { "done" } else { "not done (the next start runs it)" }
+          Add-Line ("  readable rows matching a withhold: $readable; held for review: $([int]$pending.held_for_review); " +
+            "identity repair $repair")
+        }
+      } else {
+        Add-Problem ("the withhold identity could not be read: " + (($p.Err | Select-Object -First 2) -join " "))
+      }
+    } else {
+      Add-Line "  0008_brain_withhold_identity: not present (0.6.2 not installed)"
     }
     Add-Line "  agents switched off: $($v[1]) (agents without a saved state are on)"
     Add-Line "  schedules enabled: $($v[2]) of $($v[3])"

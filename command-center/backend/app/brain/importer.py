@@ -73,12 +73,14 @@ from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import asyncpg
 from sqlalchemy import delete, func, insert, or_, select, update
 from sqlalchemy import text as sql
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -88,7 +90,9 @@ from ..db import sessionmaker
 from ..models import (
     ArchiveMessage,
     ArchiveSession,
+    BrainPurgedContent,
     BrainTombstone,
+    BrainWithholdExemption,
     ImportRecord,
     ImportRun,
     MemoryConflict,
@@ -99,7 +103,7 @@ from ..models import (
     User,
     WorkflowDraft,
 )
-from . import IMPORTER_VERSION
+from . import IMPORTER_VERSION, identity
 from . import jarvis_kit as kit
 from . import mapping
 from . import source as src
@@ -135,7 +139,8 @@ PHASES = ("files", "jobs", "sessions", "orphans")
 CHAT_IN, CHAT_OUT = 200_000, 50_000
 TOOL_IN, TOOL_OUT = 20_000, 4_000
 ARG_OUT = 500
-CARRIED = "carried-on copy of a compacted message"
+CARRIED = identity.CARRIED
+SAME_AS_PREVIOUS = identity.SAME_AS_PREVIOUS
 REWOUND = "rewound or superseded"
 DECISION_NOTE = "decision carried over from the test copy"
 BRAIN_TABLES = ("memory_items", "archive_sessions", "archive_messages", "workflow_drafts")
@@ -390,7 +395,12 @@ def _empty_tally() -> dict[str, Any]:
             "secrets": {"types": {}, "where": {"messages": 0, "files": 0, "drafts": 0}},
             "restricted": {"types": {}, "sessions_withheld": 0, "files_excluded": 0},
             "masked": {"email_address": 0, "phone_number": 0}, "conflicts": {}, "drafts": [],
-            "time_range": {"first": None, "last": None}}
+            "time_range": {"first": None, "last": None},
+            # 1.1.0: what the withhold identity did (spec 2.9): rows stored without text as the same message as a
+            # withheld one, by rule; rows held for an admin's review; keys that named another JARVIS row; stored rows
+            # re-keyed in place; items back under another key after a purge.
+            "withheld_same_message": {}, "held_for_review": {}, "key_reassigned": 0, "keys_adopted": 0,
+            "purged_same_text": 0, "stones_added": 0}
 
 
 class Tally:
@@ -398,6 +408,8 @@ class Tally:
 
     def __init__(self, data: dict[str, Any] | None = None) -> None:
         self.d = json.loads(json.dumps(data)) if data else _empty_tally()
+        for k, v in _empty_tally().items():  # a run resumed from an older checkpoint
+            self.d.setdefault(k, v)
 
     @staticmethod
     def _inc(bucket: dict[str, int], key: str, n: int = 1) -> None:
@@ -440,6 +452,12 @@ class Tally:
 
     def conflict(self, kind: str) -> None:
         self._inc(self.d["conflicts"], kind)
+
+    def held(self, via: str, review: str) -> None:
+        self._inc(self.d["held_for_review" if review == identity.PENDING else "withheld_same_message"], via)
+
+    def bump(self, name: str, n: int = 1) -> None:
+        self.d[name] = int(self.d.get(name) or 0) + n
 
     def time(self, at: datetime | None) -> None:
         if at is None:
@@ -583,6 +601,19 @@ async def run_alive(run_id: int) -> bool:
 async def require_schema(session: AsyncSession) -> None:
     if not await session.scalar(sql("SELECT to_regclass('public.import_runs') IS NOT NULL")):
         raise Refused("the JARVIS Brain tables are not installed (migration 0006_brain): run migrate first")
+    if not await session.scalar(sql(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' "
+            "AND table_name = 'brain_tombstones' AND column_name = 'anchor_key')")):
+        raise Refused("the JARVIS Brain needs migration 0008_brain_withhold_identity: start the Command Center 0.6.2 "
+                      "once first")
+
+
+async def purge_key_check(session: AsyncSession) -> None:
+    """Refused (before any change) when stored purge fingerprints were made with another database password."""
+    try:
+        await identity.PurgeIndex.load(session)
+    except identity.PurgeKeyMismatch as exc:
+        raise Refused(str(exc)) from None
 
 
 async def customer_timezone(session: AsyncSession) -> tuple[str, ZoneInfo]:
@@ -634,6 +665,7 @@ class MessagePlan:
     reason: str = ""
     cleaned: MessageClean | None = None
     duplicate_of: str = ""
+    twin_of: str = ""  # the key of an earlier rewound row with the same text (an identity link only)
 
 
 class Processor:
@@ -654,13 +686,28 @@ class Processor:
         self.pending: list[dict[str, Any]] = []
         self.pending_at: list[str] = []  # the location of each pending record, for an error at the flush
         self._fake = 0
-        self.tombstones: set[str] = set()
-        self.admin_withheld: set[str] = set()  # messages an admin withheld: imported with no text
+        self.tombstones: set[str] = set()  # purges (and other non-withhold tombstones): the record is left out
+        # The identity of every withheld message (its stones, identity.py), and per session the rows that are the same
+        # message as a withheld one (key -> Match: stored without text) and the keys JARVIS gave to another row.
+        self.ids = identity.Identities()
+        self.held: dict[str, identity.Match] = {}
+        self.moved_keys: set[str] = set()
+        # Texts and contents of the rows matched as members, per group: in memory for this run only.
+        self.group_texts: dict[str, set[tuple[str, str, str]]] = {}
+        self.group_contents: dict[str, list[str]] = {}
+        self._anchor_cache: dict[str, tuple[int, dict[tuple[str, str, str], identity.Stone]]] = {}
+        self._bound_rows: dict[tuple[str, str], src.SourceMessage | None] = {}
+        self._uid_backfill: list[tuple[int, str]] = []
+        self._by_session_id: dict[str, src.SourceSession] | None = None
+        self.purge = identity.PurgeIndex()
+        self.purged_shas_here: set[str] = set()
         # Rows this batch withheld (for an admin, or by _reconcile; copies go too), inserted (nothing can quote them
-        # yet) and deleted (their quotes go): handled once per batch, by withhold_batch().
+        # yet), deleted (their quotes go) and deleted while withheld (their promoted copies go too: finding 2):
+        # handled once per batch, by withhold_batch().
         self.withheld_now: list[int] = []
         self.inserted_now: set[int] = set()
         self.deleted_now: list[int] = []
+        self.withheld_gone: list[Any] = []
         self.site_urls: dict[str, int] = {}
         self.schedules: list[dict[str, Any]] = []
         self.new_hashes: dict[str, int] = {}
@@ -671,7 +718,14 @@ class Processor:
     async def load(self, work: Work) -> None:
         rows = (await self.s.execute(select(BrainTombstone.source_key, BrainTombstone.reason))).all()
         self.tombstones = {key for key, reason in rows if reason != WITHHELD_BY_ADMIN}
-        self.admin_withheld = {key for key, reason in rows if reason == WITHHELD_BY_ADMIN}
+        self.ids = await identity.Identities.load(self.s)
+        try:
+            self.purge = await identity.PurgeIndex.load(self.s)
+        except identity.PurgeKeyMismatch as exc:
+            raise Refused(str(exc)) from None
+        self.purged_shas_here = {p.sha256 for f in work.files for p in mapping.file_parts(f, self.tz)
+                                 if p.key in self.tombstones and p.sha256}
+        await self._rebind()
         for site_id, url in (await self.s.execute(select(Site.id, Site.url))).all():
             normalized = mapping.normalize_url(url or "")
             if normalized:
@@ -688,6 +742,23 @@ class Processor:
             if self.src.watchdog is not None:
                 self.drafts.append(mapping.draft_for_watchdog(self.src.watchdog, cron_mode=self.src.cron_mode,
                                                               tz_name=self.src.tz_name, schedules=self.schedules))
+
+    async def _rebind(self) -> None:
+        """A stone bound to a JARVIS row that is in this backup learns that row's uid when it had none (a message
+        withheld while its uid was NULL, or by 0.6.x under a row-form key): learned, so uid_known stays false. With
+        write, the uid is kept. The uids a withheld fold survivor absorbed are learned in memory."""
+        backup = self.src.backup
+        for st in sorted(self.ids.by_key.values(), key=lambda st: st.key):
+            if not (st.bound and st.row and st.session and st.certain) or not backup.has_row(st.session, st.row):
+                continue
+            found = [r for r in backup.rows(st.session, [st.row]) if st.role in ("", r.role)]
+            if not found:
+                continue
+            if not st.uid and found[0].uid and self.write:
+                await self.s.execute(update(BrainTombstone).where(
+                    BrainTombstone.source_key == st.key, BrainTombstone.message_uid == "").values(
+                    message_uid=found[0].uid[:200]))
+            self.ids.learn_uid(st, found[0].uid[:200], found[0].absorbed)
 
     # Records ------------------------------------------------------------------------------------------------
 
@@ -798,6 +869,13 @@ class Processor:
             self.record(p.key, p.record_type, action, reason, "memory_items" if target else "", target)
 
         if p.key in self.tombstones:
+            fp = self.purge.fingerprint(p.sha256)
+            if self.write and fp is not None and fp not in self.purge.fps:
+                # A purge made before 0.6.2 (or on a test copy) learns the keyed fingerprint of the bytes it purged,
+                # so a later rename or copy of the same file is recognised too.
+                await identity.remember_purge(self.s, source_key=p.key, sha256_hex=p.sha256, kind=p.record_type,
+                                              actor=self.actor, via="import", key=self.purge.key)
+                self.purge.fps.add(fp)
             return rec("excluded", "purged by an admin")
         if p.excluded:
             if p.restricted:
@@ -805,6 +883,16 @@ class Processor:
             return rec("excluded", p.excluded)
         if p.duplicate_of_earlier:
             return rec("duplicate", "the same text appears earlier in the file")
+        if self.purge.same_content(p, self.purged_shas_here):
+            # An item an admin purged, back under another key (moved, copied or renamed): purged as well, by a
+            # tombstone of its own (no new data, no text, no plain hash).
+            if self.write:
+                await self.s.execute(pg_insert(BrainTombstone).values(
+                    source_key=p.key, purged_at=now(), purged_by=self.actor[:200], reason=identity.PURGED_BY_ADMIN,
+                    via="same text").on_conflict_do_nothing(index_elements=[BrainTombstone.source_key]))
+            self.tombstones.add(p.key)
+            self.t.bump("purged_same_text")
+            return rec("excluded", "purged by an admin: the same text as an item an admin purged")
         try:
             cleaned = mapping.clean(p.raw, p.text_kind)
         except Exception as exc:  # a cleaning failure excludes this record only
@@ -1001,12 +1089,7 @@ class Processor:
 
     @staticmethod
     def dup_fp(m: src.SourceMessage) -> str:
-        raw = m.tool_calls_raw
-        try:
-            calls = json.dumps(json.loads(raw), sort_keys=True) if isinstance(raw, str) and raw.strip() else raw
-        except ValueError:
-            calls = raw
-        return src.sha256_text(m.role, m.tool_name, brain_text.content_hash(m.content), calls)
+        return identity.dup_fp(m)
 
     def clean_message(self, m: src.SourceMessage, customer: bool) -> MessageClean:
         """customer: every message of this session is customer data (Sarah's sessions, customer-facing channels)."""
@@ -1084,6 +1167,10 @@ class Processor:
         plans: list[MessagePlan] = []
         prev: tuple[str, str] | None = None
         prev_key = ""
+        # Rewound rows (by text): a later row with the same text is their twin (Hermes's in-place compaction rewinds
+        # the protected tail and writes it again as new rows; /retry and replace do the same). An identity link only:
+        # the twin's action is decided as for any row.
+        rewound: dict[tuple[str, str], list[str]] = {}
         for m in msgs:
             reason = self.exclusion(m)
             if reason:
@@ -1094,9 +1181,13 @@ class Processor:
                         restricted |= set(self.clean_message(m, customer).restricted)
                     except Exception:  # the row is excluded anyway
                         pass
+                if reason == REWOUND:
+                    rewound.setdefault((self.dup_fp(m), m.tool_call_id), []).append(m.key)
                 plans.append(MessagePlan(m, "excluded", reason))
                 continue
             fp = self.dup_fp(m)
+            twin = rewound.get((fp, m.tool_call_id))
+            twin_of = twin.pop(0) if twin else ""
             same_prev = False
             if m.role in ("user", "assistant"):
                 current = (fp, m.tool_call_id)
@@ -1104,13 +1195,14 @@ class Processor:
                 if not same_prev:
                     prev, prev_key = current, m.key
             if m.key in copies:
-                plans.append(MessagePlan(m, "duplicate", CARRIED, duplicate_of=copies[m.key]))
+                plans.append(MessagePlan(m, "duplicate", CARRIED, duplicate_of=copies[m.key], twin_of=twin_of))
                 continue
             if same_prev:
-                plans.append(MessagePlan(m, "duplicate", "same as the previous message", duplicate_of=prev_key))
+                plans.append(MessagePlan(m, "duplicate", SAME_AS_PREVIOUS, duplicate_of=prev_key, twin_of=twin_of))
                 continue
             if m.key in unchanged:
-                plans.append(MessagePlan(m, "import"))  # reconciled as "already imported"; never cleaned again
+                # reconciled as "already imported"; never cleaned again
+                plans.append(MessagePlan(m, "import", twin_of=twin_of))
                 continue
             try:
                 cleaned = self.clean_message(m, customer)
@@ -1118,10 +1210,12 @@ class Processor:
                 plans.append(MessagePlan(m, "excluded", "invalid record: %s" % exc.__class__.__name__))
                 continue
             restricted |= set(cleaned.restricted)
-            plans.append(MessagePlan(m, "import", cleaned=cleaned))
+            plans.append(MessagePlan(m, "import", cleaned=cleaned, twin_of=twin_of))
         return plans, restricted
 
     def message_values(self, p: MessagePlan, withheld: bool) -> dict[str, Any]:
+        """A row's values. Withheld (restricted data in the conversation, or the same message as one an admin withheld:
+        self.held) it keeps no text and no fingerprint of its text (source_fp 'w1:<state>')."""
         m, c = p.m, p.cleaned
         assert c is not None
         values: dict[str, Any] = {
@@ -1129,17 +1223,256 @@ class Processor:
             "role": brain_text.sanitize(m.role)[:40], "content_chars": len(m.content),
             "tool_name": brain_text.sanitize(m.tool_name)[:200], "tool_call_id": brain_text.sanitize(m.tool_call_id)[:200],
             "at": m.at, "state": "compacted" if m.compacted == 1 else "live", "redactions": c.redactions,
+            "source_uid": m.uid[:200],
         }
+        held = self.held.get(m.key)
         if withheld:
             values.update(content="", truncated=False, tool_calls=[], sensitivity="restricted", withheld=True,
-                          labels=[], flags={**c.flags, "withheld": "restricted data in this conversation"})
-        elif m.key in self.admin_withheld:  # an admin withheld it (BrainTombstone): it comes back with no text
+                          labels=[], flags={**c.flags, "withheld": "restricted data in this conversation"},
+                          source_fp=identity.withheld_fp(m))
+        elif held is not None:  # the same message as one an admin withheld: it comes back with no text
             values.update(content="", truncated=False, tool_calls=[], sensitivity=c.sensitivity, withheld=True,
-                          labels=[], flags={**c.flags, "withheld_by_admin": {"note": WITHHELD_BY_ADMIN}})
+                          labels=[], flags={**c.flags, "withheld_by_admin": self._held_flag(held)},
+                          source_fp=identity.withheld_fp(m))
         else:
             values.update(content=c.content, truncated=c.truncated, tool_calls=c.calls, sensitivity=c.sensitivity,
                           withheld=False, labels=c.labels, flags=c.flags)
         return values
+
+    @staticmethod
+    def _held_flag(mt: identity.Match) -> dict[str, Any]:
+        flag: dict[str, Any] = {"note": WITHHELD_BY_ADMIN}
+        if mt.via != "key":
+            flag["via"] = mt.via
+        if mt.review == identity.PENDING:
+            flag["review"] = identity.PENDING
+        return flag
+
+    # The identity of withheld messages (spec 2.9) ----------------------------------------------------------------
+
+    def held_rows(self, ss: src.SourceSession, msgs: list[src.SourceMessage], plans: list[MessagePlan],
+                  rows: dict[str, dict[str, Any]]) -> dict[str, identity.Match]:
+        """The source rows of this session that are the same message as a withheld one (key -> Match): members are
+        stored without text and inherit a stone; holds as well, listed for an admin. Also sets self.moved_keys: keys
+        whose stone names another JARVIS row that is still in the backup (the row is excluded as a key collision).
+
+        Certain rules first (R-key, R-row, R-fold; excluded rows too: a rewound original is an anchor), then the
+        importer's own links (R-link), the shared uid (R-uid: a member when the text agrees, an archived generation,
+        nothing to compare, or the withheld text contained; a hold otherwise) and the same text in this session or a
+        continuation or branch ancestor (R-text: a member in a copy position, a hold otherwise; never a row the admin
+        saw, a released row, or a row with its own uid when the withheld message's uid was known)."""
+        backup = self.src.backup
+        by_key = {m.key: m for m in msgs}
+        held: dict[str, identity.Match] = {}
+        pend: dict[str, identity.Match] = {}
+        self.moved_keys = set()
+        for m in msgs:
+            mt = self.ids.certain(ss.id, m, backup.has_row)
+            if mt is identity.MOVED:
+                self.moved_keys.add(m.key)
+            elif isinstance(mt, identity.Match) and mt.review == identity.PENDING:
+                pend[m.key] = mt  # the hold itself, unless a certain rule matches it below
+            elif isinstance(mt, identity.Match):
+                held[m.key] = mt
+        self._links(plans, held, by_key)
+        for m in msgs:
+            if m.key in held or not m.uid or m.key in self.moved_keys:
+                continue
+            cands = self.ids.uid_stones(m.uid, m.role)
+            if not cands:
+                continue
+            st = cands[0]
+            texts, contents = self.anchor_texts(st.group, held, by_key)
+            content = identity.norm(m.content)
+            if (identity.text_key(m) in texts or m.compacted == 1 or not texts
+                    or any(len(a) >= identity.MIN_CONTAINED and a in content for a in contents)):
+                held[m.key] = identity.Match(st, "same message id", identity.CERTAIN)
+            elif (st.group, ss.id, str(m.id)[:200]) not in self.ids.exempt:
+                held[m.key] = identity.Match(st, "same message id, different text", identity.PENDING)
+        self._links(plans, held, by_key)
+        anchors: dict[tuple[str, str, str], identity.Stone] = {}
+        for k, mt in held.items():
+            if mt.review == identity.CERTAIN:
+                anchors.setdefault(identity.text_key(by_key[k]), mt.stone)
+        for t, st in self.ancestor_anchors(ss).items():
+            anchors.setdefault(t, st)
+        if anchors:
+            for p in plans:
+                m = p.m
+                if m.key in held or p.action != "import" or m.key in self.moved_keys:
+                    continue
+                found = anchors.get(identity.text_key(m))
+                if found is None:
+                    continue
+                row = rows.get(m.key)
+                if row is not None and (row["withheld"] or (row["import_run_id"] or 0) <= found.after_run):
+                    continue  # stored before the withhold: the admin saw it
+                if (found.group, ss.id, str(m.id)[:200]) in self.ids.exempt:
+                    continue
+                if identity.copied_by_history(m, ss):
+                    held[m.key] = identity.Match(found, "copied by JARVIS", identity.CERTAIN)
+                elif not self.ids.independent(found.group, m.uid):
+                    held[m.key] = identity.Match(found, "same text", identity.PENDING)
+            self._links(plans, held, by_key)
+        for k, mt in pend.items():
+            held.setdefault(k, mt)
+        return held
+
+    @staticmethod
+    def _links(plans: list[MessagePlan], held: dict[str, identity.Match], by_key: dict[str, src.SourceMessage]
+               ) -> None:
+        """R-link, in id order: a carried-on copy or an adjacent repeat the importer linked to a held row, and a twin
+        of a held rewound row (unless both carry uids and they differ), are held as that row is."""
+        for p in plans:
+            m = p.m
+            if m.key in held:
+                continue
+            if p.action == "duplicate" and p.reason in identity.PROVENANCE_REASONS and p.duplicate_of in held:
+                mt = held[p.duplicate_of]
+                held[m.key] = identity.Match(mt.stone, "duplicate", mt.review)
+            elif p.twin_of in held and not identity.uid_conflict(by_key[p.twin_of], m):
+                mt = held[p.twin_of]
+                held[m.key] = identity.Match(mt.stone, "copied by JARVIS", mt.review)
+
+    def _bound_row(self, session_id: str, row_id: str) -> src.SourceMessage | None:
+        if (session_id, row_id) not in self._bound_rows:
+            backup = self.src.backup
+            found = backup.rows(session_id, [row_id]) if backup.has_row(session_id, row_id) else []
+            self._bound_rows[(session_id, row_id)] = found[0] if found else None
+        return self._bound_rows[(session_id, row_id)]
+
+    def anchor_texts(self, group: str, held: dict[str, identity.Match], by_key: dict[str, src.SourceMessage]
+                     ) -> tuple[set[tuple[str, str, str]], list[str]]:
+        """The texts (and normalised contents) a group's withheld message has in this backup: rows matched as members
+        in this run, and the rows the group's certain stones are bound to. In memory only."""
+        texts = set(self.group_texts.get(group, ()))
+        contents = list(self.group_contents.get(group, ()))
+        for k, mt in held.items():
+            if mt.review == identity.CERTAIN and mt.group == group:
+                texts.add(identity.text_key(by_key[k]))
+                contents.append(identity.norm(by_key[k].content))
+        for st in self.ids.groups.get(group, ()):
+            if st.certain and st.row and st.session:
+                row = self._bound_row(st.session, st.row)
+                if row is not None and st.role in ("", row.role):
+                    texts.add(identity.text_key(row))
+                    contents.append(identity.norm(row.content))
+        return texts, contents
+
+    def ancestor_anchors(self, ss: src.SourceSession) -> dict[tuple[str, str, str], identity.Stone]:
+        """The texts of withheld rows in the continuation and branch ancestors of this session (a rotation or a branch
+        copied their history): walked up with a visited set and no step limit."""
+        out: dict[tuple[str, str, str], identity.Stone] = {}
+        if ss.lineage not in identity.LINEAGE or not ss.parent_id:
+            return out
+        sessions = self._source_sessions()
+        seen = {ss.id}
+        cur: src.SourceSession | None = ss
+        while cur is not None and cur.lineage in identity.LINEAGE and cur.parent_id and cur.parent_id not in seen:
+            parent = sessions.get(cur.parent_id)
+            if parent is None:
+                break
+            seen.add(parent.id)
+            if parent.id in self.ids.sessions:
+                for t, st in self._anchors_of(parent).items():
+                    out.setdefault(t, st)
+            cur = parent
+        return out
+
+    def _source_sessions(self) -> dict[str, src.SourceSession]:
+        if self._by_session_id is None:
+            self._by_session_id = self.src.backup.sessions_by_id()
+        return self._by_session_id
+
+    def _anchors_of(self, a: src.SourceSession) -> dict[tuple[str, str, str], identity.Stone]:
+        version = self.ids.version[a.id]
+        cached = self._anchor_cache.get(a.id)
+        if cached is not None and cached[0] == version:
+            return cached[1]
+        found: dict[tuple[str, str, str], identity.Stone] = {}
+        for m in self.src.backup.messages(a.id):
+            row_id = str(m.id)[:200]
+            st = self.ids.by_key.get(m.key)
+            if st is not None and st.certain and (not st.row or not st.session
+                                                  or (st.session, st.row) == (a.id, row_id)):
+                found.setdefault(identity.text_key(m), st)
+                continue
+            for st in self.ids.by_row.get((a.id, row_id), ()):
+                if st.certain and st.role in ("", m.role):
+                    found.setdefault(identity.text_key(m), st)
+                    break
+        self._anchor_cache[a.id] = (version, found)
+        return found
+
+    def _collides(self, ss: src.SourceSession, m: src.SourceMessage, row: dict[str, Any] | None, sess_id: int
+                  ) -> bool:
+        """The stored row under m's key is another JARVIS row that is still in the backup (or in another session)."""
+        if row is None:
+            return False
+        if row["session_id"] != sess_id:
+            return True
+        return (not row.get("adopted_from") and row["source_message_id"] != str(m.id)[:200]
+                and self.src.backup.has_row(ss.id, row["source_message_id"]))
+
+    async def inherit(self, ss: src.SourceSession, msgs: list[src.SourceMessage], rows: dict[str, dict[str, Any]],
+                      sess_id: int) -> None:
+        """Every held row's key gets a stone (its group, the rule, the review, the JARVIS row it is now), so later
+        imports, rollbacks and every key reader keep it withheld; never a key that names another JARVIS row."""
+        by_key = {m.key: m for m in msgs}
+        for key, mt in self.held.items():
+            m = by_key[key]
+            if key in self.moved_keys or self._collides(ss, m, rows.get(key), sess_id):
+                continue
+            group = mt.group
+            existing = self.ids.by_key.get(key)
+            if existing is None or (existing.review == identity.PENDING and mt.review == identity.CERTAIN) or (
+                    not existing.bound):
+                binding = identity.Stone(
+                    key=key, anchor="" if key == group else group, session=ss.id[:200], row=str(m.id)[:200],
+                    role=m.role[:40], tool_call_id=m.tool_call_id[:200], uid=m.uid[:200], uid_known=False,
+                    via=mt.via, review=mt.review, bound=True, after_run=mt.stone.after_run)
+                if self.write:
+                    await identity.put_stone(self.s, binding, actor=self.actor)
+                self.ids.add(binding)
+                if existing is None:
+                    self.t.bump("stones_added")
+            if mt.review == identity.CERTAIN:
+                self.group_texts.setdefault(group, set()).add(identity.text_key(m))
+                self.group_contents.setdefault(group, []).append(identity.norm(m.content))
+            if mt.via != "key" or mt.stone.anchor:
+                self.t.held(mt.via, mt.review)
+
+    async def adopt_rows(self, ss: src.SourceSession, msgs: list[src.SourceMessage], rows: dict[str, dict[str, Any]],
+                         sess: ArchiveSession | None) -> None:
+        """Key adoption: a stored row of this session whose key the backup no longer has, and that is the same JARVIS
+        row as a source row whose key has no stored row (JARVIS gave it a uid, or replace_messages renumbered it with
+        its uid), is re-keyed in place (_reconcile) instead of the message being stored twice."""
+        if sess is None:
+            return
+        wanted = [m for m in msgs if m.key not in rows and not self.exclusion(m)]
+        if not wanted:
+            return
+        stale = [dict(r) for r in (await self.s.execute(select(*MESSAGE_COLUMNS).where(
+            ArchiveMessage.session_id == sess.id, ArchiveMessage.source_key.not_in([m.key for m in msgs]))
+            .order_by(ArchiveMessage.id))).mappings().all()]
+        if not stale:
+            return
+        by_row: dict[tuple[str, str], dict[str, Any]] = {}
+        by_uid: dict[tuple[str, str], dict[str, Any]] = {}
+        for r in stale:
+            by_row.setdefault((r["source_message_id"], r["role"]), r)
+            if r["source_uid"] and not self.src.backup.has_row(ss.id, r["source_message_id"]):
+                by_uid.setdefault((r["source_uid"], r["role"]), r)
+        taken: set[int] = set()
+        for m in wanted:
+            role = brain_text.sanitize(m.role)[:40]
+            r = by_row.get((str(m.id)[:200], role))
+            if r is None and m.uid:
+                r = by_uid.get((m.uid[:200], role))
+            if r is None or r["id"] in taken or (r["source_uid"] and m.uid and r["source_uid"] != m.uid[:200]):
+                continue
+            taken.add(r["id"])
+            rows[m.key] = {**r, "adopted_from": r["source_key"]}
 
     async def do_session(self, ss: src.SourceSession, index: int) -> tuple[int, int]:
         self.location = safe_location(ss.key, "session", index)
@@ -1159,19 +1492,25 @@ class Processor:
             for r in (await self.s.execute(select(*MESSAGE_COLUMNS).where(
                     ArchiveMessage.source_key.in_(keys[i:i + 1000])))).mappings().all():
                 rows[r["source_key"]] = dict(r)
+        await self.adopt_rows(ss, msgs, rows, sess)
         try:
             title_c = mapping.clean(ss.title, "chat")
         except Exception:  # a title that cannot be cleaned is left out
             title_c = brain_text.Cleaned("")
+        # A row stored from this very source row is not cleaned again; a re-keyed (adopted) row and a released hold
+        # (source_fp '': its text comes back from the source) are.
         unchanged = frozenset(m.key for m in msgs if sess is not None and m.key in rows
-                              and rows[m.key]["session_id"] == sess.id and rows[m.key]["source_fp"] == m.fp)
+                              and rows[m.key]["session_id"] == sess.id and not rows[m.key].get("adopted_from")
+                              and rows[m.key]["source_fp"] and identity.same_source(rows[m.key], m))
         customer_channel = src.customer_channel(ss.channel)
         plans, restricted = self.plan_messages(msgs, staff == "sarah" or customer_channel, unchanged)
         restricted |= set(title_c.restricted)
         withheld = bool(restricted) or (sess is not None and sess.sensitivity == "restricted")
         why = ("restricted data in this conversation: %s" % ", ".join(sorted(restricted)) if restricted
                else "restricted data in this conversation (found by an earlier import)")
-        title = "" if withheld else brain_text.one_line(title_c.text, 300)
+        # An admin who withheld the first user message hid the title too (title_withheld): it can paraphrase it.
+        title_hidden = sess is not None and bool((sess.flags or {}).get("title_withheld"))
+        title = "" if withheld or title_hidden else brain_text.one_line(title_c.text, 300)
         flags: dict[str, Any] = {"attribution": ss.attribution.how, "inferred": ["staff", "labels"]}
         if ss.time_assumed_local:
             flags["time_assumed_local"] = True
@@ -1226,13 +1565,24 @@ class Processor:
                 for k, v in current.items():
                     setattr(sess, k, v)
                 await self.s.flush()
-        changed = await self.write_messages(plans, rows, sess_id, withheld, why)
+        self.held = self.held_rows(ss, msgs, plans, rows)
+        await self.inherit(ss, msgs, rows, sess_id)
+        changed = await self.write_messages(plans, rows, sess_id, withheld, why, ss)
         if withheld and not created and not was_restricted and self.write:
-            # Newly restricted: no copy of its earlier text is kept for a rollback either (the source keeps it).
+            # Newly restricted: every row keeps no text, also one the source no longer holds (finding 3), and no copy
+            # of its earlier text is kept for a rollback either (the source keeps it). The items promoted from its
+            # rows go too, also from a row an earlier import deleted (finding 2).
             await self.flush()
+            changed += (await self.s.execute(sql(
+                "UPDATE archive_messages SET content = '', truncated = false, tool_calls = '[]'::jsonb, labels = '{}', "
+                "sensitivity = 'restricted', withheld = true, source_fp = 'w1:' || state, "
+                "flags = flags || '{\"withheld\": \"restricted data in this conversation\"}'::jsonb "
+                "WHERE session_id = :s AND NOT withheld"), {"s": sess_id})).rowcount or 0
             await scrub_before(self.s, archive_session_id=sess_id)
             self.withheld_now += (await self.s.scalars(select(ArchiveMessage.id).where(
                 ArchiveMessage.session_id == sess_id))).all()
+            self.withheld_gone += await self._gone_promoted_rows(sess_id)
+        await self._backfill_uids()
         level = "general"
         if created or changed or source_changed:
             if self.write:
@@ -1259,7 +1609,7 @@ class Processor:
         return len(msgs), size
 
     async def write_messages(self, plans: list[MessagePlan], rows: dict[str, dict[str, Any]], sess_id: int,
-                             withheld: bool, why: str) -> int:
+                             withheld: bool, why: str, ss: src.SourceSession) -> int:
         changed = 0
         ids = {k: r["id"] for k, r in rows.items() if r["session_id"] == sess_id}
         duplicates: list[MessagePlan] = []
@@ -1269,6 +1619,17 @@ class Processor:
             row = rows.get(m.key)
             if row is not None and row["session_id"] != sess_id:
                 self.record(m.key, "message", "excluded", "key collision")
+                continue
+            if self._collides(ss, m, row, sess_id):
+                # A stored row is never overwritten with another JARVIS row's text (a uid that stopped being shared).
+                self.record(m.key, "message", "excluded", "key collision: JARVIS gave this key to another row")
+                continue
+            if m.key in self.moved_keys and (row is None or row.get("adopted_from")):
+                # The key of a withheld message now names another row: that row is neither stored under it nor
+                # withheld by it.
+                self.t.bump("key_reassigned")
+                self.record(m.key, "message", "excluded",
+                            "key collision: JARVIS gave the key of a withheld message to another row")
                 continue
             if row is not None:
                 changed += await self._reconcile(p, row, withheld, why)
@@ -1288,11 +1649,18 @@ class Processor:
             ids[p.m.key] = outcome
             changed += 1
             self.inserted_now.add(outcome)
-            if withheld or p.m.key in self.admin_withheld:  # stored without its text: copies of an earlier row go too
+            held = self.held.get(p.m.key)
+            if withheld or held is not None:  # stored without its text: copies of an earlier row go too
                 self.withheld_now.append(outcome)
             self._count_message(p, withheld)
-            self.record(p.m.key, "message", "withheld" if withheld else "imported", why if withheld else "",
-                        "archive_messages", outcome)
+            if withheld:
+                self.record(p.m.key, "message", "withheld", why, "archive_messages", outcome)
+            elif held is not None:
+                self.record(p.m.key, "message", "withheld", "held for an admin's review: %s" % held.via
+                            if held.review == identity.PENDING else WITHHELD_BY_ADMIN if held.via == "key"
+                            else "%s: %s" % (WITHHELD_BY_ADMIN, held.via), "archive_messages", outcome)
+            else:
+                self.record(p.m.key, "message", "imported", "", "archive_messages", outcome)
         for p in duplicates:
             target = ids.get(p.duplicate_of)
             self.record(p.m.key, "message", "duplicate", p.reason, "archive_messages" if target else "", target)
@@ -1337,33 +1705,45 @@ class Processor:
         self.t.masked(c.masked)
 
     async def _reconcile(self, p: MessagePlan, row: dict[str, Any], withheld: bool, why: str) -> int:
-        """A message an earlier run imported: unchanged, now withheld, changed, compacted or rewound. A row withheld
-        before (by an import, an admin or a rescan) stays withheld: a newer copy of the source never brings its text
-        back."""
+        """A message an earlier run imported: unchanged, now withheld, changed, compacted, rewound, re-keyed (key
+        adoption) or released. A row withheld before (by an import, an admin or a rescan) stays withheld: a newer copy
+        of the source never brings its text back; only an admin's release of a hold does (its stone is gone, and the
+        row is marked released_at)."""
         m = p.m
         kept = {k: v for k, v in (row["flags"] or {}).items() if k.startswith("withheld")} if row["withheld"] else {}
         session_withheld, withheld = withheld, withheld or bool(row["withheld"])
-        if row["source_fp"] == m.fp:
+        held = self.held.get(m.key)
+        old_key = row.get("adopted_from")
+        same = identity.same_source(row, m)
+        released = (bool(row["withheld"]) and not session_withheld and held is None
+                    and bool(((row["flags"] or {}).get("withheld_by_admin") or {}).get("released_at"))
+                    and m.key not in self.ids.by_key and (old_key or "") not in self.ids.by_key)
+        restricted_now = {"content": "", "truncated": False, "tool_calls": [], "sensitivity": "restricted",
+                          "withheld": True, "labels": [], "source_fp": identity.withheld_fp(m),
+                          "flags": {**(row["flags"] or {}), "withheld": "restricted data in this conversation"}}
+        held_now = {"content": "", "truncated": False, "tool_calls": [], "withheld": True, "labels": [],
+                    "source_fp": identity.withheld_fp(m),
+                    "flags": {**(row["flags"] or {}), "withheld_by_admin": self._held_flag(held)} if held else {}}
+        if same and not old_key and not released:
             # Withheld now: the rollback copy keeps no text either (it is never stored to be scrubbed later).
             if withheld and not row["withheld"]:
-                values = {"content": "", "truncated": False, "tool_calls": [], "sensitivity": "restricted",
-                          "withheld": True, "labels": [],
-                          "flags": {**(row["flags"] or {}), "withheld": "restricted data in this conversation"}}
-                await self._update_row(row, values)
+                await self._update_row(row, {**restricted_now, "source_uid": m.uid[:200]})
                 self.record(m.key, "message", "updated", "withheld: " + why, "archive_messages", row["id"],
                             blank_before(jsonable({k: row[k] for k in MESSAGE_FIELDS})))
                 self.withheld_now.append(row["id"])
                 return 1
-            if m.key in self.admin_withheld and not row["withheld"]:
-                # An admin withheld it (its tombstone says so) but the row still has its text: an import that ran
-                # during the withhold, or a withhold decisions-apply could not make. The conversation stays as it is.
-                values = {"content": "", "truncated": False, "tool_calls": [], "withheld": True, "labels": [],
-                          "flags": {**(row["flags"] or {}), "withheld_by_admin": {"note": WITHHELD_BY_ADMIN}}}
-                await self._update_row(row, values)
-                self.record(m.key, "message", "updated", "withheld: an admin withheld it", "archive_messages",
-                            row["id"], blank_before(jsonable({k: row[k] for k in MESSAGE_FIELDS})))
+            if held is not None and not row["withheld"]:
+                # The same message as one an admin withheld, and its row still has its text: an import that ran during
+                # the withhold, a withhold decisions-apply could not make, or a copy found since. The conversation
+                # stays as it is.
+                await self._update_row(row, {**held_now, "source_uid": m.uid[:200]})
+                self.record(m.key, "message", "updated", "withheld: an admin withheld it" if held.via == "key"
+                            else "withheld: the same message as one an admin withheld (%s)" % held.via,
+                            "archive_messages", row["id"], blank_before(jsonable({k: row[k] for k in MESSAGE_FIELDS})))
                 self.withheld_now.append(row["id"])
                 return 1
+            if (row.get("source_uid") or "") != m.uid[:200]:
+                self._uid_backfill.append((int(row["id"]), m.uid[:200]))
             self.record(m.key, "message", "duplicate", "already imported", "archive_messages", row["id"])
             return 0
         if p.action in ("excluded", "duplicate"):
@@ -1373,26 +1753,72 @@ class Processor:
                 await self.s.execute(delete(ArchiveMessage).where(ArchiveMessage.id == row["id"]))
                 self.deleted_now.append(row["id"])
             self.record(m.key, "message", "updated", reason, "archive_messages", row["id"],
-                        {"deleted_row": jsonable(row)})
+                        {"deleted_row": jsonable({k: v for k, v in row.items() if k != "adopted_from"})})
+            if withheld or held is not None:  # its promoted copies go too, also once no row of it is left
+                self.withheld_gone.append(SimpleNamespace(id=row["id"], source_key=row["source_key"],
+                                                          session_id=row["session_id"], position=row["position"]))
             return 1
-        values = self.message_values(p, withheld)
-        if kept:
-            values["flags"] = {**values["flags"], **kept}
-            if not session_withheld:  # withheld by an admin or a rescan: the conversation itself stays as it was
-                values["sensitivity"] = row["sensitivity"]
+        if released:
+            # An admin released this hold: its text comes back from the source (unless the conversation is withheld).
+            values = self.message_values(p, False)
+            values["flags"] = {k: v for k, v in values["flags"].items() if k != "withheld_by_admin"}
+            reason = "released by an admin: restored from the source"
+        elif same:  # re-keyed, the source row unchanged
+            values = dict(restricted_now if withheld and not row["withheld"] else
+                          held_now if held is not None and not row["withheld"] else {})
+            reason = "key changed since an earlier import"
+        else:
+            values = self.message_values(p, withheld)
+            if kept:
+                values["flags"] = {**values["flags"], **kept}
+                if not session_withheld:  # withheld by an admin or a rescan: the conversation itself stays as it was
+                    values["sensitivity"] = row["sensitivity"]
+            reason = ("key changed since an earlier import" if old_key else
+                      "compacted since an earlier import" if values["state"] == "compacted" and row["state"] == "live"
+                      else "changed since an earlier import")
+        values["source_uid"] = m.uid[:200]
+        if old_key:  # the JARVIS row as it is now (replace_messages renumbers it)
+            values.update(source_key=m.key, source_message_id=str(m.id)[:200], position=m.position)
         ok, result = await self.guarded(lambda: self._update_row(row, values))
         if not ok:
             self.record(m.key, "message", "excluded", "invalid record: %s" % result)
             return 0
-        reason = ("compacted since an earlier import" if values["state"] == "compacted" and row["state"] == "live"
-                  else "changed since an earlier import")
-        self._count_message(p, withheld)
+        if "state" in values:
+            self._count_message(p, withheld and not released)
         before = jsonable({k: row[k] for k in MESSAGE_FIELDS})
-        if values["withheld"] and not row["withheld"]:  # withheld now (its session, or an admin's tombstone)
+        if old_key:  # a rollback puts the old key back
+            before.update(source_key=old_key, source_uid=row.get("source_uid") or "")
+            self.t.bump("keys_adopted")
+        if values.get("withheld") and not row["withheld"]:  # withheld now (its session, or the same message)
             before = blank_before(before)
             self.withheld_now.append(row["id"])
         self.record(m.key, "message", "updated", reason, "archive_messages", row["id"], before)
         return 1
+
+    async def _backfill_uids(self) -> None:
+        """The JARVIS uid of rows this import left as they were (identity metadata, not a change: no record)."""
+        pending, self._uid_backfill = self._uid_backfill, []
+        if not pending or not self.write:
+            return
+        for i in range(0, len(pending), 1000):
+            chunk = pending[i:i + 1000]
+            params: dict[str, Any] = {}
+            values = []
+            for n, (row_id, uid) in enumerate(chunk):
+                params["i%d" % n], params["u%d" % n] = row_id, uid
+                values.append("(CAST(:i%d AS bigint), CAST(:u%d AS text))" % (n, n))
+            await self.s.execute(sql("UPDATE archive_messages AS a SET source_uid = v.u FROM (VALUES %s) AS v(id, u) "
+                                     "WHERE a.id = v.id" % ", ".join(values)), params)
+
+    async def _gone_promoted_rows(self, sess_id: int) -> list[Any]:
+        """The rows of this conversation that items were promoted from and that are gone (deleted by an earlier
+        import): their copies are emptied once the conversation is withheld (finding 2)."""
+        promoted_from = MemoryItem.flags["message_id"].as_integer()
+        found = (await self.s.execute(select(promoted_from, MemoryItem.flags["message_source_key"].astext).where(
+            MemoryItem.origin == "promoted", MemoryItem.flags["archive_session_id"].as_integer() == sess_id,
+            ~select(ArchiveMessage.id).where(ArchiveMessage.id == promoted_from).exists()))).all()
+        return [SimpleNamespace(id=int(gone_id), source_key=key or "", session_id=sess_id, position=-1)
+                for gone_id, key in found if gone_id is not None]
 
     async def _update_row(self, row: dict[str, Any], values: dict[str, Any]) -> None:
         if self.write:
@@ -1470,12 +1896,13 @@ class Processor:
         of the rows it deleted go too (quotes.scrub_quotes). Once per batch, right before its commit: the quote lock
         that removing quotes takes is held only from here (recalls are queued again meanwhile), and the rows the batch
         inserted are never looked for in quotes (nothing can have read them yet)."""
-        withheld, inserted, deleted = self.withheld_now, self.inserted_now, self.deleted_now
-        self.withheld_now, self.inserted_now, self.deleted_now = [], set(), []
+        withheld, inserted, deleted, gone = self.withheld_now, self.inserted_now, self.deleted_now, self.withheld_gone
+        self.withheld_now, self.inserted_now, self.deleted_now, self.withheld_gone = [], set(), [], []
         if not self.write:
             return
-        if withheld:
-            await withhold_copies(self.s, message_ids=withheld, fresh_ids=inserted, actor=self.actor, cause="import")
+        if withheld or gone:
+            await withhold_copies(self.s, messages=gone, message_ids=withheld, fresh_ids=inserted, actor=self.actor,
+                                  cause="import")
         await scrub_quotes(self.s, message_ids=deleted)
 
     async def _orphans(self, start: int, checkpoint: Callable[[str, int], Awaitable[None]]) -> None:
@@ -1510,11 +1937,15 @@ async def plan(paths: SourcePaths, selection: Selection, *, report_file: str | N
     async with sessionmaker()() as s:
         await s.execute(sql("SET TRANSACTION READ ONLY"))
         await require_schema(s)
+        await purge_key_check(s)
         tz_name, tz = await customer_timezone(s)
         sources = Sources(paths, tz, tz_name)
         try:
             work = select_work(sources, selection)
             tally = Tally()
+            # What the identity repair a run makes first would change (a plan writes nothing, so it decides on the
+            # database as it is).
+            repair_pending = await identity.pending(s)
             proc = Processor(s, sources, run_id=None, tally=tally, write=False)
             await proc.load(work)
 
@@ -1522,6 +1953,7 @@ async def plan(paths: SourcePaths, selection: Selection, *, report_file: str | N
                 return None
             await proc.run_phases(work, None, 0, no_checkpoint)
             report = tally.report(selection, work.totals, sources.discovery, await missing_from_source(s, sources))
+            report["repair_pending"] = repair_pending
         finally:
             sources.close()
             await s.rollback()
@@ -1538,6 +1970,7 @@ async def run(paths: SourcePaths, selection: Selection, *, label: str = "", acto
     selection.validate()
     async with sessionmaker()() as s:
         await require_schema(s)
+        await purge_key_check(s)
         tz_name, tz = await customer_timezone(s)
     sources = Sources(paths, tz, tz_name)
     try:
@@ -1565,6 +1998,7 @@ async def resume(run_id: int, paths: SourcePaths, *, report_file: str | None = N
     """Continue an interrupted or failed run after its checkpoint, from the very same sources."""
     async with sessionmaker()() as s:
         await require_schema(s)
+        await purge_key_check(s)
         found = await s.get(ImportRun, run_id)
         if found is None:
             raise Refused("there is no import run %d" % run_id)
@@ -1619,6 +2053,10 @@ async def _execute(run_id: int, sources: Sources, selection: Selection, checkpoi
             await audit.record(s, actor, "brain.import_started", "import_run", run_id,
                                {"run": run_id, "resumed": resumed, "selection": selection.mode,
                                 "totals": work.totals})
+            await s.commit()
+            # Under the run's lock, before anything is imported: every readable row that is the same message as a
+            # withheld one is withheld first (idempotent; a resume repairs again).
+            tally.d["repair"] = await identity.repair(s, actor=actor, cause="import", refresh_quotes=False)
             await s.commit()
             await proc.load(work)
 
@@ -1676,7 +2114,8 @@ async def _stop(run_id: int, status: str, error: str, actor: str, s: AsyncSessio
 
 ID_COLUMNS = {"id", "source_key", "source_message_id", "source_session_id", "parent_source_session_id", "source_fp",
               "content_hash", "source_sha256", "dedupe_key", "tool_call_id", "job_id", "import_run_id", "session_id",
-              "run_id", "item_id", "existing_id", "incoming_item_id", "schedule_id", "existing_table", "source_system"}
+              "run_id", "item_id", "existing_id", "incoming_item_id", "schedule_id", "existing_table", "source_system",
+              "source_uid"}
 # Records keyed by the backup's own row identifiers (read like the ID columns), and the digest that ends a memory
 # entry's key: neither is text from the sources.
 IDENTIFIER_RECORDS = ("session", "message", "orphan")
@@ -1703,6 +2142,15 @@ def unmasked_leak_types(value: str) -> list[str]:
     """leak_types() for text stored unmasked (a source key, a reason): an e-mail address or a phone number counts."""
     cleaned = mapping.clean(value, "chat")
     return sorted(set(cleaned.secret_types) | set(cleaned.restricted) | set(cleaned.masked))
+
+
+def _without_ids(before: Any) -> Any:
+    """A rollback copy (import_records.before) without its identifier fields, at its top level and in its deleted_row,
+    as _row_leaks skips them in a row: keys and fingerprints are not text from the sources, and a sha256 can hold a
+    run of digits the card detector accepts (key adoption, 0.6.2, writes a copy of every row it re-keys)."""
+    if not isinstance(before, dict):
+        return before
+    return {k: _without_ids(v) if k == "deleted_row" else v for k, v in before.items() if k not in ID_COLUMNS}
 
 
 def _row_leaks(table: str, row: dict[str, Any], kinds: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -1742,7 +2190,7 @@ async def _search_word(s: AsyncSession, text: str) -> str | None:
 
 
 async def verify(run_id: int, paths: SourcePaths, *, report_file: str | None = None) -> dict[str, Any]:
-    """Recompute the selection from the sources and check the run against it (spec 2.1, eight checks)."""
+    """Recompute the selection from the sources and check the run against it (spec 2.1, twelve checks)."""
     async with sessionmaker()() as s:
         await require_schema(s)
         run_row = await s.get(ImportRun, run_id)
@@ -1828,6 +2276,7 @@ async def verify(run_id: int, paths: SourcePaths, *, report_file: str | None = N
                            if kit.REASONING_COLUMN.search(c) or src.FORBIDDEN_COLUMN.match(c)]
             checks["no_reasoning_columns_read"] = {"ok": not bad_columns, "columns": bad_columns}
             checks["search_finds_imported_text"] = await _search_check(s, run_id)
+            checks.update(await _identity_checks(s, run_id, sources, work))
             passed = all(c["ok"] for c in checks.values())
             verification = {"passed": passed, "checked_at": now().isoformat(), "checks": checks}
             report["verification"] = verification
@@ -1882,7 +2331,7 @@ async def _scan_leaks(s: AsyncSession, run_id: int, report: dict[str, Any]) -> l
         leaks += _row_leaks("workflow_drafts", row)
     for row in await rows(select(ImportRecord.id, ImportRecord.before).where(ImportRecord.run_id == run_id,
                                                                               ImportRecord.before != {})):
-        leaks += _row_leaks("import_records", row)
+        leaks += _row_leaks("import_records", {**row, "before": _without_ids(row["before"])})
     # Keys and reasons are shown unmasked wherever records are listed: they hold no contact data either.
     for name in ("source_key", "reason"):
         column = getattr(ImportRecord, name)
@@ -1895,6 +2344,93 @@ async def _scan_leaks(s: AsyncSession, run_id: int, report: dict[str, Any]) -> l
                 leaks.append({"table": "import_records", "id": record_id, "column": name, "types": found})
     leaks += _row_leaks("import_runs", {"id": run_id, "report": report})
     return leaks
+
+
+async def _identity_checks(s: AsyncSession, run_id: int, sources: Sources, work: Work) -> dict[str, dict[str, Any]]:
+    """Checks 9-12 (spec 2.9): nothing that is the same message as a withheld one is readable, no withheld row or
+    rollback copy keeps a fingerprint of its text, purged items stay purged, and the database guard never had to
+    remove text the import wrote."""
+    checks: dict[str, dict[str, Any]] = {}
+    pending = dict((await s.execute(sql("SELECT brain_withhold_pending()"))).scalar() or {})
+    readable = {k: int(pending.get(k) or 0) for k in
+                ("readable_by_key", "readable_by_jarvis_row", "readable_in_restricted_sessions")}
+    # The rules again, from the backup, with the stones as they are now (read-only): every row that is the same
+    # message as a withheld one (or held for review) is stored without text.
+    proc = Processor(s, sources, run_id=None, tally=Tally(), write=False)
+    proc.ids = await identity.Identities.load(s)
+    await proc._rebind()
+    rule_rows: list[int] = []
+    for ss in work.sessions:
+        sess_id = await s.scalar(select(ArchiveSession.id).where(ArchiveSession.source_key == ss.key))
+        if sess_id is None:
+            continue
+        msgs = sources.backup.messages(ss.id)
+        keys = [m.key for m in msgs]
+        rows: dict[str, dict[str, Any]] = {}
+        for i in range(0, len(keys), 1000):
+            for r in (await s.execute(select(*MESSAGE_COLUMNS).where(
+                    ArchiveMessage.source_key.in_(keys[i:i + 1000])))).mappings().all():
+                rows[r["source_key"]] = dict(r)
+        plans, _ = proc.plan_messages(msgs, False, frozenset(keys))  # actions only: nothing is cleaned
+        held = proc.held_rows(ss, msgs, plans, rows)
+        if not held:
+            continue
+        by_jarvis_row: dict[tuple[str, str], list[Any]] = {}
+        for r in (await s.execute(select(ArchiveMessage.id, ArchiveMessage.source_message_id, ArchiveMessage.role,
+                                         ArchiveMessage.withheld).where(ArchiveMessage.session_id == sess_id))).all():
+            by_jarvis_row.setdefault((r.source_message_id, r.role), []).append(r)
+        by_key = {m.key: m for m in msgs}
+        for key, mt in held.items():
+            m, row = by_key[key], rows.get(key)
+            if row is not None and row["session_id"] == sess_id and row["source_message_id"] == str(m.id)[:200]:
+                stored = [row]
+            else:  # a re-keyed row, or none stored (excluded, a duplicate)
+                stored = by_jarvis_row.get((str(m.id)[:200], brain_text.sanitize(m.role)[:40]), [])
+            rule_rows += [int(r["id"] if isinstance(r, dict) else r.id) for r in stored
+                          if not (r["withheld"] if isinstance(r, dict) else r.withheld)]
+    unstoned = int(await s.scalar(sql(
+        "SELECT count(*) FROM import_records d JOIN archive_messages t ON t.id = d.target_id "
+        "JOIN archive_sessions sx ON sx.id = t.session_id "
+        "JOIN brain_tombstones st ON st.source_key = t.source_key AND st.reason = :wh "
+        "WHERE d.run_id = :r AND d.record_type = 'message' AND d.action = 'duplicate' "
+        "AND d.target_table = 'archive_messages' AND d.reason IN (:c1, :c2) AND sx.sensitivity <> 'restricted' "
+        "AND NOT EXISTS (SELECT 1 FROM brain_tombstones x WHERE x.source_key = d.source_key)"),
+        {"r": run_id, "wh": WITHHELD_BY_ADMIN, "c1": identity.CARRIED, "c2": identity.SAME_AS_PREVIOUS}) or 0)
+    checks["withheld_identity_holds"] = {
+        "ok": not any(readable.values()) and not rule_rows and not unstoned, **readable,
+        "readable_rows_the_rules_match": len(rule_rows), "row_ids": sorted(set(rule_rows))[:50],
+        "duplicates_of_withheld_rows_without_a_stone": unstoned}
+    rows_fp = int(await s.scalar(sql(
+        "SELECT count(*) FROM archive_messages WHERE withheld AND source_fp <> '' AND source_fp NOT LIKE 'w1:%'"))
+        or 0)
+    copies_fp = int(await s.scalar(sql(
+        "SELECT count(*) FROM import_records x WHERE x.record_type = 'message' AND x.before <> '{}'::jsonb "
+        "AND coalesce(x.before -> 'deleted_row' ->> 'withheld', x.before ->> 'withheld') = 'true' "
+        "AND coalesce(x.before -> 'deleted_row' ->> 'source_fp', x.before ->> 'source_fp', '') <> '' "
+        "AND coalesce(x.before -> 'deleted_row' ->> 'source_fp', x.before ->> 'source_fp') NOT LIKE 'w1:%'")) or 0)
+    checks["withheld_hold_no_fingerprint"] = {"ok": not rows_fp and not copies_fp, "rows": rows_fp,
+                                              "rollback_copies": copies_fp}
+    finished = await s.scalar(select(ImportRun.finished_at).where(ImportRun.id == run_id)) or now()
+    purge = await identity.PurgeIndex.load(s, check=False)
+    tombs = {k: at for k, at in (await s.execute(select(BrainTombstone.source_key, BrainTombstone.purged_at).where(
+        BrainTombstone.reason == identity.PURGED_BY_ADMIN, BrainTombstone.purged_at <= finished))).all()}
+    digests = {found.group(1) for k in tombs if (found := identity.ENTRY.search(k))}
+    fps = set((await s.scalars(select(BrainPurgedContent.fp).where(BrainPurgedContent.purged_at <= finished,
+                                                                   identity.live_fingerprints()))).all())
+    back = []
+    for item_id, key, sha in (await s.execute(select(MemoryItem.id, MemoryItem.source_key, MemoryItem.source_sha256)
+                                              .where(MemoryItem.import_run_id == run_id))).all():
+        found = identity.ENTRY.search(key or "")
+        if (key in tombs or (found and found.group(1) in digests)
+                or (purge.fingerprint(sha or "") or "-") in fps):
+            back.append(item_id)
+    checks["purged_stay_purged"] = {"ok": not back, "items": len(back), "item_ids": back[:50]}
+    guarded = int(await s.scalar(sql(
+        "SELECT count(*) FROM archive_messages m WHERE m.flags -> 'withheld_by_admin' ? 'guard' AND "
+        "(m.import_run_id = :r OR m.id IN (SELECT x.target_id FROM import_records x WHERE x.run_id = :r AND "
+        "x.target_table = 'archive_messages' AND x.action = 'updated'))"), {"r": run_id}) or 0)
+    checks["database_guard_quiet"] = {"ok": not guarded, "rows": guarded}
+    return checks
 
 
 async def _search_check(s: AsyncSession, run_id: int) -> dict[str, Any]:
@@ -2013,11 +2549,37 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
     updates = (await session.execute(select(ImportRecord.target_table, ImportRecord.target_id, ImportRecord.before)
                                      .where(ImportRecord.run_id == run_id, ImportRecord.action == "updated")
                                      .order_by(ImportRecord.id.desc()))).all()
-    # A withheld row stays withheld (whoever withheld it, and when): its text is never restored. A row whose source
-    # key an admin withheld (brain_tombstones) comes back without its text too, keeping its sensitivity.
-    admin_withheld = set((await session.scalars(select(BrainTombstone.source_key).where(
-        BrainTombstone.reason == WITHHELD_BY_ADMIN))).all())
-    by_admin = {"withheld_by_admin": {"note": WITHHELD_BY_ADMIN}}
+    # A withheld row stays withheld (whoever withheld it, and when): its text is never restored. A row that is the
+    # same message as one an admin withheld (its key has a stone, its JARVIS row is a stone's binding) comes back
+    # without its text too, keeping its sensitivity; one that only shares a withheld message's uid comes back held for
+    # review (a rollback cannot compare the text; the next import does). Every withheld row put back keeps no
+    # fingerprint of its text. Stones and exemptions are never deleted: an inherited withhold is as permanent as the
+    # admin's own.
+    ids = await identity.Identities.load(session)
+    jarvis_sessions: dict[int, str] = {}
+
+    async def same_message(values: dict[str, Any]) -> identity.Match | None:
+        sid = int(values["session_id"])
+        if sid not in jarvis_sessions:
+            jarvis_sessions[sid] = await session.scalar(select(ArchiveSession.source_session_id).where(
+                ArchiveSession.id == sid)) or ""
+        mt = ids.match_row(values.get("source_key") or "", jarvis_sessions[sid],
+                           str(values.get("source_message_id") or ""), values.get("role") or "",
+                           values.get("source_uid") or "")
+        if mt is not None and mt.via == "same message id" and values.get("source_key") not in ids.by_key:
+            hold = identity.Stone(
+                key=values["source_key"], anchor=mt.group, session=jarvis_sessions[sid],
+                row=str(values.get("source_message_id") or ""), role=values.get("role") or "",
+                tool_call_id=values.get("tool_call_id") or "", uid=values.get("source_uid") or "",
+                via=mt.via, review=mt.review, bound=True, after_run=mt.stone.after_run)
+            await identity.put_stone(session, hold, actor=actor)
+            ids.add(hold)
+        return mt
+
+    def no_fingerprint(values: dict[str, Any], state: str | None) -> None:
+        released = ((values.get("flags") or {}).get("withheld_by_admin") or {}).get("released_at")
+        values["source_fp"] = "" if released else "w1:%s" % (values.get("state") or state or "live")
+
     put_back_withheld: list[int] = []
     for table, target, before in updates:
         if table == "archive_messages" and before:
@@ -2026,24 +2588,33 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
                 if withheld_later(await session.scalar(select(ArchiveSession.flags).where(
                         ArchiveSession.id == int(row["session_id"])))):
                     row.update(WITHHELD_ROW)
-                elif row.get("source_key") in admin_withheld and not row.get("withheld"):
+                elif not row.get("withheld") and (mt := await same_message(row)) is not None:
                     row.update(content="", tool_calls=[], labels=[], withheld=True, truncated=False,
-                               flags={**(row.get("flags") or {}), **by_admin})
+                               flags={**(row.get("flags") or {}), "withheld_by_admin": Processor._held_flag(mt)})
+                if row.get("withheld"):
+                    no_fingerprint(row, None)
                 await session.execute(insert(ArchiveMessage).values(**row))
                 touched.add(int(row["session_id"]))
                 if row.get("withheld"):
                     put_back_withheld.append(int(row["id"]))
             else:
                 values = unjson(before)
-                current = (await session.execute(select(ArchiveMessage.session_id, ArchiveMessage.flags,
-                                                        ArchiveMessage.withheld, ArchiveMessage.sensitivity,
-                                                        ArchiveMessage.source_key).where(
-                    ArchiveMessage.id == target))).first()
+                current = (await session.execute(select(
+                    ArchiveMessage.session_id, ArchiveMessage.flags, ArchiveMessage.withheld,
+                    ArchiveMessage.sensitivity, ArchiveMessage.source_key, ArchiveMessage.source_uid,
+                    ArchiveMessage.source_message_id, ArchiveMessage.role, ArchiveMessage.tool_call_id,
+                    ArchiveMessage.state).where(ArchiveMessage.id == target))).first()
+                mt = None
+                if current is not None and not current.withheld:
+                    mt = await same_message({**current._asdict(), **values})
                 if current is not None and current.withheld:
                     values.update(WITHHELD_ROW, flags=current.flags, sensitivity=current.sensitivity)
-                elif current is not None and current.source_key in admin_withheld:
-                    values.update(WITHHELD_ROW, flags={**(current.flags or {}), **by_admin},
+                    no_fingerprint(values, current.state)
+                elif current is not None and mt is not None:
+                    values.update(WITHHELD_ROW, flags={**(current.flags or {}),
+                                                       "withheld_by_admin": Processor._held_flag(mt)},
                                   sensitivity=current.sensitivity)
+                    no_fingerprint(values, current.state)
                     put_back_withheld.append(int(target))
                 await session.execute(update(ArchiveMessage).where(ArchiveMessage.id == target).values(**values))
                 if current is not None:
@@ -2302,15 +2873,29 @@ async def status(run_id: int | None = None) -> dict[str, Any]:
             "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0006_brain')")))
         withhold = bool(await s.scalar(sql(
             "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0007_brain_withhold')")))
+        identity_migration = bool(await s.scalar(sql(
+            "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0008_brain_withhold_identity')")))
         out: dict[str, Any] = {"importer_version": IMPORTER_VERSION, "installed": installed,
                                "migration_0006_brain": migration, "migration_0007_brain_withhold": withhold,
-                               "runs": []}
+                               "migration_0008_brain_withhold_identity": identity_migration, "runs": []}
         if not installed:
             return out
         # Promoted items whose message is withheld but which still hold text, and rollback copies of withheld messages
         # that still hold it (0.6.0 left them under an older row id): the start-up check empties both.
         out["withheld_copies_with_text"] = len(await withheld_copies(s))
         out["withheld_rollback_copies_with_text"] = await withheld_rollback_copies(s)
+        # The withhold identity (0.6.2): whether the repair ran, and what is left for it or for an admin. Counts only.
+        pending = await identity.pending(s)
+        if pending.get("installed"):
+            out.update(
+                identity_repair_done=bool(pending.get("repair_done")),
+                readable_rows_matching_a_withhold=int(pending["readable_rows_matching_a_withhold"]),
+                held_for_review=int(pending.get("held_for_review") or 0),
+                withheld_rows_with_a_text_fingerprint=int(pending.get("withheld_with_text_fingerprint") or 0)
+                + int(pending["withheld_copies_with_text_fingerprint"]),
+                rows_blanked_by_the_database_guard=int(pending["rows_blanked_by_the_database_guard"]),
+                quotes_of_removed_sources=int(pending["quotes_of_removed_sources"]),
+                purge_fingerprints_made_with_another_key=int(pending["purge_fingerprints_other_key"]))
         out["marked_interrupted"] = await mark_dead_runs(s)
         query = select(ImportRun).order_by(ImportRun.id.desc())
         query = query.where(ImportRun.id == run_id) if run_id is not None else query.limit(20)
@@ -2326,6 +2911,38 @@ async def status(run_id: int | None = None) -> dict[str, Any]:
         if run_id is not None and not out["runs"]:
             raise Refused("there is no import run %d" % run_id)
     return out
+
+
+# --- repair ------------------------------------------------------------------------------------------------------
+
+
+async def repair(*, apply: bool, actor: str = DEFAULT_ACTOR) -> dict[str, Any]:
+    """The identity repair (identity.repair), by hand: without apply, only what is pending (read-only). Refused while an
+    import, a rollback or a rescan runs."""
+    async with sessionmaker()() as s:
+        await require_schema(s)
+        if not apply:
+            return {"applied": False, "pending": await identity.pending(s)}
+        if not await try_xact_lock(s, GLOBAL_LOCK):
+            raise Refused("an import, rollback or rescan is running: try again when it has finished")
+        counts = await identity.repair(s, actor=actor, cause="cli")
+        await s.commit()
+    return {"applied": True, "repair": counts}
+
+
+async def forget_fingerprints(*, apply: bool, actor: str = DEFAULT_ACTOR) -> dict[str, Any]:
+    """Purge fingerprints made with another database password, deleted (with apply; audited). The purges stay, by
+    their keys. Refused while an import, a rollback or a rescan runs."""
+    async with sessionmaker()() as s:
+        await require_schema(s)
+        if apply and not await try_xact_lock(s, GLOBAL_LOCK):
+            raise Refused("an import, rollback or rescan is running: try again when it has finished")
+        n = await identity.forget_other_key(s, actor=actor, apply=apply)
+        if apply:
+            await s.commit()
+        else:
+            await s.rollback()
+    return {"applied": apply, "fingerprints_made_with_another_key": n}
 
 
 # --- rescan ------------------------------------------------------------------------------------------------------
@@ -2356,6 +2973,13 @@ async def rescan(*, apply: bool, actor: str = DEFAULT_ACTOR) -> dict[str, Any]:
             raise Refused("an import, rollback or rescan is running")
         async with sessionmaker()() as s:
             await require_schema(s)
+            # First the identity repair of the rows: every readable row that is the same message as a withheld one is
+            # withheld (without --yes it runs too, and is rolled back with the rest: the counts say what --yes would
+            # do). Its copies and quotes go in the last pass, with the rescan's own.
+            repaired = await identity.repair_rows(s, cause="rescan")
+            counts["identity_rows_withheld"] = sum(int(repaired.get(k) or 0) for k in (
+                "withheld_by_key", "withheld_by_jarvis_row", "held_by_message_id", "held_by_same_text",
+                "restricted_rows_withheld"))
             await _rescan_items(s, counts, apply, actor)
             withhold, touched = await _rescan_messages(s, counts, apply)
             await _rescan_sessions(s, counts, apply, withhold, touched)
@@ -2517,11 +3141,24 @@ async def _rescan_copies(s: AsyncSession, counts: dict[str, int], withhold: set[
     too and is rolled back with the rest: the counts say what --yes would do."""
     ids = list((await s.scalars(select(ArchiveMessage.id).where(ArchiveMessage.session_id.in_(withhold))))
                .all()) if withhold else []
-    done = await withhold_copies(s, message_ids=ids, actor=actor, cause="rescan")
+    # The items promoted from rows of those sessions that an earlier import deleted go too (finding 2).
+    gone: list[Any] = []
+    promoted_from = MemoryItem.flags["message_id"].as_integer()
+    for sid in sorted(withhold):
+        gone += [SimpleNamespace(id=int(i), source_key=k or "", session_id=sid, position=-1) for i, k in (
+            await s.execute(select(promoted_from, MemoryItem.flags["message_source_key"].astext).where(
+                MemoryItem.origin == "promoted", MemoryItem.flags["archive_session_id"].as_integer() == sid,
+                ~select(ArchiveMessage.id).where(ArchiveMessage.id == promoted_from).exists()))).all()
+            if i is not None]
+    done = await withhold_copies(s, messages=gone, message_ids=ids, actor=actor, cause="rescan")
+    settled = await identity.settle(s, actor=actor, cause="rescan")  # the rows the identity repair withheld
     swept = await sweep_withheld_copies(s, actor=actor, cause="rescan")
-    counts["copies_withheld"] += len(done.copies) + len(swept)
-    counts["copy_versions_blanked"] += done.versions_blanked + sum(c["versions_blanked"] for c in swept)
-    counts["rollback_copies_blanked"] = done.rollback_copies_blanked + await sweep_withheld_records(s)
+    counts["copies_withheld"] += len(done.copies) + len(swept) + settled["copies_emptied"]
+    counts["copy_versions_blanked"] += (done.versions_blanked + sum(c["versions_blanked"] for c in swept)
+                                        + settled["copy_versions_blanked"])
+    counts["rollback_copies_blanked"] = (done.rollback_copies_blanked + await sweep_withheld_records(s)
+                                         + settled["rollback_copies_blanked"])
+    counts["purged_items_quarantined"] = settled["purged_items_quarantined"]
 
 
 async def _rescan_json(s: AsyncSession, counts: dict[str, int], apply: bool) -> None:
@@ -2577,22 +3214,32 @@ async def _rescan_json(s: AsyncSession, counts: dict[str, int], apply: bool) -> 
 
 DECISION_STATUS = {"approved": "approve", "rejected": "reject", "archived": "archive"}
 PURGED_BY_ADMIN = "purged by an admin"  # review.purge()'s tombstone reason
+DECISIONS_VERSION = 4  # 4 (0.6.2): withholds carry their JARVIS row, and releases travel; 3 (0.6.0, 0.6.1) still read
+RESTORE_ACTOR = "system (restore)"  # decisions-apply --removals-only: restore.ps1 applies the removals again
+RESTORE_NOTE = "decision applied again after a restore"
+# What a withhold carries in a version 4 file: its key and binding (spec 2.1), never text or a fingerprint.
+WITHHOLD_FIELDS = ("source_key", "reason", "anchor", "session", "row", "role", "tool_call_id", "uid", "uid_known",
+                   "via", "review")
 
 
-async def decisions_export(out_path: str, *, actor: str = DEFAULT_ACTOR) -> dict[str, Any]:
+async def decisions_export(out_path: str, *, actor: str = DEFAULT_ACTOR, removals_only: bool = False
+                           ) -> dict[str, Any]:
     """Every imported item a person reviewed or edited in this database, keyed by source_key and by the content hash
     of the imported version (so production applies a decision only to the very same import).
 
     The file holds decisions, not memory: an item's text is written only when a person edited it (production needs
     the edit), and never for a customer or Credit Repair item. Such an edit is marked edit_not_exported, and
-    decisions-apply lists it to be redone by hand. It also lists the removals (source keys only, never text): the
-    messages an admin withheld and the items an admin purged, so production withholds and purges the same."""
+    decisions-apply lists it to be redone by hand. It also lists the removals (keys and JARVIS ids only, never text
+    and never a fingerprint): every withhold that is certain (an admin's own, the rows that are the same message, a
+    hold an admin kept), each with the JARVIS row it names (version 4), and the items an admin purged; and the
+    releases of held rows. Holds still waiting for review are not exported: an import there finds them again by the
+    same rules. With removals_only, only the removals and releases (restore.ps1, before a restore)."""
     if os.path.exists(out_path):
         raise Refused("the output file already exists; nothing is overwritten")
     decisions, skipped, not_exported = [], 0, 0
     async with sessionmaker()() as s:
         await require_schema(s)
-        items = (await s.scalars(select(MemoryItem).where(
+        items = [] if removals_only else (await s.scalars(select(MemoryItem).where(
             MemoryItem.origin == "import",
             or_(MemoryItem.version > 1, MemoryItem.reviewed_by != "", MemoryItem.deleted_at.is_not(None)))
             .order_by(MemoryItem.id))).all()
@@ -2621,29 +3268,62 @@ async def decisions_export(out_path: str, *, actor: str = DEFAULT_ACTOR) -> dict
                     decision.update(title=item.title, body=item.body, tags=list(item.tags or []), kind=item.kind,
                                     agent=item.agent)
             decisions.append(decision)
-        removals = [{"source_key": key, "reason": reason} for key, reason in (await s.execute(
-            select(BrainTombstone.source_key, BrainTombstone.reason)
-            .where(BrainTombstone.reason.in_((WITHHELD_BY_ADMIN, PURGED_BY_ADMIN)))
-            .order_by(BrainTombstone.source_key))).all()]
+        removals: list[dict[str, Any]] = []
+        for t in (await s.scalars(select(BrainTombstone).where(
+                BrainTombstone.reason.in_((WITHHELD_BY_ADMIN, PURGED_BY_ADMIN)),
+                BrainTombstone.review != identity.PENDING).order_by(BrainTombstone.source_key))).all():
+            if t.reason == PURGED_BY_ADMIN:
+                removals.append({"source_key": t.source_key, "reason": t.reason})
+                continue
+            removals.append({"source_key": t.source_key, "reason": t.reason, "anchor": t.anchor_key or "",
+                             "session": t.source_session_id or "", "row": t.source_row_id or "", "role": t.role or "",
+                             "tool_call_id": t.tool_call_id or "", "uid": t.message_uid or "",
+                             "uid_known": bool(t.uid_known), "via": t.via or "", "review": t.review or ""})
+        releases = [{"anchor": a, "session": sid, "row": row} for a, sid, row in (await s.execute(select(
+            BrainWithholdExemption.anchor_key, BrainWithholdExemption.source_session_id,
+            BrainWithholdExemption.source_row_id).order_by(BrainWithholdExemption.anchor_key,
+                                                           BrainWithholdExemption.source_session_id,
+                                                           BrainWithholdExemption.source_row_id))).all()]
+    content: dict[str, Any] = {"format": "jarvis-brain-decisions", "version": DECISIONS_VERSION,
+                               "exported_at": now().isoformat(), "importer_version": IMPORTER_VERSION,
+                               "removals": removals, "releases": releases}
+    if removals_only:
+        content["removals_only"] = True
+    else:
+        content["decisions"] = decisions
     with open(out_path, "x", encoding="utf-8") as f:
-        json.dump({"format": "jarvis-brain-decisions", "version": 3, "exported_at": now().isoformat(),
-                   "importer_version": IMPORTER_VERSION, "decisions": decisions, "removals": removals}, f, indent=2,
-                  sort_keys=True)
-    out = {"exported": len(decisions), "skipped_without_source_key": skipped, "edits_not_exported": not_exported,
-           "removals": len(removals)}
+        json.dump(content, f, indent=2, sort_keys=True)
+    out: dict[str, Any] = {"removals": len(removals), "releases": len(releases)}
+    if removals_only:
+        out["removals_only"] = True
+    else:
+        out.update(exported=len(decisions), skipped_without_source_key=skipped, edits_not_exported=not_exported)
     async with sessionmaker()() as s:
         await audit.record(s, actor, "brain.decisions_exported", "brain", "", dict(out))  # no path: it can name a user
         await s.commit()
     return out
 
 
-async def decisions_apply(in_path: str, run_id: int, *, actor: str, apply: bool) -> dict[str, Any]:
+@dataclass(frozen=True)
+class _Decider:
+    """Who applies removals: an active admin (decisions-apply --actor), or restore.ps1 putting back decisions an
+    admin already took (--removals-only without --actor: every one was allowed when it was taken)."""
+    email: str
+    can_access_sensitive: bool
+
+
+async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None, apply: bool,
+                          removals_only: bool = False) -> dict[str, Any]:
     """Apply exported decisions to the production import run where the item is the very same (same source_key and
     content hash, untouched since). Anything else is listed by decision number, not applied.
 
     The removals apply to the whole database, not only to the run: a message an admin withheld on the test copy is
-    withheld here too and an item an admin purged there is purged here, and their tombstones keep later imports from
-    bringing them back (also for what this database has not imported yet)."""
+    withheld here too (found by its key or by the JARVIS row it names, whatever key this database stored it under) and
+    an item an admin purged there is purged here, and their tombstones keep later imports from bringing them back
+    (also for what this database has not imported yet). Releases of held rows apply too.
+
+    With removals_only (restore.ps1, after a restore: spec 9.3) only the removals and releases apply, no run is needed
+    and the actor is "system (restore)" unless an admin is named."""
     from . import review  # imports the task service and the scheduler: not needed by the import itself
     try:
         with open(in_path, "rb") as f:
@@ -2652,92 +3332,149 @@ async def decisions_apply(in_path: str, run_id: int, *, actor: str, apply: bool)
         raise Refused("the decisions file could not be read as JSON") from None
     if not isinstance(data, dict) or data.get("format") != "jarvis-brain-decisions":
         raise Refused("this is not a decisions file exported by brain-import decisions-export")
+    version = data.get("version")
+    if not isinstance(version, int) or isinstance(version, bool) or version > DECISIONS_VERSION:
+        raise Refused("this decisions file was written by a newer Command Center (version %s): apply it with that "
+                      "version" % str(version)[:20])
+    if not removals_only and run_id is None:
+        raise Refused("--run is needed (the production import run the decisions apply to), unless --removals-only")
     listed: dict[str, list[int]] = {}
     applied = 0
+    via = "restore" if removals_only else "decisions-apply"
     async with sessionmaker()() as s:
         await require_schema(s)
-        user = await s.scalar(select(User).where(func.lower(User.email) == actor.lower(), User.role == "admin",
-                                                 User.is_active.is_(True)))
-        if user is None:
-            raise Refused("--actor must be the e-mail address of an active admin: decisions that need an admin keep "
-                          "needing one")
-        if await s.get(ImportRun, run_id) is None:
+        if actor or not removals_only:
+            user = await s.scalar(select(User).where(func.lower(User.email) == (actor or "").lower(),
+                                                     User.role == "admin", User.is_active.is_(True)))
+            if user is None:
+                raise Refused("--actor must be the e-mail address of an active admin: decisions that need an admin "
+                              "keep needing one")
+            decider = _Decider(user.email, bool(user.can_access_sensitive))
+        else:
+            decider = _Decider(RESTORE_ACTOR, True)
+        if run_id is not None and await s.get(ImportRun, run_id) is None:
             raise Refused("there is no import run %d" % run_id)
         # Not while an import, a rollback or a rescan runs (its rows could be written back over a withhold).
         if not await try_xact_lock(s, GLOBAL_LOCK):
             raise Refused("an import, rollback or rescan is running: try again when it has finished")
-        for n, d in enumerate(data.get("decisions") or [], 1):
-            reason = await _apply_decision(s, d, run_id, user, apply)
-            if reason:
-                listed.setdefault(reason, []).append(n)
-            else:
-                applied += 1
+        if not removals_only:
+            for n, d in enumerate(data.get("decisions") or [], 1):
+                reason = await _apply_decision(s, d, int(run_id or 0), user, apply)
+                if reason:
+                    listed.setdefault(reason, []).append(n)
+                else:
+                    applied += 1
+        after = await identity.current_after_run(s)
         removed: Counter[str] = Counter()
         removals_listed: dict[str, list[int]] = {}
         removals = data.get("removals") or []
         for n, r in enumerate(removals if isinstance(removals, list) else [], 1):
-            outcome = await _apply_removal(s, r, user, review)
-            if outcome in ("withheld", "purged", "already done", "kept for later imports"):
+            outcome = await _apply_removal(s, r, decider, review, via=via, after=after)
+            if outcome in REMOVAL_DONE:
                 removed[outcome] += 1
             else:
                 removals_listed.setdefault(outcome, []).append(n)
+        released: Counter[str] = Counter()
+        releases_listed: dict[str, list[int]] = {}
+        releases = data.get("releases") or []
+        for n, r in enumerate(releases if isinstance(releases, list) else [], 1):
+            outcome = await _apply_release(s, r, decider, review, via=via)
+            if outcome in RELEASE_DONE:
+                released[outcome] += 1
+            else:
+                releases_listed.setdefault(outcome, []).append(n)
         if apply:
-            await audit.record(s, user.email, "brain.decisions_applied", "import_run", run_id,
-                               {"run": run_id, "applied": applied,
-                                "not_applied": {k: len(v) for k, v in listed.items()},
-                                "removals": dict(removed),
-                                "removals_not_applied": {k: len(v) for k, v in removals_listed.items()}})
+            detail: dict[str, Any] = {"run": run_id, "applied": applied,
+                                      "not_applied": {k: len(v) for k, v in listed.items()},
+                                      "removals": dict(removed),
+                                      "removals_not_applied": {k: len(v) for k, v in removals_listed.items()}}
+            if releases:
+                detail.update(releases=dict(released),
+                              releases_not_applied={k: len(v) for k, v in releases_listed.items()})
+            if removals_only:
+                detail["via"] = "restore"
+            await audit.record(s, decider.email, "brain.decisions_applied", "import_run" if run_id else "brain",
+                               run_id if run_id else "", detail)
             await s.commit()
         else:
             await s.rollback()  # the removals ran to count them: nothing is kept
     return {"applied" if apply else "would_apply": applied, "not_applied": listed, "removals": dict(removed),
-            "removals_not_applied": removals_listed}
+            "removals_not_applied": removals_listed, "releases": dict(released),
+            "releases_not_applied": releases_listed}
 
 
-async def _tombstone(s: AsyncSession, key: str, reason: str, user: User) -> bool:
-    """Whether the tombstone was there already; adds it otherwise."""
-    if await s.get(BrainTombstone, key) is not None:
-        return True
-    s.add(BrainTombstone(source_key=key, purged_at=now(), purged_by=user.email[:200], reason=reason))
-    await s.flush()
-    return False
+REMOVAL_DONE = ("withheld", "held for review", "purged", "already done", "kept for later imports")
+RELEASE_DONE = ("released", "already done", "kept for later imports")
 
 
-async def _apply_removal(s: AsyncSession, r: Any, user: User, review: Any) -> str:
-    """One removal from the test copy: the tombstone, then the message withheld or the item purged if this database
-    holds it, each audited as the API audits it (ids and counts). Returns what happened, or why it was not applied.
+def _carried_stone(r: dict[str, Any], *, via: str, after: int) -> identity.Stone:
+    """The stone a withhold in a decisions file becomes here. Version 4 carries the JARVIS row it named (session, row
+    id, role, tool_call_id, uid) and its group; version 3 only the key, whose form gives the row or the uid
+    (identity.parse_key; the role unknown)."""
+    def text(name: str, limit: int = 200) -> str:
+        value = r.get(name)
+        return value[:limit] if isinstance(value, str) else ""
 
-    A withhold's tombstone is written in a savepoint of its own: when the withhold itself is refused here, the
-    tombstone stays, so the next import brings the message back withheld. A purge and its tombstone go together: a
-    refusal (the sensitive-data permission) leaves neither."""
+    key = r["source_key"]
+    session, row, uid = text("session"), text("row"), text("uid")
+    uid_known = r.get("uid_known") is True and bool(uid)
+    if not (session or row or uid):  # version 3, or a stone that named no row when it was exported
+        session, row, uid = identity.parse_key(key)
+        uid_known = bool(uid)  # a uid-form key: the uid the admin decided on
+    review = identity.KEPT if r.get("review") == identity.KEPT else identity.CERTAIN
+    return identity.Stone(key=key, anchor=text("anchor") if text("anchor") != key else "", session=session, row=row,
+                          role=text("role", 40), tool_call_id=text("tool_call_id"), uid=uid, uid_known=uid_known,
+                          via=via, review=review, bound=bool(row or uid), after_run=after)
+
+
+async def _apply_removal(s: AsyncSession, r: Any, user: Any, review: Any, *, via: str, after: int) -> str:
+    """One removal from the decisions file: the tombstone, then the message withheld or the item purged if this
+    database holds it, each audited as the API audits it (ids and counts). Returns what happened, or why it was not
+    applied.
+
+    A withhold's stone is written in a savepoint of its own: when the withhold itself is refused here, the stone
+    stays, so the next import brings the message back withheld. The rows it names are found by key and by the JARVIS
+    row it names (identity.rows_for); a row that only shares its uid is held for review. A purge and its tombstone go
+    together: a refusal (the sensitive-data permission) leaves neither."""
     if not isinstance(r, dict) or not isinstance(r.get("source_key"), str) or not r["source_key"] or r.get(
             "reason") not in (WITHHELD_BY_ADMIN, PURGED_BY_ADMIN):
         return "not a removal"
     key, reason = r["source_key"], r["reason"]
     try:
         if reason == WITHHELD_BY_ADMIN:
+            binding = _carried_stone(r, via=via, after=after)
             async with s.begin_nested():
-                existed = await _tombstone(s, key, reason, user)
+                existed = await s.get(BrainTombstone, key) is not None
+                await identity.put_stone(s, binding, actor=user.email)
             async with s.begin_nested():
-                message = await s.scalar(select(ArchiveMessage).where(ArchiveMessage.source_key == key))
-                if message is None:
+                certain, uid_only = await identity.rows_for(s, binding)
+                if not certain and not uid_only:
                     # No row of it here (not imported yet, or removed by a rollback or an import): its rollback
                     # copies, and the items promoted from an earlier row of it, which kept the text, lose it.
-                    await withhold_copies(s, source_keys=[key], actor=user.email, cause="decisions-apply")
+                    await withhold_copies(s, source_keys=[key], actor=user.email, cause=via)
                     return "already done" if existed else "kept for later imports"
-                if message.withheld:
-                    return "already done"
-                done = await review.withhold_message(s, message, actor=user.email, cause="decisions-apply")
-                sess = done.session
-                await audit.record(s, user.email, "archive.message_withheld", "archive_message", message.id, {
-                    "message": message.id, "session": message.session_id,
-                    "imported_messages": sess.imported_messages if sess is not None else None,
-                    "withheld_messages": sess.withheld_messages if sess is not None else None,
-                    "tombstone": not existed, "copies": [c["item"] for c in done.copies],
-                    "versions_blanked": done.versions_blanked,
-                    "rollback_copies_blanked": done.rollback_copies_blanked,
-                    "answers_scrubbed": done.answers_scrubbed, "via": "decisions-apply"})
-                return "withheld"
+                outcome = "already done"
+                for message in certain:
+                    await s.refresh(message)  # a withhold just before may have taken it with its own group
+                    if message.withheld:
+                        continue
+                    done = await review.withhold_message(s, message, actor=user.email, cause=via, via=via)
+                    await _withheld_audit(s, user, message, done, tombstone=not existed, via=via)
+                    outcome = "withheld"
+                for message in uid_only:
+                    await s.refresh(message)
+                    if message.withheld:
+                        continue
+                    done = await review.hold_message(s, message, anchor=binding.group, actor=user.email, cause=via)
+                    await audit.record(s, user.email, "archive.message_held", "archive_message", message.id, {
+                        "message": message.id, "session": message.session_id, "anchor": binding.group,
+                        "rule": "same message id", "copies": [c["item"] for c in done.copies],
+                        "versions_blanked": done.versions_blanked,
+                        "rollback_copies_blanked": done.rollback_copies_blanked,
+                        "answers_scrubbed": done.answers_scrubbed, "via": via})
+                    if outcome != "withheld":
+                        outcome = "held for review"
+                return outcome
         async with s.begin_nested():
             existed = await _tombstone(s, key, reason, user)
             item = await s.scalar(select(MemoryItem).where(MemoryItem.source_key == key))
@@ -2746,7 +3483,8 @@ async def _apply_removal(s: AsyncSession, r: Any, user: User, review: Any) -> st
             if SENSITIVE_AGENT == item.agent and not user.can_access_sensitive:
                 raise store.BrainError("needs the sensitive-data permission")
             if item.deleted_at is None:
-                await store.delete_item(s, item, actor=user.email, note=DECISION_NOTE)
+                await store.delete_item(s, item, actor=user.email,
+                                        note=RESTORE_NOTE if via == "restore" else DECISION_NOTE)
             flags = dict(item.flags or {})
             detail = {"item": item.id, "kind": item.kind, "agent": item.agent}
             origin = {"origin": item.origin, "message": flags.get("message_id"),
@@ -2760,6 +3498,67 @@ async def _apply_removal(s: AsyncSession, r: Any, user: User, review: Any) -> st
         return "%s on the test copy, refused here: %s" % (reason, exc)
     except (DataError, IntegrityError):
         return "%s on the test copy, refused here by the database" % reason
+
+
+async def _tombstone(s: AsyncSession, key: str, reason: str, user: Any) -> bool:
+    """Whether the tombstone was there already; adds it otherwise."""
+    if await s.get(BrainTombstone, key) is not None:
+        return True
+    s.add(BrainTombstone(source_key=key, purged_at=now(), purged_by=user.email[:200], reason=reason))
+    await s.flush()
+    return False
+
+
+async def _withheld_audit(s: AsyncSession, user: Any, message: ArchiveMessage, done: Any, *, tombstone: bool,
+                          via: str) -> None:
+    sess = done.session
+    await audit.record(s, user.email, "archive.message_withheld", "archive_message", message.id, {
+        "message": message.id, "session": message.session_id,
+        "imported_messages": sess.imported_messages if sess is not None else None,
+        "withheld_messages": sess.withheld_messages if sess is not None else None,
+        "tombstone": tombstone, "copies": [c["item"] for c in done.copies],
+        "versions_blanked": done.versions_blanked, "rollback_copies_blanked": done.rollback_copies_blanked,
+        "answers_scrubbed": done.answers_scrubbed, "via": via,
+        "also_withheld": done.also_withheld, "held_for_review": done.held_for_review,
+        "identical_withheld": done.identical_withheld, "keys_tombstoned": done.keys_tombstoned,
+        "title_hidden": done.title_hidden})
+
+
+async def _apply_release(s: AsyncSession, r: Any, user: Any, review: Any, *, via: str) -> str:
+    """One release from the decisions file (an admin said a held JARVIS row is not the withheld message): the
+    exemption, then a row held here for that group released as the API releases it (review.release_hold: its text
+    comes back at the next import). A row a certain rule names stays withheld (the exemption never skips those)."""
+    names = ("anchor", "session", "row")
+    if not isinstance(r, dict) or not all(isinstance(r.get(k), str) and r[k] for k in names):
+        return "not a release"
+    anchor, session_id, row_id = (r[k][:200] if k != "anchor" else r[k] for k in names)
+    async with s.begin_nested():
+        added = (await s.execute(pg_insert(BrainWithholdExemption).values(
+            anchor_key=anchor, source_session_id=session_id, source_row_id=row_id, reason="released by an admin",
+            decided_by=user.email[:200]).on_conflict_do_nothing())).rowcount
+        held = (await s.execute(
+            select(ArchiveMessage, ArchiveSession, BrainTombstone)
+            .join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
+            .join(BrainTombstone, BrainTombstone.source_key == ArchiveMessage.source_key)
+            .where(ArchiveSession.source_session_id == session_id, ArchiveMessage.source_message_id == row_id,
+                   ArchiveMessage.withheld.is_(True), BrainTombstone.reason == WITHHELD_BY_ADMIN,
+                   BrainTombstone.review == identity.PENDING,
+                   func.coalesce(func.nullif(BrainTombstone.anchor_key, ""), BrainTombstone.source_key) == anchor)
+            .order_by(ArchiveMessage.id))).all()
+        released = 0
+        for message, sess, _ in held:
+            try:
+                async with s.begin_nested():
+                    stone = await review.release_hold(s, message, sess, actor=user.email)
+            except store.BrainError:
+                continue  # the same message as a withheld one: it stays withheld
+            await audit.record(s, user.email, "archive.hold_released", "archive_message", message.id, {
+                "message": message.id, "session": message.session_id,
+                "anchor": stone.anchor_key or stone.source_key, "rule": stone.via, "via": via})
+            released += 1
+    if released:
+        return "released"
+    return "kept for later imports" if added else "already done"
 
 
 async def _apply_decision(s: AsyncSession, d: Any, run_id: int, user: User, apply: bool) -> str:

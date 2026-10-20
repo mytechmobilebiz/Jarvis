@@ -704,6 +704,66 @@ export interface ArchiveMessage {
   flags: Record<string, unknown>;
 }
 
+/** A stored row the withhold preview names: where it is, never its text. */
+export interface WithholdRow {
+  id: number;
+  session: number;
+  position: number;
+  role: string;
+  at: string | null;
+  state: "live" | "compacted";
+  withheld: boolean;
+}
+
+/** GET /api/brain/messages/{id}/withhold-preview (admin, read-only, 0.6.2): what a withhold would also take. Rows outside
+ * the admin's scope are counted in the *_hidden fields, never named. */
+export interface WithholdPreview {
+  message: number;
+  /** Other stored rows of the same JARVIS message: withheld too. */
+  same_message_rows: WithholdRow[];
+  same_message_rows_hidden?: number;
+  /** Rows sharing its JARVIS id with other text: withheld and held for an admin's review. */
+  held_rows: WithholdRow[];
+  held_rows_hidden?: number;
+  /** Readable rows with exactly this text in the conversation and its continuations or branches: only when asked for. */
+  identical_text_rows: WithholdRow[];
+  identical_text_rows_hidden?: number;
+  /** Copies the importer stored only as duplicates (no row of their own). */
+  rowless_copies: number;
+  /** Imported memory items whose text contains the message's text (to purge separately; nothing is automatic). */
+  items_with_this_text: { id: number; title: string }[];
+  first_user_message: boolean;
+}
+
+/** POST /api/brain/messages/{id}/withhold: what was withheld (0.6.2 adds the same-message and held rows). */
+export interface WithholdResult {
+  copies?: { items?: number[]; versions_blanked?: number };
+  also_withheld?: number[];
+  held_for_review?: number[];
+  identical_withheld?: number;
+  keys_tombstoned?: number;
+  title_hidden?: boolean;
+}
+
+/** GET /api/brain/holds (admin, 0.6.2): a row withheld because it may be a withheld message. Evidence only, never text. */
+export interface BrainHold {
+  message: number;
+  session: number;
+  /** null when an admin hid the conversation's title. */
+  title: string | null;
+  position: number;
+  role: string;
+  at: string | null;
+  content_chars: number;
+  state: "live" | "compacted";
+  /** The rule that held it: "same message id, different text", "same text", "upgrade: same message id", ... */
+  rule: string;
+  withheld_message: { id: number | null; position: number | null; role: string; at: string | null; content_chars: number | null };
+  compare: "identical text" | "different text" | "nothing to compare";
+  /** Ids of the readable messages before and after it. */
+  neighbours: number[];
+}
+
 export interface BrainSearchHit {
   message: ArchiveMessage;
   session: { id: number; title: string; staff: string; agent: string; started_at: string | null };

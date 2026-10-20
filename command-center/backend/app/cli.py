@@ -4,7 +4,8 @@
     python -m app.cli migrate        # apply pending database migrations
     python -m app.cli db-status      # list applied migrations
     python -m app.cli brain-import   # the JARVIS import (plan, run, resume, verify, rollback, status, rescan,
-                                     # decisions-export, decisions-apply); brain-import --help lists them
+                                     # repair, fingerprints, decisions-export, decisions-apply); brain-import --help
+                                     # lists them
 """
 
 from __future__ import annotations
@@ -91,8 +92,14 @@ BRAIN_HELP = """python -m app.cli brain-import COMMAND ...
   rollback  --run ID --yes [--discard-reviewed] [--actor T]
   status    [--run ID]
   rescan    [--yes]                       re-clean every stored brain text with the current detectors
-  decisions-export --out FILE             review decisions keyed by source_key (on the test copy)
+  repair    [--yes] [--actor T]           withhold every readable row that is the same message as a withheld one
+                                          (without --yes: what is pending, nothing is changed)
+  fingerprints --forget-other-key [--yes] forget purge fingerprints made with another database password
+  decisions-export --out FILE [--removals-only]   review decisions keyed by source_key (on the test copy);
+                                          --removals-only: only withholds, purges and releases (restore.ps1)
   decisions-apply  --in FILE --run ID --actor ADMIN_EMAIL [--yes]   (after the production import)
+  decisions-apply  --in FILE --removals-only [--actor ADMIN_EMAIL] [--yes]   withholds, purges and releases only
+                                          (restore.ps1, after a restore; the actor is "system (restore)")
 
 SELECTION: --sample N [--files-sample M] | --all | --since DATE --until DATE; and --no-files.
 Staged plan: --sample 5, review; --sample (about 10 %), review; then --all.
@@ -154,13 +161,22 @@ def _brain_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("rescan", add_help=False)
     p.add_argument("--yes", action="store_true")
     p.add_argument("--actor")
+    p = sub.add_parser("repair", add_help=False)
+    p.add_argument("--yes", action="store_true")
+    p.add_argument("--actor")
+    p = sub.add_parser("fingerprints", add_help=False)
+    p.add_argument("--forget-other-key", action="store_true", required=True)
+    p.add_argument("--yes", action="store_true")
+    p.add_argument("--actor")
     p = sub.add_parser("decisions-export", add_help=False)
     p.add_argument("--out", required=True)
+    p.add_argument("--removals-only", action="store_true")
     p = sub.add_parser("decisions-apply", add_help=False)
     p.add_argument("--in", dest="in_path", required=True)
-    p.add_argument("--run", type=int, required=True)
-    p.add_argument("--actor", required=True)
+    p.add_argument("--run", type=int)
+    p.add_argument("--actor")
     p.add_argument("--yes", action="store_true")
+    p.add_argument("--removals-only", action="store_true")
     return parser
 
 
@@ -195,6 +211,14 @@ def _print_report(report: dict[str, Any]) -> None:
                  _counts_line(restricted.get("types") or {})))
     print("contact details masked: " + _counts_line(report.get("masked") or {}))
     print("conflicts for a person to decide: " + _counts_line(report.get("conflicts") or {}))
+    if report.get("withheld_same_message") or report.get("held_for_review"):
+        print("stored without text as the same message as a withheld one: %s; held for an admin's review: %s"
+              % (_counts_line(report.get("withheld_same_message") or {}),
+                 _counts_line(report.get("held_for_review") or {})))
+    if report.get("key_reassigned") or report.get("keys_adopted") or report.get("purged_same_text"):
+        print("keys JARVIS gave to another row (left out): %d; stored rows re-keyed: %d; purged items back under "
+              "another key (left out): %d" % (report.get("key_reassigned", 0), report.get("keys_adopted", 0),
+                                              report.get("purged_same_text", 0)))
     drafts = report.get("drafts") or []
     if drafts:
         print("workflow drafts (never run; disabled): %d" % len(drafts))
@@ -288,6 +312,19 @@ async def _brain_command(args: argparse.Namespace) -> int:
                 if out.get("withheld_rollback_copies_with_text"):
                     print("rollback copies of withheld messages with text: %d (the next start, or rescan --yes, "
                           "blanks them)" % out["withheld_rollback_copies_with_text"])
+                if "migration_0008_brain_withhold_identity" in out:
+                    # scripts/jarvis-import.ps1 reads this line too (0.6.2).
+                    print("migration 0008_brain_withhold_identity %s; identity repair %s; readable rows matching a "
+                          "withhold: %d; held for review: %d; withheld rows with a text fingerprint: %d; rows blanked "
+                          "by the database guard: %d; quotes of removed sources: %d; purge fingerprints made with "
+                          "another key: %d" % (
+                              "present" if out["migration_0008_brain_withhold_identity"] else "MISSING",
+                              "done" if out.get("identity_repair_done") else "not done",
+                              out.get("readable_rows_matching_a_withhold", 0), out.get("held_for_review", 0),
+                              out.get("withheld_rows_with_a_text_fingerprint", 0),
+                              out.get("rows_blanked_by_the_database_guard", 0),
+                              out.get("quotes_of_removed_sources", 0),
+                              out.get("purge_fingerprints_made_with_another_key", 0)))
             if out.get("marked_interrupted"):
                 print("marked interrupted (their process is gone): runs %s"
                       % ", ".join(str(i) for i in out["marked_interrupted"]))
@@ -305,24 +342,55 @@ async def _brain_command(args: argparse.Namespace) -> int:
             print(("rescan applied: " if args.yes else "rescan (nothing was changed; add --yes to apply): ")
                   + _counts_line({k: v for k, v in out.items() if k != "applied"}))
             return 0
+        if args.command == "repair":
+            out = await imp.repair(apply=args.yes, actor=actor)
+            if args.yes:
+                print("identity repair done: " + _counts_line({k: v for k, v in out["repair"].items()
+                                                               if isinstance(v, int) and not isinstance(v, bool)}))
+            else:
+                print("identity repair pending (nothing was changed; add --yes to repair): " + _counts_line(
+                    {k: v for k, v in out["pending"].items() if not isinstance(v, (dict, list))}))
+            return 0
+        if args.command == "fingerprints":
+            out = await imp.forget_fingerprints(apply=args.yes, actor=actor)
+            print("purge fingerprints made with another key: %d (%s)" % (
+                out["fingerprints_made_with_another_key"],
+                "forgotten; the purges stay, by their keys" if args.yes else "nothing was changed; add --yes"))
+            return 0
         if args.command == "decisions-export":
-            out = await imp.decisions_export(args.out)
+            out = await imp.decisions_export(args.out, removals_only=args.removals_only)
+            if args.removals_only:
+                # scripts/restore.ps1 reads this line (tests/unit/test_brain_ops.py runs its pattern against it).
+                print("removals exported (withheld messages and purged items, keys and JARVIS ids only): %d; "
+                      "releases: %d" % (out["removals"], out["releases"]))
+                return 0
             print("decisions exported: %d (items without a source key skipped: %d; edits of customer or Credit "
                   "Repair items not exported, to redo by hand: %d); removals (withheld messages and purged items, "
-                  "keys only): %d"
-                  % (out["exported"], out["skipped_without_source_key"], out["edits_not_exported"], out["removals"]))
+                  "keys and JARVIS ids only): %d; releases: %d"
+                  % (out["exported"], out["skipped_without_source_key"], out["edits_not_exported"], out["removals"],
+                     out["releases"]))
             return 0
         if args.command == "decisions-apply":
-            out = await imp.decisions_apply(args.in_path, args.run, actor=args.actor, apply=args.yes)
-            key = "applied" if args.yes else "would_apply"
-            print("decisions %s: %d%s" % ("applied" if args.yes else "that would apply (add --yes)", out[key],
-                                          "" if out["not_applied"] else "; none left over"))
-            for reason, numbers in sorted(out["not_applied"].items()):
-                print("  not applied (%s): decisions %s" % (reason, ", ".join(str(n) for n in numbers)))
+            if not args.removals_only and (args.run is None or not args.actor):
+                raise imp.Refused("decisions-apply needs --run ID and --actor ADMIN_EMAIL (or --removals-only)")
+            out = await imp.decisions_apply(args.in_path, args.run, actor=args.actor, apply=args.yes,
+                                            removals_only=args.removals_only)
+            if not args.removals_only:
+                key = "applied" if args.yes else "would_apply"
+                print("decisions %s: %d%s" % ("applied" if args.yes else "that would apply (add --yes)", out[key],
+                                              "" if out["not_applied"] else "; none left over"))
+                for reason, numbers in sorted(out["not_applied"].items()):
+                    print("  not applied (%s): decisions %s" % (reason, ", ".join(str(n) for n in numbers)))
+            # scripts/restore.ps1 reads the removals line (tests/unit/test_brain_ops.py runs its pattern against it).
             print("removals %s: %s" % ("applied" if args.yes else "that would apply",
                                        _counts_line(out["removals"]) if out["removals"] else "none"))
             for reason, numbers in sorted(out["removals_not_applied"].items()):
                 print("  removal not applied (%s): removals %s" % (reason, ", ".join(str(n) for n in numbers)))
+            if out["releases"] or out["releases_not_applied"]:
+                print("releases %s: %s" % ("applied" if args.yes else "that would apply",
+                                           _counts_line(out["releases"]) if out["releases"] else "none"))
+            for reason, numbers in sorted(out["releases_not_applied"].items()):
+                print("  release not applied (%s): releases %s" % (reason, ", ".join(str(n) for n in numbers)))
             return 0
         raise _UsageError("unknown command")
     except imp.Refused as exc:

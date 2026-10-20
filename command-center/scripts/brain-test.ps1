@@ -166,6 +166,9 @@ function Invoke-Seed([string[]]$compose, [string]$folder) {
     "DELETE FROM sessions; " +
     "DELETE FROM secret_values; " +
     "UPDATE events SET forward_status = 'skipped' WHERE forward_status = 'pending'; " +
+    # 0.6.2: purged-item fingerprints are keyed with the live installation's database password, which the test copy
+    # does not have; its imports would refuse them. The purges themselves stay, by their keys.
+    'DO $f$ BEGIN IF to_regclass(''public.brain_purged_content'') IS NOT NULL THEN DELETE FROM brain_purged_content; END IF; END $f$; ' +
     "COMMIT;"
   $r = Invoke-Docker ($compose + $psql + @("-d", "command_center", "-c", $sql))
   if ($r.Code -ne 0) { return "the seeded data could not be switched off: $($r.Err -join ' ')" }
@@ -175,7 +178,7 @@ function Invoke-Seed([string[]]$compose, [string]$folder) {
   $r = Invoke-Docker ($compose + $psql + @("-d", "command_center", "-t", "-A", "-c", $sql))
   $left = (@($r.Out | Where-Object { $_.Trim() }) | Select-Object -Last 1)
   if ($r.Code -ne 0 -or "$left".Trim() -ne "0") { return "after the seed, something that could act is still on ($left)" }
-  Write-Host "Seeded: schedules disabled, open tasks cancelled, pending approvals rejected, sessions and stored secrets deleted, pending events skipped." -ForegroundColor Green
+  Write-Host "Seeded: schedules disabled, open tasks cancelled, pending approvals rejected, sessions and stored secrets deleted, pending events skipped, the live installation's purge fingerprints left out." -ForegroundColor Green
   return ""
 }
 

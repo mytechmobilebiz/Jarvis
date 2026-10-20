@@ -9,14 +9,20 @@ import {
   CUSTOMER_PILL,
   emptiedCopy,
   hiddenText,
+  HOLDS_INTRO,
+  holdRuleText,
+  identicalLabel,
+  previewText,
   PURGE_PROMOTED_TEXT,
   QUARANTINED_TEXT,
+  RELEASE_CONFIRM,
   SOURCE_WITHHELD_PENDING_TEXT,
   SOURCE_WITHHELD_TEXT,
   WITHHELD_COPY_TITLE,
   WITHHELD_SESSION,
   WITHHOLD_NOT_REACHED,
   WITHHOLD_REMOVES,
+  withheldByAdmin,
   withholdText,
 } from "../pages/Brain";
 import { mockFetch } from "./fetchMock";
@@ -482,6 +488,187 @@ describe("JARVIS Brain: conversations", () => {
     fireEvent.click(within(confirm).getByRole("button", { name: "Withhold this message" }));
     await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.path === "/api/brain/messages/102/withhold")).toBe(true));
     expect(await within(dialog).findByText("Withheld. 0 promoted item(s) emptied.")).toBeInTheDocument();
+  });
+});
+
+describe("JARVIS Brain: withholding the same JARVIS message (0.6.2)", () => {
+  const row = (id: number, position: number) => ({ id, session: 11, position, role: "user", at: "2026-03-01T08:00:00Z", state: "live" as const, withheld: false });
+  function preview(over: Record<string, unknown> = {}) {
+    return {
+      message: 101, same_message_rows: [row(140, 4)], held_rows: [row(141, 5), row(142, 6)], identical_text_rows: [row(150, 9), row(151, 12)],
+      rowless_copies: 1, items_with_this_text: [{ id: 66, title: "Weekly sweep notes" }], first_user_message: true, ...over,
+    };
+  }
+  function withholdRoutes(over: Record<string, unknown> = {}) {
+    return {
+      "GET /api/brain/sessions": { sessions: [session()], total: 1 },
+      "GET /api/brain/sessions/11": { session: session(), messages, total: 3, hidden: 0 },
+      "GET /api/brain/messages/101/promoted": { message: 101, count: 0, items: [] },
+      "GET /api/brain/messages/101/withhold-preview": preview(),
+      "POST /api/brain/messages/101/withhold": {
+        json: { message: { ...messages[0], content: "", withheld: true }, copies: { items: [] }, also_withheld: [140], held_for_review: [141, 142], identical_withheld: 2, title_hidden: true },
+      },
+      ...over,
+    };
+  }
+
+  it("lists the same message's other rows and the held ones, offers identical text unticked and the title ticked for the first user message", async () => {
+    const calls = renderAt("/brain?tab=conversations&session=11", admin, withholdRoutes());
+    const dialog = await screen.findByRole("dialog", { name: "Weekly SEO sweep" });
+    await within(dialog).findByText("Run the weekly sweep");
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "Withhold" })[0]);
+    const confirm = await screen.findByRole("dialog", { name: "Withhold message #0" });
+    expect(await within(confirm).findByText("1 other stored row is the same JARVIS message and is withheld too; 2 are held for your review.")).toBeInTheDocument();
+    expect(within(confirm).getByText(/1 copy JARVIS keeps without a stored row/)).toBeInTheDocument();
+    const identical = within(confirm).getByRole("checkbox", { name: identicalLabel(2) });
+    expect(identicalLabel(2)).toBe("Also withhold 2 other messages with exactly this text in this conversation");
+    expect(identical).not.toBeChecked();
+    const title = within(confirm).getByRole("checkbox", { name: "Hide the conversation title" });
+    expect(title).toBeChecked();
+    expect(within(confirm).getByText(/1 imported memory item contains this text\. They are not removed/)).toBeInTheDocument();
+    expect(within(confirm).getByRole("button", { name: "Weekly sweep notes" })).toBeInTheDocument();
+    // The 0.6.1 wording stays.
+    expect(within(confirm).getByText(WITHHOLD_REMOVES)).toBeInTheDocument();
+    expect(within(confirm).getByText(WITHHOLD_NOT_REACHED)).toBeInTheDocument();
+    // Nothing is withheld before the admin confirms, and identical text only when ticked.
+    expect(calls.some((c) => c.method === "POST")).toBe(false);
+    fireEvent.click(identical);
+    fireEvent.click(title);
+    fireEvent.click(within(confirm).getByRole("button", { name: "Withhold this message" }));
+    await waitFor(() => expect(calls.find((c) => c.method === "POST" && c.path === "/api/brain/messages/101/withhold")?.body).toEqual({ include_identical: true, hide_title: false }));
+    expect(
+      await within(dialog).findByText(
+        "Withheld. 0 promoted item(s) emptied. 1 other stored row of the same JARVIS message withheld too. 2 held for your review (JARVIS Brain → Review). 2 messages with exactly this text withheld. The conversation's title is hidden.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("sends the defaults when the admin changes nothing: identical text left alone, the title as the preview says", async () => {
+    const calls = renderAt("/brain?tab=conversations&session=11", admin, withholdRoutes({
+      "GET /api/brain/messages/102/promoted": { message: 102, count: 0, items: [] },
+      "GET /api/brain/messages/102/withhold-preview": preview({ message: 102, same_message_rows: [], held_rows: [], identical_text_rows: [], rowless_copies: 0, items_with_this_text: [], first_user_message: false }),
+      "POST /api/brain/messages/102/withhold": { json: { message: { ...messages[1], content: "", withheld: true }, copies: { items: [] } } },
+    }));
+    const dialog = await screen.findByRole("dialog", { name: "Weekly SEO sweep" });
+    await within(dialog).findByText("Published the keyword brief.");
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "Withhold" })[1]);
+    const confirm = await screen.findByRole("dialog", { name: "Withhold message #1" });
+    const title = await within(confirm).findByRole("checkbox", { name: "Hide the conversation title" });
+    expect(title).not.toBeChecked();
+    expect(within(confirm).queryByRole("checkbox", { name: /Also withhold/ })).toBeNull();
+    expect(confirm.textContent).not.toMatch(/same JARVIS message/);
+    fireEvent.click(within(confirm).getByRole("button", { name: "Withhold this message" }));
+    await waitFor(() => expect(calls.find((c) => c.method === "POST")?.body).toEqual({ include_identical: false, hide_title: false }));
+    expect(await within(dialog).findByText("Withheld. 0 promoted item(s) emptied.")).toBeInTheDocument();
+  });
+
+  it("still withholds when the preview cannot be loaded, and leaves the title to the server", async () => {
+    const calls = renderAt("/brain?tab=conversations&session=11", admin, withholdRoutes({
+      "GET /api/brain/messages/101/withhold-preview": { status: 500, json: { detail: "the database refused this change; nothing was saved" } },
+    }));
+    const dialog = await screen.findByRole("dialog", { name: "Weekly SEO sweep" });
+    await within(dialog).findByText("Run the weekly sweep");
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "Withhold" })[0]);
+    const confirm = await screen.findByRole("dialog", { name: "Withhold message #0" });
+    expect(await within(confirm).findByText(/^Could not list the other stored copies of this message/)).toBeInTheDocument();
+    expect(within(confirm).queryByRole("checkbox")).toBeNull();
+    fireEvent.click(within(confirm).getByRole("button", { name: "Withhold this message" }));
+    await waitFor(() => expect(calls.find((c) => c.method === "POST")?.body).toEqual({ include_identical: false, hide_title: null }));
+  });
+
+  it("says why a withheld message is withheld, and that a title is hidden", async () => {
+    const held = [
+      message({ id: 130, content: "", withheld: true, flags: { withheld_by_admin: { note: "withheld by an admin", via: "same text", review: "pending" } } }),
+      message({ id: 131, position: 1, role: "assistant", content: "", withheld: true, flags: { withheld_by_admin: { note: "withheld by an admin", guard: "key" } } }),
+      message({ id: 132, position: 2, role: "assistant", content: "", withheld: true, flags: { withheld_by_admin: { note: "withheld by an admin" } } }),
+    ];
+    renderAt("/brain?tab=conversations&session=11", admin, {
+      "GET /api/brain/sessions": { sessions: [session()], total: 1 },
+      "GET /api/brain/sessions/11": { session: session({ title: "", flags: { attribution: "job id", title_withheld: true } }), messages: held, total: 3, hidden: 0 },
+    });
+    const dialog = await screen.findByRole("dialog", { name: "Untitled conversation" });
+    expect(await within(dialog).findByText("held for review")).toBeInTheDocument();
+    expect(within(dialog).getByText("withheld by the database guard")).toBeInTheDocument();
+    expect(within(dialog).getByText("withheld by an admin")).toBeInTheDocument();
+    expect(within(dialog).getByText("title hidden by an admin")).toBeInTheDocument();
+    expect(withheldByAdmin({ released_at: now })).toMatch(/^released/);
+    expect(withheldByAdmin({ review: "kept" })).toBe("withheld by an admin (kept after review)");
+  });
+
+  it("puts every count into words", () => {
+    expect(previewText(preview({ same_message_rows: [], held_rows: [], rowless_copies: 0 }))).toEqual([]);
+    expect(previewText(preview({ same_message_rows: [row(1, 1), row(2, 2)], same_message_rows_hidden: 1, held_rows: [], rowless_copies: 0 }))).toEqual([
+      "3 other stored rows are the same JARVIS message and are withheld too; 0 are held for your review.",
+    ]);
+    expect(identicalLabel(1)).toBe("Also withhold 1 other message with exactly this text in this conversation");
+  });
+});
+
+describe("JARVIS Brain: held for review (0.6.2)", () => {
+  const hold = {
+    message: 141, session: 11, title: "Weekly SEO sweep", position: 5, role: "assistant", at: "2026-03-01T08:05:00Z", content_chars: 120, state: "live",
+    rule: "same message id, different text", withheld_message: { id: 102, position: 1, role: "assistant", at: "2026-03-01T08:01:00Z", content_chars: 118 },
+    compare: "different text", neighbours: [101, 103],
+  };
+  const hiddenTitle = { ...hold, message: 142, title: null, position: 7, rule: "same text", compare: "identical text", withheld_message: { id: null, position: null, role: "user", at: null, content_chars: null } };
+  function holdRoutes(over: Record<string, unknown> = {}) {
+    return {
+      "GET /api/brain/items?status=quarantined&limit=100": { items: [], total: 0 },
+      "GET /api/brain/items?status=pending_review&limit=100": { items: [], total: 0 },
+      "GET /api/brain/conflicts": { conflicts: [], total: 0 },
+      "GET /api/brain/items?include_deleted=true&limit=200": { items: [], total: 0 },
+      "GET /api/brain/holds": { holds: [hold, hiddenTitle], total: 2 },
+      "POST /api/brain/holds/141/keep": { json: { message: {}, review: "kept" } },
+      "POST /api/brain/holds/142/release": { json: { message: {}, released: true } },
+      ...over,
+    };
+  }
+
+  it("lists held messages with the evidence and never their text, and keeps one withheld", async () => {
+    const calls = renderAt("/brain?tab=review", admin, holdRoutes());
+    const card = (await screen.findByRole("heading", { name: "Held for review" })).closest(".card") as HTMLElement;
+    expect(within(card).getByText(HOLDS_INTRO)).toBeInTheDocument();
+    expect(await within(card).findByRole("button", { name: "Message #5 (Assistant) in Weekly SEO sweep" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Message #7 (Assistant) in a conversation whose title is hidden" })).toBeInTheDocument();
+    expect(within(card).getByText(holdRuleText("same message id, different text"))).toBeInTheDocument();
+    expect(within(card).getByText(holdRuleText("same text"))).toBeInTheDocument();
+    expect(within(card).getAllByText(/120 characters/).length).toBe(2);
+    expect(within(card).getByText(/different text$/)).toBeInTheDocument();
+    expect(within(card).getByText(/The withheld message it may be: #1 \(Assistant, 118 characters/)).toBeInTheDocument();
+    expect(within(card).getByText(/The withheld message it may be: no longer stored \(User\)/)).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole("button", { name: "Keep message #5 (Assistant) withheld" }));
+    await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.path === "/api/brain/holds/141/keep")).toBe(true));
+  });
+
+  it("releases a held message only after the admin confirms what comes back", async () => {
+    const calls = renderAt("/brain?tab=review", admin, holdRoutes());
+    const card = (await screen.findByRole("heading", { name: "Held for review" })).closest(".card") as HTMLElement;
+    fireEvent.click(await within(card).findByRole("button", { name: "Release message #7 (Assistant)" }));
+    const confirm = await screen.findByRole("dialog", { name: "Release message #7" });
+    expect(within(confirm).getByText(RELEASE_CONFIRM)).toBeInTheDocument();
+    expect(RELEASE_CONFIRM).toBe("Its text comes back at the next import; promoted copies stay empty.");
+    expect(within(confirm).getByText(holdRuleText("same text"))).toBeInTheDocument();
+    expect(calls.some((c) => c.path.endsWith("/release"))).toBe(false);
+    fireEvent.click(within(confirm).getByRole("button", { name: "Release" }));
+    await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.path === "/api/brain/holds/142/release")).toBe(true));
+  });
+
+  it("shows the API's refusal when a release is refused", async () => {
+    renderAt("/brain?tab=review", admin, holdRoutes({
+      "POST /api/brain/holds/142/release": { status: 400, json: { detail: "it is the same message as a withheld one: it cannot be released" } },
+    }));
+    const card = (await screen.findByRole("heading", { name: "Held for review" })).closest(".card") as HTMLElement;
+    fireEvent.click(await within(card).findByRole("button", { name: "Release message #7 (Assistant)" }));
+    const confirm = await screen.findByRole("dialog", { name: "Release message #7" });
+    fireEvent.click(within(confirm).getByRole("button", { name: "Release" }));
+    expect(await within(confirm).findByText(/it cannot be released/)).toBeInTheDocument();
+  });
+
+  it("is not shown to operators, who never ask for it", async () => {
+    const calls = renderAt("/brain?tab=review", operator, holdRoutes());
+    await screen.findByRole("heading", { name: "Open conflicts" });
+    expect(screen.queryByRole("heading", { name: "Held for review" })).toBeNull();
+    expect(calls.some((c) => c.path.startsWith("/api/brain/holds"))).toBe(false);
   });
 });
 

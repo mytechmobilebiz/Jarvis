@@ -19,9 +19,10 @@ SHA-256 in the `.sha256` file next to it · step-by-step Windows guide:
 >
 > - Do not install 0.6.1, and do not import JARVIS data with any 0.6.x
 >   release.
-> - If you are still on 0.5.0, stay there. A corrected 0.6.2 is being
->   prepared, with a direct 0.5.0 -> 0.6.2 guide. It will be published only
->   after its security reviews pass.
+> - If you are still on 0.5.0, stay there. 0.6.2 corrects the defect
+>   ([RELEASE_NOTES_0.6.2.md](RELEASE_NOTES_0.6.2.md)), with a direct
+>   0.5.0 -> 0.6.2 guide; it is pending its verdict
+>   (`releases/GO_NO_GO_0.6.2.md`) and is installed only after that says GO.
 > - An installation of 0.6.0 or 0.6.1 that has imported nothing holds no
 >   JARVIS data and is not exposed: leave it as it is and import nothing.
 

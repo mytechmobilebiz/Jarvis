@@ -202,6 +202,37 @@ def test_backup_columns_are_listed_and_never_reasoning_prompts_models_or_costs(t
         b.close()
 
 
+def test_absorbed_uids_are_read_when_the_column_exists_and_rows_are_looked_up_by_id(tmp_path):
+    """0.6.2: Hermes's absorbed_message_uids (a fold's survivor names the uids it absorbed) is read only when present,
+    is neither a reasoning nor a forbidden column, and parses like Hermes's own _uid_list; the uid of every row is
+    kept with it (SourceMessage.uid), and a session's rows can be looked up by id (Backup.has_row, Backup.rows)."""
+    assert not (kit.REASONING_COLUMN.search("absorbed_message_uids")
+                or source.FORBIDDEN_COLUMN.match("absorbed_message_uids"))
+    path = _backup(tmp_path / "fold.db", extra_columns=", absorbed_message_uids TEXT")
+    con = sqlite3.connect(path)
+    con.execute("UPDATE messages SET absorbed_message_uids = ? WHERE id = 1", ('["u-x", "", "u-y", "u-x", 7]',))
+    con.execute("UPDATE messages SET absorbed_message_uids = 'not json' WHERE id = 2")
+    con.commit()
+    con.close()
+    b = source.Backup(path, NY, {}, TEMPLATE_JOBS)
+    try:
+        assert b.columns_read["messages"][-1] == "absorbed_message_uids"
+        msgs = b.messages("c1")
+        assert [(m.uid, m.absorbed) for m in msgs] == [("u-1", ("u-x", "u-y")), ("u-dup", ()), ("u-dup", ())]
+        assert b.has_row("c1", "3") and not b.has_row("c1", "4") and not b.has_row("nope", "1")
+        assert [(m.id, m.key) for m in b.rows("c1", ["3", "1", "99"])] == [(1, "jarvis:message:uid:u-1"),
+                                                                         (3, "jarvis:message:c1:3")]
+        assert set(b.sessions_by_id()) == {"p1", "c1", "b0", "b1", "d1", "x1"}
+    finally:
+        b.close()
+    plain = source.Backup(_backup(tmp_path / "plain2.db", uid=False), NY, {}, TEMPLATE_JOBS)
+    try:
+        assert "absorbed_message_uids" not in plain.columns_read["messages"]
+        assert {(m.uid, m.absorbed) for m in plain.messages("c1")} == {("", ())}
+    finally:
+        plain.close()
+
+
 def test_message_keys_order_positions_and_orphans(tmp_path):
     b = source.Backup(_backup(tmp_path / "s.db"), NY, {}, TEMPLATE_JOBS)
     try:

@@ -9,6 +9,7 @@ import {
   type ArchiveMessage,
   type ArchiveSession,
   type BrainAgent,
+  type BrainHold,
   type BrainOverview,
   type BrainSearch,
   type ConflictKind,
@@ -21,6 +22,8 @@ import {
   type MemoryItemVersion,
   type MemoryKind,
   type Schedule,
+  type WithholdPreview,
+  type WithholdResult,
   type WorkflowDraft,
 } from "../api";
 import { useAuth } from "../App";
@@ -82,6 +85,10 @@ export const WITHHOLD_REMOVES =
 export const WITHHOLD_NOT_REACHED =
   "Not reached: the JARVIS backup, Command Center backups, exports and decisions files already saved, the test copy, Docker container logs, and text already sent to an AI model or written into drafts. The conversation's title and related messages (a paired tool result, a summary, a copy in a branch) are kept; withhold them separately. This cannot be undone.";
 export const PURGE_PROMOTED_TEXT = "The conversation message it came from is kept; withhold that message to remove its text.";
+/** 0.6.2: what a release of a held row does (the importer restores it from the source; emptied copies stay empty). */
+export const RELEASE_CONFIRM = "Its text comes back at the next import; promoted copies stay empty.";
+export const HOLDS_INTRO =
+  "These messages were withheld because they may be a message an admin withheld: they share its JARVIS id but their text differs, or they repeat its exact text outside a copy JARVIS made. Their text is not shown. Keep one withheld for good, or release it: certain copies (the same JARVIS row, a carried-on copy) are never listed here and cannot be released.";
 
 /** Emptied because its source message was withheld (backend store.emptied()): flagged and without text. A copy 0.6.0
  * flagged can still hold its text until the next start or a rescan empties it. */
@@ -103,6 +110,47 @@ export function withholdText(count: number | null, error?: string | null): strin
   lines.push(WITHHOLD_NOT_REACHED);
   return lines;
 }
+/** The withhold preview in words (0.6.2): the other stored rows of the same JARVIS message, withheld too, and those held for
+ * the admin's review; copies with no row of their own. Empty when the message is stored once. */
+export function previewText(p: WithholdPreview | null | undefined): string[] {
+  if (!p) return [];
+  const n = p.same_message_rows.length + (p.same_message_rows_hidden ?? 0);
+  const m = p.held_rows.length + (p.held_rows_hidden ?? 0);
+  const lines: string[] = [];
+  if (n || m) {
+    lines.push(
+      `${plural(n, "other stored row")} ${n === 1 ? "is" : "are"} the same JARVIS message and ${n === 1 ? "is" : "are"} withheld too; ${m.toLocaleString()} ${m === 1 ? "is" : "are"} held for your review.`,
+    );
+  }
+  if (p.rowless_copies > 0) {
+    lines.push(`${plural(p.rowless_copies, "copy", "copies")} JARVIS keeps without a stored row of its own will never be imported with this text either.`);
+  }
+  return lines;
+}
+
+/** "Also withhold 2 other messages with exactly this text in this conversation" (unticked by default: identical words
+ * elsewhere are not the same message). */
+export function identicalLabel(k: number): string {
+  return `Also withhold ${plural(k, "other message")} with exactly this text in this conversation`;
+}
+
+/** What a hold's rule means: what releasing it brings back. */
+export function holdRuleText(rule: string): string {
+  switch (rule) {
+    case "same message id, different text":
+      return "It shares the withheld message's JARVIS id, but its text differs from the withheld message as JARVIS holds it now. Releasing brings back that different text.";
+    case "same text":
+      return "It repeats the withheld message's exact text, outside a copy JARVIS made. Releasing brings back text identical to the withheld message.";
+    case "upgrade: same text":
+      return "Found when 0.6.2 was installed: an earlier version stored the withheld message's exact text here. Releasing brings back that text.";
+    case "upgrade: same message id":
+    case "same message id":
+      return "It shares the withheld message's JARVIS id; its text could not be compared. Releasing brings back whatever it holds.";
+    default:
+      return `Held by the rule "${rule}".`;
+  }
+}
+
 export const CUSTOMER_PILL = "customer data (masked)";
 export const NO_IMPORT = "No JARVIS import yet";
 export const AI_OFF = "Off: memory never goes into AI prompts.";
@@ -265,7 +313,7 @@ export function CustomerPill() {
 }
 
 /** Flags that keep an item out of AI prompts and need an admin (backend policy.RISK_FLAGS). */
-const RISK_FLAGS = ["instruction_like", "approval_conflict", "secrets_redacted", "script", "plugin_or_hook", "custom", "owner_profile", "source_withheld"];
+const RISK_FLAGS = ["instruction_like", "approval_conflict", "secrets_redacted", "script", "plugin_or_hook", "custom", "owner_profile", "source_withheld", "purged_before"];
 const FLAG_TEXT: Record<string, string | ((v: unknown) => string)> = {
   secrets_redacted: "secrets removed",
   instruction_like: "instruction-like",
@@ -285,7 +333,22 @@ const FLAG_TEXT: Record<string, string | ((v: unknown) => string)> = {
   restricted: "restricted data removed",
   withheld: "withheld by an admin",
   source_withheld: "source message withheld",
+  purged_before: "the same text as an item an admin purged",
+  // 0.6.2: why a message is withheld (flags.withheld_by_admin) and a title an admin hid.
+  withheld_by_admin: (v) => withheldByAdmin(v),
+  title_withheld: "title hidden by an admin",
 };
+
+/** A withheld message's flags.withheld_by_admin in words: held for review, kept, released, or withheld by the database
+ * guard (the importer tried to store its text and the database removed it). */
+export function withheldByAdmin(v: unknown): string {
+  const f = v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+  if (f.released_at) return "released: its text comes back at the next import";
+  if (f.review === "pending") return "held for review";
+  if (f.guard) return "withheld by the database guard";
+  if (f.review === "kept") return "withheld by an admin (kept after review)";
+  return "withheld by an admin";
+}
 /** Flags that describe rather than warn (a skill's mapping, the masking shown by the customer pill). */
 const NOT_CHIPS = new Set([
   "skill", "staff", "capabilities", "compatibility", "note", "frontmatter", "language", "executable", "masked", "attribution", "reference_only",
@@ -1010,7 +1073,10 @@ function MessageRow({
         <LabelChips labels={m.labels} />
       </div>
       {m.withheld ? (
-        <p className="br-withheld small">Withheld: no text is kept for this message.</p>
+        <p className="br-withheld small">
+          Withheld: no text is kept for this message.
+          {m.flags?.withheld_by_admin ? <span className="br-chip br-chip-risk">{withheldByAdmin(m.flags.withheld_by_admin)}</span> : null}
+        </p>
       ) : m.role === "tool" ? (
         <details className="br-details">
           <summary>Show the tool result</summary>
@@ -1050,6 +1116,70 @@ function MessageRow({
   );
 }
 
+/** The 0.6.2 part of the withhold dialog: the other stored rows of the same JARVIS message (withheld too) and those held
+ * for review, the opt-in for identical text elsewhere in the conversation, the title option, and the imported memory
+ * items that contain the text (listed to purge by hand: nothing is removed automatically). */
+function WithholdChoices({
+  preview,
+  includeIdentical,
+  setIncludeIdentical,
+  hideTitle,
+  setHideTitle,
+  onOpenItem,
+}: {
+  preview: { data: WithholdPreview | null; error: string | null };
+  includeIdentical: boolean;
+  setIncludeIdentical: (v: boolean) => void;
+  hideTitle: boolean | null;
+  setHideTitle: (v: boolean) => void;
+  onOpenItem: (id: number) => void;
+}) {
+  const p = preview.data;
+  if (!p) {
+    return (
+      <p>
+        Could not list the other stored copies of this message ({preview.error || "no answer"}); every stored row of the same JARVIS message is withheld too, and the
+        title is hidden when this is the conversation's first user message.
+      </p>
+    );
+  }
+  const identical = p.identical_text_rows.length + (p.identical_text_rows_hidden ?? 0);
+  const items = p.items_with_this_text ?? [];
+  return (
+    <>
+      {previewText(p).map((line) => (
+        <p key={line}>{line}</p>
+      ))}
+      {identical > 0 ? (
+        <label className="check">
+          <input type="checkbox" checked={includeIdentical} onChange={(e) => setIncludeIdentical(e.target.checked)} />
+          {identicalLabel(identical)}
+        </label>
+      ) : null}
+      <label className="check">
+        <input type="checkbox" checked={!!hideTitle} onChange={(e) => setHideTitle(e.target.checked)} />
+        Hide the conversation title
+      </label>
+      {items.length ? (
+        <div className="br-preview-items">
+          <p>
+            {plural(items.length, "imported memory item")} {items.length === 1 ? "contains" : "contain"} this text. They are not removed: open one to delete and purge it.
+          </p>
+          <ul className="br-list small">
+            {items.map((it) => (
+              <li key={it.id}>
+                <button type="button" className="link-button" onClick={() => onOpenItem(it.id)}>
+                  {it.title}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 export function SessionModal({
   id,
   focus,
@@ -1079,6 +1209,11 @@ export function SessionModal({
   const [withholdError, setWithholdError] = useState<string | null>(null);
   /** The memory items promoted from the message being withheld (undefined while they are counted). */
   const [copies, setCopies] = useState<{ count: number | null; error: string | null } | undefined>(undefined);
+  /** 0.6.2: the other stored rows of the same message, held rows and identical text (undefined while it loads). */
+  const [preview, setPreview] = useState<{ data: WithholdPreview | null; error: string | null } | undefined>(undefined);
+  const [includeIdentical, setIncludeIdentical] = useState(false);
+  /** null: the server decides (it hides the title for the conversation's first user message). */
+  const [hideTitle, setHideTitle] = useState<boolean | null>(null);
   const [withheldNote, setWithheldNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const d = detail.data;
@@ -1098,14 +1233,26 @@ export function SessionModal({
     }
   }, [focus, current, offset]);
 
-  // The withhold dialog says how many promoted memory items it empties before the admin confirms.
+  // The withhold dialog says how many promoted memory items it empties, and which other stored rows go with the message
+  // (0.6.2: the withhold preview), before the admin confirms.
   useEffect(() => {
     setCopies(undefined);
+    setPreview(undefined);
+    setIncludeIdentical(false);
+    setHideTitle(null);
     if (!withhold) return;
     let live = true;
     api.get<{ count: number }>(`${BASE}/messages/${withhold.id}/promoted`).then(
       (r) => live && setCopies({ count: r.count, error: null }),
       (err) => live && setCopies({ count: null, error: errText(err) }),
+    );
+    api.get<WithholdPreview>(`${BASE}/messages/${withhold.id}/withhold-preview`).then(
+      (r) => {
+        if (!live) return;
+        setPreview({ data: r, error: null });
+        setHideTitle(!!r.first_user_message);
+      },
+      (err) => live && setPreview({ data: null, error: errText(err) }),
     );
     return () => {
       live = false;
@@ -1116,9 +1263,14 @@ export function SessionModal({
     setBusy(true);
     setWithholdError(null);
     try {
-      const r = await api.post<{ copies?: { items?: number[] } }>(`${BASE}/messages/${m.id}/withhold`);
+      const r = await api.post<WithholdResult>(`${BASE}/messages/${m.id}/withhold`, { include_identical: includeIdentical, hide_title: hideTitle });
       setWithhold(null);
-      setWithheldNote(`Withheld. ${(r?.copies?.items?.length ?? 0).toLocaleString()} promoted item(s) emptied.`);
+      const note = [`Withheld. ${(r?.copies?.items?.length ?? 0).toLocaleString()} promoted item(s) emptied.`];
+      if (r?.also_withheld?.length) note.push(`${plural(r.also_withheld.length, "other stored row")} of the same JARVIS message withheld too.`);
+      if (r?.held_for_review?.length) note.push(`${r.held_for_review.length.toLocaleString()} held for your review (JARVIS Brain → Review).`);
+      if (r?.identical_withheld) note.push(`${plural(r.identical_withheld, "message")} with exactly this text withheld.`);
+      if (r?.title_hidden) note.push("The conversation's title is hidden.");
+      setWithheldNote(note.join(" "));
       await detail.refresh();
       onChanged?.();
     } catch (err) {
@@ -1181,6 +1333,11 @@ export function SessionModal({
           </dl>
           <div className="br-session-chips">
             {s.sensitivity === "customer" ? <CustomerPill /> : null}
+            {s.flags?.title_withheld ? (
+              <span className="br-chip" title="An admin withheld a message this title could repeat, so the title is hidden.">
+                {FLAG_TEXT.title_withheld as string}
+              </span>
+            ) : null}
             <LabelChips labels={s.labels} />
           </div>
           {restricted ? (
@@ -1251,7 +1408,7 @@ export function SessionModal({
         <ConfirmModal
           title={`Withhold message #${withhold.position}`}
           action="Withhold this message"
-          busy={busy || copies === undefined}
+          busy={busy || copies === undefined || preview === undefined}
           error={withholdError}
           onConfirm={() => void doWithhold(withhold)}
           onCancel={() => {
@@ -1259,10 +1416,22 @@ export function SessionModal({
             setWithholdError(null);
           }}
         >
-          {copies === undefined ? (
+          {copies === undefined || preview === undefined ? (
             <p>Counting the memory items promoted from this message…</p>
           ) : (
-            withholdText(copies.count, copies.error).map((line) => <p key={line}>{line}</p>)
+            <>
+              {withholdText(copies.count, copies.error).map((line) => (
+                <p key={line}>{line}</p>
+              ))}
+              <WithholdChoices
+                preview={preview}
+                includeIdentical={includeIdentical}
+                setIncludeIdentical={setIncludeIdentical}
+                hideTitle={hideTitle}
+                setHideTitle={setHideTitle}
+                onOpenItem={onOpenItem}
+              />
+            </>
           )}
         </ConfirmModal>
       ) : null}
@@ -2820,7 +2989,114 @@ function DeletedList({ rev, onOpenItem }: { rev: number; onOpenItem: (id: number
   );
 }
 
-function Review({ rev, bump, onOpenItem }: { rev: number; bump: () => void; onOpenItem: (id: number) => void }) {
+/** Admins (0.6.2): rows withheld because they may be a message an admin withheld, with the evidence (never their text):
+ * keep one withheld for good, or release it (its text comes back at the next import). */
+function HeldForReview({ rev, onChanged, onOpenMessage }: { rev: number; onChanged: () => void; onOpenMessage: (session: number, message?: number) => void }) {
+  const list = usePoll(() => api.get<{ holds: BrainHold[]; total: number }>(`${BASE}/holds`), 0, [rev]);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<number | null>(null);
+  const [release, setRelease] = useState<BrainHold | null>(null);
+  const holds = list.data?.holds ?? null;
+
+  async function act(h: BrainHold, what: "keep" | "release") {
+    setBusy(h.message);
+    setError(null);
+    try {
+      await api.post(`${BASE}/holds/${h.message}/${what}`);
+      setRelease(null);
+      onChanged();
+      await list.refresh();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Card
+      title={
+        <>
+          <Icon name="lock" size={18} className="card-icon" /> Held for review
+        </>
+      }
+      actions={holds ? <span className="small">{plural(holds.length, "message")}</span> : null}
+    >
+      <p className="muted small">{HOLDS_INTRO}</p>
+      <ErrorNote error={list.error ? `Could not load the held messages: ${list.error}` : release ? null : error} />
+      {!holds ? (
+        list.error ? null : <Empty>Loading…</Empty>
+      ) : !holds.length ? (
+        <Empty>No messages are held for review.</Empty>
+      ) : (
+        <ul className="br-hits">
+          {holds.map((h) => {
+            const w = h.withheld_message;
+            const label = `message #${h.position} (${ROLE_LABEL[h.role] ?? cap(h.role)})`;
+            return (
+              <li key={h.message} className="br-hit br-review-row br-hold">
+                <div className="br-review-main">
+                  <button type="button" className="br-hit-title link-button" onClick={() => onOpenMessage(h.session, h.message)}>
+                    {cap(label)} in {h.title === null ? "a conversation whose title is hidden" : h.title || "an untitled conversation"}
+                  </button>
+                  <div className="br-hit-meta small">
+                    <span className="br-chip br-chip-risk">held for review</span>
+                    <span className="muted">
+                      <When iso={h.at} /> · {h.content_chars.toLocaleString()} characters · {h.state} · {h.compare}
+                    </span>
+                  </div>
+                  <p className="small">{holdRuleText(h.rule)}</p>
+                  <p className="small muted">
+                    The withheld message it may be: {w.position != null ? `#${w.position}` : "no longer stored"} ({ROLE_LABEL[w.role] ?? (w.role ? cap(w.role) : "role unknown")}
+                    {w.content_chars != null ? `, ${w.content_chars.toLocaleString()} characters` : ""}
+                    {w.at ? ", " : ""}
+                    {w.at ? <When iso={w.at} /> : null}).
+                  </p>
+                </div>
+                <div className="row-actions br-review-actions">
+                  <button type="button" className="btn small" disabled={busy === h.message} aria-label={`Keep ${label} withheld`} onClick={() => void act(h, "keep")}>
+                    Keep withheld
+                  </button>
+                  <button type="button" className="btn small ghost" disabled={busy === h.message} aria-label={`Release ${label}`} onClick={() => setRelease(h)}>
+                    Release
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {release ? (
+        <ConfirmModal
+          title={`Release message #${release.position}`}
+          action="Release"
+          busy={busy === release.message}
+          error={error}
+          onConfirm={() => void act(release, "release")}
+          onCancel={() => {
+            setRelease(null);
+            setError(null);
+          }}
+        >
+          <p>{RELEASE_CONFIRM}</p>
+          <p>{holdRuleText(release.rule)}</p>
+        </ConfirmModal>
+      ) : null}
+    </Card>
+  );
+}
+
+function Review({
+  rev,
+  bump,
+  onOpenItem,
+  onOpenMessage,
+}: {
+  rev: number;
+  bump: () => void;
+  onOpenItem: (id: number) => void;
+  onOpenMessage: (session: number, message?: number) => void;
+}) {
   const { user } = useAuth();
   const isAdmin = user.role === "admin";
   const conflicts = usePoll(() => api.get<{ conflicts: MemoryConflict[]; total: number }>(`${BASE}/conflicts${qs({ status: "open" })}`), 0, [rev]);
@@ -2878,6 +3154,7 @@ function Review({ rev, bump, onOpenItem }: { rev: number; bump: () => void; onOp
           </ul>
         )}
       </Card>
+      {isAdmin ? <HeldForReview rev={rev} onChanged={bump} onOpenMessage={onOpenMessage} /> : null}
       {isAdmin ? <DeletedList rev={rev} onOpenItem={onOpenItem} /> : null}
     </>
   );
@@ -3445,7 +3722,7 @@ export default function Brain() {
           {tab === "agents" ? <AgentKnowledge rev={rev} /> : null}
           {tab === "skills" ? <Skills rev={rev} onOpenItem={openItem} /> : null}
           {tab === "workflows" ? <Workflows rev={rev} openDraft={(n) => update({ draft: String(n) })} /> : null}
-          {tab === "review" ? <Review rev={rev} bump={bump} onOpenItem={openItem} /> : null}
+          {tab === "review" ? <Review rev={rev} bump={bump} onOpenItem={openItem} onOpenMessage={(s, m) => openSession(s, m)} /> : null}
           {tab === "imports" ? <Imports rev={rev} openRun={(n) => update({ run: String(n) })} /> : null}
         </Contained>
       </div>

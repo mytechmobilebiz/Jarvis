@@ -71,25 +71,7 @@ NOT_READ = {"relevant": False, "prompt": False, "notes": False, "recall": False,
 # --- Helpers -----------------------------------------------------------------------------------------------------
 
 
-async def nowhere(marker: str, allow: tuple[str, ...] = (), caplog=None) -> list[str]:
-    """Every table.column (text, varchar, JSONB, arrays and search vectors) holding the marker, except `allow`, and
-    "log" when an application log line holds it."""
-    found = []
-    async with session_scope() as s:
-        columns = (await s.execute(text(
-            "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' AND "
-            "data_type IN ('text', 'character varying', 'jsonb', 'json', 'ARRAY', 'tsvector') "
-            "ORDER BY table_name, column_name"))).all()
-        for table, column in columns:
-            where = "%s.%s" % (table, column)
-            if where not in allow and await s.scalar(text(
-                    'SELECT EXISTS (SELECT 1 FROM "%s" WHERE "%s"::text ILIKE :m)' % (table, column)),
-                    {"m": "%" + marker + "%"}):
-                found.append(where)
-    if caplog is not None and any(marker.lower() in r.getMessage().lower() for r in caplog.records
-                                  if not r.name.startswith("httpx")):  # the test client logs its own URLs
-        found.append("log")
-    return found
+nowhere = bj.nowhere  # shared with the 0.6.2 identity tests (tests/brain_jarvis.py)
 
 
 async def plant(key: str = "w1", *, labels: tuple[str, ...] = ("accomplishment",), content: str | None = None,
@@ -962,14 +944,15 @@ async def test_decisions_export_lists_a_withhold_made_after_promotion(built, tmp
     out = tmp_path / "decisions.json"
     result = await imp.decisions_export(str(out))
     exported = json.loads(out.read_text())
-    assert {"source_key": message.source_key, "reason": WITHHELD_BY_ADMIN} in exported["removals"]
+    [removal] = [r for r in exported["removals"] if r["source_key"] == message.source_key]
+    assert removal["reason"] == WITHHELD_BY_ADMIN and removal["anchor"] == ""  # the admin's own decision
     assert exported["decisions"] == []  # the copy is no import: it is not exported
     flat = out.read_text()
     assert TITLE not in flat and json.dumps(message.content)[1:-1] not in flat
     assert (await item_state(copy))[0].source_key is None  # nothing to key a decision by
     [entry] = await audits("brain.decisions_exported")
     assert entry.detail == result and set(result) == {"exported", "skipped_without_source_key", "edits_not_exported",
-                                                      "removals"}
+                                                      "removals", "releases"}
 
 
 async def _production(built, tmp_path, *, purge: bool = False) -> dict:
@@ -1046,8 +1029,10 @@ async def test_decisions_apply_keeps_the_withhold_tombstone_when_the_withhold_is
     again = await imp.run(bj.paths(built), ALL)  # the next import withholds it, and empties its copy
     message = await message_by_key(p["key"])
     assert (message.withheld, message.content) == (True, "") and "withheld_by_admin" in message.flags
+    # 0.6.2: the import's identity repair withholds it by its key before anything is imported.
+    assert again["report"]["repair"]["withheld_by_key"] == 1
     record = (await imp_records(again["run_id"]))[p["key"]]
-    assert (record.action, record.reason) == ("updated", "withheld: an admin withheld it")
+    assert (record.action, record.reason, record.before) == ("duplicate", "already imported", {})
     await assert_emptied(p["copy"])
 
 
@@ -1213,7 +1198,9 @@ async def test_decisions_apply_audits_each_removal_with_ids_and_counts_only(buil
     assert result["removals"] == {"withheld": 1, "purged": 1}
     [withheld] = await audits("archive.message_withheld")
     assert set(withheld.detail) == {"message", "session", "imported_messages", "withheld_messages", "tombstone",
-                                    "copies", "versions_blanked", "rollback_copies_blanked", "answers_scrubbed", "via"}
+                                    "copies", "versions_blanked", "rollback_copies_blanked", "answers_scrubbed", "via",
+                                    "also_withheld", "held_for_review", "identical_withheld", "keys_tombstoned",
+                                    "title_hidden"}
     assert (withheld.detail["message"], withheld.detail["tombstone"]) == (p["message"], True)
     [purged] = await audits("memory.purged")
     assert purged.target_id == str(item_id) and set(purged.detail) == {
@@ -1261,12 +1248,14 @@ async def test_reimport_withholds_again_a_row_an_admin_tombstone_names(built):
     again = await imp.run(bj.paths(built), ALL)
     back = await message_by_key(message.source_key)
     assert (back.withheld, back.content, back.tool_calls, back.labels) == (True, "", [], [])
-    assert back.flags["withheld_by_admin"] == {"note": WITHHELD_BY_ADMIN} and back.sensitivity == message.sensitivity
+    assert back.flags["withheld_by_admin"]["note"] == WITHHELD_BY_ADMIN and back.sensitivity == message.sensitivity
+    # 0.6.2: the import's identity repair withholds it by its key before anything is imported, and keeps no copy of
+    # its text for a rollback.
+    assert again["report"]["repair"]["withheld_by_key"] == 1 and back.source_fp == "w1:live"
     record = (await imp_records(again["run_id"]))[message.source_key]
-    assert (record.action, record.reason) == ("updated", "withheld: an admin withheld it")
-    assert (record.before["content"], record.before["withheld"], record.before["tool_calls"]) == ("", True, [])
+    assert (record.action, record.reason, record.before) == ("duplicate", "already imported", {})
     await assert_emptied(copy)
-    assert [e.detail["cause"] for e in await audits("memory.source_withheld")] == ["import"]
+    assert [e.detail["cause"] for e in await audits("memory.source_withheld")] == ["repair"]
     assert (await imp.verify(again["run_id"], bj.paths(built)))["passed"]
 
 
@@ -1369,7 +1358,9 @@ async def test_an_import_that_adds_a_row_to_an_already_restricted_session_emptie
         sess.flags = {**sess.flags, "withheld_by_import": True}
         await recompute_session(s, sess.id)
         assert sess.sensitivity == "restricted"
-    assert (await agent_reads(copy, TITLE))["relevant"] is True
+    # 0.6.2: an item promoted from a restricted conversation is kept from agents before any import empties it
+    # (policy.withheld_source(), finding 2's safety net).
+    assert await agent_reads(copy, TITLE) == NOT_READ
     await imp.run(bj.paths(built), ALL)
     back = await message_by_key(message.source_key)
     assert back.id != message.id and (back.withheld, back.content) == (True, "")
@@ -1395,7 +1386,7 @@ async def test_an_import_empties_copies_of_a_new_row_an_admin_tombstone_names(bu
     back = await message_by_key(message.source_key)
     assert back.id != message.id
     assert (back.withheld, back.content, back.tool_calls) == (True, "", []) and "withheld_by_admin" in back.flags
-    assert (await imp_records(again["run_id"]))[message.source_key].action == "imported"
+    assert (await imp_records(again["run_id"]))[message.source_key].action == "withheld"
     await assert_emptied(copy)
     assert [e.detail["cause"] for e in await audits("memory.source_withheld")] == ["import"]
     assert (await imp.verify(again["run_id"], bj.paths(built)))["passed"]
@@ -1421,11 +1412,13 @@ async def test_a_changed_source_reimport_of_a_row_an_admin_tombstone_names_withh
     second = await imp.run(bj.paths(fx), ALL)
     back = await message_by_key(tool.source_key)
     assert (back.withheld, back.content, back.tool_calls) == (True, "", []) and "withheld_by_admin" in back.flags
+    # 0.6.2: the import's identity repair withholds it by its key first; a withheld row keeps no fingerprint of its
+    # text, so the changed text is not even compared (it stays withheld whatever it became).
+    assert second["report"]["repair"]["withheld_by_key"] == 1
     record = (await imp_records(second["run_id"]))[tool.source_key]
-    assert (record.action, record.reason) == ("updated", "changed since an earlier import")
-    assert (record.before["content"], record.before["withheld"]) == ("", True)
+    assert (record.action, record.reason, record.before) == ("duplicate", "already imported", {})
     await assert_emptied(copy)
-    assert [e.detail["cause"] for e in await audits("memory.source_withheld")] == ["import"]
+    assert [e.detail["cause"] for e in await audits("memory.source_withheld")] == ["repair"]
     assert await nowhere("ls output", allow=("archive_messages.content", "archive_messages.search")) == []
     assert (await imp.verify(second["run_id"], bj.paths(fx)))["passed"]
 
@@ -2000,13 +1993,13 @@ async def test_no_agent_path_reads_an_emptied_copy_even_if_forced_back_to_approv
     async with session_scope() as s:  # forced by hand: approved again, with text again
         await s.execute(update(MemoryItem).where(MemoryItem.id == copy).values(
             status="approved", title="Forced " + TITLE, body="Forced back: " + MSG))
+        if source != "withheld":  # first: while its stone is there, the database guard keeps the row without text
+            await s.execute(delete(BrainTombstone))
         if source == "back":
             await s.execute(update(ArchiveMessage).where(ArchiveMessage.id == ids["message"]).values(
                 withheld=False, content="Forced back."))
         elif source == "gone":
             await s.execute(delete(ArchiveMessage).where(ArchiveMessage.id == ids["message"]))
-        if source != "withheld":
-            await s.execute(delete(BrainTombstone))
     assert await agent_reads(copy, MSG) == NOT_READ
     if source != "withheld":  # without the flag the agents would read it: the flag alone kept them away
         async with session_scope() as s:
@@ -2016,10 +2009,11 @@ async def test_no_agent_path_reads_an_emptied_copy_even_if_forced_back_to_approv
 
 
 @pytest.mark.parametrize("state", ["newer row", "tombstone", "legacy", "legacy, source removed"])
-async def test_no_agent_or_person_below_admin_reads_a_copy_whose_message_is_withheld_elsewhere(client, state):
+async def test_no_agent_or_person_reads_a_copy_whose_message_is_withheld_elsewhere(client, state):
     """Before any sweep empties it: the message is withheld under a newer row id than the copy names (found by
     flags.message_source_key); an admin withheld it and no row of it is left (tombstone); or the copy was promoted by
-    0.6.0 (no message_source_key), its message_id names no row and its source_ref names a withheld row."""
+    0.6.0 (no message_source_key), its message_id names no row and its source_ref names a withheld row. Nobody reads
+    it, an admin included (0.6.2: 0.6.1 listed it, with its text, to admins)."""
     await allow_ai_context()
     ids = await plant()
     copy = await promote(ids["message"])
@@ -2042,22 +2036,23 @@ async def test_no_agent_or_person_below_admin_reads_a_copy_whose_message_is_with
             if state.endswith("removed"):
                 item.source_ref += archive.SOURCE_REMOVED
     assert await agent_reads(copy, MSG) == NOT_READ
-    assert await listed_by(client, copy) == {"viewer": False, "operator": False, "admin": True}
+    assert await listed_by(client, copy) == {"viewer": False, "operator": False, "admin": False}
     await as_(client, "admin+")
-    assert (await client.get("/api/brain/export")).json()["count"] == 0  # an admin lists it, but never exports it
-    await as_(client, "operator")
-    assert (await client.get("/api/brain/items/%d" % copy)).status_code == 404
-    assert (await client.get("/api/brain/search", params={"q": MSG})).json()["memory"]["total"] == 0
-    assert await withheld_counts() == (1, 1)  # the start-up check, the status count and the pre-check find it too
+    assert (await client.get("/api/brain/export")).json()["count"] == 0
+    for who in ("operator", "admin", "admin+"):
+        await as_(client, who)
+        assert (await client.get("/api/brain/items/%d" % copy)).status_code == 404, who
+        assert (await client.get("/api/brain/search", params={"q": MSG})).json()["memory"]["total"] == 0, who
+    assert await withheld_counts() == (1, 1)  # the start-up check, the status count and the pre-check find it
     await check_withheld_copies()
     await assert_emptied(copy)
 
 
 @pytest.mark.parametrize("status", ["approved", "rejected", "archived", "pending_review"])
-async def test_a_flagged_copy_0_6_0_left_with_its_text_is_for_admins_only_until_it_is_emptied(client, status):
+async def test_a_flagged_copy_0_6_0_left_with_its_text_is_shown_to_nobody_until_it_is_emptied(client, status):
     """0.6.0's withhold of a message whose copy was quarantined at promotion flagged the copy source_withheld and kept
     its text, and 0.6.0 let an admin approve, reject, archive or reopen it. Until the start-up check empties it, the
-    flag alone never shows it to a viewer or an operator: only an emptied copy is shown by its flag."""
+    flag alone never shows it to anyone, an admin included (0.6.2): only an emptied copy is shown by its flag."""
     ids = await plant(content="The %s key [REDACTED:api_key] was rotated." % MSG, redactions={"api_key": 1})
     copy = await promote(ids["message"])
     async with session_scope() as s:  # as 0.6.0 left it
@@ -2066,8 +2061,8 @@ async def test_a_flagged_copy_0_6_0_left_with_its_text_is_for_admins_only_until_
         item = await s.get(MemoryItem, copy)
         item.flags = {**item.flags, "source_withheld": True}
         item.status = status
-    assert await listed_by(client, copy) == {"viewer": False, "operator": False, "admin": True}
-    for who in ("viewer", "operator"):
+    assert await listed_by(client, copy) == {"viewer": False, "operator": False, "admin": False}
+    for who in ("viewer", "operator", "admin", "admin+"):
         await as_(client, who)
         assert (await client.get("/api/brain/items/%d" % copy)).status_code == 404, who
         assert (await client.get("/api/brain/search", params={"q": MSG})).json()["memory"]["total"] == 0, who
@@ -2368,13 +2363,15 @@ async def test_audit_details_have_exactly_the_specified_keys(client, tmp_path):
     expected = {
         "archive.message_withheld": {"message", "session", "imported_messages", "withheld_messages", "tombstone",
                                      "copies", "versions_blanked", "rollback_copies_blanked", "answers_scrubbed",
-                                     "via"},
+                                     "via", "also_withheld", "held_for_review", "identical_withheld",
+                                     "keys_tombstoned", "title_hidden"},
         "memory.source_withheld": {"item", "kind", "agent", "status_before", "status", "version", "deleted",
                                    "versions_blanked", "message", "session", "cause"},
         "memory.purged": {"item", "kind", "agent", "versions_removed", "conflicts_removed", "tombstone", "origin",
                           "message", "source_withheld", "answers_scrubbed"},
         "memory.version_redacted": {"item", "version", "kind", "answers_scrubbed"},
-        "brain.decisions_exported": {"exported", "skipped_without_source_key", "edits_not_exported", "removals"},
+        "brain.decisions_exported": {"exported", "skipped_without_source_key", "edits_not_exported", "removals",
+                                     "releases"},
     }
     for action, keys in expected.items():
         [entry] = await audits(action)
@@ -2406,3 +2403,349 @@ async def test_a_failed_task_records_the_database_error_class_only(admin, gate_a
     assert detail["task"]["error"] == "IntegrityError (_Refused, SQLSTATE 23514)"
     assert [e["message"] for e in detail["logs"]] == ["IntegrityError (_Refused, SQLSTATE 23514)"]
     assert await nowhere(MSG, caplog=caplog) == []
+
+
+# --- 0.6.2: findings 2 and 3 (a restricted conversation), legacy copies of rowless messages, the pre-check -----------
+# (spec 19.8; findings F3/F4 and F8 of the 0.6.1 review, with the attacker's and the skeptic's own probes.)
+
+LATER = 1796000000.0  # after every fixture session
+SSN_TEXT = "His SSN is 219-09-9999"  # synthetic restricted value
+
+
+def _conversation(fx: dict[str, str], sid: str, mark: str, started: float) -> list[int]:
+    bj.add_session(fx["db"], sid, started=started)
+    return [bj.add_row(fx["db"], sid, "user", "How did the backup go?", started + 1),
+            bj.add_row(fx["db"], sid, "assistant", "The %s backup finished at noon." % mark, started + 2),
+            bj.add_row(fx["db"], sid, "user", "Great.", started + 3)]
+
+
+async def _rows_of(sid: str) -> list[ArchiveMessage]:
+    async with session_scope() as s:
+        sess = await s.scalar(select(ArchiveSession).where(ArchiveSession.source_session_id == sid))
+        return list((await s.scalars(select(ArchiveMessage).where(ArchiveMessage.session_id == sess.id)
+                                     .order_by(ArchiveMessage.position, ArchiveMessage.id))).all())
+
+
+async def _session_of(sid: str) -> ArchiveSession:
+    async with session_scope() as s:
+        return await s.scalar(select(ArchiveSession).where(ArchiveSession.source_session_id == sid))
+
+
+async def _promoted_backup_copy(fx: dict[str, str], sid: str, mark: str, started: float) -> tuple[list[int], int]:
+    ids = _conversation(fx, sid, mark, started)
+    await allow_ai_context()
+    await imp.run(bj.paths(fx), ALL)
+    message = next(r for r in await _rows_of(sid) if mark in r.content)
+    copy = await promote(message.id, title="Backup " + mark)
+    await decide(copy, "approve")
+    return ids, copy
+
+
+async def _emptied_for_everyone(client, copy: int, mark: str) -> None:
+    """The copy is emptied and quarantined, no agent path reads it, only an admin lists it (as a placeholder), and
+    the mark is nowhere."""
+    await assert_emptied(copy)
+    assert await agent_reads(copy, mark) == NOT_READ
+    assert await listed_by(client, copy) == {"viewer": False, "operator": False, "admin": True}
+    assert await nowhere(mark) == []
+
+
+@pytest.mark.parametrize("order", ["K2A same import", "K2B rewind first", "K2C restrict first"])
+async def test_finding_2_copy_of_a_rewound_row_of_a_restricted_conversation_is_emptied(fx, client, order):
+    """F3 (the skeptic's K2A-K2C): the row a copy was promoted from is rewound in JARVIS, and the conversation is
+    restricted (restricted data appears) in the same import, a later one, or an earlier one. Whatever the order, the
+    copy is emptied and no agent reads it."""
+    mark = "zqktwo%s62" % order[2].lower()
+    sid = "k2_%s" % order[2].lower()
+    ids, copy = await _promoted_backup_copy(fx, sid, mark, LATER + 6000)
+
+    def rewind() -> None:
+        bj.change(fx["db"], "UPDATE messages SET active = 0, compacted = 0 WHERE id = ?", ids[1])
+
+    def restrict() -> None:
+        bj.add_row(fx["db"], sid, "user", SSN_TEXT, LATER + 6050)
+
+    if order.startswith("K2A"):
+        rewind()
+        restrict()
+    elif order.startswith("K2B"):
+        rewind()
+        await imp.run(bj.paths(fx), ALL)  # rewound only: the conversation is still general, the copy stays
+        assert (await agent_reads(copy, mark))["relevant"] is True
+        restrict()
+    else:
+        restrict()
+        await imp.run(bj.paths(fx), ALL)
+        rewind()
+    last = await imp.run(bj.paths(fx), ALL)
+    assert (await _session_of(sid)).sensitivity == "restricted"
+    await _emptied_for_everyone(client, copy, mark)
+    assert (await imp.verify(last["run_id"], bj.paths(fx)))["passed"]
+
+
+async def test_finding_2_attacker_probe_c(fx, client):
+    """The attacker's probe C: one import rewinds the promoted assistant turn and finds restricted data."""
+    mark = "rewoundwombatqc62"
+    sid = "20261117_0303"
+    ids, copy = await _promoted_backup_copy(fx, sid, mark, LATER + 2000)
+    bj.change(fx["db"], "UPDATE messages SET active = 0, compacted = 0 WHERE id = ?", ids[1])
+    bj.add_row(fx["db"], sid, "user", SSN_TEXT, LATER + 2050)
+    second = await imp.run(bj.paths(fx), ALL)
+    assert (await _session_of(sid)).sensitivity == "restricted"
+    assert (await imp.verify(second["run_id"], bj.paths(fx)))["passed"]
+    await _emptied_for_everyone(client, copy, mark)
+
+
+@pytest.mark.parametrize("later", [False, True], ids=["K3A same import", "K3B deleted earlier"])
+async def test_finding_3_a_row_the_source_no_longer_holds_keeps_no_text_in_a_restricted_conversation(fx, client,
+                                                                                                    later):
+    """F4 (K3A, K3B): a stored row JARVIS no longer holds, in a conversation an import restricts, keeps no text: not
+    even an admin with the sensitive-data permission reads it, and a rescan has nothing left to do."""
+    mark = "skgoneotter%s62" % ("b" if later else "a")
+    sid = "k3_%s" % ("b" if later else "a")
+    ids = _conversation(fx, sid, mark, LATER + 9000)
+    await imp.run(bj.paths(fx), ALL)
+    bj.change(fx["db"], "DELETE FROM messages WHERE id = ?", ids[1])
+    if later:
+        await imp.run(bj.paths(fx), ALL)
+    bj.add_row(fx["db"], sid, "user", SSN_TEXT, LATER + 9050)
+    last = await imp.run(bj.paths(fx), ALL)
+    sess = await _session_of(sid)
+    assert sess.sensitivity == "restricted" and sess.imported_messages == 0
+    assert all(r.withheld and r.content == "" for r in await _rows_of(sid))
+    for who in ("operator", "admin", "admin+"):
+        await as_(client, who)
+        r = await client.get("/api/brain/sessions/%d" % sess.id)
+        assert mark not in r.text, who
+        assert mark not in (await client.get("/api/brain/search", params={"q": mark, "scope": "archive"})).text
+    async with session_scope() as s:
+        hits, _ = await store.AgentMemory(s, "supervisor").history(mark)
+    assert not hits
+    assert (await imp.verify(last["run_id"], bj.paths(fx)))["passed"]
+    assert await nowhere(mark) == []
+    out = await imp.rescan(apply=True, actor=ADMIN[0])
+    assert not out.get("sessions_withheld") and await nowhere(mark) == []
+
+
+async def test_finding_3_attacker_probe_d(fx, client):
+    """The attacker's probe D: the promoted row is deleted from the backup and the conversation restricted in one
+    import: the row keeps no text, the copy is emptied, admins and admins+ read nothing."""
+    mark = "missingwombatqd62"
+    sid = "20261117_0304"
+    ids, copy = await _promoted_backup_copy(fx, sid, mark, LATER + 3000)
+    bj.change(fx["db"], "DELETE FROM messages WHERE id = ?", ids[1])
+    bj.add_row(fx["db"], sid, "user", SSN_TEXT, LATER + 3050)
+    second = await imp.run(bj.paths(fx), ALL)
+    assert (await imp.verify(second["run_id"], bj.paths(fx)))["passed"]
+    sess = await _session_of(sid)
+    assert (sess.sensitivity, sess.imported_messages) == ("restricted", 0)
+    for who in ("admin", "admin+"):
+        await as_(client, who)
+        assert mark not in (await client.get("/api/brain/sessions/%d" % sess.id)).text
+        assert mark not in (await client.get("/api/brain/search", params={"q": mark})).text
+    await _emptied_for_everyone(client, copy, mark)
+
+
+# Legacy copies (0.6.0's promote wrote flags.message_id and archive_session_id, no message_source_key) of a message
+# withheld while this database holds no row of it (F8).
+
+LEGACY_SID = "20261011_0011"  # the conversation modify_copy rewinds (its first assistant row goes inactive)
+L_BODY, L_TITLE, L_TAG, L_NOTE, L_EDIT = "zqcfbody62", "zqcftitle62", "zqcftag62", "zqcfnote62", "zqcfedit62"
+
+
+def _plant_legacy_body(fx: dict[str, str]) -> None:
+    con = bj.sqlite(fx["db"])
+    try:
+        mid = con.execute("SELECT min(id) FROM messages WHERE session_id = ? AND role = 'assistant'",
+                          (LEGACY_SID,)).fetchone()[0]
+        con.execute("UPDATE messages SET content = content || ' (cert %s)' WHERE id = ?" % L_BODY, (mid,))
+        con.commit()
+    finally:
+        con.close()
+
+
+async def _legacy_copy(message_id: int, *, title: str = "Cert renewal " + L_TITLE, edited: bool = True) -> int:
+    """What 0.6.0's review.promote_message wrote (5ccdf21), then an admin's approval with a note, an edit and a
+    second approval."""
+    async with session_scope() as s:
+        message = await s.get(ArchiveMessage, message_id)
+        sess = await s.get(ArchiveSession, message.session_id)
+        item = await store.create_item(
+            s, kind="project", title=title, body=message.content, actor=OPERATOR, agent="", origin="promoted",
+            flags={"message_id": message.id, "archive_session_id": sess.id}, sensitivity="general",
+            source_system="jarvis", source_ref=archive.promoted_ref(sess.source_session_id, message.position),
+            source_at=message.at, import_run_id=None, note="promoted from an archived JARVIS message", tags=[L_TAG])
+        await store.review_item(s, item, decision="approve", actor=ADMIN[0], note="ok " + L_NOTE)
+        if edited:
+            await store.edit_item(s, item, actor=ADMIN[0], body=message.content + " " + L_EDIT)
+            await store.review_item(s, item, decision="approve", actor=ADMIN[0])
+        return item.id
+
+
+async def _legacy_gone(fx: dict[str, str], gone: str) -> tuple[dict, str, int]:
+    """The legacy copy of the planted assistant row, then that row gone: its run rolled back, or rewound by a newer
+    import. Returns (the first run, the row's key, the copy)."""
+    await allow_ai_context()
+    _plant_legacy_body(fx)
+    first = await imp.run(bj.paths(fx), ALL)
+    async with session_scope() as s:
+        message = await s.scalar(select(ArchiveMessage).where(ArchiveMessage.content.contains(L_BODY)))
+    assert message is not None and not message.withheld
+    copy = await _legacy_copy(message.id)
+    if gone == "rolled back":
+        await imp.rollback(first["run_id"], confirm=True)
+    else:
+        modify_copy(fx)
+        await imp.run(bj.paths(fx), ALL)
+    assert await message_by_key(message.source_key) is None
+    assert (await agent_reads(copy, L_TITLE))["relevant"] is True  # its row is gone, not withheld: still read
+    return first, message.source_key, copy
+
+
+def _removal_file(tmp_path, key: str) -> str:
+    out = tmp_path / "decisions.json"
+    out.write_text(json.dumps({"format": "jarvis-brain-decisions", "version": 3, "decisions": [],
+                               "removals": [{"source_key": key, "reason": WITHHELD_BY_ADMIN}]}))
+    return str(out)
+
+
+async def _legacy_clean_everywhere(client, copy: int) -> None:
+    await _emptied_for_everyone(client, copy, L_TITLE)
+    for mark in (L_BODY, L_TAG, L_NOTE, L_EDIT):
+        assert await nowhere(mark) == [], mark
+    for who in ("viewer", "operator"):
+        await as_(client, who)
+        assert (await client.get("/api/brain/items", params={"q": L_BODY})).json()["total"] == 0
+        assert L_BODY not in (await client.get("/api/brain/search", params={"q": L_BODY})).text
+        assert (await client.get("/api/brain/items/%d" % copy)).status_code == 404
+    await as_(client, "admin+")
+    assert L_BODY not in (await client.get("/api/brain/export?include_customer=true")).text
+    assert await withheld_counts() == (0, 0)
+
+
+@pytest.mark.parametrize("gone", ["rolled back", "rewound"])
+async def test_p06_legacy_copy_of_a_rowless_withheld_message_is_emptied_by_decisions_apply(fx, tmp_path, client,
+                                                                                           gone):
+    """P06 and the skeptic's C1: decisions-apply withholds a message this database holds no row of ("kept for later
+    imports"); the 0.6.0 copy of its old row is found through the import records and emptied at once."""
+    first, key, copy = await _legacy_gone(fx, gone)
+    result = await imp.decisions_apply(_removal_file(tmp_path, key), first["run_id"], actor=ADMIN[0], apply=True)
+    assert result["removals"] == {"kept for later imports": 1}
+    await _legacy_clean_everywhere(client, copy)
+    if gone == "rolled back":  # the same source again: the row comes back withheld, the copy stays empty
+        await imp.run(bj.paths(fx), ALL)
+        back = await message_by_key(key)
+        assert back is not None and back.withheld and back.content == ""
+        await assert_emptied(copy)
+
+
+async def test_p06b_the_start_up_check_and_rescan_empty_a_legacy_copy_whose_key_0_6_0_tombstoned(fx, client):
+    """P06b and the skeptic's C2: what 0.6.0 left (its run rolled back, its decisions-apply wrote only the withhold
+    tombstone); 0.6.2 starts, then rescans."""
+    _, key, copy = await _legacy_gone(fx, "rolled back")
+    async with session_scope() as s:
+        s.add(BrainTombstone(source_key=key, purged_by=ADMIN[0], reason=WITHHELD_BY_ADMIN))
+    assert await check_withheld_copies() is True
+    await assert_emptied(copy)
+    await imp.rescan(apply=True, actor=ADMIN[0])
+    await _legacy_clean_everywhere(client, copy)
+
+
+async def test_p06c_before_the_start_up_check_a_legacy_copy_is_counted_and_kept_from_everyone(fx, client):
+    """P06c: the same state, before any check: status and the pre-check count it, no agent and no person reads it, an
+    admin included (policy.withheld_source(): the import records name the withheld key its gone row held)."""
+    _, key, copy = await _legacy_gone(fx, "rolled back")
+    async with session_scope() as s:
+        s.add(BrainTombstone(source_key=key, purged_by=ADMIN[0], reason=WITHHELD_BY_ADMIN))
+    assert await withheld_counts() == (1, 1)
+    assert (await imp.status())["withheld_copies_with_text"] == 1
+    assert await agent_reads(copy, L_TITLE) == NOT_READ
+    assert await listed_by(client, copy) == {"viewer": False, "operator": False, "admin": False}
+    await check_withheld_copies()
+    await _legacy_clean_everywhere(client, copy)
+
+
+async def test_confirm_c3_control_a_rowful_withhold_empties_the_same_legacy_copy(fx, tmp_path, client):
+    """The skeptic's C3 (control): while the row is there, decisions-apply withholds it and empties the same copy."""
+    await allow_ai_context()
+    _plant_legacy_body(fx)
+    first = await imp.run(bj.paths(fx), ALL)
+    async with session_scope() as s:
+        message = await s.scalar(select(ArchiveMessage).where(ArchiveMessage.content.contains(L_BODY)))
+    copy = await _legacy_copy(message.id)
+    result = await imp.decisions_apply(_removal_file(tmp_path, message.source_key), first["run_id"], actor=ADMIN[0],
+                                       apply=True)
+    assert result["removals"] == {"withheld": 1}
+    await _legacy_clean_everywhere(client, copy)
+
+
+async def test_precheck_sql_parity(client):
+    """scripts/brain-precheck.ps1 counts exactly what the start-up check finds (archive.withheld_copies), branch by
+    branch: a withheld row by id, by a newer row's key, by an admin's tombstone with no row, a 0.6.0 copy by its
+    source_ref, a 0.6.0 copy whose row is gone by the import records (0.6.2), a copy of a restricted conversation
+    (0.6.2) and a flagged 0.6.0 copy that kept its text. Copies of readable messages and emptied copies are never
+    counted."""
+    expected = 0
+
+    async def check() -> None:
+        assert await withheld_counts() == (expected, expected)
+
+    readable = await plant("pq0")
+    await promote(readable["message"])
+    await check()
+    for branch in ("id", "newer key", "tombstone", "legacy ref", "legacy record", "restricted", "flagged"):
+        ids = await plant("pq_%s" % branch.replace(" ", "_"))
+        copy = await promote(ids["message"])
+        async with session_scope() as s:
+            item = await s.get(MemoryItem, copy)
+            withhold_row = update(ArchiveMessage).where(ArchiveMessage.id == ids["message"]).values(
+                content="", tool_calls=[], labels=[], withheld=True)
+            if branch == "id":
+                await s.execute(withhold_row)
+            elif branch == "newer key":
+                await s.execute(withhold_row)
+                item.flags = {**item.flags, "message_id": 990_001}
+            elif branch == "tombstone":
+                await s.execute(delete(ArchiveMessage).where(ArchiveMessage.id == ids["message"]))
+                s.add(BrainTombstone(source_key=ids["key"], purged_by=ADMIN[0], reason=WITHHELD_BY_ADMIN))
+            elif branch == "legacy ref":
+                await s.execute(withhold_row)
+                item.flags = {"message_id": 990_002, "archive_session_id": ids["session"]}
+            elif branch == "legacy record":
+                run = ImportRun(status="completed", created_by="importer (cli)")
+                s.add(run)
+                await s.flush()
+                s.add(ImportRecord(run_id=run.id, source_key=ids["key"], record_type="message", action="imported",
+                                   target_table="archive_messages", target_id=ids["message"]))
+                await s.execute(delete(ArchiveMessage).where(ArchiveMessage.id == ids["message"]))
+                s.add(BrainTombstone(source_key=ids["key"], purged_by=ADMIN[0], reason=WITHHELD_BY_ADMIN))
+                item.flags = {"message_id": ids["message"], "archive_session_id": ids["session"]}
+            elif branch == "restricted":
+                sess = await s.get(ArchiveSession, ids["session"])
+                sess.sensitivity = "restricted"
+            else:
+                item.flags = {**item.flags, "source_withheld": True}
+        expected += 1
+        await check()
+    assert await check_withheld_copies() is True
+    expected = 0
+    await check()
+
+
+async def test_agents_never_read_a_row_whose_key_has_a_withhold_stone(client):
+    """The agent key guard (spec 11): a row whose key an admin's withhold names is withheld by every writer and by
+    the repair; even if one were readable (here: a stone written after the row, before any repair), the Supervisor's
+    history and recall never read it."""
+    ids = await plant("kg1")
+    async with session_scope() as s:
+        hits, _ = await store.AgentMemory(s, "supervisor").history(MSG)
+        assert [h.message.id for h in hits] == [ids["message"]]
+        s.add(BrainTombstone(source_key=ids["key"], purged_by=ADMIN[0], reason=WITHHELD_BY_ADMIN))
+    async with session_scope() as s:
+        assert (await s.get(ArchiveMessage, ids["message"])).withheld is False  # not repaired yet
+        hits, _ = await store.AgentMemory(s, "supervisor").history(MSG)
+        assert hits == []
+    assert MSG not in json.dumps((await ask("what did JARVIS accomplish with %s" % MSG)).data)
+    await check_withheld_copies()  # the repair withholds the row itself
+    async with session_scope() as s:
+        assert (await s.get(ArchiveMessage, ids["message"])).withheld is True

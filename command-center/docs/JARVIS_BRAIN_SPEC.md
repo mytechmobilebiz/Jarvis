@@ -1,4 +1,4 @@
-# JARVIS Brain: developer specification (0.6.0)
+# JARVIS Brain: developer specification (0.6.0; withhold identity 0.6.2)
 
 This is the contract the JARVIS Brain is built against. The owner-facing explanation
 is `docs/JARVIS_MIGRATION_DESIGN.md`. Paths are relative to `command-center/`.
@@ -146,8 +146,11 @@ python -m app.cli brain-import verify   --run ID --db F --profile D [--content D
 python -m app.cli brain-import rollback --run ID --yes [--discard-reviewed] [--actor T]
 python -m app.cli brain-import status   [--run ID]
 python -m app.cli brain-import rescan   [--yes]          # re-clean every stored brain text with the current detectors
-python -m app.cli brain-import decisions-export --out FILE  # review decisions keyed by source_key (test copy)
+python -m app.cli brain-import repair   [--yes] [--actor T]   # 0.6.2: the withhold identity repair (2.9); without --yes: what is pending
+python -m app.cli brain-import fingerprints --forget-other-key [--yes]   # 0.6.2: purge fingerprints made with another DB password
+python -m app.cli brain-import decisions-export --out FILE [--removals-only]  # review decisions keyed by source_key (test copy)
 python -m app.cli brain-import decisions-apply  --in FILE --run ID --actor ADMIN_EMAIL [--yes]  # after the production import
+python -m app.cli brain-import decisions-apply  --in FILE --removals-only [--actor ADMIN_EMAIL] [--yes]  # restore.ps1
 ```
 
 **Selection** (`SELECTION`):
@@ -225,6 +228,18 @@ read-only, for duplicates, conflicts and tombstones. It prints counts and, with
 6. No withheld message or restricted session has text.
 7. `columns_read` holds no reasoning or system-prompt column.
 8. Full-text search finds a sample of the imported messages and items.
+9. (0.6.2) `withheld_identity_holds`: `brain_withhold_pending()` counts no readable
+   row matching a withhold; every source row the identity rules (2.9) match in the
+   run's sessions is stored withheld (by key, or by its JARVIS row for a re-keyed
+   row); every `duplicate` record of the run whose target's key has a stone has one
+   itself (restricted sessions aside).
+10. (0.6.2) `withheld_hold_no_fingerprint`: no withheld row, and no rollback copy
+    marked withheld, has a `source_fp` other than `w1:*` (or `''`, a released hold).
+11. (0.6.2) `purged_stay_purged`: no item of the run has a purge-tombstoned key, a
+    purged entry digest or a fingerprinted `source_sha256` (purges made by the end
+    of the run).
+12. (0.6.2) `database_guard_quiet`: no row stored or updated by the run carries
+    `flags.withheld_by_admin.guard` (the trigger had to blank it: an importer bug).
 
 It writes `report.verification` (that key alone, and only while the run is still
 `completed`: a rollback during verify refuses the write).
@@ -274,6 +289,17 @@ Since 0.6.1:
   as it is. The result and the audit entry list it in `kept_withheld_copies`
   (ids), outside `reverted`.
 
+Since 0.6.2 (2.9): every row a rollback puts back is matched against the stones
+without its text: its key has a stone, or its JARVIS row (session, row id, equal or
+unknown role) is a stone's binding → back withheld as a member; it shares only a
+stone's uid (same role) → back withheld as a hold (`review = 'pending'`, with a
+pending stone on its key, so the holds list shows it and the next import compares the
+text). Every withheld row and copy put back has `source_fp = 'w1:<state>'` (a
+released hold keeps `''`). A `before` holding `source_key` (key adoption) restores the
+old key. Stones and exemptions are never deleted: an inherited withhold is as
+permanent as the admin's own. The database guard runs on every put-back and never
+contradicts these rules.
+
 `rollback_run(session, run_id, actor, discard_reviewed=False) -> dict` is also
 called by the API.
 
@@ -288,6 +314,9 @@ current detectors:
   `copy_versions_blanked` and `rollback_copies_blanked`, also in a dry run, whose
   changes are rolled back;
 - older versions' text is re-cleaned too.
+
+Since 0.6.2 it runs the withhold identity repair first (`identity.repair_rows`;
+the Python part of the repair in its last pass).
 
 It reports counts and writes the audit entry `brain.rescanned`.
 
@@ -326,11 +355,38 @@ It reports counts and writes the audit entry `brain.rescanned`.
 - Not carried over (redo by hand): edits of customer and Credit Repair items,
   conflict decisions, workflow drafts reviewed or converted, promoted messages,
   redacted versions.
+- **Version 4 (0.6.2).** A withhold travels as every stone (2.9) that is certain or
+  kept: `{source_key, reason, anchor, session, row, role, tool_call_id, uid,
+  uid_known, via, review}` (`review` `''` or `kept`); a purge as `{source_key,
+  reason}`; and `releases: [{anchor, session, row}]` (the exemptions). Holds still
+  pending are not exported (the live import finds them again). No text and no
+  fingerprint. `--removals-only` writes only `removals` and `releases`
+  (`removals_only: true`, no `decisions`). Versions 3 and 4 are read; a newer
+  version is refused. A version 3 withhold gets its binding from its key
+  (`identity.parse_key`: the row form gives the JARVIS row, the uid form the uid).
+- Apply, per withhold: the stone (with its binding, group and `via
+  decisions-apply`, or `restore`; a kept hold stays kept) in its own savepoint;
+  then the rows it names (`identity.rows_for`: by key, and by JARVIS row with an
+  equal or unknown role) are withheld with `review.withhold_message`; a row that
+  only shares its uid is held for review (`review.hold_message`, audited
+  `archive.message_held`, outcome `held for review`); with no row, its copies are
+  emptied (`kept for later imports`). Releases come after the removals: the
+  exemption, then a row held in that group for that JARVIS row is released as the
+  API releases it (`released`); otherwise `kept for later imports` or `already
+  done`. The result and `brain.decisions_applied` count `releases` too.
+- **`--removals-only`** (restore.ps1, 6.6 and `DEPLOY_WINDOWS.md`): no `--run`,
+  item decisions ignored, the actor `system (restore)` (with the sensitive-data
+  permission: every decision in the file was an admin's) unless `--actor` names an
+  active admin; `brain.decisions_applied` has target `brain` and `"via":
+  "restore"`, and every withhold and purge is audited with `via: restore`.
 
 **Audit actions:** `brain.import_started`, `brain.import_completed`,
 `brain.import_failed`, `brain.import_rolled_back`, `brain.rescanned`,
 `brain.decisions_exported`, `brain.decisions_applied` (actor `--actor`, default
 `importer (cli)`), and `memory.source_withheld` for each item a withhold empties.
+Since 0.6.2: `brain.withhold_identity_repaired` (cause and counts, only when
+something changed), `archive.message_held`, `archive.hold_kept`,
+`archive.hold_released` and `brain.purge_fingerprints_forgotten`.
 
 **`status`** also reports `migration_0007_brain_withhold`,
 `withheld_copies_with_text` (promoted items whose message is withheld but which
@@ -339,6 +395,17 @@ withheld message that still hold it). `jarvis-import.ps1 -Target Production`
 requires the migrations in every mode, and a `withheld_copies_with_text` of 0 for
 `-Mode Import` and `-Mode Resume` only (the other modes print the count; `-Mode
 Rescan` empties them).
+
+Since 0.6.2 `status` prints one more line (and returns the same values as keys):
+`migration 0008_brain_withhold_identity present; identity repair done; readable rows
+matching a withhold: N; held for review: H; withheld rows with a text fingerprint: M;
+rows blanked by the database guard: G; quotes of removed sources: Q; purge
+fingerprints made with another key: X` (`MISSING` and `not done` where they apply).
+`jarvis-import.ps1` reads it (6.6). **`repair`** without `--yes` prints what is
+pending and changes nothing; with `--yes` it takes the import lock (refused, exit 2,
+while it is held), runs `identity.repair` and prints the counts. **`fingerprints
+--forget-other-key --yes`** deletes only the purge fingerprints made with another
+database password (2.3) and audits how many.
 
 ### 2.2 Sessions and messages
 
@@ -384,6 +451,39 @@ Rescan` empties them).
   with `before`.
 - Sessions in the archive but missing from the new backup are counted in the report
   (`missing_from_source`). They are never deleted.
+
+**Since 0.6.2 (2.9):**
+- **No fingerprint of withheld text.** A withheld row and its rollback copies keep
+  `source_fp = 'w1:live' | 'w1:compacted' | 'w1:rewound'` (the state only); a stored
+  row is "the same" as its source row while the state is (`identity.same_source`).
+  `message_uid` and `absorbed_message_uids` are read when present; every row stores
+  `source_uid`.
+- **Held rows.** Before writing, `Processor.held_rows` applies the identity rules of
+  2.9 to the session; a matched row is inserted withheld (action `withheld`, reason
+  `withheld by an admin[: <rule>]` or `held for an admin's review: <rule>`) and its
+  key inherits a stone in the admin's group. A withheld row whose release marker is
+  set (`flags.withheld_by_admin.released_at`, `source_fp ''`) and that no stone names
+  any more is written again from the source (`updated`, reason `released by an
+  admin: restored from the source`).
+- **Rewound twins.** A live row whose (content hash, tool call) equals an earlier
+  rewound row of the session is that row's twin (Hermes's in-place compaction tail,
+  `/retry`); twins and the importer's duplicate links carry a withhold, unless both
+  rows carry different uids.
+- **Key adoption.** A stored row whose key this backup no longer has is re-keyed in
+  place when JARVIS changed only its key: the same JARVIS row and role, or (after a
+  renumbering) the same uid and role while its old row id is gone. The row keeps its
+  id; `source_key`, `source_uid`, `source_message_id` and `position` are updated
+  (`updated`, reason `key changed since an earlier import`, `before` with the old
+  key). No conversation is stored twice.
+- **Key collisions.** A key that names a stored row of another JARVIS row still in
+  the backup → `excluded`, `key collision: JARVIS gave this key to another row`; a
+  stoned key now naming another present JARVIS row → `excluded`, `key collision:
+  JARVIS gave the key of a withheld message to another row`. No row is overwritten
+  with another row's text or withheld because of another message.
+- **A newly restricted conversation** blanks every readable row of it (also rows the
+  backup no longer holds), and the items promoted from its deleted rows are emptied.
+- **Title.** A session flagged `title_withheld` (an admin hid it with a withhold)
+  keeps an empty title through later imports.
 
 ### 2.3 Profile files → memory items
 
@@ -459,6 +559,21 @@ The status is `quarantined` when any secret was redacted, or when a risk flag is
   content → the incoming item, `flags.conflict = true`, plus a conflict of kind
   `memory_item`.
 - **Tombstoned keys** → `excluded`, reason `purged by an admin`.
+- **Purge identity (0.6.2).** A purged item is also recognised under another key:
+  a memory entry whose entry digest equals a purged entry's (moved or copied to
+  another memory file); a file whose bytes equal a purged file's in the same backup;
+  a file whose keyed fingerprint is stored (`brain_purged_content.fp =
+  'k1:<key id>:' || HMAC(K, source_sha256)`, K derived from the database password:
+  `HMAC-SHA256("infinite-ai/jarvis-brain/purge-fingerprint/v1", password)`; no new
+  setting, `pg_dump` never holds it). Such a part → `excluded`, `purged by an admin:
+  the same text as an item an admin purged`, and its key gets a purge tombstone.
+  `review.purge` stores the fingerprint (also of an incoming version); an import
+  learns it for a legacy purge. Fingerprints made with another key id (the password
+  changed) make the import refuse until `fingerprints --forget-other-key --yes`.
+  With no password, purges hold by key, digest and same-backup copies only. Items
+  that came back after a purge (key tombstoned after a restore, entry digest or
+  fingerprint imported after the purge) are quarantined with risk flag
+  `purged_before` by the repair (2.9); nothing is purged automatically.
 - **Conflict dedupe.** `dedupe_key = sha256(kind, source_key or URL, incoming
   sha256)`. An existing conflict (in any status) → no new conflict.
 - **Content folder.** `--content` text files that are `not from a template` →
@@ -576,6 +691,80 @@ It holds no message text, no titles and no file names except template paths. The
 credential rotation list is `secrets.types`, shown as "rotate these kinds of
 credential".
 
+### 2.9 Withhold identity (0.6.2)
+
+0.6.0 and 0.6.1 tied a withhold to one `source_key`; JARVIS stores the same message
+under other keys (compaction copies, adjacent repeats, uid backfill, uid reuse,
+renumbering), and each came back with its text. Since 0.6.2 a withhold is bound to the
+identity of the JARVIS message (`app/brain/identity.py`, migration
+`0008_brain_withhold_identity`).
+
+**Stones.** Every part of a withheld message's identity is one more `brain_tombstones`
+row with reason `withheld by an admin` (a stone): `source_key`, the binding
+(`source_session_id`, `source_row_id`, `role`, `tool_call_id`, `message_uid`,
+`uid_known`), its group (`anchor_key`: `''` for the admin's own decision, else that
+decision's key), how it joined (`via`), its review (`''` member, `pending` hold,
+`kept` hold an admin kept) and `after_run` (the newest import run when the decision
+was taken). Every reader that honours a tombstone by key honours a stone.
+`brain_withhold_exemptions (anchor_key, source_session_id, source_row_id)` records an
+admin's release.
+
+**Rules** (`importer.Processor.held_rows`, per JARVIS session):
+
+| Rule | Matches | Outcome |
+|---|---|---|
+| key | the row's key has a stone bound to this JARVIS row, or unbound, or bound to a row gone from the backup with the same role | the stone's review; bound to another present row → key collision (2.2) |
+| JARVIS row | `(session, row id)` is a stone's binding, role equal or unknown | member |
+| fold | a uid in `absorbed_message_uids` is a certain stone's uid, or a fold survivor is | member, never releasable |
+| link | the importer's duplicate of a matched row, or its rewound twin | the matched row's review |
+| uid | the row's uid is a certain stone's uid, role equal or unknown | member when its text equals the group's (in memory), it is an archived generation, nothing can be compared, or it contains the withheld text (32+ characters); else a hold `same message id, different text` |
+| same text | identical (role, tool call, content, tool calls) to a member of the group in this conversation or a continuation or branch ancestor (no depth limit) | member `copied by JARVIS` in a copy position (a twin, or a child row timed at or before the child started); else a hold `same text`. Never for a row the admin saw (stored by a run up to `after_run`), an exempted row, or a row with its own uid when the group's uid was known |
+
+Holds come only from the uid and same-text rules and the upgrade heuristics, and an
+admin keeps or releases them (3). Certain matches are never releasable. A release
+writes an exemption; the hold rules skip that JARVIS row for that group from then on.
+
+**Invariants.** I1 a row whose key has a stone is withheld; I2 a row whose JARVIS row
+is a stone's binding is withheld; I3 no withheld row or copy keeps a text fingerprint;
+I4 an exempted row is never held again by the hold rules; I5 nothing outside the
+database (decisions files, API responses, audit, logs) holds a fingerprint.
+
+**Database guard.** A `BEFORE INSERT OR UPDATE` trigger on `archive_messages` blanks
+any row I1 or I2 names, whatever code writes it, and stamps
+`flags.withheld_by_admin.guard` (verify check 12 reports it).
+
+**Repair** (`brain_withhold_repair(cause)` in SQL, then `identity.settle`): a stone
+for every 0.6.0 withhold without one; every unbound stone bound to the row it named
+when the admin decided; a stone for every duplicate the importer recorded of a
+stoned row; readable rows that are the same message withheld (by key and JARVIS row:
+members; by uid and by 0.6.x's own fingerprint in the conversation's lineage after
+the withhold: holds); readable rows of restricted sessions withheld; every withheld
+fingerprint converted to `w1:`; then the promoted copies emptied, quotes scrubbed,
+sessions recomputed and items that came back after a purge quarantined. It runs in
+the migration (before any request), at every start-up check, before every import, in
+`rescan --yes` and in `repair --yes`. It is idempotent and audits counts only when
+something changed. `brain_withhold_pending()` counts what it would still change,
+read-only.
+
+**Withhold** (an admin, decisions-apply): `identity.group_rows` follows, to a fixed
+point (capped at 1,000 rows), the same JARVIS row, the same uid (member when the text
+equals, else a hold) and the importer's duplicates; each gets a stone in the admin's
+group and loses its text; keys of copies without a row get stones too. Identical text
+elsewhere in the lineage is withheld only when the admin ticks it
+(`include_identical`). The title is hidden by default for the conversation's first
+user message (`hide_title`).
+
+**Fail-closed on purpose:** an adjacent verbatim repeat; in a backup without uids, a
+later verbatim repeat in the lineage (a hold); a same-role uid collision with nothing
+to compare; a fold composite; 0.6.1's victim of a reused uid; the upgrade heuristics
+(holds). **Always readable:** identical text in another conversation, similar text,
+identical text the admin saw, a later repeat with its own uid, parallel tool results,
+a row that took over a key, another role, twins of readable messages, related turns,
+new turns of a child, delegated sessions, the parent of a restricted branch, an
+independent repeat first seen compacted, a released hold. The full tables, with a test
+per case, are `tests/integration/test_brain_withhold_identity.py` and
+`test_brain_withhold_overreach.py`.
+
 ## 3. API (`backend/app/api/brain.py`, `backend/app/brain/review.py`)
 
 **Router and errors:**
@@ -614,8 +803,12 @@ credential".
 | `GET /sessions` | operator | `q, staff, agent, origin, label, since, until, limit ≤ 200, offset` → `{sessions, total}` |
 | `GET /sessions/{id}` | operator | `limit ≤ 500, offset` → `{session, messages, total, hidden}`. `hidden` = messages outside the scope. |
 | `GET /messages/{id}/promoted` | admin | `{message, count, items:[{id, status, deleted}]}`: every memory item promoted from the message (what a withhold empties); `items` lists those in the admin's scope |
-| `POST /messages/{id}/withhold` | admin | 409 while an import, a rollback or a rescan holds the lock. Content `''`, `withheld`, flags note, admin tombstone; its rollback copies blanked (also under older row ids); every promoted item emptied (below); quotes removed; session derived fields recomputed → `{message, session, copies:{items, versions_blanked}, answers_scrubbed, rollback_copies_blanked}`, `archive.message_withheld`, `memory.source_withheld` per emptied item. All or nothing |
-| `POST /messages/{id}/promote` | operator | `{kind, title, agent?}` → a pending item: origin `promoted`, `import_run_id NULL`, `source_ref = "JARVIS session <source id> · message <position>"`, sensitivity = the highest of the message and its session → `memory.promoted`. A withheld message, or one with an admin's withhold tombstone → 400. The message's row is locked: a withhold of it waits for the promote and then empties the new item, or the promote waits for the withhold and is refused. |
+| `POST /messages/{id}/withhold` | admin | 409 while an import, a rollback or a rescan holds the lock. Optional body `{include_identical: false, hide_title: null}`. Content `''`, `withheld`, flags note, admin tombstone (its stone, 2.9), and every other stored row of the same JARVIS message withheld too (2.9: members, and holds for the same uid with other text); identical text elsewhere only with `include_identical`; the title hidden with `hide_title` (default: when it is the conversation's first user message); its rollback copies blanked (also under older row ids); every promoted item emptied (below); quotes removed; session derived fields recomputed → `{message, session, copies:{items, versions_blanked}, answers_scrubbed, rollback_copies_blanked, also_withheld, held_for_review, identical_withheld, keys_tombstoned, title_hidden}`, `archive.message_withheld` (the same keys), `memory.source_withheld` per emptied item. All or nothing |
+| `GET /messages/{id}/withhold-preview` | admin | read-only: `same_message_rows`, `held_rows`, `identical_text_rows` (ids, positions, roles, times, states; rows outside the scope counted in `<list>_hidden`), `rowless_copies` (a count), `items_with_this_text` (imported items in the scope whose text contains the message's, 32+ characters: `[{id, title}]`, to purge by hand), `first_user_message`. Never text |
+| `GET /holds` | admin | every withheld row whose stone is pending, in the scope, with its evidence and never its text: `{message, session, title (null when hidden), position, role, at, content_chars, state, rule, withheld_message:{id, position, role, at, content_chars}, compare: identical text\|different text\|nothing to compare, neighbours}` |
+| `POST /holds/{id}/keep` | admin | 409 during an import. The stone becomes `kept` (permanent) → `archive.hold_kept {message, session, anchor, rule}` |
+| `POST /holds/{id}/release` | admin | 409 during an import. 400 when a certain stone names its JARVIS row ("it is the same message as a withheld one: it cannot be released"). Deletes the pending stone, writes the exemption, sets the release marker; its text comes back at the next import of a backup holding it; promoted copies emptied meanwhile stay empty → `archive.hold_released {message, session, anchor, rule}` |
+| `POST /messages/{id}/promote` | operator | `{kind, title, agent?}` → a pending item: origin `promoted`, `import_run_id NULL`, `source_ref = "JARVIS session <source id> · message <position>"`, sensitivity = the highest of the message and its session → `memory.promoted`. A withheld message, or one with an admin's withhold tombstone → 400; since 0.6.2 also a row that is the same JARVIS message as a withheld one (its key has a stone, its JARVIS row is a stone's binding, or its uid is a stone's uid with an equal or unknown role and no release of that group names it) → 400 "this message is the same JARVIS message as one an admin withheld: it cannot be promoted". A readable row with identical text that the admin saw stays promotable. The message's row is locked: a withhold of it waits for the promote and then empties the new item, or the promote waits for the withhold and is refused. |
 | `GET /conflicts` | operator | `status` → `{conflicts, total}` |
 | `POST /conflicts/{id}/resolve` | operator (`instruction`, `source_changed` and `workflow`: admin) | `{resolution, note?}` → `memory.conflict_resolved`; see the resolution rules below |
 | `GET /workflows`, `GET /workflows/{id}` | operator | `{drafts}` / `{draft, schedule_exists}` |
@@ -654,10 +847,12 @@ its status and deleted ones too (`store.empty_withheld_copy`):
   withheld, a row with its `message_source_key` is withheld or that key has an
   admin's withhold tombstone, or (promoted by 0.6.0) its `message_id` names no row
   and its `source_ref` names a withheld row (read out of the `source_ref`, so it is
-  found by index). Viewers and operators never list such an item while it still
-  holds text, nor one flagged `source_withheld` that still holds it (0.6.0 flagged
-  a copy quarantined at promotion and kept its text) (`policy.person_items`);
-  admins do, but never export it.
+  found by index). Nobody lists such an item while it still holds text, nor one
+  flagged `source_withheld` that still holds it (0.6.0 flagged a copy quarantined at
+  promotion and kept its text) (`policy.person_items`): from 0.6.2 not an admin
+  either (0.6.1 listed it to admins until it was emptied). `brain-import status`
+  and the pre-check count it until the start-up check or a rescan empties it; the
+  emptied item is listed again by the role rules.
 
 An import empties them for every row it stores without its text: a row of a
 conversation that is, or becomes, restricted (also when the session is created again
@@ -679,6 +874,16 @@ quarantined again. The start-up check runs under the import lock and the quote l
 and is skipped, not waited for, while an import, a rollback or a rescan holds the
 one, or a task quoting the brain holds the other: if `brain-import status` still
 shows `withheld copies with text` above 0, start again or run `rescan --yes`.
+
+Since 0.6.2: the start-up check runs the withhold identity repair (2.9) when it gets
+the import lock, and refreshes quotes even when it does not (an import repairs before
+it imports); the worker tries it again every minute until it ran completely. Items
+promoted from a restricted conversation, and 0.6.0 copies (`message_id` only) of a
+message withheld while it had no row, are matched by `policy.withheld_source()` too.
+`refresh_quotes` also removes request-summary lines (`quotes.QUOTE_LINE`) that quote a
+removed source, and every route returning a task or a request strips quotes of
+removed sources when it reads them (`quotes.strip_dead`, `strip_summary`), so a quote
+is never served even before the start-up check has run.
 
 A task that quotes JARVIS Brain text into its result (the Supervisor's `recall`, a
 `summarize_request` that copies a recall's local-only answer, and reference notes)
@@ -789,6 +994,10 @@ lets the test copy use `cc_session_brain_test`.
   - For a request with `plan.local_only`, viewers get the summary line "Answer about
     JARVIS's history (visible to operators and admins)".
 - **Untouched.** The planner prompt and the daily briefing do not change.
+- **Withhold key guard (0.6.2).** `policy.agent_messages()` never returns a row whose
+  `source_key` has a withhold stone, and `agent_items()` (and `person_items()` for
+  every role but admin) never returns an item whose `source_key` has a purge
+  tombstone: both hold before any repair runs (a restore of an older dump).
 
 ## 5. Dashboard (`dashboard/src/pages/Brain.tsx`, `Brain.css`, `api.ts`, `shell/nav.ts`, `icons.tsx`, `App.tsx`, tests)
 
@@ -818,6 +1027,20 @@ lets the test copy use `cc_session_brain_test`.
 - edit; delete, restore, purge and redact version for admins;
 - promote and withhold on messages.
 
+**Withhold dialog (0.6.2):** it loads `withhold-preview` and states "N other stored rows
+are the same JARVIS message and are withheld too; M are held for your review"; the
+unticked box "Also withhold K other messages with exactly this text in this
+conversation"; "Hide the conversation title" (ticked for the first user message); the
+imported memory items that contain the text, as links. When the preview cannot be
+loaded, the withhold still works (the server decides the title).
+
+**Held for review (admins, Review tab):** each held row's evidence (never its text),
+what its rule means, **Keep withheld**, and **Release** with the confirmation "Its
+text comes back at the next import; promoted copies stay empty." Chips:
+`withheld_by_admin.review` pending ("held for review") and kept, `guard` ("withheld by
+the database guard"), released, `title_withheld` ("title hidden by an admin"),
+`purged_before`.
+
 **Honesty:**
 - loading is not empty;
 - "No JARVIS import yet" before any import;
@@ -842,9 +1065,10 @@ The KB page gets a JARVIS Brain article and an `AREAS` row.
 
 ### 6.1 Folder layout and sequence (owner)
 
-1. **Folders.** The live install stays where it is. 0.6.0 is extracted into a **new**
-   folder, `C:\InfiniteAI\v0.6.0-brain-test\InfiniteAI-CommandCenter`, which has no
-   `.env`. The test copy runs only from there.
+1. **Folders.** The live install stays where it is. The release under test is
+   extracted into a **new** folder, `C:\InfiniteAI\v<version>-brain-test\InfiniteAI-CommandCenter`
+   (0.6.2: `v0.6.2-brain-test`), which has no `.env`. The test copy runs only from
+   there.
 2. **Before the test.** `scripts\brain-precheck.ps1` reads the live install,
    read-only, and records a fingerprint (6.4).
 3. **The test copy.** `scripts\brain-test.ps1 -Action Start [-SeedFromBackup <folder
@@ -854,7 +1078,7 @@ The KB page gets a JARVIS Brain article and an `AREAS` row.
 5. **The owner reviews** in the test copy at `http://127.0.0.1:8190`. Review
    decisions are exported with `-Mode ExportDecisions`.
 6. **Approval.** The owner approves the production upgrade (a separate step): backup,
-   install 0.6.0 from a new folder, then smoke.
+   install the release (0.6.2) from a new folder, then smoke.
 7. **The production import.**
    - `-Target Production -Mode Plan`, then `Import` (typed confirmation; a
      `command_center`-only verified dump first), then `Verify`, then
@@ -906,7 +1130,9 @@ The KB page gets a JARVIS Brain article and an `AREAS` row.
     3. `pg_restore` (no `--clean`) of the backup's `command_center.dump`;
     4. in one transaction: disables every schedule; cancels queued, running and
        awaiting-approval tasks; rejects pending approvals with note `test copy`;
-       deletes sessions and secret values; marks pending events `skipped`;
+       deletes sessions and secret values; marks pending events `skipped`; deletes
+       the live installation's purge fingerprints (0.6.2: keyed with its database
+       password, which the test copy does not have; the purges stay by key);
     5. then starts api, worker and dashboard.
   - Waits for health and checks `/api/system/status` against `VERSION`.
   - Prints `http://127.0.0.1:<port>` and the sign-in. After a seed, that is the
@@ -929,7 +1155,13 @@ The KB page gets a JARVIS Brain article and an `AREAS` row.
 - the live folder (from the label) and its `VERSION`;
 - the API version (`docker compose exec -T api python -c "import app; print(app.__version__)"`);
 - container health;
-- `schema_migrations` and whether `0006_brain` is present;
+- `schema_migrations` and whether `0006_brain`, `0007_brain_withhold` and
+  `0008_brain_withhold_identity` are present;
+- the promoted items of withheld messages that still hold text (the same rules as
+  `archive.withheld_copies`, parity-tested);
+- with 0008: `brain_withhold_pending()` (counts only, a read-only transaction) and,
+  in words, the readable rows matching a withhold, the rows held for review and
+  whether the identity repair is done; without it, "0.6.2 not installed";
 - counts of agents enabled, schedules (enabled/total), sites, pending approvals and
   users;
 - whether the n8n and postgres healthchecks pass.
@@ -962,7 +1194,7 @@ It is used with the test project or the production project:
 
 **Parameters.**
 - `-Target Test|Production`
-- `-Mode Plan|Import|Resume|Verify|Rollback|Status|ExportDecisions|ApplyDecisions|Rescan`
+- `-Mode Plan|Import|Resume|Verify|Rollback|Status|ExportDecisions|ApplyDecisions|Rescan|Repair`
 - `-BackupDb <file>`
 - `-Restored <folder with profile\ and content\>`
 - `-Sample N` / `-FilesSample M` / `-All` / `-Since` / `-Until`
@@ -983,8 +1215,17 @@ production fingerprint is compared before and after.
 
 **Production target:**
 - Feature check: `brain-import status` exits 0 and prints `IMPORTER_VERSION`;
-  `schema_migrations` holds `0006_brain`; the image of the running api equals
-  `BRAIN_IMPORT_IMAGE`.
+  `schema_migrations` holds `0006_brain`, `0007_brain_withhold` and (0.6.2)
+  `0008_brain_withhold_identity`; the importer is 1.1.0 or later; the image of the
+  running api equals `BRAIN_IMPORT_IMAGE`. Each refusal names 0.6.2 ("install 0.6.2
+  on the live installation first").
+- 0.6.2 gate for `Import` and `Resume`: the status line (2.1) says `identity repair
+  done` (else: let the live installation start once, or `-Mode Repair`), `withheld
+  copies with text: 0` and `purge fingerprints made with another key: 0`. Readable
+  rows matching a withhold, held rows, quotes of removed sources and guard counts are
+  printed, not required: an import repairs first.
+- `-Mode Repair` runs `brain-import repair --yes` in `brain-importer-nosource`
+  (typed confirmation `REPAIR PRODUCTION`).
 - Typed confirmations: `IMPORT INTO PRODUCTION` for Import and Resume,
   `ROLL BACK PRODUCTION` for Rollback.
 - Before Import:
@@ -995,6 +1236,16 @@ production fingerprint is compared before and after.
   - its path printed.
 - Undo is the importer rollback. Restore is disaster recovery: it loses everything
   since the dump.
+
+**`scripts/restore.ps1` (0.6.2).** Before stopping the application, when the api runs
+and `schema_migrations` holds `0006_brain`, it runs `decisions-export --removals-only`
+in the api container and keeps the file as
+`backups\removals-before-restore-<time>.json`; after `start.ps1` it copies it back and
+runs `decisions-apply --removals-only --yes`, tried again ten seconds later (three
+times) while the start-up check holds the import lock. It prints how many removals it
+applied again (`already done` is not counted). A failed export is a warning (the
+restore goes on; the safety backup holds the decisions); a failed re-apply prints the
+two commands to run and ends with exit 1. Windows PowerShell 5.1, ASCII only.
 
 **Paths** go in through the environment variables of 6.5. No path is written into a
 `-v` string.
@@ -1017,3 +1268,9 @@ It runs under PowerShell 7 in Docker:
 10. Remove;
 11. the production fingerprint is unchanged throughout, and no planted value is in
     the test database (`pg_dump` of the brain tables, grep).
+12. (0.6.2) `restore.ps1` with a stand-in `docker`: removals exported before the
+    stop, applied again after the start (retried while the lock is held), and a
+    failed re-apply ending with exit 1; after the import, a message withheld through
+    the API stays withheld through a re-import of the same backup (verify checks 9
+    to 12), `Status` prints the 0.6.2 line, `-Mode Repair` runs, and the version 4
+    decisions file names its JARVIS row and holds no text.

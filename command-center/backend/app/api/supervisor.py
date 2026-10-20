@@ -10,15 +10,27 @@ from .. import tasks as task_service
 from ..config import Settings, get_settings
 from ..models import SupervisorRequest, Task
 from .deps import OPERATOR_ROLES, Principal, client_ip, get_db, require_operator_or_service, require_user, to_dict
-from .work import task_view
+from ..brain import quotes
+from .work import task_views
 
 # What a viewer reads instead of the summary of a request answered from JARVIS's history (supervisor.recall): the
 # answer quotes archived conversations, which only operators and admins may read.
 LOCAL_ONLY_VIEWER_SUMMARY = "Answer about JARVIS's history (visible to operators and admins)"
 
 
-def request_view(req: SupervisorRequest, principal: Principal) -> dict:
+async def request_view(session: AsyncSession, req: SupervisorRequest, principal: Principal) -> dict:
+    """A request as the API returns it. The summary of a history request keeps only the quoting lines its tasks still
+    hold once quotes of removed JARVIS Brain sources are left out (the read-time guard: quotes.strip_summary over the
+    tasks as task_views() serves them); a viewer reads a placeholder instead."""
     out = to_dict(req)
+    if (req.plan or {}).get("local_only") and out.get("summary"):
+        tasks = list((await session.scalars(select(Task).where(Task.request_id == req.id).order_by(Task.id))).all())
+        held: set[str] = set()
+        for view in await task_views(session, tasks):
+            answer = ((view.get("result") or {}).get("data") or {}).get("answer")
+            if isinstance(answer, list):
+                held |= {str(line) for line in answer}
+        out["summary"] = quotes.strip_summary(out["summary"], held)
     if principal.role not in OPERATOR_ROLES and (req.plan or {}).get("local_only"):
         out["summary"] = LOCAL_ONLY_VIEWER_SUMMARY
     return out
@@ -76,7 +88,7 @@ async def list_requests(
     rows = (
         await session.scalars(select(SupervisorRequest).order_by(SupervisorRequest.id.desc()).limit(limit).offset(offset))
     ).all()
-    return {"requests": [request_view(r, principal) for r in rows], "total": total}
+    return {"requests": [await request_view(session, r, principal) for r in rows], "total": total}
 
 
 @router.get("/requests/{request_id}")
@@ -87,4 +99,5 @@ async def get_request(
     if req is None:
         raise HTTPException(404, "no such request")
     tasks = (await session.scalars(select(Task).where(Task.request_id == request_id).order_by(Task.id))).all()
-    return {"request": request_view(req, principal), "tasks": [task_view(t, principal) for t in tasks]}
+    return {"request": await request_view(session, req, principal),
+            "tasks": await task_views(session, list(tasks), principal)}

@@ -5,29 +5,35 @@ Compose project, **`infinite-command-center`**, with its own containers,
 network and volumes, so it does not touch XAMPP or other Docker projects
 (including the Foundation Starter, project `infinite-ai-command-center`).
 
-> **Security notice, 2026-10-20: 0.6.1 is NO-GO, for installation and for any
-> JARVIS import.** A verification of the published 0.6.1 found a high-severity
-> defect, reproduced three times independently on the exact published code.
-> The text of a JARVIS message that an admin withheld comes back when a
-> **later** JARVIS backup is imported. JARVIS's compaction stores copies of
-> messages under new identifiers, and the importer withholds only the
-> identifier that was withheld, so a copy is imported with its text.
+> **Security notice, 2026-10-20: 0.6.0 and 0.6.1 are NO-GO, for installation
+> and for any JARVIS import.** A verification of the published 0.6.1 found a
+> high-severity defect, reproduced three times independently on the exact
+> published code. The text of a JARVIS message that an admin withheld comes
+> back when a **later** JARVIS backup is imported. JARVIS's compaction stores
+> copies of messages under new identifiers, and the importer withholds only
+> the identifier that was withheld, so a copy is imported with its text.
 > Operators, admins, the Supervisor's history and recall, and newly promoted
 > memory items can then read it (viewers cannot), and the verification
 > commands still report success. 0.6.0 has the same defect.
 >
-> - Do not install 0.6.1, and do not import JARVIS data with any 0.6.x
->   release.
-> - If you are still on 0.5.0, stay there. A corrected 0.6.2 is being
->   prepared, with a direct 0.5.0 -> 0.6.2 guide. It will be published only
->   after its security reviews pass.
+> **0.6.2 corrects it and is pending its verdict**
+> (`releases/GO_NO_GO_0.6.2.md`; what changed:
+> [RELEASE_NOTES_0.6.2.md](RELEASE_NOTES_0.6.2.md)). Until that verdict says
+> GO:
+>
+> - Do not install 0.6.0, 0.6.1 or 0.6.2, and do not import JARVIS data with
+>   any 0.6.x release.
+> - If you are still on 0.5.0, stay there. 0.6.2 comes with a direct
+>   0.5.0 -> 0.6.2 guide.
 > - An installation of 0.6.0 or 0.6.1 that has imported nothing holds no
 >   JARVIS data and is not exposed: leave it as it is and import nothing.
+>
+> The steps below describe 0.6.2.
 
 | What | Where |
 |---|---|
-| Installation package | `InfiniteAI-CommandCenter-0.6.1-windows.zip` (in the GitHub repo at `command-center/releases/` on the branch `jarvis-migration`, with a `.sha256` file) |
-| Source | GitHub `mytechmobilebiz/Jarvis`, branch `jarvis-migration` (0.6.1 and 0.6.0; 0.5.1 and earlier on `ccr-eb27a2af-8u7i39`), folder `command-center/` |
+| Installation package | `InfiniteAI-CommandCenter-0.6.2-windows.zip` (in the GitHub repo at `command-center/releases/` on the branch `jarvis-migration`, with a `.sha256` file) |
+| Source | GitHub `mytechmobilebiz/Jarvis`, branch `jarvis-migration` (0.6.2, 0.6.1 and 0.6.0; 0.5.1 and earlier on `ccr-eb27a2af-8u7i39`), folder `command-center/` |
 | Install location on the PC | `C:\InfiniteAI\InfiniteAI-CommandCenter` (outside `C:\xampp`) |
 | Dashboard | http://localhost:8090 (bound to 127.0.0.1 only) |
 | n8n editor | http://localhost:5680 (bound to 127.0.0.1 only) |
@@ -50,9 +56,9 @@ The scripts are run with `-ExecutionPolicy Bypass` for that one process only;
 the machine-wide execution policy is not changed. `preflight.ps1` and
 `status.ps1` are read-only; read any script first if you wish.
 
-1. Download `InfiniteAI-CommandCenter-0.6.1-windows.zip` and, optionally,
+1. Download `InfiniteAI-CommandCenter-0.6.2-windows.zip` and, optionally,
    check it against the `.sha256` file:
-   `Get-FileHash .\InfiniteAI-CommandCenter-0.6.1-windows.zip -Algorithm SHA256`
+   `Get-FileHash .\InfiniteAI-CommandCenter-0.6.2-windows.zip -Algorithm SHA256`
 2. Extract it to `C:\InfiniteAI` (you get `C:\InfiniteAI\InfiniteAI-CommandCenter`).
 3. Open PowerShell and run:
 
@@ -92,6 +98,25 @@ and run the same command from `Jarvis\command-center`.
 | `ANTHROPIC_API_KEY` (optional) | Deployment default for Claude; normally leave empty and enter your key on the dashboard's Settings page instead (stored encrypted) |
 | `DASHBOARD_PORT`, `N8N_PORT`, `TZ` | Local ports and time zone |
 
+Upgrading to 0.6.2 (from 0.6.1, 0.6.0 or 0.5.0, each directly) needs no new
+keys and no `.env` change. Its migration `0008_brain_withhold_identity` ties
+every withhold of a JARVIS message to the message itself, not to one of the
+importer's keys for it, so a later import never brings the text back; it
+repairs, before the first request, any database where 0.6.0 or 0.6.1 let the
+text come back (on a PC with nothing imported it finds nothing). It also keeps
+purged items purged when JARVIS moves or renames them, and makes `restore.ps1`
+keep JARVIS Brain decisions (below, "Day to day"). Step by step:
+`releases/UPGRADE_0.6.1_TO_0.6.2_WINDOWS.md` (on GitHub, in
+`command-center/releases/` on the branch `jarvis-migration`, next to the zip;
+it has sections for 0.5.0 and 0.6.0); what changed, the defaults, going back
+and the tests: [RELEASE_NOTES_0.6.2.md](RELEASE_NOTES_0.6.2.md). Use 0.6.2 on
+the live installation and for the test copy before the JARVIS import below.
+After the upgrade, `jarvis-import.ps1 -Target Production -Mode Status` must
+say `identity repair done` (if not: `-Mode Repair`).
+
+0.6.1 and 0.6.0 (NO-GO, security notice above) are described here for
+reference only.
+
 Upgrading to 0.6.1 (from 0.6.0, or from 0.5.0 directly) needs no new keys
 and changes no existing data. Its migration `0007_brain_withhold` replaces one
 check on a JARVIS Brain table (it allows one more value) and adds two
@@ -104,9 +129,7 @@ from the import records. Step by step from 0.6.0:
 (on GitHub, in `command-center/releases/` on the branch `jarvis-migration`,
 next to the zip; it is not inside the zip);
 what changed, going back and the tests:
-[RELEASE_NOTES_0.6.1.md](RELEASE_NOTES_0.6.1.md). Install 0.6.1 on the live
-installation, and use 0.6.1 for the test copy, before the JARVIS import
-below.
+[RELEASE_NOTES_0.6.1.md](RELEASE_NOTES_0.6.1.md).
 
 Upgrading to 0.6.0 (from 0.5.0 directly, or from 0.5.1) needs no new keys
 and changes no existing data: one migration adds the nine empty JARVIS Brain
@@ -241,6 +264,19 @@ Docker Desktop if nothing else uses them.
 Keep a copy of `.env` with your backups: the encryption keys in it are needed
 to read stored credentials and Credit Repair data.
 
+**Restore and the JARVIS Brain (0.6.2).** Before it restores, `restore.ps1`
+exports every message an admin withheld, every item an admin purged and every
+held row an admin released (keys and ids only, never text) to
+`backups\removals-before-restore-<time>.json`, and after the restart it applies
+them again, so restoring an older backup does not bring back what was removed
+after it. It prints how many it applied again and asks you to run
+`.\scripts\jarvis-import.ps1 -Target Production -Mode Status`. If that step
+fails, it prints the two commands that apply the file by hand and ends with an
+error; the restore itself is done. If the api was not running before the
+restore, nothing could be exported: it says so, and withholds and purges made
+after the backup must be made again. Use the `restore.ps1` of 0.6.2 or later;
+older versions do not do this.
+
 (Prefix each with `powershell -NoProfile -ExecutionPolicy Bypass -File` if
 script execution is restricted.)
 
@@ -316,7 +352,7 @@ You need, from the JARVIS migration kit (`migration\jarvis\README.md`):
 | Folder | What it is |
 |---|---|
 | `C:\InfiniteAI\InfiniteAI-CommandCenter` (or wherever it is now) | the live installation, with its `.env`. Stays as it is. |
-| `C:\InfiniteAI\v0.6.1-brain-test\InfiniteAI-CommandCenter` | 0.6.1 extracted into a new folder, **without** a `.env`. The test copy runs only from here. |
+| `C:\InfiniteAI\v0.6.2-brain-test\InfiniteAI-CommandCenter` | 0.6.2 extracted into a new folder, **without** a `.env`. The test copy runs only from here. |
 | `C:\InfiniteAI\JarvisMigration` | the kit, the JARVIS backups, `restored`, the pre-check reports and `import-reports` |
 
 The test copy is a separate Docker project, `cc-brain-test`: its own
@@ -325,11 +361,11 @@ containers, database, images and secrets (in `.env.brain-test`, never
 label on every page, no n8n, and a worker without internet. It needs Docker
 Desktop with Docker Compose 2.24.4 or later.
 
-**1. Folders.** Extract the 0.6.1 zip into `C:\InfiniteAI\v0.6.1-brain-test`
+**1. Folders.** Extract the 0.6.2 zip into `C:\InfiniteAI\v0.6.2-brain-test`
 (Explorer: right-click, Extract All). Do not copy `.env` there.
 
 ```powershell
-$test = "C:\InfiniteAI\v0.6.1-brain-test\InfiniteAI-CommandCenter"
+$test = "C:\InfiniteAI\v0.6.2-brain-test\InfiniteAI-CommandCenter"
 $db = "C:\InfiniteAI\JarvisMigration\backups\jarvis-state-<time>.db"
 $restored = "C:\InfiniteAI\JarvisMigration\restored"
 $discovery = "C:\InfiniteAI\JarvisMigration\discovery-<time>\discovery-summary.json"
@@ -361,8 +397,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\brain-test.ps1 -Ac
 `-SeedFromBackup` takes the folder of a `backup.ps1` run, in the `backups`
 folder of the installation you ran it from (it must contain
 `command_center.dump`): `C:\InfiniteAI\v0.5.0\InfiniteAI-CommandCenter\backups\<timestamp>`
-before the upgrades, `C:\InfiniteAI\v0.6.0\InfiniteAI-CommandCenter\backups\<timestamp>`
-or `C:\InfiniteAI\v0.6.1\InfiniteAI-CommandCenter\backups\<timestamp>` after them.
+before the upgrade, `C:\InfiniteAI\v0.6.2\InfiniteAI-CommandCenter\backups\<timestamp>`
+after it (or the `v0.6.0` or `v0.6.1` folder, if one of those ran). Purged-item
+fingerprints of the live installation are left out of the copy (they are keyed
+with its database password; the purges themselves stay).
 
 It prints the address and how to sign in: without a seed, the email it shows
 and the `ADMIN_PASSWORD` in `.env.brain-test`; after a seed, your usual
@@ -394,10 +432,20 @@ An interrupted import continues with `-Mode Resume -Run <run number>` and the
 same `-BackupDb` and `-Restored`.
 
 **5. Your review** happens in the test copy at http://127.0.0.1:8190. When you
-are done, save your decisions so they can be carried over to the live
-installation: what you decided on the imported memory items (approved,
-rejected, archived, deleted, and your edits of them), plus the messages you
-withheld and the items you purged (as their keys only, never their text).
+withhold a message, the dialog says how many other stored rows are the same
+JARVIS message (withheld too) and how many are held for your review; it offers
+to withhold other messages with exactly the same text in that conversation
+(off unless you tick it) and to hide the conversation's title (ticked for the
+conversation's first message), and lists the memory items that contain the
+text, for you to purge. Look at "Held for review" before you finish: keep each
+held row withheld, or release it. When you are done, save your decisions so
+they can be carried over to the live installation: what you decided on the
+imported memory items (approved, rejected, archived, deleted, and your edits
+of them), plus the messages you withheld (with the JARVIS rows they are), the
+held rows you kept or released and the items you purged (keys and ids only,
+never their text). Rows still held for review are not carried over: the live
+import holds them again. A decisions file exported by 0.6.0 or 0.6.1 still
+applies, but export again with 0.6.2.
 Not carried over, so write them down and do them again in the live
 installation after step 7: edits of customer or Credit Repair items (the
 export prints how many it left out, and step 7 lists them), conflicts you
@@ -416,19 +464,21 @@ Desktop, and the counts (agents switched off, schedules enabled, sites,
 pending approvals, users) change with normal use; neither means the test
 touched the live installation.
 
-**6. Approval.** Upgrading the live installation to 0.6.1 is a separate step
-that you approve, in a new PowerShell window. From 0.5.0, follow
-`UPGRADE_0.5.0_TO_0.6.0_WINDOWS.md` first; then, from 0.6.0, follow
-`UPGRADE_0.6.0_TO_0.6.1_WINDOWS.md` step by step (both on GitHub in
-`command-center/releases/`, branch `jarvis-migration`; they are not in the
-zip): `backup.ps1` in
-your current folder, check the zip's SHA-256, extract it into the new folder
-`C:\InfiniteAI\v0.6.1`, copy `.env` there, then `install.ps1`, which must end
-with `SMOKE TEST PASSED`. From then on,
-`C:\InfiniteAI\v0.6.1\InfiniteAI-CommandCenter` is the live installation's
-folder. The live import refuses to run on an installation without 0.6.1's
-migration `0007_brain_withhold`. Set `$db`, `$restored` and `$discovery` again
-(step 1) before step 7.
+**6. Approval.** Upgrading the live installation to 0.6.2 is a separate step
+that you approve, in a new PowerShell window. Follow
+`UPGRADE_0.6.1_TO_0.6.2_WINDOWS.md` step by step, in its section for the
+version you have (0.5.0, 0.6.0 or 0.6.1; on GitHub in
+`command-center/releases/`, branch `jarvis-migration`; it is not in the zip):
+`backup.ps1` in your current folder, check the zip's SHA-256, extract it into
+the new folder `C:\InfiniteAI\v0.6.2`, copy `.env` there, then `install.ps1`,
+which must end with `SMOKE TEST PASSED`. From then on,
+`C:\InfiniteAI\v0.6.2\InfiniteAI-CommandCenter` is the live installation's
+folder. The live import refuses to run on an installation without 0.6.2: its
+migration `0008_brain_withhold_identity`, importer 1.1.0, the identity repair
+done at its first start (if `-Mode Status` says `not done`, run
+`-Mode Repair` and type `REPAIR PRODUCTION`), and no purged-item fingerprint
+made with another database password. Set `$db`, `$restored` and `$discovery`
+again (step 1) before step 7.
 
 **7. The import into the live installation.** From the live installation's
 folder only (the script refuses anywhere else). `Import` asks you to type
@@ -450,13 +500,18 @@ verified and reviewed.
 $db = "C:\InfiniteAI\JarvisMigration\backups\jarvis-state-<time>.db"
 $restored = "C:\InfiniteAI\JarvisMigration\restored"
 $discovery = "C:\InfiniteAI\JarvisMigration\discovery-<time>\discovery-summary.json"
-Set-Location "C:\InfiniteAI\v0.6.1\InfiniteAI-CommandCenter"
+Set-Location "C:\InfiniteAI\v0.6.2\InfiniteAI-CommandCenter"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\backup.ps1   # a full backup (Command Center, n8n, Credit Repair) before every live import
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Plan -All -BackupDb $db -Restored $restored -Discovery $discovery
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Import -All -BackupDb $db -Restored $restored -Discovery $discovery
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Verify -Run <run number> -BackupDb $db -Restored $restored
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode ApplyDecisions -Run <run number> -Decisions "C:\InfiniteAI\JarvisMigration\import-reports\decisions-test-<time>.json" -Actor <your admin email>
 ```
+
+After `ApplyDecisions`, run `-Mode Status` again: `readable rows matching a
+withhold` must be 0. Review the rows held for review on the live JARVIS Brain
+page ("Held for review"); a later import of a newer JARVIS backup keeps every
+withhold, hold and release.
 
 Workflows converted from JARVIS's jobs are created **switched off**. Switch
 the matching job off in JARVIS first, then switch the Command Center's
@@ -469,7 +524,7 @@ edited) and, once the live import is verified and reviewed, the pre-import
 dump (it holds your whole live database, unencrypted):
 
 ```powershell
-$test = "C:\InfiniteAI\v0.6.1-brain-test\InfiniteAI-CommandCenter"
+$test = "C:\InfiniteAI\v0.6.2-brain-test\InfiniteAI-CommandCenter"
 Set-Location $test
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\brain-test.ps1 -Action Remove
 Remove-Item -Recurse -Force C:\InfiniteAI\JarvisMigration\restored

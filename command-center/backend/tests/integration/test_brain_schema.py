@@ -201,7 +201,7 @@ async def test_0007_runs_twice_and_keeps_every_0_6_0_value(scratch):
 async def test_upgrade_from_0_5_0_applies_0006_and_0007_together(scratch):
     url = scratch
     await _install(url, "0006")
-    assert await _migrate(url) == ["0006_brain", "0007_brain_withhold"]
+    assert await _migrate(url) == ["0006_brain", "0007_brain_withhold", "0008_brain_withhold_identity"]
     assert await _migrate(url) == []
     conn = await asyncpg.connect(url)
     try:
@@ -220,7 +220,7 @@ async def test_upgrade_from_0_6_0_applies_0007_only(scratch):
             await _version_row(conn, "quarantined")
     finally:
         await conn.close()
-    assert await _migrate(url) == ["0007_brain_withhold"]
+    assert await _migrate(url) == ["0007_brain_withhold", "0008_brain_withhold_identity"]
     conn = await asyncpg.connect(url)
     try:
         await _version_row(conn, "quarantined")
@@ -237,7 +237,7 @@ async def test_a_0_6_0_backup_restored_over_0_6_1_gets_the_new_check_again(scrat
     await _install(url, "0007")  # 0.6.0
     dump = _pg(container, "pg_dump", "-U", "cc", "-Fc", "-f", DUMP_060, SCRATCH)
     assert dump.returncode == 0, dump.stderr
-    assert await _migrate(url) == ["0007_brain_withhold"]  # 0.6.1 installed
+    assert await _migrate(url) == ["0007_brain_withhold", "0008_brain_withhold_identity"]  # 0.6.2 installed
     restore = _pg(container, "pg_restore", "-U", "cc", "-d", SCRATCH, "--clean", "--if-exists",
                   "--single-transaction", "--exit-on-error", DUMP_060)
     assert restore.returncode == 0, restore.stderr
@@ -248,7 +248,7 @@ async def test_a_0_6_0_backup_restored_over_0_6_1_gets_the_new_check_again(scrat
         assert not await conn.fetchval("SELECT count(*) FROM schema_migrations WHERE version = '0007_brain_withhold'")
     finally:
         await conn.close()
-    assert await _migrate(url) == ["0007_brain_withhold"]  # the next start of 0.6.1
+    assert await _migrate(url) == ["0007_brain_withhold", "0008_brain_withhold_identity"]  # the next start
     conn = await asyncpg.connect(url)
     try:
         checks = await conn.fetch(CHANGE_CHECKS)

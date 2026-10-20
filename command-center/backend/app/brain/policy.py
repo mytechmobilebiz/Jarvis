@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import BigInteger, ColumnElement, Text, and_, cast, exists, false, func, not_, or_, true
 
-from ..models import ArchiveMessage, ArchiveSession, BrainTombstone, MemoryItem
+from ..models import ArchiveMessage, ArchiveSession, BrainTombstone, ImportRecord, MemoryItem
 from . import AGENTS
 
 SENSITIVE_AGENT = "credit_repair"
@@ -33,13 +33,15 @@ SENSITIVE_AGENT = "credit_repair"
 BUSINESS_KINDS = ("business", "knowledge", "agent_note", "project", "decision", "accomplishment", "problem")
 PROMPT_KINDS = ("business", "knowledge", "agent_note", "project")
 # Flags that keep an item out of AI prompts and need an admin to approve it. source_withheld: an item promoted from a
-# message that was withheld since, emptied (store.empty_withheld_copy); it is never approved again.
+# message that was withheld since, emptied (store.empty_withheld_copy); it is never approved again. purged_before: an
+# imported item that is the same text as an item an admin purged (identity.repair, R8): an admin purges or approves it.
 RISK_FLAGS = ("instruction_like", "approval_conflict", "secrets_redacted", "script", "plugin_or_hook", "custom",
-              "owner_profile", "source_withheld")
+              "owner_profile", "source_withheld", "purged_before")
 # How an item promoted from an archived message names it (review.promote_message), and the brain_tombstones reason of
 # a message an admin withheld (archive.py uses them too; they live here because archive imports store, which imports
-# this module).
+# this module), and that of an item an admin purged (review.purge).
 WITHHELD_BY_ADMIN = "withheld by an admin"
+PURGED_BY_ADMIN = "purged by an admin"
 PROMOTED_REF = "JARVIS session %s · message %s"  # Python's % and PostgreSQL's format() read it alike
 # The title of a copy emptied because its message was withheld (store.empty_withheld_copy).
 WITHHELD_COPY_TITLE = "Withheld: the archived message it was promoted from was withheld"
@@ -49,6 +51,9 @@ SOURCE_REMOVED = " (source removed)"  # added to a promoted item's source_ref wh
 PROMOTED_REF_REMOVED = r" \(source removed\)$"
 PROMOTED_REF_SESSION = "^JARVIS session (.*) · message [0-9]+$"
 PROMOTED_REF_POSITION = " · message ([0-9]{1,18})$"
+# The import_records actions that name a row a message's source key was stored as (archive._older_rows; never a
+# 'duplicate' record's: it names the row of the message it duplicates).
+OLD_ROW_ACTIONS = ("imported", "withheld", "updated")
 
 
 @dataclass(frozen=True)
@@ -95,7 +100,10 @@ def withheld_source() -> ColumnElement[bool]:
     """SQL: an item promoted from a message that is withheld, matched as archive.withheld_copies() matches it: the row
     its flags.message_id names is withheld; a row with its flags.message_source_key is withheld (a rollback and a new
     import gave the message a new id), or that key has an admin's withhold tombstone (no row of it is left); or,
-    promoted by 0.6.0 (no message_source_key), its message_id names no row and its source_ref names a withheld row."""
+    promoted by 0.6.0 (no message_source_key), its message_id names no row and either its source_ref names a withheld
+    row, or the import records name the source key that row held and that key is withheld (a withheld row has it, or
+    an admin's withhold: the row was rolled back or rewound away). Also any item promoted from a conversation that is
+    withheld for restricted data (flags.archive_session_id), whatever became of its row (finding 2)."""
     message_id = MemoryItem.flags["message_id"].as_integer()
     key = MemoryItem.flags["message_source_key"].astext
     # The legacy rule reads the session id and the position out of the item's source_ref, so the message is found
@@ -109,7 +117,20 @@ def withheld_source() -> ColumnElement[bool]:
                                  ArchiveMessage.session_id == ArchiveSession.id,
                                  ArchiveMessage.position == position,
                                  ArchiveMessage.withheld.is_(True)).correlate(MemoryItem))
+    # The import records name the source key the gone row held (record_type 'message', never a 'duplicate' record's).
+    old_keys = exists().where(
+        ImportRecord.record_type == "message", ImportRecord.target_table == "archive_messages",
+        ImportRecord.target_id == message_id, ImportRecord.action.in_(OLD_ROW_ACTIONS),
+        or_(exists().where(BrainTombstone.source_key == ImportRecord.source_key,
+                           BrainTombstone.reason == WITHHELD_BY_ADMIN),
+            exists().where(ArchiveMessage.source_key == ImportRecord.source_key,
+                           ArchiveMessage.withheld.is_(True)))).correlate(MemoryItem)
+    legacy_by_record = and_(not_(MemoryItem.flags.has_key("message_source_key")),
+                            not_(exists().where(ArchiveMessage.id == message_id).correlate(MemoryItem)), old_keys)
+    restricted = exists().where(ArchiveSession.id == MemoryItem.flags["archive_session_id"].as_integer(),
+                                ArchiveSession.sensitivity == "restricted").correlate(MemoryItem)
     return and_(MemoryItem.origin == "promoted", or_(
+        legacy_by_record, restricted,
         exists().where(ArchiveMessage.id == message_id, ArchiveMessage.withheld.is_(True)).correlate(MemoryItem),
         exists().where(ArchiveMessage.source_key == key, ArchiveMessage.withheld.is_(True)).correlate(MemoryItem),
         exists().where(BrainTombstone.source_key == key, BrainTombstone.reason == WITHHELD_BY_ADMIN
@@ -117,15 +138,23 @@ def withheld_source() -> ColumnElement[bool]:
         legacy))
 
 
+def purged_key() -> ColumnElement[bool]:
+    """SQL: an item whose source key an admin purged (a restore of a dump older than the purge brought it back;
+    identity.repair quarantines it, R8). A primary-key probe of brain_tombstones."""
+    return exists().where(BrainTombstone.source_key == MemoryItem.source_key,
+                          BrainTombstone.reason == PURGED_BY_ADMIN).correlate(MemoryItem)
+
+
 def agent_items(policy: AgentPolicy, *, general_only: bool = False) -> ColumnElement[bool]:
     """The memory items an agent may read. Never an item promoted from a withheld message, whatever its status: one
     that was emptied (source_withheld), and one a withhold has not reached yet (withheld_source(): a database 0.6.0
-    left behind, until the start-up check empties it, or a message withheld under another row id)."""
+    left behind, until the start-up check empties it, or a message withheld under another row id); never an item
+    whose source an admin purged (purged_key(): back after a restore, until the start-up check quarantines it)."""
     scope = [MemoryItem.agent == "", MemoryItem.agent == policy.agent]
     if policy.other_agents:
         scope.append(MemoryItem.agent != SENSITIVE_AGENT)
     clauses = [MemoryItem.status == "approved", MemoryItem.deleted_at.is_(None), or_(*scope),
-               not_(MemoryItem.flags.has_key("source_withheld")), not_(withheld_source())]
+               not_(MemoryItem.flags.has_key("source_withheld")), not_(withheld_source()), not_(purged_key())]
     if general_only or not policy.customer:
         clauses.append(MemoryItem.sensitivity == "general")
     return and_(*clauses)
@@ -144,8 +173,12 @@ def agent_archive(policy: AgentPolicy, *, general_only: bool = False) -> ColumnE
 
 
 def agent_messages(policy: AgentPolicy, *, general_only: bool = False) -> ColumnElement[bool]:
-    """Archived messages an agent may read: never withheld ones or copies, customer ones only where allowed."""
-    clauses = [ArchiveMessage.withheld.is_(False)]
+    """Archived messages an agent may read: never withheld ones or copies, customer ones only where allowed, and never
+    a row whose key an admin's withhold names (a row with such a key is always withheld, by the importer, the
+    identity repair and the database guard; this holds even if one were not)."""
+    clauses = [ArchiveMessage.withheld.is_(False),
+               not_(exists().where(BrainTombstone.source_key == ArchiveMessage.source_key,
+                                   BrainTombstone.reason == WITHHELD_BY_ADMIN).correlate(ArchiveMessage))]
     if general_only or not policy.customer:
         clauses.append(ArchiveMessage.sensitivity == "general")
     return and_(*clauses)
@@ -183,11 +216,12 @@ class PersonScope:
 
 
 def person_items(scope: PersonScope, *, include_deleted: bool = False) -> ColumnElement[bool]:
-    """Items a person may list. Only an admin sees an item promoted from a withheld message that still holds its
-    text, until the start-up check or a rescan empties it: one whose message is withheld (withheld_source()), and one
-    flagged source_withheld that is not empty (0.6.0's withhold flagged a copy quarantined at promotion and kept its
-    text; an admin could then approve it). Once emptied (store.emptied()) it holds none, and the role rules alone
-    apply."""
+    """Items a person may list. Nobody, an admin included, sees an item promoted from a withheld message that still
+    holds its text, until the start-up check or a rescan empties it (status and the pre-check count it meanwhile):
+    one whose message is withheld (withheld_source()), and one flagged source_withheld that is not empty (0.6.0's
+    withhold flagged a copy quarantined at promotion and kept its text). Once emptied (store.emptied()) it holds
+    none, and the role rules alone apply. Only an admin sees an imported item whose source key an admin purged
+    (purged_key(): a restore brought it back; the start-up check quarantines it for the admin to decide)."""
     clauses: list[ColumnElement[bool]] = []
     if not (include_deleted and scope.is_admin):
         clauses.append(MemoryItem.deleted_at.is_(None))
@@ -195,11 +229,12 @@ def person_items(scope: PersonScope, *, include_deleted: bool = False) -> Column
         clauses += [MemoryItem.status == "approved", MemoryItem.kind.in_(BUSINESS_KINDS)]
     elif not scope.is_admin:
         clauses.append(MemoryItem.status != "quarantined")
+    flagged = MemoryItem.flags.has_key("source_withheld")
+    emptied = and_(flagged, MemoryItem.title == WITHHELD_COPY_TITLE, MemoryItem.body == "",
+                   cast(MemoryItem.tags, Text) == "[]")
+    clauses.append(or_(emptied, and_(not_(flagged), not_(withheld_source()))))
     if not scope.is_admin:
-        flagged = MemoryItem.flags.has_key("source_withheld")
-        emptied = and_(flagged, MemoryItem.title == WITHHELD_COPY_TITLE, MemoryItem.body == "",
-                       cast(MemoryItem.tags, Text) == "[]")
-        clauses.append(or_(emptied, and_(not_(flagged), not_(withheld_source()))))
+        clauses.append(not_(purged_key()))
     if not scope.sees_customer:
         clauses.append(MemoryItem.sensitivity == "general")
     if not scope.sensitive:

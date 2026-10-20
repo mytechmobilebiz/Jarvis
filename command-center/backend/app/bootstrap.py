@@ -75,40 +75,47 @@ async def ensure_schedules(extra: list[dict] | None = None) -> None:
                 session.add(Schedule(**spec))
 
 
-async def check_withheld_copies() -> None:
-    """Empties the memory items promoted from a withheld message that still hold text, blanks the rollback copies of
-    withheld messages that still hold it (what a database 0.6.0 left behind: its withholds kept them,
-    app/brain/archive.py), and removes the quotes of withheld, deleted or emptied sources that tasks kept
-    (quotes.refresh_quotes). Skipped, never waited for, while an import, a rollback or a rescan holds the lock, or a
-    task quoting the brain holds the quote lock (the next start, or rescan --yes, does it); a failure is logged by its
-    class only and never stops the start-up, and brain-import status keeps counting what is left
-    (withheld_copies_with_text)."""
-    from .brain import archive, importer, quotes
+async def check_withheld_copies() -> bool:
+    """The withhold identity repair (app/brain/identity.repair): every readable row that is the same message as a
+    withheld one is withheld (migration 0008 already did it in SQL; this runs it again, then empties the memory items
+    promoted from those rows and every other withheld message that still hold text, blanks rollback copies that still
+    hold it, recomputes the sessions it changed, removes the quotes of withheld, deleted or emptied sources that tasks
+    kept, and quarantines items that came back after a purge).
+
+    Never waits: while a task quoting the brain holds the quote lock it is skipped; while an import, a rollback or a
+    rescan holds the import lock, only the quotes are refreshed (that import repairs before it imports). Returns
+    whether the whole check ran: the worker calls it again, at most once a minute, until it does. A failure is logged
+    by its class only and never stops the start-up; brain-import status keeps counting what is left."""
+    from .brain import identity, importer, quotes
 
     try:
         async with session_scope() as session:
-            if not await importer.try_xact_lock(session, importer.GLOBAL_LOCK):
-                log.info("withheld-copies check skipped: an import, rollback or rescan is running")
-                return
-            # Held from here (the sweep and refresh_quotes take it again at once): never waits for a running recall.
+            # Held from here (the repair and refresh_quotes take it again at once): never waits for a running recall.
             if not await quotes.lock_quotes(session, wait=False):
                 log.info("withheld-copies check skipped: a task is writing a history answer")
-                return
-            emptied = await archive.sweep_withheld_copies(session, actor="system (start-up check)")
-            blanked = await archive.sweep_withheld_records(session)
+                return False
+            if await importer.try_xact_lock(session, importer.GLOBAL_LOCK):
+                counts = await identity.repair(session, actor="system (start-up check)", cause="startup-check")
+                changed = {k: v for k, v in counts.items() if isinstance(v, int) and not isinstance(v, bool) and v}
+                if changed:
+                    log.info("withheld-copies check: %s", ", ".join("%s %d" % kv for kv in sorted(changed.items())))
+                return True
+            log.info("identity repair skipped: an import, rollback or rescan is running (it repairs before it "
+                     "imports); quotes refreshed")
             scrubbed = await quotes.refresh_quotes(session)
-            if emptied or blanked or scrubbed:
-                log.info("withheld-copies check: %d promoted memory item(s) emptied or quarantined again, %d rollback "
-                         "copies blanked, %d task result(s) lost a quote", len(emptied), blanked, scrubbed)
+            if scrubbed:
+                log.info("withheld-copies check: %d task result(s) lost a quote", scrubbed)
+            return False
     except Exception as exc:  # noqa: BLE001 - never stops the start-up; the class only, never the text
         log.warning("withheld-copies check failed: %s", exc.__class__.__name__)
+        return False
 
 
-async def bootstrap(settings: Settings) -> None:
+async def bootstrap(settings: Settings) -> dict[str, bool]:
     applied = await run_migrations()
     if applied:
         log.info("applied migrations: %s", ", ".join(applied))
-    await check_withheld_copies()
+    complete = await check_withheld_copies()
     await ensure_admin(settings)
     from .credit_repair import store as credit_repair_store
 
@@ -120,3 +127,4 @@ async def bootstrap(settings: Settings) -> None:
 
     extra = [s for a in all_agents().values() for s in getattr(a, "default_schedules", [])]
     await ensure_schedules(extra)
+    return {"withheld_check_complete": complete}

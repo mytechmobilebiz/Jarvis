@@ -72,6 +72,7 @@ class Worker:
         engine: WorkflowEngine | None = None,
         http_transport: httpx.AsyncBaseTransport | None = None,
         worker_id: str | None = None,
+        withheld_check_done: bool = True,
     ) -> None:
         self.settings = settings
         # A fixed provider (tests); otherwise resolved per task from the
@@ -85,6 +86,10 @@ class Worker:
         self._running: set[asyncio.Task[None]] = set()
         self._stop = asyncio.Event()
         self._last_probe = 0.0
+        # The start-up's withheld check (bootstrap.check_withheld_copies) skipped or failed: retried from tick() at
+        # most once a minute until it runs completely. It never waits for a lock, so ticks are never delayed.
+        self._withheld_check_done = withheld_check_done
+        self._last_withheld_check: float | None = None
         from ..ssh.gateway import SSHGateway
 
         self.ssh = SSHGateway(settings)
@@ -111,6 +116,7 @@ class Worker:
 
     async def tick(self) -> int:
         await self.heartbeat()
+        await self.retry_withheld_check()
         await scheduler.enqueue_due(self.settings)
         await self.reap_stale()
         claimed = 0
@@ -125,6 +131,17 @@ class Worker:
         await forwarder.forward_pending(self.engine)
         await self.probe_engine()
         return claimed
+
+    async def retry_withheld_check(self) -> None:
+        if self._withheld_check_done:
+            return
+        loop = asyncio.get_running_loop()
+        if self._last_withheld_check is not None and loop.time() - self._last_withheld_check < 60:
+            return
+        self._last_withheld_check = loop.time()
+        from ..bootstrap import check_withheld_copies
+
+        self._withheld_check_done = await check_withheld_copies()
 
     async def run_until_idle(self, max_rounds: int = 100) -> None:
         """Process everything currently runnable (used by tests and one-shot runs)."""

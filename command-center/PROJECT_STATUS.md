@@ -1,23 +1,27 @@
 # Project status: Infinite AI Command Center
 
-Last updated: 2026-10-20 (UTC) · version 0.6.1 · branch `jarvis-migration`
+Last updated: 2026-10-20 (UTC) · version 0.6.2 (pending its verdict) · branch `jarvis-migration`
 
-> **Security notice, 2026-10-20: 0.6.1 is NO-GO, for installation and for any
-> JARVIS import.** A verification of the published 0.6.1 found a high-severity
-> defect, reproduced three times independently on the exact published code.
-> The text of a JARVIS message that an admin withheld comes back when a
-> **later** JARVIS backup is imported. JARVIS's compaction stores copies of
-> messages under new identifiers, and the importer withholds only the
-> identifier that was withheld, so a copy is imported with its text.
+> **Security notice, 2026-10-20: 0.6.0 and 0.6.1 are NO-GO, for installation
+> and for any JARVIS import.** A verification of the published 0.6.1 found a
+> high-severity defect, reproduced three times independently on the exact
+> published code. The text of a JARVIS message that an admin withheld comes
+> back when a **later** JARVIS backup is imported. JARVIS's compaction stores
+> copies of messages under new identifiers, and the importer withholds only
+> the identifier that was withheld, so a copy is imported with its text.
 > Operators, admins, the Supervisor's history and recall, and newly promoted
 > memory items can then read it (viewers cannot), and the verification
 > commands still report success. 0.6.0 has the same defect.
 >
-> - Do not install 0.6.1, and do not import JARVIS data with any 0.6.x
->   release.
-> - If you are still on 0.5.0, stay there. A corrected 0.6.2 is being
->   prepared, with a direct 0.5.0 -> 0.6.2 guide. It will be published only
->   after its security reviews pass.
+> **0.6.2 corrects it and is pending its verdict**
+> (`releases/GO_NO_GO_0.6.2.md`; what changed:
+> [docs/RELEASE_NOTES_0.6.2.md](docs/RELEASE_NOTES_0.6.2.md)). Until that
+> verdict says GO:
+>
+> - Do not install 0.6.0, 0.6.1 or 0.6.2, and do not import JARVIS data with
+>   any 0.6.x release.
+> - If you are still on 0.5.0, stay there. 0.6.2 comes with a direct
+>   0.5.0 -> 0.6.2 guide.
 > - An installation of 0.6.0 or 0.6.1 that has imported nothing holds no
 >   JARVIS data and is not exposed: leave it as it is and import nothing.
 
@@ -32,8 +36,12 @@ reports 0.2.0"). The cause was found and fixed in **0.5.1** (see "Completed in
 is finished and tested in the sandbox and **waits for the owner's approval**:
 it has not been installed, and none of JARVIS's real data has been imported
 anywhere. **0.6.1** (a JARVIS Brain patch: withholding a message that has a
-promoted memory copy) is finished and tested in the sandbox; it is needed
-before the JARVIS test-copy import. **Nothing has been run on a real CWP server**; see "Cloud sandbox vs
+promoted memory copy) is finished and tested in the sandbox. Both are **NO-GO**
+(security notice above). **0.6.2** (durable withholding: a withheld JARVIS
+message stays withheld whatever JARVIS does with it; purges and restores keep
+their decisions) is built in the sandbox and waits for its tests, package and
+verdict; it is the release to install, from 0.5.0 directly, once its verdict
+says GO. **Nothing has been run on a real CWP server**; see "Cloud sandbox vs
 Windows and servers" below.
 
 ## Milestones
@@ -49,7 +57,8 @@ Windows and servers" below.
 | 0.5.0: dashboard to the reference with real data only; approvals name the exact action and target; host-key scan fixed | Done; installed on the owner's PC (version check failed: stale build copies, fixed in 0.5.1). Remaining differences and owner decisions: docs/REFERENCE_DESIGN_GAP.md |
 | 0.5.1: images can no longer be built from stale files without the build stopping; plugin updates only to the approved, current, newer WordPress.org release | **Done in the sandbox**; not yet run on the PC |
 | 0.6.0: the JARVIS Brain: memory with review and versions, JARVIS's conversation archive, the importer with a test copy, agents reading approved memory as reference | **Done in the sandbox**; waits for the owner's approval to install; no real JARVIS data imported |
-| 0.6.1: withholding a message that has promoted memory copies works and removes its text from every promoted copy, the history answers quoting them and the import records; database errors never log row values | **Done in the sandbox**; to install after 0.6.0 is verified on the PC; needed before the test-copy import |
+| 0.6.1: withholding a message that has promoted memory copies works and removes its text from every promoted copy, the history answers quoting them and the import records; database errors never log row values | **Done in the sandbox**; **NO-GO** (security notice above) |
+| 0.6.2: a withhold is tied to the JARVIS message, not to one importer key, and holds through every later import, restart, restore and upgrade; every reader respects it; purged items stay purged when JARVIS moves them; uncertain matches are held for an admin's review | **Built in the sandbox**; tests, package and verdict pending (releases/GO_NO_GO_0.6.2.md) |
 | M5: real integrations (email, publishing, ads, notifications) | Needs owner approval and credentials |
 
 Estimated MVP completion: **about 85%**. This is an estimate, weighted by the
@@ -76,11 +85,12 @@ Every approved mock action is listed on the **Outbox** page as
 through cc-gate, only after approval, and only if the server's own
 `allow_changes` switch is on.
 
-## JARVIS migration and the JARVIS Brain (0.6.0, waiting for approval)
+## JARVIS migration and the JARVIS Brain (0.6.2 pending its verdict; 0.6.0 and 0.6.1 NO-GO)
 
-**Nothing has been installed or imported.** 0.6.0 is built and tested in the
-sandbox with synthetic data only. The GO/NO-GO report is
-[releases/GO_NO_GO_0.6.0.md](releases/GO_NO_GO_0.6.0.md). Installing it, importing the real JARVIS
+**Nothing has been installed or imported.** 0.6.0 and 0.6.1 are NO-GO
+(security notice above); 0.6.2 is built in the sandbox with synthetic data
+only and waits for its verdict (`releases/GO_NO_GO_0.6.2.md`). The 0.6.0
+GO/NO-GO report is [releases/GO_NO_GO_0.6.0.md](releases/GO_NO_GO_0.6.0.md). Installing it, importing the real JARVIS
 backup into a test copy and importing into the live installation are three
 separate approvals (docs/RELEASE_NOTES_0.6.0.md section 8). JARVIS stays
 installed and running; nothing here changes it.
@@ -95,6 +105,34 @@ installed and running; nothing here changes it.
   profile and content without secret files, and a counts-only inventory, in a
   container with no network and the JARVIS folders mounted read-only.
 - **The JARVIS Brain (0.6.0)**: see "Completed in 0.6.0" below.
+
+## Built for 0.6.2 (one migration, three small tables; no new keys; pending its verdict)
+
+Full list, the decisions and defaults, upgrade from 0.5.0, 0.6.0 or 0.6.1,
+going back, and what stays open:
+[docs/RELEASE_NOTES_0.6.2.md](docs/RELEASE_NOTES_0.6.2.md); step by step on
+Windows: `releases/UPGRADE_0.6.1_TO_0.6.2_WINDOWS.md` (with the package).
+
+- A withhold records the JARVIS message itself (conversation, row, role, tool
+  call, message id) and every other name the importer gave it, so carried-on
+  copies, repeats, new or reused message ids and decisions carried from the
+  test copy never bring its text back. Certain matches are withheld for good;
+  uncertain ones are held for an admin's review (keep or release); text alone
+  never withholds anything.
+- Migration `0008_brain_withhold_identity` repairs, before the first request,
+  every database where 0.6.0 or 0.6.1 let the text come back; a database guard
+  keeps any row a withhold names without text; no fingerprint of a withheld
+  text is kept.
+- Every reader respects withholds and restrictions, also before the start-up
+  check runs: people, agents, the Supervisor's recall, search and the API.
+- Purged items stay purged when JARVIS moves, renames or copies them (keyed
+  fingerprints from the database password; no new secret); items that came
+  back are quarantined for an admin.
+- Decisions file version 4 (JARVIS rows, kept holds, releases); `restore.ps1`
+  applies withholds, purges and releases made after the restored backup
+  again.
+- Importer 1.1.0: `repair`, `fingerprints --forget-other-key`, verify checks
+  9 to 12; the production import needs 0.6.2 and a completed repair.
 
 ## Completed in 0.6.1 (one migration; no new tables, no new keys)
 
@@ -319,6 +357,7 @@ Known limits that remain (by design or not yet done):
 
 | Suite | Result | What it covers |
 |---|---|---|
+| Backend, dashboard, end-to-end and upgrade tests, 0.6.2 | TODO (recorded in docs/RELEASE_NOTES_0.6.2.md section 6 and releases/GO_NO_GO_0.6.2.md) | every confirmed 0.6.1 exploit replayed with its leak inverted, the over-withholding cases, the upgrade repair of a real 0.6.1 database, restores, purges |
 | Backend unit + integration (pytest, real PostgreSQL 18), 0.6.1 | **965 passed, 0 failed, 0 skipped** (0.6.1), 420 of them JARVIS Brain tests | everything below, plus the 0.6.1 withhold and purge tests (RELEASE_NOTES_0.6.1.md section 5) |
 | Dashboard (Vitest), type check, production build, 0.6.1 | **225 passed**; type check clean; build succeeded | the withhold dialog's copy count and wording, the emptied item, the disabled Approve |
 | End-to-end, JARVIS Brain operations, 0.6.1 | **100 passed, 0 failed, 0 skipped**, including the 19 browser checks | as below, plus terse database error logs for the app's user |
@@ -463,32 +502,35 @@ owner's approval; the dashboard and the n8n editor stay bound to localhost.
    the version the Command Center names, and only WordPress.org's current,
    newer release, but it cannot see the approval itself. Binding it would need
    approvals signed outside the Command Center.
-7. **JARVIS Brain (0.6.0)**: waits for the owner's approvals (install, a
-   test-copy import of the real backup, then the live import; release notes
-   section 8). Detection of secrets and restricted data is pattern-based:
+7. **JARVIS Brain (0.6.2)**: 0.6.0 and 0.6.1 are NO-GO; 0.6.2 waits for its
+   verdict, then for the owner's approvals (install, a test-copy import of the
+   real backup, then the live import). Detection of secrets and restricted data is pattern-based:
    names and street addresses are not detected, so the owner's review in the
    test copy is required before the live import. Nothing is imported or
    activated before that, and nothing runs on the PC from here.
 
 ## Next steps
 
-1. Owner: read docs/RELEASE_NOTES_0.6.0.md and decide on the approvals in its
-   section 8. Nothing is installed or imported before that. Then 0.6.1
-   (docs/RELEASE_NOTES_0.6.1.md), after 0.6.0 is verified on the PC.
-2. If approved, owner: upgrade the live installation straight from 0.5.0 to
-   0.6.0 (section 4: back up, check the zip against its `.sha256`, extract
-   into `C:\InfiniteAI\v0.6.0`, copy `.env`, run `install.ps1`). Installing
-   0.5.1 first is not needed. All **seven** smoke checks should pass, with API
-   and dashboard 0.6.0. If anything fails, send the output of `install.ps1`
-   and `.\scripts\status.ps1`.
-3. If approved, owner, with 0.6.1 installed: the test copy (from the 0.6.1
-   package) and the import of the real JARVIS backup into it (DEPLOY_WINDOWS.md, "JARVIS Brain: test copy and import"), then
-   the review there; send the import report (it lists kinds and counts, never
-   values) and rotate the credentials it names.
+1. Development: finish 0.6.2's tests, package and verdict
+   (releases/GO_NO_GO_0.6.2.md). Until it says GO, nothing of 0.6.x is
+   installed and nothing is imported.
+2. If GO and approved, owner: upgrade the live installation from 0.5.0
+   straight to 0.6.2 with `releases/UPGRADE_0.6.1_TO_0.6.2_WINDOWS.md` (its
+   0.5.0 section: back up, check the zip against its `.sha256`, extract into
+   `C:\InfiniteAI\v0.6.2`, copy `.env`, run `install.ps1`). All smoke checks
+   should pass, with API and dashboard 0.6.2, and `jarvis-import.ps1 -Target
+   Production -Mode Status` should say `identity repair done`. If anything
+   fails, send the output of `install.ps1` and `.\scripts\status.ps1`.
+3. If approved, owner, with 0.6.2 installed: the test copy (from the 0.6.2
+   package, `C:\InfiniteAI\v0.6.2-brain-test`) and the import of the real
+   JARVIS backup into it (DEPLOY_WINDOWS.md, "JARVIS Brain: test copy and
+   import"), then the review there, including "Held for review"; send the
+   import report (it lists kinds and counts, never values) and rotate the
+   credentials it names.
 4. Only after that review and a separate approval: the live import.
 5. Still open from before: the items in docs/REFERENCE_DESIGN_GAP.md, the DNS
    inventory for remote access (docs/REMOTE_ACCESS_PLAN.md), the six 0.7.0
    messaging decisions above, and a test server for SERVER_SETUP.md.
-6. Next development, after 0.6.0 is verified on the PC: whatever the owner
+6. Next development, after 0.6.2 is verified on the PC: whatever the owner
    decides from items 3 to 5, an owner-acknowledged administrator baseline,
    and the first real integration you choose.

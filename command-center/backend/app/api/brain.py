@@ -91,6 +91,14 @@ class ItemReview(BaseModel):
     note: str = Field("", max_length=2000)
 
 
+class WithholdBody(BaseModel):
+    # Also withhold the readable messages with exactly this text in the conversation and its continuations and
+    # branches (never by default: identical words elsewhere are not the same message).
+    include_identical: bool = False
+    # Hide the conversation's title too; by default only when this is its first user message (null).
+    hide_title: bool | None = None
+
+
 class PromoteBody(BaseModel):
     kind: str = Field(max_length=40)
     title: str = Field(min_length=1, max_length=store.MAX_TITLE)
@@ -473,25 +481,100 @@ async def promoted_copies(message_id: int, caller: Caller = Depends(admin),
                       for c in copies if c.id in visible]}
 
 
-@router.post("/messages/{message_id}/withhold")
-async def withhold_message(message_id: int, request: Request, caller: Caller = Depends(admin),
+async def _in_scope(session: AsyncSession, caller: Caller, ids: list[int]) -> list[int]:
+    """The message ids the caller may see (the others are counted, not named)."""
+    if not ids:
+        return []
+    return sorted((await session.scalars(select(ArchiveMessage.id).join(
+        ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id).where(
+        ArchiveMessage.id.in_(ids), person_sessions(caller.scope), person_messages(caller.scope)))).all())
+
+
+@router.get("/messages/{message_id}/withhold-preview")
+async def withhold_preview(message_id: int, caller: Caller = Depends(admin),
                            session: AsyncSession = Depends(get_db)) -> dict:
+    """What withholding a message would also withhold, hold for review or leave to the admin's choice (ids, positions
+    and counts, never text); read-only."""
+    message, sess = await _message(session, caller, message_id)
+    if message.withheld:
+        raise HTTPException(400, "this message is already withheld")
+    out = await review.withhold_preview(session, message, sess, caller.scope)
+    for key in ("same_message_rows", "held_rows", "identical_text_rows"):
+        visible = set(await _in_scope(session, caller, [r["id"] for r in out[key]]))
+        out[key + "_hidden"] = sum(1 for r in out[key] if r["id"] not in visible)
+        out[key] = [r for r in out[key] if r["id"] in visible]
+    return out
+
+
+@router.post("/messages/{message_id}/withhold")
+async def withhold_message(message_id: int, request: Request, body: WithholdBody | None = None,
+                           caller: Caller = Depends(admin), session: AsyncSession = Depends(get_db)) -> dict:
     await _no_import_running(session)  # it could write the message back with its text
+    body = body or WithholdBody()
     message, _ = await _message(session, caller, message_id, lock=True)
-    done = await review.withhold_message(session, message, actor=caller.name, ip=client_ip(request))
+    done = await review.withhold_message(session, message, actor=caller.name, ip=client_ip(request),
+                                         include_identical=body.include_identical, hide_title=body.hide_title)
     sess = done.session
     assert sess is not None
     copies = [c["item"] for c in done.copies]
+    also = await _in_scope(session, caller, done.also_withheld)
+    held = await _in_scope(session, caller, done.held_for_review)
     await audit.record(session, caller.name, "archive.message_withheld", "archive_message", message.id,
                        {"message": message.id, "session": sess.id, "imported_messages": sess.imported_messages,
                         "withheld_messages": sess.withheld_messages, "tombstone": done.tombstone_created,
                         "copies": copies, "versions_blanked": done.versions_blanked,
                         "rollback_copies_blanked": done.rollback_copies_blanked,
-                        "answers_scrubbed": done.answers_scrubbed, "via": "api"}, ip=client_ip(request))
+                        "answers_scrubbed": done.answers_scrubbed, "via": "api", "also_withheld": also,
+                        "held_for_review": held, "identical_withheld": done.identical_withheld,
+                        "keys_tombstoned": done.keys_tombstoned, "title_hidden": done.title_hidden},
+                       ip=client_ip(request))
     await session.commit()
     return {"message": review.message_out(message), "session": review.session_out(sess),
             "copies": {"items": copies, "versions_blanked": done.versions_blanked},
-            "answers_scrubbed": done.answers_scrubbed, "rollback_copies_blanked": done.rollback_copies_blanked}
+            "answers_scrubbed": done.answers_scrubbed, "rollback_copies_blanked": done.rollback_copies_blanked,
+            "also_withheld": also, "held_for_review": held, "identical_withheld": done.identical_withheld,
+            "keys_tombstoned": done.keys_tombstoned, "title_hidden": done.title_hidden}
+
+
+# --- Holds: rows withheld for an admin's review -----------------------------------------------------------------
+
+
+@router.get("/holds")
+async def list_holds(caller: Caller = Depends(admin), session: AsyncSession = Depends(get_db)) -> dict:
+    """Rows withheld because they may be a withheld message (the same uid with other text, the same text outside a
+    copy position, an upgrade heuristic), with the evidence; never their text."""
+    found = await review.holds(session, caller.scope)
+    return {"holds": found, "total": len(found)}
+
+
+async def _hold_audit(session: AsyncSession, caller: Caller, action: str, message: ArchiveMessage,
+                      stone: Any, request: Request) -> None:
+    await audit.record(session, caller.name, action, "archive_message", message.id,
+                       {"message": message.id, "session": message.session_id,
+                        "anchor": stone.anchor_key or stone.source_key, "rule": stone.via}, ip=client_ip(request))
+
+
+@router.post("/holds/{message_id}/keep")
+async def keep_hold(message_id: int, request: Request, caller: Caller = Depends(admin),
+                    session: AsyncSession = Depends(get_db)) -> dict:
+    await _no_import_running(session)
+    message, _ = await _message(session, caller, message_id, lock=True)
+    stone = await review.keep_hold(session, message, actor=caller.name)
+    await _hold_audit(session, caller, "archive.hold_kept", message, stone, request)
+    await session.commit()
+    return {"message": review.message_out(message), "review": stone.review}
+
+
+@router.post("/holds/{message_id}/release")
+async def release_hold(message_id: int, request: Request, caller: Caller = Depends(admin),
+                       session: AsyncSession = Depends(get_db)) -> dict:
+    await _no_import_running(session)  # an import could hold it again before the release is committed
+    message, sess = await _message(session, caller, message_id, lock=True)
+    stone = await review.release_hold(session, message, sess, actor=caller.name)
+    await _hold_audit(session, caller, "archive.hold_released", message, stone, request)
+    await session.commit()
+    return {"message": review.message_out(message), "released": True,
+            "note": "its text comes back at the next import of a backup holding it; promoted copies stay empty"}
 
 
 @router.post("/messages/{message_id}/promote", status_code=201)

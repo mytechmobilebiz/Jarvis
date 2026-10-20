@@ -608,7 +608,9 @@ async def test_withholding_a_message_recomputes_its_session(client):
         entry = await s.scalar(select(AuditLog).where(AuditLog.action == "archive.message_withheld"))
         assert entry.detail == {"message": ids["m2"], "session": ids["s1"], "imported_messages": 1,
                                 "withheld_messages": 1, "tombstone": True, "copies": [], "versions_blanked": 0,
-                                "rollback_copies_blanked": 0, "answers_scrubbed": 0, "via": "api"}
+                                "rollback_copies_blanked": 0, "answers_scrubbed": 0, "via": "api",
+                                "also_withheld": [], "held_for_review": [], "identical_withheld": 0,
+                                "keys_tombstoned": 1, "title_hidden": False}
 
 
 async def test_promoting_a_message_keeps_the_highest_sensitivity(client):

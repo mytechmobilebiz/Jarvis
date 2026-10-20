@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import audit, licensing
 from .. import tasks as task_service
 from ..agents.registry import all_agents, get_agent
+from ..brain import quotes
 from ..config import Settings, get_settings
 from ..models import AgentState, Approval, Task, TaskLog, User
 from .deps import OPERATOR_ROLES, Principal, client_ip, get_db, require_operator, require_user, to_dict
@@ -53,7 +54,8 @@ OPERATOR_ONLY_RESULT_DATA = ("answer", "memory_notes")
 
 def task_view(task: Task, principal: Principal | None = None) -> dict[str, Any]:
     """A task as the API returns it. For a viewer (any role that does not operate), the operator-only parts of the
-    result are left out; callers that already require an operator pass no principal."""
+    result are left out; callers that already require an operator pass no principal. Routes serve tasks through
+    task_views(), which also leaves out quotes of removed JARVIS Brain sources."""
     out = to_dict(task)
     if principal is not None and principal.role not in OPERATOR_ROLES:
         result = out.get("result")
@@ -61,6 +63,29 @@ def task_view(task: Task, principal: Principal | None = None) -> dict[str, Any]:
         if isinstance(data, dict) and any(key in data for key in OPERATOR_ONLY_RESULT_DATA):
             out["result"] = {**result, "data": {k: v for k, v in data.items() if k not in OPERATOR_ONLY_RESULT_DATA}}
     return out
+
+
+async def task_views(session: AsyncSession, tasks: list[Task], principal: Principal | None = None
+                     ) -> list[dict[str, Any]]:
+    """task_view() of each task, without the answer lines that quote a withheld, deleted or emptied JARVIS Brain
+    source and without reference notes naming such an item (quotes.dead_sources, one lookup per page): the read-time
+    guard, for quotes a start-up check has not removed yet (skipped while a task held the quote lock, or a database
+    0.6.0 left behind). The stored result is not changed."""
+    datas = [d for t in tasks if isinstance(d := (t.result or {}).get("data"), dict)]
+    dead_m, dead_i = await quotes.dead_sources(session, datas) if datas else (set(), set())
+    out = []
+    for t in tasks:
+        view = task_view(t, principal)
+        result = view.get("result")
+        data = result.get("data") if isinstance(result, dict) else None
+        if isinstance(data, dict) and (dead_m or dead_i):
+            view["result"] = {**result, "data": quotes.strip_dead(data, dead_m, dead_i)}
+        out.append(view)
+    return out
+
+
+async def task_one(session: AsyncSession, task: Task, principal: Principal | None = None) -> dict[str, Any]:
+    return (await task_views(session, [task], principal))[0]
 
 
 @router.get("/agents")
@@ -164,7 +189,7 @@ async def run_capability(
         {"agent": name, "capability": body.capability, "status": task.status}, ip=client_ip(request),
     )
     await session.commit()
-    return {"task": task_view(task)}
+    return {"task": await task_one(session, task)}
 
 
 @router.get("/tasks")
@@ -186,7 +211,7 @@ async def list_tasks(
         q = q.where(Task.request_id == request_id)
     total = await session.scalar(select(func.count()).select_from(q.subquery()))
     rows = (await session.scalars(q.order_by(Task.id.desc()).limit(limit).offset(offset))).all()
-    return {"tasks": [task_view(t, principal) for t in rows], "total": total}
+    return {"tasks": await task_views(session, list(rows), principal), "total": total}
 
 
 @router.get("/tasks/{task_id}")
@@ -197,7 +222,7 @@ async def get_task(task_id: int, principal: Principal = Depends(require_user), s
     logs = (await session.scalars(select(TaskLog).where(TaskLog.task_id == task_id).order_by(TaskLog.id))).all()
     approval = await session.scalar(select(Approval).where(Approval.task_id == task_id))
     return {
-        "task": task_view(task, principal),
+        "task": await task_one(session, task, principal),
         "logs": [to_dict(entry) for entry in logs],
         "approval": to_dict(approval) if approval else None,
     }
@@ -223,7 +248,7 @@ async def cancel(
     task = await task_service.cancel_task(session, settings, task, principal.name)
     await audit.record(session, principal.name, "task.cancelled", "task", task_id, ip=client_ip(request))
     await session.commit()
-    return {"task": task_view(task)}
+    return {"task": await task_one(session, task)}
 
 
 @router.post("/tasks/{task_id}/retry", status_code=201)
@@ -239,7 +264,7 @@ async def retry(
     task = await task_service.retry_task(session, settings, task, principal.name)
     await audit.record(session, principal.name, "task.retried", "task", task_id, {"new_task_id": task.id}, ip=client_ip(request))
     await session.commit()
-    return {"task": task_view(task)}
+    return {"task": await task_one(session, task)}
 
 
 @router.get("/approvals")
@@ -278,4 +303,4 @@ async def decide(
         {"task_id": task.id, "agent": task.agent, "capability": task.capability, "note": body.note}, ip=client_ip(request),
     )
     await session.commit()
-    return {"approval": to_dict(approval), "task": task_view(task)}
+    return {"approval": to_dict(approval), "task": await task_one(session, task)}

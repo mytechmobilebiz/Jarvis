@@ -8,7 +8,8 @@
 #   ... -Mode Import -Sample 5        then review, then -Sample <about 10 % of the sessions>, then review, then -All
 #   ... -Mode Verify -Run <id>        -Mode Status [-Run <id>]        -Mode Rollback -Run <id> [-DiscardReviewed]
 #   ... -Mode ExportDecisions (test copy)     -Mode ApplyDecisions -Decisions <file> -Run <id> -Actor <admin email> (live)
-#   ... -Mode Resume -Run <id>        -Mode Rescan
+#   ... -Mode Resume -Run <id>        -Mode Rescan        -Mode Repair (0.6.2: withhold what is the same message as a
+#       withheld one now, without waiting for the next start or import)
 #
 # -Target Test uses the test copy of THIS folder (project cc-brain-test, .env.brain-test). -Target Production must be
 # run from the live installation's folder; it asks for typed confirmations and, before an import, writes a verified
@@ -49,7 +50,8 @@ if ($PSVersionTable.PSEdition -eq "Core" -and -not $IsWindows) { $onWindows = $f
 
 # --- Parameters ---------------------------------------------------------------------------------------------------
 $targets = @("Test", "Production")
-$modes = @("Plan", "Import", "Resume", "Verify", "Rollback", "Status", "ExportDecisions", "ApplyDecisions", "Rescan")
+$modes = @("Plan", "Import", "Resume", "Verify", "Rollback", "Status", "ExportDecisions", "ApplyDecisions", "Rescan",
+  "Repair")
 if ($targets -notcontains $Target) { Stop-Brain "give -Target Test or -Target Production" }
 if ($modes -notcontains $Mode) { Stop-Brain ("give -Mode " + ($modes -join ", ")) }
 $Target = $targets | Where-Object { $_ -eq $Target }
@@ -308,8 +310,9 @@ Show-Fingerprint "live installation before ($Target $Mode)" $before
 if ($Target -eq "Production") {
   # Feature check: the running api's image has the importer and the database has the JARVIS Brain tables.
   $migrations = @(Get-AppliedMigrations)
-  if ($migrations -notcontains "0006_brain") { Clear-ImportVars; Stop-Brain "the live database has no 0006_brain migration: install 0.6.1 on the live installation first" }
-  if ($migrations -notcontains "0007_brain_withhold") { Clear-ImportVars; Stop-Brain "the live database has no 0007_brain_withhold migration: install 0.6.1 on the live installation first" }
+  if ($migrations -notcontains "0006_brain") { Clear-ImportVars; Stop-Brain "the live database has no 0006_brain migration: install 0.6.2 on the live installation first and let it start once" }
+  if ($migrations -notcontains "0007_brain_withhold") { Clear-ImportVars; Stop-Brain "the live database has no 0007_brain_withhold migration: install 0.6.2 on the live installation first and let it start once" }
+  if ($migrations -notcontains "0008_brain_withhold_identity") { Clear-ImportVars; Stop-Brain "the live database has no 0008_brain_withhold_identity migration: install 0.6.2 on the live installation first and let it start once" }
   if (-not (Test-Path -LiteralPath $Reports)) { $null = New-Item -ItemType Directory -Path $Reports }
   $saved = $service
   $service = "brain-importer-nosource"
@@ -320,9 +323,13 @@ if ($Target -eq "Production") {
   # pattern against the CLI's own output).
   if ($r.Code -ne 0 -or $printed -notmatch '(?m)^importer (\d+\.\d+\.\d+); JARVIS Brain tables installed\b') {
     Clear-ImportVars
-    Stop-Brain "the running api's image has no working brain-import (status exit $($r.Code)); install 0.6.1 on the live installation first"
+    Stop-Brain "the running api's image has no working brain-import (status exit $($r.Code)); install 0.6.2 on the live installation first"
   }
   $importerVersion = $Matches[1]
+  if ([version]$importerVersion -lt [version]"1.1.0") {
+    Clear-ImportVars
+    Stop-Brain "the running api's importer is ${importerVersion}: install 0.6.2 on the live installation first (importer 1.1.0 or later keeps withheld messages withheld whatever JARVIS does to them)"
+  }
   # 0.6.1 empties, at start-up, the memory items promoted from withheld messages that 0.6.0 left with their text; the
   # status line says how many are left (tests/unit/test_brain_ops.py runs this pattern against the CLI's own output).
   # Only what brings JARVIS text in (Import, Resume) waits for 0: Status shows the count, Rescan is a remedy, and
@@ -331,9 +338,34 @@ if ($Target -eq "Production") {
   if ($printed -match '(?m)^migration 0007_brain_withhold present; withheld copies with text: (\d+)\b') { $withheldCopies = $Matches[1] }
   if (@("Import", "Resume") -contains $Mode -and $withheldCopies -ne "0") {
     Clear-ImportVars
-    Stop-Brain "the live installation still has promoted memory items whose source message is withheld, or no 0.6.1 importer: install 0.6.1 on the live installation first and let it start once (the start-up check is skipped while an import, rollback or rescan runs: if brain-import status still shows withheld copies with text above 0, restart the live installation, or run .\scripts\jarvis-import.ps1 -Target Production -Mode Rescan)"
+    Stop-Brain "the live installation still has promoted memory items whose source message is withheld, or no 0.6.1 importer: install 0.6.2 on the live installation first and let it start once (the start-up check is skipped while an import, rollback or rescan runs: if brain-import status still shows withheld copies with text above 0, restart the live installation, or run .\scripts\jarvis-import.ps1 -Target Production -Mode Rescan)"
   }
-  Write-Host "Live installation: importer $importerVersion, migrations 0006_brain and 0007_brain_withhold present, withheld copies with text: $withheldCopies, importer image = running api code ($runningVersion)."
+  # 0.6.2: the withhold identity (tests/unit/test_brain_ops.py runs this pattern against the CLI's own output). An import
+  # repairs before it imports, so readable rows matching a withhold, holds, quotes and guard counts are shown, not
+  # required; the repair itself must have run once (the start-up check, or -Mode Repair), and purge fingerprints must
+  # all be readable with this database password.
+  $identity = $null
+  if ($printed -match '(?m)^migration 0008_brain_withhold_identity present; identity repair (done|not done); readable rows matching a withhold: (\d+); held for review: (\d+); withheld rows with a text fingerprint: (\d+); rows blanked by the database guard: (\d+); quotes of removed sources: (\d+); purge fingerprints made with another key: (\d+)\b') {
+    $identity = @{ Repair = $Matches[1]; Readable = $Matches[2]; Held = $Matches[3]; Fingerprints = $Matches[4]; Guard = $Matches[5]; Quotes = $Matches[6]; OtherKey = $Matches[7] }
+  }
+  if (@("Import", "Resume") -contains $Mode) {
+    if (-not $identity) {
+      Clear-ImportVars
+      Stop-Brain "brain-import status shows no withhold identity line: install 0.6.2 on the live installation first and let it start once"
+    }
+    if ($identity.Repair -ne "done") {
+      Clear-ImportVars
+      Stop-Brain "the identity repair has not run on the live installation yet: let it start once (the start-up check runs it), or run .\scripts\jarvis-import.ps1 -Target Production -Mode Repair"
+    }
+    if ($identity.OtherKey -ne "0") {
+      Clear-ImportVars
+      Stop-Brain "$($identity.OtherKey) purged-item fingerprint(s) were made with another database password: restore that password, or in this folder run: docker compose exec -T api python -m app.cli brain-import fingerprints --forget-other-key --yes (the purges themselves stay, by their keys)"
+    }
+  }
+  Write-Host "Live installation: importer $importerVersion, migrations 0006_brain, 0007_brain_withhold and 0008_brain_withhold_identity present, withheld copies with text: $withheldCopies, importer image = running api code ($runningVersion)."
+  if ($identity) {
+    Write-Host "Withhold identity: repair $($identity.Repair); readable rows matching a withhold: $($identity.Readable) (an import repairs them first); held for review: $($identity.Held); withheld rows with a text fingerprint: $($identity.Fingerprints); rows blanked by the database guard: $($identity.Guard); quotes of removed sources: $($identity.Quotes)."
+  }
 }
 
 # --- Run ----------------------------------------------------------------------------------------------------------
@@ -346,6 +378,7 @@ try {
       "Resume" { Confirm-Typed "IMPORT INTO PRODUCTION" "This continues import run $Run in the LIVE Command Center." }
       "Rollback" { Confirm-Typed "ROLL BACK PRODUCTION" "This removes everything import run $Run added to the LIVE Command Center." }
       "Rescan" { Confirm-Typed "RESCAN PRODUCTION" "This re-cleans every stored JARVIS text in the LIVE Command Center with the current detectors." }
+      "Repair" { Confirm-Typed "REPAIR PRODUCTION" "This withholds, in the LIVE Command Center, every stored row that is the same JARVIS message as a withheld one." }
       "ApplyDecisions" { Confirm-Typed "APPLY DECISIONS TO PRODUCTION" "This applies the review decisions from the test copy to import run $Run in the LIVE Command Center." }
     }
   }
@@ -370,6 +403,7 @@ try {
     }
     "Status" { $cli = @("status"); if ($Run -gt 0) { $cli += @("--run", "$Run") } }
     "Rescan" { $cli = @("rescan", "--yes") }
+    "Repair" { $cli = @("repair", "--yes") }
     "ExportDecisions" {
       $report = "/reports/decisions-" + $Target.ToLower() + "-$stamp.json"
       $cli = @("decisions-export", "--out", $report)

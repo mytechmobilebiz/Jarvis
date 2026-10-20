@@ -252,7 +252,8 @@ def sqlite(db: str) -> sqlite3.Connection:
 
 BRAIN_TABLES = ("import_runs", "import_records", "memory_items", "memory_item_versions", "archive_sessions",
                 "archive_messages", "memory_conflicts", "workflow_drafts", "brain_tombstones")
-HISTORY_TABLES = ("import_runs", "import_records", "audit_log")  # kept by a rollback, on purpose
+# Kept by a rollback, on purpose (brain_maintenance: the identity repair's done-markers, 0008).
+HISTORY_TABLES = ("import_runs", "import_records", "audit_log", "brain_maintenance")
 
 
 def paths(fx: dict[str, str], **kw: Any) -> Any:
@@ -305,3 +306,250 @@ def snapshot(root: str) -> dict[str, tuple[Any, ...]]:
                 with open(full, "rb") as f:
                     state[full] = (st.st_size, st.st_mtime_ns, hashlib.sha256(f.read()).hexdigest())
     return state
+
+
+# --- Small JARVIS installations in the shapes Hermes writes (0.6.2 withhold identity tests) ------------------------
+
+# The kit's backup schema (migration/jarvis/tests/make_fixture.py), without its full-text index: rows are added and
+# changed by the helpers below exactly as Hermes changes them.
+JARVIS_SCHEMA = """
+CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, user_id TEXT, model TEXT, model_config TEXT,
+    system_prompt TEXT, parent_session_id TEXT, started_at REAL, ended_at REAL, end_reason TEXT,
+    message_count INTEGER, tool_call_count INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+    title TEXT, display_name TEXT, archived INTEGER DEFAULT 0, estimated_cost_usd REAL, actual_cost_usd REAL);
+CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL,
+    content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL NOT NULL,
+    token_count INTEGER, finish_reason TEXT, reasoning TEXT, reasoning_details TEXT,
+    active INTEGER DEFAULT 1, compacted INTEGER DEFAULT 0, message_uid TEXT, tool_call_uids TEXT);
+CREATE INDEX idx_messages_session ON messages(session_id, timestamp);
+"""
+
+
+def mini(root: str | os.PathLike[str]) -> dict[str, str]:
+    """An installation with no files and an empty backup: the tests add the conversations they need."""
+    root = str(root)
+    out = {"root": root, "db": os.path.join(root, "state-backup.db"), "profile": os.path.join(root, "profile"),
+           "content": os.path.join(root, "content")}
+    os.makedirs(out["profile"], exist_ok=True)
+    os.makedirs(out["content"], exist_ok=True)
+    con = sqlite3.connect(out["db"])
+    con.executescript(JARVIS_SCHEMA)
+    con.commit()
+    con.close()
+    return out
+
+
+def _write_db(db: str, fn: Any) -> Any:
+    con = sqlite3.connect(db)
+    try:
+        result = fn(con)
+        con.commit()
+        con.execute("PRAGMA journal_mode = DELETE")
+        return result
+    finally:
+        con.close()
+
+
+def new_uid() -> str:
+    """A Hermes message_uid (uuid4 hex)."""
+    import uuid
+
+    return uuid.uuid4().hex
+
+
+def add_session(db: str, sid: str, *, started: float, parent: str | None = None, end_reason: str = "completed",
+                model_config: dict[str, Any] | None = None, title: str = "Probe conversation",
+                source: str = "cli") -> None:
+    _write_db(db, lambda con: con.execute(
+        "INSERT INTO sessions (id, source, model, model_config, system_prompt, parent_session_id, started_at, "
+        "ended_at, end_reason, message_count, tool_call_count, title, archived) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0)",
+        (sid, source, "claude-opus-5", json.dumps(model_config or {}), "sys", parent, started, None, end_reason, 0, 0,
+         title)))
+
+
+def add_row(db: str, sid: str, role: str, content: str, ts: float, *, uid: str | None | bool = None,
+            active: int = 1, compacted: int = 0, tool_call_id: str | None = None, tool_name: str | None = None
+            ) -> int:
+    """One message row; uid None mints one (Hermes stamps every row), False leaves it NULL (or out: a backup of a
+    Hermes older than message_uid has no such column)."""
+    value = new_uid() if uid is None else (None if uid is False else uid)
+
+    def insert(con: sqlite3.Connection) -> int:
+        cols = ["session_id", "role", "content", "tool_call_id", "tool_name", "timestamp", "active", "compacted"]
+        values = [sid, role, content, tool_call_id, tool_name, ts, active, compacted]
+        if "message_uid" in {r[1] for r in con.execute("PRAGMA table_info(messages)")}:
+            cols.append("message_uid")
+            values.append(value)
+        return con.execute("INSERT INTO messages (%s) VALUES (%s)" % (", ".join(cols), ",".join("?" * len(cols))),
+                           values).lastrowid
+    return _write_db(db, insert)
+
+
+def rows(db: str, sid: str) -> list[dict[str, Any]]:
+    con = sqlite3.connect(db)
+    con.row_factory = sqlite3.Row
+    try:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(messages)")}
+        uid = "message_uid" if "message_uid" in cols else "NULL AS message_uid"
+        return [dict(r) for r in con.execute(
+            "SELECT id, role, content, tool_call_id, tool_name, timestamp, active, compacted, %s FROM messages "
+            "WHERE session_id = ? ORDER BY id" % uid, (sid,))]
+    finally:
+        con.close()
+
+
+def change(db: str, sql: str, *args: Any) -> None:
+    _write_db(db, lambda con: con.execute(sql, args))
+
+
+def hermes_compact(db: str, sid: str, head_n: int, tail_n: int, ts: float) -> list[int]:
+    """Hermes's in-place compaction (hermes_state_messages._archive_and_compact_on_conn, watermark None): the tail
+    originals are rewind-flagged (active 0, compacted 0), the rest archived (compacted 1), then copies of the first
+    head_n archived rows, the summary and copies of the tail are inserted as live rows with the originals' uids.
+    Returns the new rows' ids."""
+    def run(con: sqlite3.Connection) -> list[int]:
+        live = con.execute("SELECT id, role, content, message_uid, tool_call_id, tool_name FROM messages "
+                           "WHERE session_id = ? AND active = 1 AND role != 'system' ORDER BY id", (sid,)).fetchall()
+        head, tail = live[:head_n], (live[-tail_n:] if tail_n else [])
+        for r in tail:
+            con.execute("UPDATE messages SET active = 0, compacted = 0 WHERE id = ?", (r[0],))
+        con.execute("UPDATE messages SET active = 0, compacted = 1 WHERE session_id = ? AND active = 1", (sid,))
+        new = []
+        insert = ("INSERT INTO messages (session_id, role, content, message_uid, tool_call_id, tool_name, timestamp) "
+                  "VALUES (?,?,?,?,?,?,?)")
+        for _, role, content, uid, call_id, name in head:
+            new.append(con.execute(insert, (sid, role, content, uid, call_id, name, ts)).lastrowid)
+        new.append(con.execute(insert, (sid, "assistant", "[CONTEXT COMPACTION] Summary of earlier turns.", new_uid(),
+                                        None, None, ts + 1)).lastrowid)
+        for _, role, content, uid, call_id, name in tail:
+            new.append(con.execute(insert, (sid, role, content, uid, call_id, name, ts + 2)).lastrowid)
+        return new
+    return _write_db(db, run)
+
+
+def _copy_into(db: str, parent: str, child: str, *, fresh_uid: bool) -> list[int]:
+    def run(con: sqlite3.Connection) -> list[int]:
+        out = []
+        for role, content, uid, call_id, name, ts in con.execute(
+                "SELECT role, content, message_uid, tool_call_id, tool_name, timestamp FROM messages "
+                "WHERE session_id = ? AND active = 1 AND role != 'system' ORDER BY id", (parent,)).fetchall():
+            out.append(con.execute(
+                "INSERT INTO messages (session_id, role, content, message_uid, tool_call_id, tool_name, timestamp) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (child, role, content, new_uid() if fresh_uid else uid, call_id, name, ts)).lastrowid)
+        return out
+    return _write_db(db, run)
+
+
+def gateway_branch(db: str, parent: str, child: str, started_at: float) -> list[int]:
+    """The gateway's /branch (gateway/slash_commands_session.py _branch_row): the child copies the parent's live rows
+    with their timestamps and a fresh uid each; model_config names the parent."""
+    add_session(db, child, started=started_at, parent=parent, model_config={"_branched_from": parent},
+                title="Branch of the probe")
+    return _copy_into(db, parent, child, fresh_uid=True)
+
+
+def cli_branch(db: str, parent: str, child: str, started_at: float) -> list[int]:
+    """The CLI's /branch: the parent ends 'branched', the child copies its rows keeping their uids."""
+    change(db, "UPDATE sessions SET end_reason = 'branched' WHERE id = ?", parent)
+    add_session(db, child, started=started_at, parent=parent, model_config={"_branched_from": parent},
+                title="CLI branch of the probe")
+    return _copy_into(db, parent, child, fresh_uid=False)
+
+
+def rotate(db: str, parent: str, child: str, started_at: float) -> list[int]:
+    """A rotating compaction (in_place False): the parent ends 'compression' and the continuation child carries its
+    rows on with their uids."""
+    change(db, "UPDATE sessions SET end_reason = 'compression' WHERE id = ?", parent)
+    add_session(db, child, started=started_at, parent=parent, title="Continuation of the probe")
+    return _copy_into(db, parent, child, fresh_uid=False)
+
+
+def fold(db: str, sid: str, survivor: int, dropped: list[int]) -> None:
+    """Hermes's micro-compaction fold: the survivor's text becomes the composite, it records the uids it absorbed
+    (absorbed_message_uids, a JSON list), and the folded rows are removed."""
+    def run(con: sqlite3.Connection) -> None:
+        if "absorbed_message_uids" not in {r[1] for r in con.execute("PRAGMA table_info(messages)")}:
+            con.execute("ALTER TABLE messages ADD COLUMN absorbed_message_uids TEXT")
+        parts = [con.execute("SELECT content, message_uid FROM messages WHERE id = ?", (i,)).fetchone()
+                 for i in dropped]
+        text = con.execute("SELECT content FROM messages WHERE id = ?", (survivor,)).fetchone()[0]
+        con.execute("UPDATE messages SET content = ?, absorbed_message_uids = ? WHERE id = ?",
+                    ("\n".join([p[0] for p in parts] + [text]), json.dumps([p[1] for p in parts]), survivor))
+        con.execute("DELETE FROM messages WHERE id IN (%s)" % ",".join("?" * len(dropped)), dropped)
+    _write_db(db, run)
+
+
+def prune_twin(db: str, sid: str, row: int, stub: str = "[tool output pruned to save context]") -> int:
+    """Pruning: the full row is archived as a compacted twin with the same uid, the live row keeps a stub."""
+    def run(con: sqlite3.Connection) -> int:
+        role, content, uid, call_id, name, ts = con.execute(
+            "SELECT role, content, message_uid, tool_call_id, tool_name, timestamp FROM messages WHERE id = ?",
+            (row,)).fetchone()
+        twin = con.execute("INSERT INTO messages (session_id, role, content, message_uid, tool_call_id, tool_name, "
+                           "timestamp, active, compacted) VALUES (?,?,?,?,?,?,?,0,1)",
+                           (sid, role, content, uid, call_id, name, ts)).lastrowid
+        con.execute("UPDATE messages SET content = ? WHERE id = ?", (stub, row))
+        return twin
+    return _write_db(db, run)
+
+
+def replace_renumber(db: str, sid: str) -> dict[int, int]:
+    """Hermes's replace_messages: every row of the session deleted and written again, new ids, the same uids.
+    Returns old id -> new id."""
+    def run(con: sqlite3.Connection) -> dict[int, int]:
+        old = con.execute("SELECT id, role, content, message_uid, tool_call_id, tool_name, timestamp, active, "
+                          "compacted FROM messages WHERE session_id = ? ORDER BY id", (sid,)).fetchall()
+        con.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+        out = {}
+        for r in old:
+            out[r[0]] = con.execute(
+                "INSERT INTO messages (session_id, role, content, message_uid, tool_call_id, tool_name, timestamp, "
+                "active, compacted) VALUES (?,?,?,?,?,?,?,?,?)", (sid, *r[1:])).lastrowid
+        return out
+    return _write_db(db, run)
+
+
+def backfill_uids(db: str, sid: str, n: int | None = None) -> dict[int, str]:
+    """Hermes's uid backfill: rows with no message_uid get one (the first n, or all). Returns id -> uid."""
+    def run(con: sqlite3.Connection) -> dict[int, str]:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(messages)")}
+        if "message_uid" not in cols:
+            con.execute("ALTER TABLE messages ADD COLUMN message_uid TEXT")
+        ids = [r[0] for r in con.execute("SELECT id FROM messages WHERE session_id = ? AND message_uid IS NULL "
+                                         "ORDER BY id", (sid,))]
+        out = {i: new_uid() for i in (ids if n is None else ids[:n])}
+        for i, uid in out.items():
+            con.execute("UPDATE messages SET message_uid = ? WHERE id = ?", (uid, i))
+        return out
+    return _write_db(db, run)
+
+
+def drop_uid_column(db: str) -> None:
+    """A backup of a Hermes older than message_uid."""
+    _write_db(db, lambda con: con.execute("ALTER TABLE messages DROP COLUMN message_uid"))
+
+
+async def nowhere(marker: str, allow: tuple[str, ...] = (), caplog: Any = None) -> list[str]:
+    """Every table.column (text, varchar, JSONB, arrays and search vectors) holding the marker, except `allow`, and
+    "log" when an application log line holds it."""
+    from sqlalchemy import text
+
+    from app.db import session_scope
+
+    found = []
+    async with session_scope() as s:
+        columns = (await s.execute(text(
+            "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' AND "
+            "data_type IN ('text', 'character varying', 'jsonb', 'json', 'ARRAY', 'tsvector') "
+            "ORDER BY table_name, column_name"))).all()
+        for table, column in columns:
+            where = "%s.%s" % (table, column)
+            if where not in allow and await s.scalar(text(
+                    'SELECT EXISTS (SELECT 1 FROM "%s" WHERE "%s"::text ILIKE :m)' % (table, column)),
+                    {"m": "%" + marker + "%"}):
+                found.append(where)
+    if caplog is not None and any(marker.lower() in r.getMessage().lower() for r in caplog.records
+                                  if not r.name.startswith("httpx")):  # the test client logs its own URLs
+        found.append("log")
+    return found

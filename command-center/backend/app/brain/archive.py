@@ -28,7 +28,7 @@ from .. import audit
 from ..models import ArchiveMessage, ArchiveSession, BrainTombstone, ImportRecord, MemoryItem, MemoryItemVersion
 from . import store
 from . import text as brain_text
-from .policy import PROMOTED_REF, SOURCE_REMOVED, WITHHELD_BY_ADMIN
+from .policy import OLD_ROW_ACTIONS, PROMOTED_REF, SOURCE_REMOVED, WITHHELD_BY_ADMIN
 from .quotes import scrub_quotes
 
 SUMMARY_FIRST = 200
@@ -123,12 +123,15 @@ def withheld_later(flags: dict[str, Any] | None) -> bool:
 
 
 def blank_before(before: dict[str, Any]) -> dict[str, Any]:
-    """A rollback copy (import_records.before) without its text; a message's copy is marked withheld."""
+    """A rollback copy (import_records.before) without its text; a message's copy is marked withheld and keeps no
+    fingerprint of its text either (source_fp 'w1:<state>', as a withheld row)."""
     if "deleted_row" in before:
         return {**before, "deleted_row": blank_before(dict(before["deleted_row"]))}
     out = {**before, **({"title": ""} if "title" in before else {})}
     if "content" in before:
         out.update(WITHHELD_ROW)
+        if "source_fp" in before:
+            out["source_fp"] = "w1:%s" % (before.get("state") or "live")
     return out
 
 
@@ -274,6 +277,15 @@ async def withhold_copies(session: AsyncSession, *, messages: Sequence[Any] = ()
         copies += [(item, None) for item in (await session.scalars(select(MemoryItem).where(
             MemoryItem.origin == "promoted", MemoryItem.flags["message_source_key"].astext.in_(list(chunk)))
             .order_by(MemoryItem.id))).all() if item.id not in known]
+    older = await _older_rows(session, sorted({m.source_key for m in rows.values() if m.source_key} | set(rowless)))
+    # A 0.6.0 copy (no message_source_key) names only the row it was promoted from: also an older row of these keys,
+    # whose id the import records keep (rolled back, rewound, or a position that moved since).
+    for chunk in _chunks(sorted(older - set(rows))):
+        known = {item.id for item, _ in copies}
+        copies += [(item, None) for item in (await session.scalars(select(MemoryItem).where(
+            MemoryItem.origin == "promoted", not_(MemoryItem.flags.has_key("message_source_key")),
+            MemoryItem.flags["message_id"].as_integer().in_(list(chunk))).order_by(MemoryItem.id))).all()
+            if item.id not in known]
     for item, message in copies:
         done = await store.empty_withheld_copy(session, item, actor=actor)
         if done is None:
@@ -281,8 +293,7 @@ async def withhold_copies(session: AsyncSession, *, messages: Sequence[Any] = ()
         out.copies.append(done)
         out.versions_blanked += done["versions_blanked"]
         await _audit_copy(session, actor, done, message, cause, ip)
-    quoted = set(rows) | await _older_rows(session, sorted({m.source_key for m in rows.values() if m.source_key}
-                                                           | set(rowless)))
+    quoted = set(rows) | older
     out.answers_scrubbed = await scrub_quotes(session, message_ids=quoted - {int(i) for i in fresh_ids},
                                               item_ids=[i.id for i, _ in copies])
     return out
@@ -296,7 +307,7 @@ async def _older_rows(session: AsyncSession, keys: Sequence[str]) -> set[int]:
     for chunk in _chunks(keys):
         ids |= {int(i) for i in (await session.scalars(select(ImportRecord.target_id).where(
             ImportRecord.record_type == "message", ImportRecord.target_table == "archive_messages",
-            ImportRecord.action.in_(("imported", "withheld", "updated")), ImportRecord.target_id.is_not(None),
+            ImportRecord.action.in_(OLD_ROW_ACTIONS), ImportRecord.target_id.is_not(None),
             ImportRecord.source_key.in_(list(chunk))))).all()}
     return ids
 
@@ -314,8 +325,10 @@ def _holds_text() -> Any:
 async def withheld_copies(session: AsyncSession) -> list[tuple[MemoryItem, Any]]:
     """Promoted items that still hold text although their message is withheld, with that message (None when no row
     of it is left): flagged source_withheld (0.6.0 quarantined them but kept the text); their message_id row is
-    withheld; their message_source_key row is withheld, or has an admin's withhold tombstone; or (promoted by 0.6.0)
-    their source_ref names a withheld row while their message_id names none."""
+    withheld; their message_source_key row is withheld, or has an admin's withhold tombstone; (promoted by 0.6.0)
+    their source_ref names a withheld row while their message_id names none, or the import records name the source
+    key their gone row held and that key is withheld; or their conversation is withheld for restricted data
+    (policy.withheld_source() matches the same items)."""
     items = list((await session.scalars(select(MemoryItem).where(MemoryItem.origin == "promoted", _holds_text())
                                         .order_by(MemoryItem.id))).all())
     if not items:
@@ -338,6 +351,26 @@ async def withheld_copies(session: AsyncSession) -> list[tuple[MemoryItem, Any]]
                                         .join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
                                         .where(ArchiveMessage.withheld.is_(True), ref.in_(legacy)))).all():
             by_ref.setdefault(r.ref, r)
+    # 0.6.0 copies whose row is gone: the source key the import records name for that row, when it is withheld.
+    gone_ids = sorted({f["message_id"] for i in items if "message_source_key" not in (f := i.flags or {})
+                       and isinstance(f.get("message_id"), int) and f["message_id"] not in by_id})
+    old_key: dict[int, str] = {}
+    withheld_keys: set[str] = set()
+    for chunk in _chunks(gone_ids):
+        old_key.update((int(t), k) for t, k in (await session.execute(select(
+            ImportRecord.target_id, ImportRecord.source_key).where(
+            ImportRecord.record_type == "message", ImportRecord.target_table == "archive_messages",
+            ImportRecord.action.in_(OLD_ROW_ACTIONS), ImportRecord.target_id.in_(list(chunk))))).all())
+    for chunk in _chunks(sorted(set(old_key.values()))):
+        withheld_keys |= set((await session.scalars(select(ArchiveMessage.source_key).where(
+            ArchiveMessage.source_key.in_(list(chunk)), ArchiveMessage.withheld.is_(True)))).all())
+        withheld_keys |= set((await session.scalars(select(BrainTombstone.source_key).where(
+            BrainTombstone.source_key.in_(list(chunk)), BrainTombstone.reason == WITHHELD_BY_ADMIN))).all())
+    # Copies of a conversation withheld for restricted data, whatever became of their row (finding 2).
+    sessions = sorted({f["archive_session_id"] for i in items
+                       if isinstance((f := i.flags or {}).get("archive_session_id"), int)})
+    restricted = set((await session.scalars(select(ArchiveSession.id).where(
+        ArchiveSession.id.in_(sessions), ArchiveSession.sensitivity == "restricted"))).all()) if sessions else set()
     found = []
     for item in items:
         flags = item.flags or {}
@@ -351,6 +384,10 @@ async def withheld_copies(session: AsyncSession) -> list[tuple[MemoryItem, Any]]
             found.append((item, keyed))
         elif not key and row is None and item.source_ref.removesuffix(SOURCE_REMOVED) in by_ref:
             found.append((item, by_ref[item.source_ref.removesuffix(SOURCE_REMOVED)]))
+        elif not key and row is None and old_key.get(flags.get("message_id")) in withheld_keys:
+            found.append((item, None))
+        elif flags.get("archive_session_id") in restricted:
+            found.append((item, row))
         elif flags.get("source_withheld"):
             found.append((item, row))
     return found

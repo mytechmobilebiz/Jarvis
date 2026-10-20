@@ -16,10 +16,12 @@
 # app role's terse PostgreSQL error log (no DETAIL);
 # configuration and running-container assertions; the worker without internet; the hardened importer container and
 # a missing bind source; jarvis-import.ps1 refusals and its -Target Test wiring; the pre-import dump function; the
-# kit-made inputs; restart persistence and Stop/Start; COMPOSE_* in the environment; -SeedFromBackup; Remove; the
+# kit-made inputs; restart persistence and Stop/Start; COMPOSE_* in the environment; restore.ps1 carrying the JARVIS
+# Brain's removals across a restore (0.6.2; a stand-in docker, nothing is restored); -SeedFromBackup; Remove; the
 # pre-check again. Steps that need "python -m app.cli brain-import" and /api/brain (spec 6.7 steps 5, 6, 9 and the
-# planted-value check of 11) run only when the test copy's image has them; otherwise they are reported as SKIP (with
-# --require-importer, as FAIL). Exit status: 0 all ran steps passed, 1 a step failed.
+# planted-value check of 11, and 0.6.2's durable withholding: status line, a withhold kept through a re-import,
+# -Mode Repair, a version 4 decisions file without text) run only when the test copy's image has them; otherwise
+# they are reported as SKIP (with --require-importer, as FAIL). Exit status: 0 all ran steps passed, 1 a step failed.
 #
 # Environment: REGISTRY and EXTRA_CA_BUNDLE as for docker compose (passed to the scripts' builds); PWSH_IMAGE;
 # KEEP_WORK=1 keeps the work folder (logs, reports) for inspection; BRAIN_UI=1 (with BRAIN_UI_PYTHON, a Python with
@@ -36,7 +38,7 @@ PORT=8190
 LIVE_PROJECT=infinite-command-center
 TEST_PROJECT=cc-brain-test
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/brain-check.XXXXXX")
-TEST="$WORK/C_InfiniteAI/v0.6.0-brain-test/InfiniteAI-CommandCenter"
+TEST="$WORK/C_InfiniteAI/v$(tr -d '\r\n' < "$CC/VERSION")-brain-test/InfiniteAI-CommandCenter"  # as docs/DEPLOY_WINDOWS.md
 MIG="$WORK/C_InfiniteAI/JarvisMigration"
 LOGS="$WORK/logs"
 mkdir -p "$TEST" "$MIG" "$LOGS"
@@ -687,6 +689,62 @@ step_precheck_again() {  # 11. the same report after the test: same fingerprint 
   check_fp "precheck again"
 }
 
+step_restore_reapply() {  # 0.6.2 (spec 9.3): restore.ps1 exports the removals first and applies them after the start
+  # restore.ps1 works on the project of its own folder (the live one's name): here it runs in a copy of the test folder
+  # with a stand-in "docker" function that only records the calls and answers like the CLI. Nothing is stopped,
+  # restored or started; backup.ps1 and start.ps1 are stand-ins too.
+  local dir="$WORK/restore-check/InfiniteAI-CommandCenter" scenario out
+  mkdir -p "$dir/scripts" "$dir/backups/old"
+  cp "$TEST/scripts/restore.ps1" "$dir/scripts/"
+  printf 'exit 0\r\n' > "$dir/scripts/backup.ps1"; printf 'param([switch]$NoBuild)\r\nexit 0\r\n' > "$dir/scripts/start.ps1"
+  : > "$dir/backups/old/command_center.dump"
+  cat > "$WORK/restore-stub.ps1" <<'EOF'
+param([string]$Dir, [string]$Scenario)
+$global:Calls = New-Object System.Collections.Generic.List[string]
+$global:Tries = 0
+function global:Start-Sleep { param([int]$Seconds) $global:Calls.Add("sleep $Seconds") }
+function global:docker {
+  $line = ($args | ForEach-Object { "$_" }) -join " "
+  $global:Calls.Add($line); $global:LASTEXITCODE = 0
+  if ($line -match "version = '0006_brain'") { "1"; return }
+  if ($line -match '^compose ps -q --status running api') { "0123abcd"; return }
+  if ($line -match 'decisions-export --removals-only') { "removals exported (withheld messages and purged items, keys and JARVIS ids only): 3; releases: 1"; return }
+  if ($line -match '^compose cp api:(\S+) (.+)$') { Set-Content -LiteralPath $Matches[2] -Value '{}'; return }
+  if ($line -match 'decisions-apply --removals-only') {
+    $global:Tries++
+    if ($Scenario -eq "fails") { "failed: OperationalError"; $global:LASTEXITCODE = 1; return }
+    if ($global:Tries -lt 3) { "refused: an import, rollback or rescan is running: try again when it has finished"; $global:LASTEXITCODE = 2; return }
+    "removals applied: already done 2, purged 1, withheld 2"; return
+  }
+}
+& (Join-Path $Dir "scripts/restore.ps1") -BackupFolder (Join-Path $Dir "backups/old") -Yes
+$code = $LASTEXITCODE
+"--- calls"; $global:Calls; "exit=$code"
+EOF
+  for scenario in works fails; do
+    out=$(docker run --rm -v "$WORK:$WORK" -w "$dir" "$PWSH_IMAGE" pwsh -NoProfile -File "$WORK/restore-stub.ps1" "$dir" "$scenario" 2>&1 || true)
+    echo "$out" > "$LOGS/restore-$scenario.log"
+    local calls export stop restore apply
+    calls=$(sed -n '/^--- calls/,$p' <<<"$out" | grep -n .)  # numbered, in the order restore.ps1 made them
+    export=$(grep 'decisions-export --removals-only' <<<"$calls" | head -1 | cut -d: -f1)
+    stop=$(grep ':compose stop ' <<<"$calls" | head -1 | cut -d: -f1)
+    restore=$(grep 'pg_restore' <<<"$calls" | head -1 | cut -d: -f1)
+    apply=$(grep 'decisions-apply --removals-only' <<<"$calls" | head -1 | cut -d: -f1)
+    if [ "$scenario" = works ]; then
+      [[ -n "$export" && -n "$apply" && "$export" -lt "$stop" && "$stop" -lt "$restore" && "$restore" -lt "$apply" \
+         && "$out" == *"were applied again (3)"* && "$out" == *"exit=0"* && "$(grep -c '^sleep 10' <<<"$out")" = 2 \
+         && -n "$(ls "$dir/backups"/removals-before-restore-*.json 2>/dev/null)" ]] \
+        && pass "restore.ps1: removals exported before the stop, kept in backups\\, applied again after the start (tried again while the start-up check held the lock)" \
+        || { fail "restore.ps1 removals (export $export, stop $stop, restore $restore, apply $apply)"; tail -20 "$LOGS/restore-$scenario.log"; }
+    else
+      [[ "$out" == *"NOT applied again"* && "$out" == *"decisions-apply --removals-only --in /tmp/removals.json --yes"* && "$out" == *"exit=1"* ]] \
+        && pass "restore.ps1: a failed re-apply names the commands to run and ends with exit 1" \
+        || { fail "restore.ps1 failed re-apply"; tail -20 "$LOGS/restore-$scenario.log"; }
+    fi
+  done
+  check_fp "restore.ps1 removals"
+}
+
 # ================================================================================================ steps (after the merge)
 # These need "python -m app.cli brain-import" (spec 2.1) and /api/brain (spec 3) in the test copy's image.
 
@@ -746,6 +804,59 @@ step_api_brain() {  # 6. sign-in with the test cookie; overview; search; session
   check_fp "brain API"
 }
 
+step_withhold_identity() {  # 0.6.2: a withhold survives a re-import of the same backup; Repair; Status; decisions v4
+  [ "$(login)" = 200 ] || { fail "sign-in for the withhold check"; return; }
+  local id
+  # A message whose text no other row holds: identical text elsewhere stays readable by design (0.6.2 withholds the same
+  # message, never the same words), so the text-gone check below needs a unique one. The fixture's replies are short.
+  id=$(tpsql -c "SELECT m.id FROM archive_messages m JOIN archive_sessions s ON s.id = m.session_id WHERE NOT m.withheld
+    AND s.sensitivity = 'general' AND m.role IN ('assistant', 'user') AND length(m.content) >= 20
+    AND (SELECT count(*) FROM archive_messages o WHERE o.content = m.content) = 1
+    ORDER BY m.role = 'assistant' DESC, m.id LIMIT 1" || true)
+  [ -n "$id" ] || { fail "no readable message with unique text to withhold"; return; }
+  # The text stays in this work folder only (to look for it afterwards), never in a log.
+  tpsql -c "SELECT content FROM archive_messages WHERE id = $id" > "$WORK/withheld.txt"
+  local r
+  r=$(api_post "/api/brain/messages/$id/withhold" '{}')
+  jq_py '"ok" if d["message"]["withheld"] else d' <<<"$r" | grep -qx ok && pass "an admin withholds message $id through the API" \
+    || { fail "withhold: $(cut -c1-200 <<<"$r")"; return; }
+  ji status-identity "" -Mode Status
+  [[ "$CODE" = 0 && "$OUT" == *"migration 0008_brain_withhold_identity present; identity repair done; readable rows matching a withhold: 0;"* ]] \
+    && pass "brain-import status: 0008 present, identity repair done, no readable row matching a withhold" || { fail "status (0.6.2 line)"; show status-identity; }
+  ji import-again "" -Mode Import -All
+  RUN3=$(latest_run)
+  [[ "$CODE" = 0 && "$RUN3" != "$RUN2" ]] && pass "Import -All again (run $RUN3)" || { fail "re-import"; show import-again; }
+  ji verify-again "" -Mode Verify -Run "$RUN3"
+  [[ "$CODE" = 0 && "$OUT" == *withheld_identity_holds*ok* && "$OUT" == *database_guard_quiet*ok* ]] \
+    && pass "Verify run $RUN3 (checks 9-12 included)" || { fail "verify after re-import"; show verify-again; }
+  ji repair "" -Mode Repair
+  [[ "$CODE" = 0 && "$OUT" == *"identity repair done"* ]] && pass "-Mode Repair runs brain-import repair --yes" || { fail "Repair"; show repair; }
+  ji export-v4 "" -Mode ExportDecisions
+  local file
+  file=$(ls -t "$MIG/import-reports"/decisions-test-*.json 2>/dev/null | head -1)
+  docker exec "$(cid postgres)" pg_dump -U postgres --data-only command_center > "$WORK/after-withhold.sql" || true
+  local verdict
+  verdict=$(python3 - "$WORK/withheld.txt" "$file" "$WORK/after-withhold.sql" "$id" <<'EOF'
+import json, sys
+text = open(sys.argv[1], encoding="utf-8").read().strip()
+data = json.load(open(sys.argv[2], encoding="utf-8"))
+flat = open(sys.argv[2], encoding="utf-8").read()
+dump = open(sys.argv[3], encoding="utf-8", errors="replace").read()
+p = []
+if data.get("version") != 4: p.append("version %r" % data.get("version"))
+withholds = [r for r in data["removals"] if r["reason"] == "withheld by an admin"]
+if not withholds or not all({"session", "row", "role", "uid", "anchor"} <= set(r) for r in withholds): p.append("no binding")
+if text in flat: p.append("text in the decisions file")
+if text in dump: p.append("text in the database")
+print("; ".join(p))
+EOF
+)
+  [ -n "$file" ] && [ -z "$verdict" ] && pass "message $id stays withheld through a re-import; the version 4 decisions file names its JARVIS row, and neither it nor the database holds its text" \
+    || fail "withhold identity: $verdict"
+  rm -f "$WORK/withheld.txt" "$WORK/after-withhold.sql"
+  check_fp "withhold identity"
+}
+
 step_restart_with_imports() {  # 8 (with imported data): restart, and the imported rows are still there
   local before after
   before=$(tpsql -c "SELECT (SELECT count(*) FROM memory_items), (SELECT count(*) FROM archive_messages)" || true)
@@ -790,13 +901,15 @@ EOF
 step_rollback() {  # 9. Rollback (newest first), then zero rows
   local discard=()
   [ "${BRAIN_UI:-0}" = 1 ] && discard=(-DiscardReviewed)  # the browser check approved and edited an imported item
+  local c3=0
+  if [ -n "${RUN3:-}" ]; then ji rollback-again "" -Mode Rollback -Run "$RUN3" "${discard[@]}"; c3=$CODE; fi
   ji rollback-all "" -Mode Rollback -Run "$RUN2" "${discard[@]}"
   local c2=$CODE
   ji rollback-sample "" -Mode Rollback -Run "$RUN1" "${discard[@]}"
   local rows
   rows=$(tpsql -c "SELECT (SELECT count(*) FROM memory_items) + (SELECT count(*) FROM memory_item_versions) + (SELECT count(*) FROM archive_sessions)
     + (SELECT count(*) FROM archive_messages) + (SELECT count(*) FROM memory_conflicts) + (SELECT count(*) FROM workflow_drafts)" || true)
-  [[ "$c2" = 0 && "$CODE" = 0 && "$rows" = 0 ]] && pass "Rollback of both runs leaves zero brain rows" || fail "rollback (exit $c2/$CODE, rows $rows)"
+  [[ "$c3" = 0 && "$c2" = 0 && "$CODE" = 0 && "$rows" = 0 ]] && pass "Rollback of every run leaves zero brain rows" || fail "rollback (exit $c3/$c2/$CODE, rows $rows)"
   check_fp "rollback"
 }
 
@@ -816,9 +929,11 @@ step_pre_import_dump
 restored_from_kit  # the importer's inputs as the owner makes them (no importer needed yet)
 step_persistence
 step_status_env_override
+step_restore_reapply
 if [ "${HAVE_IMPORTER:-0}" = 1 ]; then
   step_import_staged
   step_api_brain
+  step_withhold_identity
   step_restart_with_imports
   step_no_planted_values
   [ "${BRAIN_UI:-0}" = 1 ] && step_ui_brain
@@ -826,7 +941,8 @@ if [ "${HAVE_IMPORTER:-0}" = 1 ]; then
 else
   for s in "5. jarvis-import -Target Test: Plan, Import -Sample 2, Verify, Import -All, Verify" \
            "6. brain API: overview, search, sessions, Supervisor recall" "8. imported rows persist across a restart" \
-           "9. Rollback, then zero rows" "11. no planted value in the brain tables"; do skip "$s"; done
+           "9. Rollback, then zero rows" "11. no planted value in the brain tables" \
+           "0.6.2: a withhold kept through a re-import, Status, Repair, decisions version 4"; do skip "$s"; done
 fi
 step_seed
 step_remove

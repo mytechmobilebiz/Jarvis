@@ -522,6 +522,7 @@ class ArchiveMessage(Base):
     labels: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     flags: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     import_run_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("import_runs.id", ondelete="SET NULL"))
+    source_uid: Mapped[str] = mapped_column(Text, default="")  # 0008: the JARVIS message_uid ('' unknown)
     search: Mapped[Any] = _search_col()
 
 
@@ -585,3 +586,48 @@ class BrainTombstone(Base):
     purged_at: Mapped[datetime] = _now_col()
     purged_by: Mapped[str] = mapped_column(Text, default="")
     reason: Mapped[str] = mapped_column(Text, default="")
+    # 0008: a withhold's "stone", the identity of the JARVIS message (app/brain/identity.py). Purges leave them empty.
+    source_session_id: Mapped[str] = mapped_column(Text, default="")
+    source_row_id: Mapped[str] = mapped_column(Text, default="")
+    role: Mapped[str] = mapped_column(Text, default="")
+    tool_call_id: Mapped[str] = mapped_column(Text, default="")
+    message_uid: Mapped[str] = mapped_column(Text, default="")
+    uid_known: Mapped[bool] = mapped_column(Boolean, default=False)
+    anchor_key: Mapped[str] = mapped_column(Text, default="")
+    via: Mapped[str] = mapped_column(Text, default="")
+    review: Mapped[str] = mapped_column(Text, default="")
+    bound: Mapped[bool] = mapped_column(Boolean, default=False)
+    after_run: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+class BrainWithholdExemption(Base):
+    """An admin's release of a row held for review: the uid and same-text rules no longer hold it for that group."""
+
+    __tablename__ = "brain_withhold_exemptions"
+    anchor_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    source_session_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    source_row_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    reason: Mapped[str] = mapped_column(Text, default="released by an admin")
+    decided_by: Mapped[str] = mapped_column(Text, default="")
+    decided_at: Mapped[datetime] = _now_col()
+
+
+class BrainPurgedContent(Base):
+    """The keyed fingerprint (identity.purge_fp) of a purged item's bytes: never a plain hash."""
+
+    __tablename__ = "brain_purged_content"
+    fp: Mapped[str] = mapped_column(Text, primary_key=True)
+    source_key: Mapped[str] = mapped_column(Text, default="")
+    kind: Mapped[str] = mapped_column(Text, default="")
+    purged_at: Mapped[datetime] = _now_col()
+    purged_by: Mapped[str] = mapped_column(Text, default="")
+    via: Mapped[str] = mapped_column(Text, default="")
+
+
+class BrainMaintenance(Base):
+    """One-time brain steps that are done (identity repair, purge identity)."""
+
+    __tablename__ = "brain_maintenance"
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    done_at: Mapped[datetime] = _now_col()
+    detail: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)

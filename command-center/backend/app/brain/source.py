@@ -37,7 +37,7 @@ from . import text as brain_text
 SESSION_COLUMNS = ("id", "title", "source", "started_at", "ended_at", "end_reason", "parent_session_id",
                    "model_config", "message_count", "tool_call_count", "archived")
 MESSAGE_COLUMNS = ("id", "session_id", "role", "content", "tool_name", "tool_call_id", "tool_calls", "timestamp",
-                   "active", "compacted", "message_uid")
+                   "active", "compacted", "message_uid", "absorbed_message_uids")
 REQUIRED = {"sessions": ("id",), "messages": ("id", "session_id", "role", "content")}
 # Never selected, whatever the lists above say (a second guard: the lists are code, but so is this).
 FORBIDDEN_COLUMN = re.compile(r"(?i)^(?:system_prompt|model|.*(?:cost|token).*)$")
@@ -180,6 +180,21 @@ def parse_tool_calls(raw: Any) -> list[dict[str, Any]]:
         args = (fn or call).get("arguments", (fn or call).get("args", ""))
         out.append({"name": name if isinstance(name, str) else "", "arguments": args})
     return out
+
+
+def parse_uid_list(value: Any) -> tuple[str, ...]:
+    """The unique non-empty string uids of a JSON list (Hermes absorbed_message_uids), in order; anything else is ()
+    (as Hermes's own _uid_list reads it)."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return ()
+    if not isinstance(value, list):
+        return ()
+    return tuple(dict.fromkeys(u for u in value if isinstance(u, str) and u))
 
 
 def customer_tool(name: str) -> bool:
@@ -356,6 +371,8 @@ class SourceMessage:
     compacted: int | None
     key: str
     position: int = 0
+    uid: str = ""  # Hermes message_uid ('' when the backup has none): one logical message across its copies
+    absorbed: tuple[str, ...] = ()  # uids a fold (micro-compaction) merged into this row
 
     @property
     def fp(self) -> str:
@@ -407,6 +424,7 @@ class Backup:
                         "messages": self._columns("messages", MESSAGE_COLUMNS)}
         self._dup_uid_first: dict[str, Any] | None = None
         self._sessions: list[SourceSession] | None = None
+        self._row_ids: dict[str, set[str]] = {}
 
     def close(self) -> None:
         self.con.close()
@@ -513,7 +531,8 @@ class Backup:
             tool_calls_raw=r.get("tool_calls"), at=at, time_assumed_local=local,
             active=_as_flag(r["active"]) if "active" in r else 1,
             compacted=_as_flag(r["compacted"]) if "compacted" in r else None,
-            key=self.message_key(r["id"], sid, r.get("message_uid")))
+            key=self.message_key(r["id"], sid, r.get("message_uid")), uid=_as_text(r.get("message_uid")),
+            absorbed=parse_uid_list(r.get("absorbed_message_uids")))
 
     def _order(self) -> str:
         return "id, timestamp" if "timestamp" in self.columns["messages"] else "id"
@@ -529,6 +548,30 @@ class Backup:
             m.position = i
             out.append(m)
         return out
+
+    def has_row(self, session_id: str, row_id: str) -> bool:
+        """Whether this JARVIS row (session id, row id as text) is in the backup. The ids of a session are read once."""
+        ids = self._row_ids.get(session_id)
+        if ids is None:
+            ids = self._row_ids[session_id] = {_as_text(r[0]) for r in self.con.execute(
+                "SELECT id FROM messages WHERE session_id = ?", (session_id,))}
+        return str(row_id) in ids
+
+    def rows(self, session_id: str, row_ids: list[str] | tuple[str, ...] | set[str]) -> list[SourceMessage]:
+        """These rows of one session (ids as text), with their keys; their positions are not set."""
+        wanted = sorted({str(r) for r in row_ids if r})
+        out: list[SourceMessage] = []
+        cols = self.columns["messages"]
+        for i in range(0, len(wanted), 400):
+            chunk = wanted[i:i + 400]
+            for row in self.con.execute(
+                    "SELECT %s FROM messages WHERE session_id = ? AND id IN (%s) ORDER BY %s"
+                    % (self._select("messages"), ",".join("?" * len(chunk)), self._order()), (session_id, *chunk)):
+                out.append(self._message(dict(zip(cols, row, strict=True))))
+        return out
+
+    def sessions_by_id(self) -> dict[str, SourceSession]:
+        return {s.id: s for s in self.sessions()}
 
     def orphans(self) -> Iterator[SourceMessage]:
         """Messages whose session is not in the sessions table, by id."""

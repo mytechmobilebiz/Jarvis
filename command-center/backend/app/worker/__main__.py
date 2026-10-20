@@ -14,8 +14,9 @@ from .runner import Worker
 
 async def main() -> None:
     settings = get_settings()
-    await bootstrap(settings)
-    worker = Worker(settings)
+    state = await bootstrap(settings)
+    # Until the start-up's withheld check has run once completely, the worker runs it again (at most once a minute).
+    worker = Worker(settings, withheld_check_done=state["withheld_check_complete"])
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, worker.stop)
