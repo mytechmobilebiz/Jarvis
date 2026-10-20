@@ -106,6 +106,10 @@ quarantined. The page shows an error and nothing changes (found on
 2026-10-20 and confirmed by a test run). It matters only when you review
 imported JARVIS data, and nothing is imported by this upgrade.
 
+- **Do not try it on 0.6.0.** A failed attempt also writes the start of the
+  copy's title and text (up to 64 characters of each) into the PostgreSQL
+  log, and probably into the API log (confirmed in the sandbox with test
+  data).
 - **Workaround:** delete and purge the promoted copy first, then withhold
   the message.
 - **Fix:** a small 0.6.1 patch (one migration and a test), to be released and

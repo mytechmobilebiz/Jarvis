@@ -94,6 +94,11 @@ installed 0.5.0, JARVIS and your live database are untouched.
     `quarantined`, so the withhold fails and nothing changes.
     - It does not affect installing 0.6.0. It matters only when reviewing
       imported JARVIS data.
+    - A failed attempt also writes the start of the copy's title and text
+      (up to 64 characters of each column) into the PostgreSQL log, through
+      the database error's "Failing row contains" detail, and probably into
+      the API log (confirmed in the sandbox with test data). Do not try it on
+      0.6.0.
     - Workaround: delete and purge the promoted copy first.
     - Fix: a 0.6.1 patch, to be released before the test-copy import.
 13. Still open from earlier releases (RELEASE_NOTES_0.5.1.md section 5):
