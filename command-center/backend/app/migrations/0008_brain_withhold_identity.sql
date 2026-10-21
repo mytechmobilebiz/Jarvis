@@ -70,6 +70,14 @@ CREATE TABLE IF NOT EXISTS brain_withhold_exemptions (
     decided_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (anchor_key, source_session_id, source_row_id)
 );
+-- A release is bound to the content it released, not only to a JARVIS row id (Hermes rewrites a row in place: a
+-- prune keeps the id and uid; an older backup holds the row's earlier text): the released row's uid, its length
+-- (content_chars, -1 while not known) and, once the released row is readable, a keyed digest of its stored readable
+-- text (identity.release_fp: HMAC with a key derived from the database password, never a plain hash and never of
+-- withheld text). A later version of the row with other text is not covered by the release.
+ALTER TABLE brain_withhold_exemptions ADD COLUMN IF NOT EXISTS source_uid    TEXT    NOT NULL DEFAULT '';
+ALTER TABLE brain_withhold_exemptions ADD COLUMN IF NOT EXISTS content_chars INTEGER NOT NULL DEFAULT -1;
+ALTER TABLE brain_withhold_exemptions ADD COLUMN IF NOT EXISTS content_fp    TEXT    NOT NULL DEFAULT '';
 
 -- 2. Archive: the JARVIS uid of a stored row, and the indexes the identity rules use --------------------------------
 ALTER TABLE archive_messages ADD COLUMN IF NOT EXISTS source_uid TEXT NOT NULL DEFAULT '';
@@ -90,6 +98,13 @@ CREATE INDEX IF NOT EXISTS import_records_deleted_uid_idx ON import_records ((be
 CREATE INDEX IF NOT EXISTS import_records_deleted_session_idx
     ON import_records ((before -> 'deleted_row' ->> 'session_id'))
     WHERE record_type = 'message' AND before ? 'deleted_row';
+-- A release written before its binding existed is bound to the row it names as stored now (its length and uid; the
+-- digest follows at the next import that finds it readable).
+UPDATE brain_withhold_exemptions e
+   SET content_chars = m.content_chars, source_uid = m.source_uid
+  FROM archive_sessions s JOIN archive_messages m ON m.session_id = s.id
+ WHERE e.content_chars < 0 AND s.source_session_id = e.source_session_id AND m.source_message_id = e.source_row_id
+   AND m.content_chars >= 0;
 
 -- 3. Purges: keyed fingerprints (HMAC, app/brain/identity.purge_fp) of purged imported items, never a plain hash ------
 CREATE TABLE IF NOT EXISTS brain_purged_content (
@@ -342,9 +357,12 @@ BEGIN
       JOIN archive_messages m ON m.source_uid = t.message_uid
       JOIN archive_sessions s ON s.id = m.session_id
      WHERE t.reason = c_wh AND t.message_uid <> '' AND t.role IN ('', m.role) AND NOT m.withheld
+       -- a fold's uid is the survivor's own message (another Hermes message), never the withheld one's
+       AND t.via NOT IN ('merged into another message', 'upgrade: merged into another message')
        AND NOT EXISTS (SELECT 1 FROM brain_withhold_exemptions e
                         WHERE e.anchor_key = CASE WHEN t.anchor_key = '' THEN t.source_key ELSE t.anchor_key END
-                          AND e.source_session_id = s.source_session_id AND e.source_row_id = m.source_message_id)
+                          AND e.source_session_id = s.source_session_id AND e.source_row_id = m.source_message_id
+                          AND (e.content_chars < 0 OR e.content_chars = m.content_chars))
      ORDER BY m.id, t.source_key
     ON CONFLICT (id) DO NOTHING;
     GET DIAGNOSTICS n_uid = ROW_COUNT;
@@ -415,7 +433,8 @@ BEGIN
                 AND (f.anchor_at IS NULL OR m.at = f.anchor_at)))  -- own time (when known): a fresh uid says nothing
                                                   -- (the copy of another row with this text keeps that row's time)
        AND NOT EXISTS (SELECT 1 FROM brain_withhold_exemptions e WHERE e.anchor_key = f.anchor
-                          AND e.source_session_id = s.source_session_id AND e.source_row_id = m.source_message_id)
+                          AND e.source_session_id = s.source_session_id AND e.source_row_id = m.source_message_id
+                          AND (e.content_chars < 0 OR e.content_chars = m.content_chars))
     ORDER BY m.id, f.anchor
     ON CONFLICT (id) DO NOTHING;
     GET DIAGNOSTICS n_text = ROW_COUNT;
@@ -427,6 +446,7 @@ BEGIN
       FROM brain_tombstones t
       JOIN archive_messages m ON m.absorbed_uids @> ARRAY[t.message_uid]
      WHERE t.reason = c_wh AND t.review <> 'pending' AND t.message_uid <> '' AND NOT m.withheld
+       AND t.via NOT IN ('merged into another message', 'upgrade: merged into another message')
      ORDER BY m.id, t.anchor_key <> '', t.source_key
     ON CONFLICT (id) DO NOTHING;
     GET DIAGNOSTICS n = ROW_COUNT;
@@ -568,6 +588,7 @@ CREATE OR REPLACE FUNCTION brain_withhold_pending() RETURNS jsonb LANGUAGE sql S
         'readable_by_fold', (SELECT count(DISTINCT m.id) FROM brain_tombstones t
                                JOIN archive_messages m ON m.absorbed_uids @> ARRAY[t.message_uid]
                               WHERE t.reason = 'withheld by an admin' AND t.review <> 'pending' AND t.message_uid <> ''
+                                AND t.via NOT IN ('merged into another message', 'upgrade: merged into another message')
                                 AND NOT m.withheld),
         'readable_in_restricted_sessions', (SELECT count(*) FROM archive_messages m JOIN archive_sessions s ON s.id = m.session_id
                                              WHERE s.sensitivity = 'restricted' AND NOT m.withheld),

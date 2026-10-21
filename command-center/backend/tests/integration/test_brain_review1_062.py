@@ -854,10 +854,15 @@ async def test_r15_the_next_import_repairs_a_copy_an_earlier_withhold_missed(cli
     async def only_self(s, ids):
         return {i: "self" for i in ids}
 
+    # The lineage walk off: no family, and (since rules062-confirm, which looks up a row's DIRECT continuation and
+    # branch children itself) no child that copied the row.
+    kinds = identity.LINEAGE
     monkeypatch.setattr(identity, "lineage", only_self)
+    monkeypatch.setattr(identity, "LINEAGE", ())
     await as_(client, "admin")
     assert (await client.post("/api/brain/messages/%d/withhold" % orig.id)).status_code == 200
     monkeypatch.setattr(identity, "lineage", real)
+    monkeypatch.setattr(identity, "LINEAGE", kinds)
     [missed] = [m for m in await rows_of("r15_c") if m.role == "assistant" and mark in (m.content or "")]
     await imp.run(bj.paths(fx), ALL)
     after = {m.id: m for m in await rows_of("r15_c")}
@@ -1243,6 +1248,49 @@ async def test_r29_inverse_an_identical_message_with_its_own_uid_keeps_its_rollb
     async with session_scope() as s:
         assert await s.get(BrainTombstone, key) is None, "an independent identical message's key got a stone"
         assert mark in json.dumps((await s.get(ImportRecord, rec_id)).before)
+
+
+async def test_r29_a_deleted_row_that_only_shares_the_uid_gets_no_stone_and_a_rollback_holds_it(client, tmp_path):
+    """R29 under the rules062-confirm principle (deviation of 2026-10-21): a CLI /branch child's copy of a tool output
+    (the parent's uid, a key of its own) is written again by Hermes with the output pruned (the same uid, a stub), and
+    the next import deletes the full copy as rewound. The admin withholds the child's stub. The deleted full copy only
+    shares the uid (other text): it gets no stone (never a member: no provenance says it is the stub), but its
+    rollback copy loses the text at once, as the start-up sweep's uid rule would (status says 0 right away); a
+    rollback of that import brings it back as a hold, listed, never readable."""
+    mark = "zqr29uidonly"
+    stub = "[tool output pruned to save context]"
+    await allow_ai_context()
+    fx = bj.mini(tmp_path / "j")
+    bj.add_session(fx["db"], "r29_up", started=T)
+    bj.add_row(fx["db"], "r29_up", "user", "Run the vendor report.", T + 1)
+    bj.add_row(fx["db"], "r29_up", "tool", "REPORT " + secret(mark), T + 2, tool_call_id="call_1", tool_name="terminal")
+    child = bj.cli_branch(fx["db"], "r29_up", "r29_uc", T + 10)
+    bj.add_row(fx["db"], "r29_uc", "user", "Branching here.", T + 11)
+    await imp.run(bj.paths(fx), ALL)
+    [full] = [r for r in bj.rows(fx["db"], "r29_uc") if r["id"] == child[1]]
+    bj.change(fx["db"], "UPDATE messages SET active = 0, compacted = 0 WHERE id = ?", child[1])  # rewound
+    again = bj.add_row(fx["db"], "r29_uc", "tool", stub, T + 12, uid=full["message_uid"], tool_call_id="call_1",
+                       tool_name="terminal")
+    second = await imp.run(bj.paths(fx), ALL)
+    [(rec_id, key, reason)] = await r29_records(mark)
+    assert reason == "rewound since an earlier import" and not key.startswith(identity.UID_KEY), key  # precondition
+    [stub_row] = await message_of("r29_uc", again)
+    await as_(client, "admin")
+    assert (await client.post("/api/brain/messages/%d/withhold" % stub_row.id)).status_code == 200
+    async with session_scope() as s:
+        assert await s.get(BrainTombstone, key) is None, "a row that only shares the uid became a member"
+        assert mark not in json.dumps((await s.get(ImportRecord, rec_id)).before)
+    assert (await imp.status())["withheld_rollback_copies_with_text"] == 0
+    await imp.rollback(second["run_id"], discard_reviewed=True, confirm=True)
+    [back] = await message_of("r29_uc", child[1])
+    st = (await stones()).get(back.source_key)
+    assert back.withheld and st is not None and st.review == identity.PENDING, (back.withheld, st and st.review)
+    # A blanked rollback copy comes back restricted (archive.WITHHELD_ROW): listed to an admin who may open it.
+    await as_(client, "admin+")
+    assert back.id in [h["message"] for h in (await client.get("/api/brain/holds")).json()["holds"]]
+    for who in ("viewer", "operator", "admin", "admin+"):
+        await as_(client, who)
+        assert mark not in (await client.get("/api/brain/search", params={"q": mark})).text, who
 
 
 async def test_r29_a_withhold_finds_deleted_copies_through_the_partial_indexes():

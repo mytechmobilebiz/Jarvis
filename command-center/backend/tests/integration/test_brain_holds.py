@@ -36,7 +36,7 @@ pytestmark = pytest.mark.usefixtures("clean_db")
 
 STUB = "[tool output pruned to save context]"
 EVIDENCE = {"message", "session", "title", "position", "role", "at", "content_chars", "state", "rule",
-            "withheld_message", "compare", "neighbours"}
+            "withheld_message", "compare", "neighbours", "evidence"}  # evidence: rules062-confirm's honest sentence
 
 
 @pytest.fixture

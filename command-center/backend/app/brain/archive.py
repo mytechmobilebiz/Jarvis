@@ -412,11 +412,17 @@ def _withheld_keys() -> list[Any]:
         BrainWithholdExemption.anchor_key == group,
         BrainWithholdExemption.source_row_id == row["source_message_id"].astext,
         BrainWithholdExemption.source_session_id.in_(select(ArchiveSession.source_session_id).where(
-            ArchiveSession.id == row["session_id"].astext.cast(BigInteger))))
+            ArchiveSession.id == row["session_id"].astext.cast(BigInteger))),
+        # a release covers the content it released (its length), not another version of the row
+        or_(BrainWithholdExemption.content_chars < 0,
+            BrainWithholdExemption.content_chars == func.coalesce(row["content_chars"].astext.cast(BigInteger), -1)))
     return [message & ImportRecord.source_key.in_(select(BrainTombstone.source_key).where(
                 BrainTombstone.reason == WITHHELD_BY_ADMIN)),
             message & exists().where(BrainTombstone.reason == WITHHELD_BY_ADMIN,
                                      BrainTombstone.review != "pending", BrainTombstone.message_uid != "",
+                                     # a fold's uid is the survivor's own message (another Hermes message)
+                                     BrainTombstone.via.not_in(("merged into another message",
+                                                                "upgrade: merged into another message")),
                                      BrainTombstone.message_uid == row["source_uid"].astext,
                                      BrainTombstone.role.in_(("", row["role"].astext)), not_(released)),
             message & ImportRecord.source_key.in_(select(ArchiveMessage.source_key).where(

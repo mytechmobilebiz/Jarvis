@@ -759,6 +759,8 @@ export interface BrainHold {
   rule: string;
   withheld_message: { id: number | null; position: number | null; role: string; at: string | null; content_chars: number | null };
   compare: "identical text" | "different text" | "contains the withheld text" | "nothing to compare";
+  /** The evidence in one sentence (what links it to the withheld message, and how sure that is); never text. */
+  evidence?: string;
   /** Ids of the readable messages before and after it. */
   neighbours: number[];
 }

@@ -655,6 +655,19 @@ describe("JARVIS Brain: held for review (0.6.2)", () => {
     await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.path === "/api/brain/holds/141/keep")).toBe(true));
   });
 
+  it("shows the server's evidence sentence for a hold, in the list and in the release dialog (rules062-confirm)", async () => {
+    const evidence = "same message id; the withheld original is not in this backup (its row is gone, or JARVIS rewrote it since), so the text could not be compared; probably the same message";
+    const uncompared = { ...hiddenTitle, rule: "same message id, nothing to compare", compare: "nothing to compare", evidence };
+    renderAt("/brain?tab=review", admin, holdRoutes({ "GET /api/brain/holds": { holds: [hold, uncompared], total: 2 } }));
+    const card = (await screen.findByRole("heading", { name: "Held for review" })).closest(".card") as HTMLElement;
+    expect(await within(card).findByText(`Evidence: ${evidence}.`)).toBeInTheDocument();
+    expect(within(card).getByText(holdRuleText("same message id, nothing to compare"))).toBeInTheDocument();
+    expect(within(card).getAllByText(/^Evidence: /).length).toBe(1); // a hold without the field shows no sentence
+    fireEvent.click(within(card).getByRole("button", { name: "Release message #7 (Assistant)" }));
+    const confirm = await screen.findByRole("dialog", { name: "Release message #7" });
+    expect(within(confirm).getByText(`Evidence: ${evidence}.`)).toBeInTheDocument();
+  });
+
   it("says when a hold's text contains the withheld message's text (rules062)", () => {
     expect(holdRuleText("same message id, contains the withheld text")).toBe(
       "It shares the withheld message's JARVIS id and its text contains the withheld message's text, with more around it. Releasing brings back the withheld text too.",

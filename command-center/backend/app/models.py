@@ -614,6 +614,11 @@ class BrainWithholdExemption(Base):
     reason: Mapped[str] = mapped_column(Text, default="released by an admin")
     decided_by: Mapped[str] = mapped_column(Text, default="")
     decided_at: Mapped[datetime] = _now_col()
+    # The content the release covers (identity.Binding): the released row's uid, length (-1 unknown) and, once it is
+    # readable, the keyed digest of its stored readable text (identity.release_fp; '' unknown).
+    source_uid: Mapped[str] = mapped_column(Text, default="")
+    content_chars: Mapped[int] = mapped_column(Integer, default=-1)
+    content_fp: Mapped[str] = mapped_column(Text, default="")
 
 
 class BrainPurgedContent(Base):

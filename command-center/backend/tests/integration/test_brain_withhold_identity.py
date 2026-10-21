@@ -605,7 +605,9 @@ async def test_decisions_v4_file_holds_no_text_and_no_fingerprint(client, fx, tm
         data = json.loads(flat)
         assert ("decisions" in data) is not removals_only and data.get("removals_only", False) is removals_only
         assert result["releases"] == 1 and len(data["releases"]) == 1
-        assert set(data["releases"][0]) == {"anchor", "session", "row"} and data["releases"][0]["session"] == "prune_01"
+        # rules062-confirm: a release travels bound to the content it released, by its uid and length (no digest)
+        assert set(data["releases"][0]) == {"anchor", "session", "row", "uid", "chars"}
+        assert data["releases"][0]["session"] == "prune_01" and data["releases"][0]["chars"] == len(STUB)
         withholds = [r for r in data["removals"] if r["reason"] == identity.WITHHELD_BY_ADMIN]
         purges = [r for r in data["removals"] if r["reason"] != identity.WITHHELD_BY_ADMIN]
         assert all(set(r) == set(imp.WITHHOLD_FIELDS) for r in withholds)
@@ -694,6 +696,12 @@ def _tool_backup(fx: dict[str, str], mark: str) -> list[int]:
 
 
 async def test_prune_twin_after_withhold_is_member(client, fx):
+    """The lead's decision (deviation 61 of 2026-10-21): the admin withholds a tool output; Hermes then prunes it in
+    place (hermes_state_prune_rewrite.rewrite_pruned_rows: the row keeps its id and uid, its text becomes a stub, and
+    its pre-prune self is INSERTed as an archived twin with every column). The twin is that very JARVIS row: a member
+    by Hermes provenance (identity.PRUNE_TWIN), never listed, so a blind release of every hold brings nothing back,
+    also across re-imports. (rules062-confirm had made it a 'nothing to compare' hold, which a blind release made
+    readable: the resurrection probe H6.)"""
     mark = "zqprunetwin62"
     ids = _tool_backup(fx, mark)
     await run(fx)
@@ -702,8 +710,74 @@ async def test_prune_twin_after_withhold_is_member(client, fx):
     second = await run(fx)
     [archived] = await message_of("prune_01", twin)
     assert archived.withheld and archived.state == "compacted"
-    assert (await stones())[archived.source_key].review == ""
-    await leak_free(client, mark, fx, (second["run_id"],))
+    st = (await stones())[archived.source_key]
+    assert (st.review, st.via) == (identity.CERTAIN, identity.PRUNE_TWIN), (st.review, st.via)
+    await as_(client, "admin")
+    holds = (await client.get("/api/brain/holds")).json()["holds"]
+    assert archived.id not in [h["message"] for h in holds]
+    for h in holds:  # a blind release of every hold
+        assert (await client.post("/api/brain/holds/%d/release" % h["message"])).status_code == 200
+    third = await run(fx)
+    await run(fx)
+    [archived] = await message_of("prune_01", twin)
+    assert archived.withheld and (await stones())[archived.source_key].review == identity.CERTAIN
+    await leak_free(client, mark, fx, (second["run_id"], third["run_id"]))
+    await inverse_readable()
+
+
+@pytest.mark.parametrize("case", ["bound_not_pruned", "other_conversation", "other_time", "user_row"])
+async def test_prune_twin_inverse_a_same_uid_archived_row_that_is_not_the_twin_stays_a_hold(client, fx, case):
+    """The inverse of the prune-twin rule (deviation 61 of 2026-10-21): an archived row that shares the uid of the
+    admin's own withheld row but is NOT the twin Hermes's prune wrote of it stays a hold (listed with its evidence,
+    releasable, never readable before an admin decides), never a member: the admin's row was not pruned (it still
+    holds the withheld text in the backup), the archived row is in another conversation or at another time than the
+    row it would be the twin of, or the row rewritten in place is a user row (rewrite_pruned_rows never rewrites
+    one). Where the real twin is in the same backup, it alone is the member."""
+    mark = "zqpinv%s62" % case.replace("_", "")[:8]
+    other = "REPORT archived copy, another output (%s)." % case
+    db = fx["db"]
+    if case == "user_row":
+        bj.add_session(db, "prune_01", started=T)
+        ids = [bj.add_row(db, "prune_01", "assistant", "What should I pay today?", T + 1),
+               bj.add_row(db, "prune_01", "user", "Pay the invoice: " + secret(mark), T + 2),
+               bj.add_row(db, "prune_01", "assistant", "Paid.", T + 3)]
+    else:
+        ids = _tool_backup(fx, mark)
+    await run(fx)
+    await withhold(client, (await message_of("prune_01", ids[1]))[0].id)
+    row = next(r for r in bj.rows(db, "prune_01") if r["id"] == ids[1])
+    uid, at, call = row["message_uid"], row["timestamp"], row["tool_call_id"]
+    twin = bj.prune_twin(db, "prune_01", ids[1]) if case in ("other_conversation", "other_time") else None
+    sid = "prune_09" if case == "other_conversation" else "prune_01"
+    if case == "user_row":  # rewritten in place (not a prune), its earlier text archived beside it under its uid
+        decoy = bj.add_row(db, sid, "user", row["content"], at, uid=uid, active=0, compacted=1)
+        bj.change(db, "UPDATE messages SET content = ? WHERE id = ?", "Pay the invoice.", ids[1])
+    else:
+        if case == "other_conversation":
+            bj.add_session(db, sid, started=T + DAY)
+        decoy = bj.add_row(db, sid, "tool", other, at + (50 if case == "other_time" else 0), uid=uid, active=0,
+                           compacted=1, tool_call_id=call, tool_name="terminal")
+    second = await run(fx)
+    [held] = await message_of(sid, decoy)
+    st = (await stones())[held.source_key]
+    assert held.withheld and st.review == identity.PENDING and st.via in identity.HOLD_VIA, (st.review, st.via)
+    if twin is not None:  # the real twin of the pruned row, in the same backup, is the member
+        [real] = await message_of("prune_01", twin)
+        assert real.withheld and (await stones())[real.source_key].via == identity.PRUNE_TWIN
+    await as_(client, "admin")
+    listed = {h["message"]: h for h in (await client.get("/api/brain/holds")).json()["holds"]}
+    assert held.id in listed, listed
+    if case == "user_row":
+        # It holds the withheld text itself, but no provenance says it is that message: a hold, honestly described.
+        assert listed[held.id]["compare"] == "nothing to compare", listed[held.id]
+        assert "probably the same message" in listed[held.id]["evidence"]
+        await leak_free(client, mark, fx, (second["run_id"],))
+    else:
+        assert (await client.post("/api/brain/holds/%d/release" % held.id)).status_code == 200
+        await run(fx)
+        [back] = await message_of(sid, decoy)
+        assert (back.withheld, back.content) == (False, other)
+        await leak_free(client, mark, fx)
     await inverse_readable()
 
 

@@ -1088,11 +1088,13 @@ async def test_r_branch_copy_of_a_held_row_is_held_until_released(client, fx):
     assert await bj.nowhere(mark) == []
 
 
-async def test_r_uid_only_row_on_live_is_withheld_not_blindly_releasable(client, tmp_path):
-    """(The resurrection attacker's control H10.) The test copy withholds the protected-tail copy of a message; live
-    imports the older backup, which holds only the original row: the same Hermes uid, in the same conversation, with
-    nothing on live to compare its text with. decisions-apply withholds it as the same message, as an import does: it
-    is never a hold that a blind release would bring back, also after re-imports of both backups."""
+async def test_r_uid_only_row_on_live_is_held_with_honest_evidence(client, tmp_path):
+    """(The resurrection attacker's control H10, under the rules062-confirm principle.) The test copy withholds the
+    protected-tail copy of a message; live imports the older backup, which holds only the original row: the same
+    Hermes uid, in the same conversation, with nothing on live to compare its text with. "Nothing to compare" never
+    makes a member: decisions-apply holds it (stored without text, never readable), lists it for an admin with the
+    honest evidence (the same message id, the original not in this backup, probably the same message), and it stays
+    held across re-imports of both backups until an admin decides. (It used to be withheld for good here.)"""
     mark = "zqrul7h1062"
     fx = bj.mini(tmp_path / "fx")
     sid = "h10_rel"
@@ -1108,9 +1110,15 @@ async def test_r_uid_only_row_on_live_is_withheld_not_blindly_releasable(client,
     await _fresh_production()
     first = await run(live_b1)
     applied = await imp.decisions_apply(out, first["run_id"], actor=ADMIN[0], apply=True)
-    assert applied["removals"].get("withheld") and await holds_listed(client) == []
+    assert applied["removals"].get("held for review") and not applied["removals"].get("withheld"), applied
+    assert (await who_reads(client, mark))["readable_rows"] == []
+    await as_(client, "admin")
+    listed = (await client.get("/api/brain/holds")).json()["holds"]
+    assert [(h["rule"], h["compare"]) for h in listed] == [(identity.UID_UNCOMPARED, "nothing to compare")]
+    assert "probably the same message" in listed[0]["evidence"]
     await run(live_b1)
     assert (await who_reads(client, mark))["readable_rows"] == []
+    assert [h["rule"] for h in (await client.get("/api/brain/holds")).json()["holds"]] == [identity.UID_UNCOMPARED]
     await run(fx)
     after = await who_reads(client, mark)
     assert after["readable_rows"] == [] and after["api"] == []
@@ -1197,3 +1205,432 @@ async def test_r5_hidden_title_survives_the_rollback_of_a_run_that_updated_the_c
     assert await bj.nowhere(mark) == []
     await run(fx)
     assert await bj.nowhere(mark) == []
+
+
+# ======================= rules062-confirm: the eight confirmed attack findings (rv062-attack-rules.json) =============
+#
+# One principle: a member (withheld for good, never listed) only by provenance; everything uncertain is a hold
+# (stored without text, listed with honest evidence, releasable); a release is bound to the content it released.
+
+
+async def _state(sid: str, row_id: int) -> tuple:
+    rows = await message_of(sid, row_id)
+    if not rows:
+        return ("no stored row",)
+    m = rows[0]
+    st = (await stones()).get(m.source_key)
+    return (m.withheld, m.content, st and st.via, st and st.review)
+
+
+async def _holds_full(client) -> list[dict]:
+    await as_(client, "admin")
+    r = await client.get("/api/brain/holds")
+    assert r.status_code == 200, r.text
+    return r.json()["holds"]
+
+
+def _micro_merge(db: str, sid: str, first: int, second: int, ts: float) -> int:
+    """Hermes's micro-compaction adjacent-user merge (agent/micro_compaction.py, record_absorbed_message: the
+    composite keeps the FIRST turn's uid and absorbs the second's), then archive_and_compact: every active row is
+    archived and the compacted list written again. Returns the composite's id."""
+    def go(con: sqlite3.Connection) -> int:
+        if "absorbed_message_uids" not in {r[1] for r in con.execute("PRAGMA table_info(messages)")}:
+            con.execute("ALTER TABLE messages ADD COLUMN absorbed_message_uids TEXT")
+        live = con.execute("SELECT id, role, content, message_uid, tool_call_id, tool_name FROM messages "
+                           "WHERE session_id = ? AND active = 1 ORDER BY id", (sid,)).fetchall()
+        con.execute("UPDATE messages SET active = 0, compacted = 1 WHERE session_id = ? AND active = 1", (sid,))
+        ins = ("INSERT INTO messages (session_id, role, content, message_uid, tool_call_id, tool_name, timestamp, "
+               "absorbed_message_uids) VALUES (?,?,?,?,?,?,?,?)")
+        by_id = {r[0]: r for r in live}
+        composite = 0
+        for r in live:
+            if r[0] == second:
+                continue
+            if r[0] == first:
+                b = by_id[second]
+                composite = con.execute(ins, (sid, r[1], r[2] + "\n\n" + b[2], r[3], None, None, ts,
+                                              json.dumps([b[3]]))).lastrowid
+                continue
+            con.execute(ins, (sid, r[1], r[2], r[3], r[4], r[5], ts, None))
+        return composite
+    return bj._write_db(db, go)
+
+
+END_MARKER = "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
+
+
+def _carrier_compaction(db: str, sid: str, ts: float, inflight_id: int) -> int:
+    """In-place compaction with the request unanswered (agent/context_compressor.py _reappend_inflight_user_task,
+    merge branch): every active row archived; the handoff carrier holds the summary, the end marker, the replay
+    header and the request, and absorbs the request's uid. Returns the carrier's id."""
+    def go(con: sqlite3.Connection) -> int:
+        if "absorbed_message_uids" not in {r[1] for r in con.execute("PRAGMA table_info(messages)")}:
+            con.execute("ALTER TABLE messages ADD COLUMN absorbed_message_uids TEXT")
+        content, uid = con.execute("SELECT content, message_uid FROM messages WHERE id = ?", (inflight_id,)).fetchone()
+        con.execute("UPDATE messages SET active = 0, compacted = 1 WHERE session_id = ? AND active = 1", (sid,))
+        return con.execute(
+            "INSERT INTO messages (session_id, role, content, message_uid, timestamp, absorbed_message_uids) "
+            "VALUES (?,?,?,?,?,?)", (sid, "user", "[CONTEXT COMPACTION] Summary one.\n%s\n\n%s\n%s" % (
+                END_MARKER, HEADER, content), bj.new_uid(), ts, json.dumps([uid]))).lastrowid
+    return bj._write_db(db, go)
+
+
+def _restating_compaction(db: str, sid: str, ts: float, carrier_id: int) -> int:
+    """The next in-place compaction, still unanswered (append branch): the in-flight turn is the carrier
+    (_has_merged_inflight_replay), so Hermes restates its request as a FRESH user row {"role": "user", "content":
+    header + request}: a new uid, nothing absorbed. Returns the restatement's id."""
+    def go(con: sqlite3.Connection) -> int:
+        content = con.execute("SELECT content FROM messages WHERE id = ?", (carrier_id,)).fetchone()[0]
+        request = content.rsplit(HEADER, 1)[-1].strip()
+        con.execute("UPDATE messages SET active = 0, compacted = 1 WHERE session_id = ? AND active = 1", (sid,))
+        con.execute("INSERT INTO messages (session_id, role, content, message_uid, timestamp) VALUES (?,?,?,?,?)",
+                    (sid, "assistant", "[CONTEXT COMPACTION] Summary two.\n%s" % END_MARKER, bj.new_uid(), ts))
+        return con.execute("INSERT INTO messages (session_id, role, content, message_uid, timestamp) "
+                           "VALUES (?,?,?,?,?)", (sid, "user", "%s\n%s" % (HEADER, request), bj.new_uid(),
+                                                  ts + 1)).lastrowid
+    return bj._write_db(db, go)
+
+
+@pytest.mark.parametrize("flow", ["same_installation", "live", "restore"])
+async def test_c0_release_of_a_pruned_stub_covers_only_the_stub(client, tmp_path, flow):
+    """(Attack finding 0, x8/x8b.) Hermes prunes a tool result in place: the row keeps its id and uid, its content
+    becomes a stub, the full output moves to a new archived twin. The admin withholds the output and releases the
+    stub. A backup taken before the prune holds the full output under the stub's row id: the release (bound to the
+    stub's content) does not cover it, so it is held (nothing to compare: the twin is not in that backup), never
+    readable, whether this installation imports that older backup or live applies the decisions to it."""
+    mark = "zqc0prune%s62" % flow[:4]
+    fx = bj.mini(tmp_path / "fx")
+    ids = _tool_backup(fx, mark)
+    older = bj.copy(fx, tmp_path / "older")  # row ids[2] holds the full output here
+    twin = bj.prune_twin(fx["db"], "c2", ids[2], STUB)
+    await run(fx)
+    await withhold(client, (await message_of("c2", twin))[0].id)
+    [stub] = await message_of("c2", ids[2])
+    await as_(client, "admin")
+    assert (await client.post("/api/brain/holds/%d/release" % stub.id)).status_code == 200
+    await run(fx)
+    assert (await _state("c2", ids[2]))[:2] == (False, STUB)
+    async with session_scope() as s:
+        [ex] = (await s.scalars(select(BrainWithholdExemption))).all()
+    assert ex.content_chars == len(STUB) and ex.content_fp.startswith("r1:")  # bound to the released content
+    if flow == "same_installation":
+        await run(older)
+    else:
+        out = tmp_path / "decisions.json"
+        await imp.decisions_export(str(out), removals_only=flow == "restore")
+        assert {k: v for k, v in json.loads(out.read_text())["releases"][0].items() if k in ("chars",)} == {
+            "chars": len(STUB)}
+        await _fresh_production()
+        live = await run(older)
+        applied = await imp.decisions_apply(str(out), live["run_id"] if flow == "live" else None,
+                                            actor=ADMIN[0] if flow == "live" else None, apply=True,
+                                            removals_only=flow == "restore")
+        assert applied["removals"].get("held for review") == 1 and not applied["releases"].get("released"), applied
+        await run(older)
+    after = await who_reads(client, mark)
+    assert after["readable_rows"] == [] and after["api"] == [], after
+    st = await _state("c2", ids[2])
+    assert st[0] and st[3] == identity.PENDING and st[2] == identity.UID_UNCOMPARED, st
+    if flow == "same_installation":  # the newer backup again: the stub is the content released, readable again
+        await run(fx)
+        assert (await _state("c2", ids[2]))[:2] == (False, STUB)
+        assert (await who_reads(client, mark))["readable_rows"] == []
+
+
+@pytest.mark.parametrize("when", ["withhold_between", "withhold_after_both"])
+async def test_c1_request_restated_under_a_new_uid_is_held(client, fx, when):
+    """(Attack finding 1, x10.) The request survives two in-place compactions: the first merges it onto the carrier
+    (absorbed: a member by provenance), the second restates the carrier's request as a FRESH user row (header +
+    request, a new uid, nothing absorbed). No provenance links that row, but it contains the withheld text: a hold
+    with honest evidence, never readable before an admin decides, at withhold time and at import alike."""
+    mark = "zqc1rest%s" % when[8:11]
+    bj.add_session(fx["db"], "c1r", started=T)
+    bj.add_row(fx["db"], "c1r", "assistant", "Hello, what can I do for you?", T + 1)
+    m = bj.add_row(fx["db"], "c1r", "user", secret(mark), T + 2)
+    carrier = _carrier_compaction(fx["db"], "c1r", T + 100, m)
+    if when == "withhold_between":
+        await run(fx)
+        await withhold(client, (await message_of("c1r", m))[0].id)
+        again = _restating_compaction(fx["db"], "c1r", T + 200, carrier)
+        await run(fx)
+    else:
+        again = _restating_compaction(fx["db"], "c1r", T + 200, carrier)
+        await run(fx)
+        await withhold(client, (await message_of("c1r", m))[0].id)
+    assert (await _state("c1r", carrier))[2:] == (identity.FOLD, identity.CERTAIN)
+    assert (await _state("c1r", again))[2:] == (identity.RESTATED, identity.PENDING)
+    [row] = await message_of("c1r", again)
+    listed = [h for h in await _holds_full(client) if h["message"] == row.id]
+    assert [(h["compare"], "contains the withheld text" in h["evidence"]) for h in listed] == [
+        ("contains the withheld text", True)]
+    await run(fx)
+    after = await who_reads(client, mark)
+    assert after["readable_rows"] == [] and after["api"] == [], after
+
+
+@pytest.mark.parametrize("decided", ["released", "unreviewed"])
+async def test_c2_test_copy_decision_survives_a_renumbered_live_backup(client, tmp_path, decided):
+    """(Attack finding 2, x4.) Hermes's replace_messages renumbered the conversation (new ids, the same uids) before
+    the live import. A release on the test copy follows the message by its uid and released content (the stub stays
+    readable); an unreviewed hold stays a hold (listed). Nothing becomes a member from "nothing to compare"."""
+    mark = "zqc2%s62" % decided[:3]
+    fx = bj.mini(tmp_path / "fx")
+    ids, stub = await _held_stub(client, fx, mark)
+    if decided == "released":
+        await as_(client, "admin")
+        assert (await client.post("/api/brain/holds/%d/release" % stub.id)).status_code == 200
+        await run(fx)
+    out = tmp_path / "decisions.json"
+    await imp.decisions_export(str(out))
+    mapping = bj.replace_renumber(fx["db"], "c2")
+    await _fresh_production()
+    live = await run(fx)
+    await imp.decisions_apply(str(out), live["run_id"], actor=ADMIN[0], apply=True)
+    await run(fx)
+    st = await _state("c2", mapping[ids[2]])
+    assert (await who_reads(client, mark))["readable_rows"] == []
+    if decided == "released":
+        assert st[:2] == (False, STUB), st
+    else:
+        assert st[0] and st[3] == identity.PENDING, st
+        [row] = await message_of("c2", mapping[ids[2]])
+        assert row.id in [h["message"] for h in await _holds_full(client)]
+    assert all(h["rule"] in identity.HOLD_VIA for h in await _holds_full(client))
+
+
+@pytest.mark.parametrize("where", ["no_uids", "cli_branch_child"])
+async def test_c3_rewound_original_rollback_copy_loses_the_text_at_withhold(client, tmp_path, where):
+    """(Attack finding 3, x6.) An in-place compaction rewinds the protected tail; the next import deletes the rewound
+    original (its rollback copy keeps the text) and stores the live copy, which the admin then withholds. The
+    importer's twin link (from stored data) blanks that rollback copy at once: nothing at rest, and a rollback of
+    that run brings nothing back."""
+    mark = "zqc3%s62" % where[:5].replace("_", "")
+    fx = bj.mini(tmp_path / "fx")
+    turns = [("user", "Hello."), ("assistant", "Hi."), ("user", "Give me the headline."), ("assistant", secret(mark))]
+    sid = "c3r"
+    if where == "no_uids":
+        conversation(fx["db"], sid, T, turns, uid=False)
+    else:
+        conversation(fx["db"], "c3r_parent", T, turns)
+        bj.cli_branch(fx["db"], "c3r_parent", sid, T + DAY)
+        bj.add_row(fx["db"], sid, "user", "Continue in the branch.", T + DAY + 10)
+    await run(fx)
+    bj.hermes_compact(fx["db"], sid, head_n=1, tail_n=3, ts=T + 2 * DAY)
+    second = await run(fx)
+    [copy] = [r for r in bj.rows(fx["db"], sid) if mark in r["content"] and r["active"] == 1]
+    [stored] = await message_of(sid, copy["id"])
+    await withhold_api(client, stored.id)
+    assert await bj.nowhere(mark) == []
+    await imp.rollback(second["run_id"], actor=ADMIN[0], confirm=True)
+    after = await who_reads(client, mark)
+    assert after["readable_rows"] == [] and after["api"] == [] and after["columns"] == [], after
+    assert await readable_with("Give me the headline.")  # the other turns stay
+
+
+@pytest.mark.parametrize("order", ["branch_before_withhold", "branch_after_withhold"])
+async def test_c4_gateway_branch_of_a_donor_timestamp_copy_stays_readable(client, fx, order):
+    """(Attack finding 4, x2.) The rotation's copy of readable row 5 got row 1's timestamp (a donor timestamp); a
+    gateway branch of the continuation copies it with a fresh uid and that time. Withholding row 1 does not take
+    the branch's copy: the nearest level it was copied from is the continuation's copy of row 5, which its uid
+    says is row 5's (readable). Row 1 stays withheld."""
+    yes = "Yes, go ahead. zqc4donor%s62" % order[7:10]
+    ids = add_turns(fx["db"], "c4d", T, _family(yes))
+    rotation_tail(fx["db"], "c4d", "c4d_child", T + DAY, tail_n=4)
+    if order == "branch_before_withhold":
+        bj.gateway_branch(fx["db"], "c4d_child", "c4d_gw", T + 2 * DAY)
+    await run(fx)
+    await withhold(client, (await message_of("c4d", ids[1]))[0].id)
+    if order == "branch_after_withhold":
+        bj.gateway_branch(fx["db"], "c4d_child", "c4d_gw", T + 2 * DAY)
+    await run(fx)
+    await run(fx)
+    [gw] = [r for r in bj.rows(fx["db"], "c4d_gw") if r["content"] == yes]
+    assert gw["timestamp"] == bj.rows(fx["db"], "c4d")[1]["timestamp"]  # row 1's (donor) time
+    assert (await _state("c4d_gw", gw["id"]))[:2] == (False, yes)
+    assert (await _state("c4d", ids[5]))[:2] == (False, yes)
+    assert (await _state("c4d", ids[1]))[0] is True
+    assert await holds_listed(client) == []
+
+
+@pytest.mark.parametrize("order", ["fold_before_withhold", "fold_after_withhold"])
+async def test_c5_a_fold_survivors_uid_never_takes_the_other_constituent(client, fx, order):
+    """(Attack finding 5, x1.) Micro-compaction folds turn B into A's composite (it keeps A's uid, absorbs B's). The
+    admin withholds B: the composite is a member (the fold records B's uid); A's own archived original (A's uid,
+    A's text) is another message: readable, never held, promotable, and no release or audit entry was needed."""
+    mark = "zqc5fold%s62" % order[5:8]
+    a_text = "Please book the dentist for Tuesday at nine in the morning."
+    bj.add_session(fx["db"], "c5f", started=T)
+    bj.add_row(fx["db"], "c5f", "assistant", "How can I help today?", T + 1)
+    a = bj.add_row(fx["db"], "c5f", "user", a_text, T + 2)
+    b = bj.add_row(fx["db"], "c5f", "user", secret(mark), T + 3)
+    if order == "fold_before_withhold":
+        composite = _micro_merge(fx["db"], "c5f", a, b, T + 10)
+        await run(fx)
+        await withhold(client, (await message_of("c5f", b))[0].id)
+        assert (await _state("c5f", a))[:2] == (False, a_text)  # right after the withhold
+    else:
+        await run(fx)
+        await withhold(client, (await message_of("c5f", b))[0].id)
+        composite = _micro_merge(fx["db"], "c5f", a, b, T + 10)
+    await run(fx)
+    await run(fx)
+    assert (await _state("c5f", composite))[2:] == (identity.FOLD, identity.CERTAIN)
+    assert (await _state("c5f", a))[:2] == (False, a_text)
+    assert await holds_listed(client) == []
+    assert (await who_reads(client, mark))["readable_rows"] == []
+    [orig_a] = await message_of("c5f", a)
+    assert await promote_status(client, orig_a.id) == 201
+    async with session_scope() as s:
+        assert (await s.scalars(select(BrainWithholdExemption))).all() == []
+
+
+async def test_c6_uidless_tail_copy_identical_to_an_archived_withheld_row_is_a_releasable_hold(client, fx):
+    """(Attack finding 6, x7.) A backup without message ids: the admin withholds row 4 ("Yes, go ahead."); row 8 is
+    another message with the same text, left readable. An in-place compaction archives rows 0-7 and rewinds the
+    protected tail 8-11. The tail copy of row 8 is its rewound twin's copy, never a carried-on copy of the archived
+    withheld row 4: at most a 'same text' hold (no uid to tell them apart), listed, and its release sticks across
+    imports and the next compaction."""
+    yes = "Yes, go ahead. zqc6yes62"
+    turns = [("user", "Morning. Let us go through the clinic list."), ("assistant", "Sure, where do we start?"),
+             ("user", "The lab results first."), ("assistant", "Should I share the biopsy result with your sister?"),
+             ("user", yes), ("assistant", "Shared with her."), ("user", "Can you book the follow-up visit?"),
+             ("assistant", "Shall I book Tuesday at nine?"), ("user", yes), ("assistant", "Booked for Tuesday."),
+             ("user", "Thanks."), ("assistant", "You are welcome.")]
+    bj.add_session(fx["db"], "c6u", started=T)
+    ids = [bj.add_row(fx["db"], "c6u", role, text_, T + 10 * (n + 1), uid=False) for n, (role, text_) in
+           enumerate(turns)]
+    await run(fx)
+    await withhold(client, (await message_of("c6u", ids[4]))[0].id)
+    bj.hermes_compact(fx["db"], "c6u", head_n=3, tail_n=4, ts=T + DAY)
+    await run(fx)
+    await run(fx)
+    [copy8] = [r for r in bj.rows(fx["db"], "c6u") if r["content"] == yes and r["active"] == 1]
+    key = "jarvis:message:c6u:%d" % copy8["id"]
+    assert not [r for r in await recs(key) if r[2] == identity.CARRIED]  # never linked to the withheld row
+    assert (await _state("c6u", copy8["id"]))[2:] == ("same text", identity.PENDING)
+    [row] = await message_of("c6u", copy8["id"])
+    await as_(client, "admin")
+    assert (await client.post("/api/brain/holds/%d/release" % row.id)).status_code == 200
+    await run(fx)
+    await run(fx)
+    assert (await _state("c6u", copy8["id"]))[:2] == (False, yes)
+    bj.add_row(fx["db"], "c6u", "user", "One more thing.", T + 2 * DAY, uid=False)
+    bj.hermes_compact(fx["db"], "c6u", head_n=0, tail_n=1, ts=T + 3 * DAY)
+    await run(fx)
+    assert await readable_with(yes), "the released copy is withheld again after the next compaction"
+    assert (await _state("c6u", ids[4]))[0] is True
+    assert await holds_listed(client) == []
+
+
+async def test_c7_withhold_time_evidence_matches_the_import_and_a_release_sticks(client, fx):
+    """(Attack finding 7, x3b.) Micro-compaction folds the short request M and the next turn X into a composite that
+    KEEPS M's uid (M's text first). The withhold holds it as 'contains the withheld text' (never 'different text'),
+    the next import agrees (a hold, not a member), and the admin's release on that evidence sticks: M's own row
+    stays withheld."""
+    mark = "zqc7pay"
+    short = "Pay %s now." % mark
+    bj.add_session(fx["db"], "c7c", started=T)
+    bj.add_row(fx["db"], "c7c", "assistant", "How can I help today?", T + 1)
+    m = bj.add_row(fx["db"], "c7c", "user", short, T + 2)
+    x = bj.add_row(fx["db"], "c7c", "user", "Also the rent for March, please, by Friday.", T + 3)
+    composite = _micro_merge(fx["db"], "c7c", m, x, T + 10)
+    await run(fx)
+    await withhold(client, (await message_of("c7c", m))[0].id)
+    [comp] = await message_of("c7c", composite)
+    at_withhold = [(h["rule"], h["compare"]) for h in await _holds_full(client) if h["message"] == comp.id]
+    assert at_withhold == [(identity.CONTAINS_SHORT, "contains the withheld text")]
+    await run(fx)
+    at_import = [(h["rule"], h["compare"]) for h in await _holds_full(client) if h["message"] == comp.id]
+    assert at_import == at_withhold
+    await as_(client, "admin")
+    assert (await client.post("/api/brain/holds/%d/release" % comp.id)).status_code == 200
+    await run(fx)
+    await run(fx)
+    assert (await _state("c7c", composite))[0] is False
+    assert (await _state("c7c", m))[0] is True
+    assert await holds_listed(client) == []
+
+
+async def test_c0b_an_explicit_release_of_another_version_rebinds_the_release(client, tmp_path):
+    """(Attack finding 0, follow-up.) The release covers the stub; the older backup brings the full output back under
+    the same JARVIS row, held ('nothing to compare'). An admin who releases that hold on its evidence is the latest
+    decision on the row: it sticks at the next import (it is not held again behind the stub's binding)."""
+    mark = "zqc0brebind62"
+    fx = bj.mini(tmp_path / "fx")
+    ids = _tool_backup(fx, mark)
+    older = bj.copy(fx, tmp_path / "older")
+    twin = bj.prune_twin(fx["db"], "c2", ids[2], STUB)
+    await run(fx)
+    await withhold(client, (await message_of("c2", twin))[0].id)
+    await as_(client, "admin")
+    assert (await client.post("/api/brain/holds/%d/release" % (await message_of("c2", ids[2]))[0].id)
+            ).status_code == 200
+    await run(fx)
+    await run(older)
+    [row3] = await message_of("c2", ids[2])
+    assert row3.withheld and (await stones())[row3.source_key].via == identity.UID_UNCOMPARED
+    await as_(client, "admin")
+    assert (await client.post("/api/brain/holds/%d/release" % row3.id)).status_code == 200
+    await run(older)
+    await run(older)
+    assert (await message_of("c2", ids[2]))[0].withheld is False
+    assert await holds_listed(client) == []
+
+
+# ======================= The lead's decision on the prune twin (deviation 61 of 2026-10-21) =========================
+
+
+async def test_h6_prune_twin_of_the_admins_row_then_compactions_and_a_blind_release(client, tmp_path):
+    """(The resurrection attacker's probe H6, under the lead's decision.) The admin withholds a tool output; Hermes
+    prunes it in place (a stub under the row id, the full output INSERTed as an archived twin with the same uid) and
+    compacts the session in place; the admin releases every hold blindly; Hermes compacts again. The twin is the very
+    row the admin withheld (identity.PRUNE_TWIN): a member, never listed, so no release brings the output back."""
+    mark = "zqh6prune62"
+    fx = bj.mini(tmp_path / "fx")
+    sid = "h6_release"
+    bj.add_session(fx["db"], sid, started=T)
+    bj.add_row(fx["db"], sid, "user", "Fetch the account page.", T + 1)
+    tool = bj.add_row(fx["db"], sid, "tool", secret(mark), T + 2, tool_call_id="call_1", tool_name="browser")
+    bj.add_row(fx["db"], sid, "assistant", "Fetched.", T + 3)
+    await run(fx)
+    await withhold(client, (await message_of(sid, tool))[0].id)
+    twin = bj.prune_twin(fx["db"], sid, tool)
+    bj.hermes_compact(fx["db"], sid, head_n=0, tail_n=3, ts=T + DAY)
+    await run(fx)
+    [archived] = await message_of(sid, twin)
+    st = (await stones())[archived.source_key]
+    assert archived.withheld and (st.via, st.review) == (identity.PRUNE_TWIN, identity.CERTAIN), (st.via, st.review)
+    holds = await _holds_full(client)
+    assert archived.id not in [h["message"] for h in holds]
+    for h in holds:
+        r = await client.post("/api/brain/holds/%d/release" % h["message"])
+        assert r.status_code == 200, r.text
+    await run(fx)
+    bj.hermes_compact(fx["db"], sid, head_n=0, tail_n=3, ts=T + 2 * DAY)
+    await run(fx)
+    after = await who_reads(client, mark)
+    assert after["readable_rows"] == [] and after["api"] == [] and after["columns"] == [], after
+    assert not after["supervisor_history"] and after["status_readable_matching"] == 0, after
+
+
+async def test_h6_inverse_the_prune_twin_of_another_message_stays_readable(client, tmp_path):
+    """The inverse: Hermes prunes ANOTHER tool output of the same conversation (its own uid) while the admin's withheld
+    row stays as it was. Its twin is not the admin's row's twin: it stays readable, and nothing is listed for it."""
+    mark = "zqh6inv62"
+    other = "PAGE: the opening hours are nine to five."
+    fx = bj.mini(tmp_path / "fx")
+    sid = "h6_inverse"
+    bj.add_session(fx["db"], sid, started=T)
+    bj.add_row(fx["db"], sid, "user", "Fetch both pages.", T + 1)
+    tool = bj.add_row(fx["db"], sid, "tool", secret(mark), T + 2, tool_call_id="call_1", tool_name="browser")
+    other_tool = bj.add_row(fx["db"], sid, "tool", other, T + 3, tool_call_id="call_2", tool_name="browser")
+    bj.add_row(fx["db"], sid, "assistant", "Fetched.", T + 4)
+    await run(fx)
+    await withhold(client, (await message_of(sid, tool))[0].id)
+    twin = bj.prune_twin(fx["db"], sid, other_tool)
+    await run(fx)
+    [kept] = await message_of(sid, twin)
+    assert (kept.withheld, kept.content) == (False, other)
+    assert kept.source_key not in await stones()
+    assert await holds_listed(client) == []
+    assert (await who_reads(client, mark))["readable_rows"] == []

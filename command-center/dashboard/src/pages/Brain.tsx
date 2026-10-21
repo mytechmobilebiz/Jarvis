@@ -88,7 +88,7 @@ export const PURGE_PROMOTED_TEXT = "The conversation message it came from is kep
 /** 0.6.2: what a release of a held row does (the importer restores it from the source; emptied copies stay empty). */
 export const RELEASE_CONFIRM = "Its text comes back at the next import; promoted copies stay empty.";
 export const HOLDS_INTRO =
-  "These messages were withheld because they may be a message an admin withheld: they share its JARVIS id but their text differs, or they repeat its exact text outside a copy JARVIS made. Their text is not shown. Keep one withheld for good, or release it: certain copies (the same JARVIS row, a carried-on copy) are never listed here and cannot be released.";
+  "These messages were withheld because they may be a message an admin withheld: they share its JARVIS id but their text differs, contains it or could not be compared, JARVIS restated its request under a new id, or they repeat its exact text outside a copy JARVIS made. Each says what links it. Their text is not shown. Keep one withheld for good, or release it: a release covers only the text it released. Certain copies (the same JARVIS row, a carried-on copy, the original JARVIS kept when it pruned the row) are never listed here and cannot be released.";
 
 /** Emptied because its source message was withheld (backend store.emptied()): flagged and without text. A copy 0.6.0
  * flagged can still hold its text until the next start or a rescan empties it. */
@@ -152,6 +152,10 @@ export function holdRuleText(rule: string): string {
       return "It repeats the withheld message's exact text, outside a copy JARVIS made. Releasing brings back text identical to the withheld message.";
     case "upgrade: same text":
       return "Found when 0.6.2 was installed: an earlier version stored the withheld message's exact text here. Releasing brings back that text.";
+    case "same message id, nothing to compare":
+      return "It shares the withheld message's JARVIS id, but the withheld original is not in this backup, so the texts could not be compared: probably the same message. Releasing brings back whatever it holds.";
+    case "restated after a compaction, new message id":
+      return "JARVIS restated the withheld request after a compaction as a new message with a new id: its text contains the withheld request. Releasing brings back the withheld text too.";
     case "upgrade: same message id":
     case "same message id":
       return "It shares the withheld message's JARVIS id; its text could not be compared. Releasing brings back whatever it holds.";
@@ -3055,6 +3059,7 @@ function HeldForReview({ rev, onChanged, onOpenMessage }: { rev: number; onChang
                     </span>
                   </div>
                   <p className="small">{holdRuleText(h.rule)}</p>
+                  {h.evidence ? <p className="small muted">{`Evidence: ${h.evidence}.`}</p> : null}
                   <p className="small muted">
                     The withheld message it may be: {w.position != null ? `#${w.position}` : "no longer stored"} ({ROLE_LABEL[w.role] ?? (w.role ? cap(w.role) : "role unknown")}
                     {w.content_chars != null ? `, ${w.content_chars.toLocaleString()} characters` : ""}
@@ -3089,6 +3094,7 @@ function HeldForReview({ rev, onChanged, onOpenMessage }: { rev: number; onChang
         >
           <p>{RELEASE_CONFIRM}</p>
           <p>{holdRuleText(release.rule)}</p>
+          {release.evidence ? <p className="small muted">{`Evidence: ${release.evidence}.`}</p> : null}
         </ConfirmModal>
       ) : null}
     </Card>

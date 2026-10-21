@@ -117,9 +117,16 @@ def test_certain_absorbed_uid_and_fold_survivor():
     folded = ids.certain("S1", msg(40, uid="V", absorbed=("Q", "U")), present)
     assert isinstance(folded, identity.Match) and folded.via == "merged into another message"
     assert folded.review == "" and folded.stone.key == "jarvis:message:uid:U"
-    # The survivor that keeps the withheld uid and absorbed others holds the withheld text too.
+    # The survivor that keeps the withheld uid and absorbed others holds the withheld text AND another message's:
+    # no certain rule by the uid alone (rules062-confirm); the import's R-uid holds it ('contains the withheld text').
     survivor = ids.certain("S1", msg(41, uid="U", key="jarvis:message:S1:41", absorbed=("Q",)), present)
-    assert isinstance(survivor, identity.Match) and survivor.via == "merged into another message"
+    assert survivor is None
+    # A fold member's own uid is the survivor's message (another one): a row that absorbed THAT uid is not a member.
+    fold = identity.Identities([stone("jarvis:message:S1:40", session="S1", row="40", role="user", uid="V",
+                                      via="merged into another message", bound=True,
+                                      anchor="jarvis:message:uid:U")])
+    assert fold.certain("S1", msg(60, uid="W", absorbed=("V",)), present) is None
+    assert fold.uid_stones("V", "user") == [] and len(fold.uid_stones("V", "user", folds=True)) == 1
     # A hold's uid is the held row's own: it never matches anything by itself.
     held = identity.Identities([stone("jarvis:message:S1:9", session="S1", row="9", uid="H", review="pending",
                                       bound=True, anchor="jarvis:message:uid:U")])

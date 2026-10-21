@@ -103,27 +103,38 @@ or a purge brought the text back silently.
   withheld row in a continuation or branch (with its message id, or with a
   fresh one at the row's very time; also when they were stored before the
   withhold), a message merged into another (also one stored before the
-  withhold), and the same message id with the same text (also restated after
-  a compaction, or containing it).
+  withhold), the same message id with the same text (also restated after a
+  compaction under that id), and the original JARVIS keeps when it prunes the
+  withheld row in place (the full output it moves to an archived copy of the
+  very row, with the same message id, call and time).
 - **Uncertain matches are held for review**, never withheld for good on a
-  guess: the same message id with different text (the evidence says when it
-  contains the withheld text), the exact same text later in the same
-  conversation or one continued from it, the same text sent again after a
-  `/retry` or a rewind, and what the upgrade repair found. A held row has no
-  text, and an admin keeps it withheld or releases it (below). A hold stays a
-  hold until an admin decides; no later compaction turns it into a certain
-  match.
+  guess, and each says in one sentence what links it: the same message id
+  with different text, with text that contains the withheld text, or with
+  nothing to compare it with (the withheld original is not in that backup:
+  probably the same message); a request JARVIS restated after a compaction
+  under a new message id; the exact same text later in the same conversation
+  or one continued from it; the same text sent again after a `/retry` or a
+  rewind; and what the upgrade repair found. A held row has no text, and an
+  admin keeps it withheld or releases it (below). A hold stays a hold until an
+  admin decides; no later compaction turns it into a certain match. A message
+  merged with the withheld one into a single row does not make the other
+  message's own rows withheld.
 - **Text alone never withholds anything.** The same words in another
   conversation, similar words, text the admin saw before the withhold, a
   later repeat that JARVIS gave its own message id, parallel tool results, a
   continuation's or branch's copy of another message with the same text, and
   the parent of a restricted branch all stay readable. Section 3 has the full
   list.
-- **A release follows the message.** It names a JARVIS row and covers that
-  row's own copies (compaction generations, the protected tail, a branch with
-  the same message id), the row after JARVIS renumbered it or gave it a
-  message id, and nothing overrides it except the withheld message's own row
-  or its own text. Each copy it covers is recorded, so it outlives the
+- **A release follows the message, and covers only what was released.** It
+  names a JARVIS row and covers that row's own copies (compaction
+  generations, the protected tail, a branch with the same message id), the row
+  after JARVIS renumbered it or gave it a message id, and nothing overrides it
+  except the withheld message's own row or its own text. It is bound to the
+  content released: the row's message id and length and, once the row is
+  readable again, a keyed digest of its text (never a plain hash; the
+  decisions file carries only the message id and length). When JARVIS
+  rewrites that row in place (a prune) or an older backup holds other text
+  under the same row, that other text is not released: it is held. Each copy it covers is recorded, so it outlives the
   original. An upgrade hold the next import disproves (another tool call,
   another message id) is released by that import, audited.
 - **No fingerprint of a withheld text is kept.** A withheld row keeps only its

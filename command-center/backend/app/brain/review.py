@@ -45,7 +45,7 @@ from ..models import (
 from ..worker.scheduler import valid_cron
 from . import AGENTS, KINDS, identity, store
 from . import text as brain_text
-from .archive import WITHHELD_BY_ADMIN, promoted_ref, recompute_session, withhold_copies
+from .archive import WITHHELD_BY_ADMIN, _blank_records, promoted_ref, recompute_session, withhold_copies
 from .quotes import relabel_hidden_titles, scrub_quotes
 from .policy import (
     POLICIES,
@@ -354,6 +354,16 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
     assert sess is not None
     text = identity.message_text(message)  # before blanking; in memory only
     group = await identity.group_rows(session, message, sess, text)
+    # The rollback copies of the rewound originals Hermes wrote these rows again from (the importer's twin link, from
+    # stored data: an in-place compaction's protected tail, a /retry), read while the texts are still in memory: a
+    # rollback of that run must not put an original back with its text (no uid key to follow without uids, or in a
+    # branch whose parent holds the uid key).
+    rewound: set[int] = set(await identity.rewound_originals(session, message, text))
+    texts = [(sess.source_session_id, message.source_message_id or "", text)]
+    for g in group.rows:
+        if not g.row.withheld:
+            rewound |= set(await identity.rewound_originals(session, g.row, identity.message_text(g.row)))
+            texts.append((g.source_session_id, g.row.source_message_id or "", identity.message_text(g.row)))
     same = await identity.identical_rows(session, message, sess, text, exclude=[g.row.id for g in group.rows]
                                          ) if include_identical else []
     after = await identity.current_after_run(session)
@@ -433,7 +443,8 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
     await session.flush()
     # The rollback copies of an earlier row of it that no stored row holds any more (an import deleted a rewound
     # original kept under its uid key) lose the text too.
-    uid_keys = sorted({identity.UID_KEY + u for u in {uid, *(identity.row_uid(g.row) for g in group.members)} if u})
+    uid_keys = sorted({identity.UID_KEY + u for u in {uid, *(identity.row_uid(g.row) for g in group.members
+                                                            if g.rule not in identity.FOLD_VIAS)} if u})
     stored = set((await session.scalars(select(ArchiveMessage.source_key).where(
         ArchiveMessage.source_key.in_(uid_keys)))).all()) if uid_keys else set()
     rowless = [st.key for st in group.rowless] + [k for k in uid_keys if k not in stored]
@@ -441,6 +452,15 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
                                  ip=ip)
     if hidden_ids:  # a history answer quoting another message of these conversations names them by the hidden title
         await relabel_hidden_titles(session, session_ids=hidden_ids)
+    if rewound:
+        done.rollback_copies_blanked += await _blank_records(session, [ImportRecord.id.in_(sorted(rewound))])
+    for key, u in group.uid_records:  # deleted rows that only share the uid: the copy loses the text, no stone
+        done.rollback_copies_blanked += await _blank_records(session, [and_(
+            identity.DELETED_COPY, ImportRecord.source_key == key,
+            or_(ImportRecord.source_key == identity.UID_KEY + u,
+                identity.deleted_field("source_uid") == u))])
+    # Released content withheld now: its release keeps no digest of it (only its length stays).
+    await identity.unbind_withheld(session, texts)
     for sid in sorted({r.session_id for r in blanked} - {message.session_id}):
         await recompute_session(session, sid)
     out.session = await recompute_session(session, message.session_id)
@@ -507,7 +527,7 @@ async def withhold_preview(session: AsyncSession, message: ArchiveMessage, sess:
 
 COMPARE = {"same text": "identical text", "upgrade: same text": "identical text",
            "same message id, different text": "different text",
-           identity.CONTAINS_SHORT: "contains the withheld text"}
+           identity.CONTAINS_SHORT: "contains the withheld text", identity.RESTATED: "contains the withheld text"}
 
 
 async def holds(session: AsyncSession, scope: PersonScope) -> list[dict[str, Any]]:
@@ -554,6 +574,7 @@ async def holds(session: AsyncSession, scope: PersonScope) -> list[dict[str, Any
                 "at": _iso(original.at) if original is not None else None,
                 "content_chars": original.content_chars if original is not None else None},
             "compare": COMPARE.get(stone.via, "nothing to compare"),
+            "evidence": identity.EVIDENCE.get(stone.via, "the text could not be compared"),
             "neighbours": [i for i in (before, after) if i is not None]})
     return out
 
@@ -601,10 +622,20 @@ async def release_hold(session: AsyncSession, message: ArchiveMessage, sess: Arc
             and_(BrainTombstone.source_session_id == sess.source_session_id,
                  BrainTombstone.source_row_id == (message.source_message_id or "")[:200],
                  BrainTombstone.role.in_(("", message.role))))))
-    await session.execute(pg_insert(BrainWithholdExemption).values(
+    # Bound to the content released: this row's uid and length now, and its readable text's keyed digest once the
+    # next import brings it back (identity.bind_exemptions). A later version of the row with other text is not covered;
+    # an admin who releases such a version too rebinds the release to it (the latest decision on the row holds).
+    stmt = pg_insert(BrainWithholdExemption).values(
         anchor_key=anchor, source_session_id=sess.source_session_id,
         source_row_id=(message.source_message_id or "")[:200], reason="released by an admin",
-        decided_by=actor[:200]).on_conflict_do_nothing())
+        decided_by=actor[:200], source_uid=identity.row_uid(message)[:200],
+        content_chars=int(message.content_chars if message.content_chars is not None else -1))
+    await session.execute(stmt.on_conflict_do_update(
+        index_elements=[BrainWithholdExemption.anchor_key, BrainWithholdExemption.source_session_id,
+                        BrainWithholdExemption.source_row_id],
+        set_={"source_uid": stmt.excluded.source_uid, "content_chars": stmt.excluded.content_chars,
+              "content_fp": "", "reason": stmt.excluded.reason, "decided_by": stmt.excluded.decided_by,
+              "decided_at": func.now()}))
     flag = dict((message.flags or {}).get("withheld_by_admin") or {})
     flag.update(released_at=now().isoformat(), released_by=actor[:200])
     message.flags = {**(message.flags or {}), "withheld_by_admin": flag}

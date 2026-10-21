@@ -729,7 +729,10 @@ decision's key), how it joined (`via`), its review (`''` member, `pending` hold,
 `kept` hold an admin kept) and `after_run` (the newest import run when the decision
 was taken). Every reader that honours a tombstone by key honours a stone.
 `brain_withhold_exemptions (anchor_key, source_session_id, source_row_id)` records an
-admin's release.
+admin's release, bound to the content released (`source_uid`, `content_chars`, -1 while
+unknown, and `content_fp`, an HMAC of the released row's readable text keyed from the
+database password, set once that row is readable and dropped when that text is withheld
+again): a later version of the row with other content is not covered.
 
 **Rules** (`importer.Processor.held_rows`, per JARVIS session):
 
@@ -737,14 +740,18 @@ admin's release.
 |---|---|---|
 | key | the row's key has a stone bound to this JARVIS row, or unbound, or bound to a row gone from the backup with the same role | the stone's review; bound to another present row → key collision (2.2) |
 | JARVIS row | `(session, row id)` is a stone's binding, role equal or unknown | member |
-| fold | a uid in `absorbed_message_uids` is a certain stone's uid, or a fold survivor is | member, never releasable |
+| fold | a uid in `absorbed_message_uids` is a certain stone's uid (never a fold member's own uid: that is the survivor's message) | member, never releasable; from a fold only its own copies (its uid and its text) |
+| prune twin | an archived (`compacted` 1) row of the conversation of the admin's own bound row, with its uid, role, call id and timestamp and a higher row id, while that bound row is a tool or assistant row Hermes rewrote in place since the withhold (its length differs from the stored withheld row's) and holds other text | member `pruned by JARVIS: the original` (Hermes `rewrite_pruned_rows` provenance) |
 | link | the importer's duplicate of a matched row, or its rewound twin | the matched row's review |
-| uid | the row's uid is a certain stone's uid, role equal or unknown | member when its text equals the group's (in memory), it is an archived generation, nothing can be compared, or it contains the withheld text (32+ characters); else a hold `same message id, different text` |
+| uid | the row's uid is a certain stone's uid, role equal or unknown | member when its text equals the group's (in memory) or is Hermes's restatement of it under that uid; else a hold: `same message id, nothing to compare` (no text of the message in the backup), `same message id, contains the withheld text`, or `same message id, different text` |
+| restated | a user row starting with Hermes's replay header whose request equals a group's text, in the message's conversation family, under a new uid | a hold `restated after a compaction, new message id` |
 | same text | identical (role, tool call, content, tool calls) to a member of the group in this conversation or a continuation or branch ancestor (no depth limit) | member `copied by JARVIS` in a copy position (a twin, or a child row timed at or before the child started); else a hold `same text`. Never for a row the admin saw (stored by a run up to `after_run`), an exempted row, or a row with its own uid when the group's uid was known |
 
-Holds come only from the uid and same-text rules and the upgrade heuristics, and an
-admin keeps or releases them (3). Certain matches are never releasable. A release
-writes an exemption; the hold rules skip that JARVIS row for that group from then on.
+Holds come only from the uid, restated and same-text rules and the upgrade heuristics,
+and an admin keeps or releases them (3); each carries an `evidence` sentence. Certain
+matches (provenance only) are never releasable. A release writes an exemption; the hold
+rules skip that JARVIS row for that group from then on while it holds the content
+released.
 
 **Invariants.** I1 a row whose key has a stone is withheld; I2 a row whose JARVIS row
 is a stone's binding is withheld; I3 no withheld row or copy keeps a text fingerprint;
@@ -833,7 +840,7 @@ per case, are `tests/integration/test_brain_withhold_identity.py` and
 | `GET /messages/{id}/promoted` | admin | `{message, count, items:[{id, status, deleted}]}`: every memory item promoted from the message (what a withhold empties); `items` lists those in the admin's scope |
 | `POST /messages/{id}/withhold` | admin | 409 while an import, a rollback or a rescan holds the lock. Optional body `{include_identical: false, hide_title: null}`. Content `''`, `withheld`, flags note, admin tombstone (its stone, 2.9), and every other stored row of the same JARVIS message withheld too (2.9: members, and holds for the same uid with other text); identical text elsewhere only with `include_identical`; the title hidden with `hide_title` (default: when it is the conversation's first user message); its rollback copies blanked (also under older row ids); every promoted item emptied (below); quotes removed; session derived fields recomputed → `{message, session, copies:{items, versions_blanked}, answers_scrubbed, rollback_copies_blanked, also_withheld, held_for_review, identical_withheld, keys_tombstoned, title_hidden}`, `archive.message_withheld` (the same keys), `memory.source_withheld` per emptied item. All or nothing |
 | `GET /messages/{id}/withhold-preview` | admin | read-only: `same_message_rows`, `held_rows`, `identical_text_rows` (ids, positions, roles, times, states; rows outside the scope counted in one total, `rows_outside_your_scope`, never per list), `rowless_copies` (a count, including rows of the message an import deleted, kept only as rollback copies), `items_with_this_text` (imported items in the scope whose text contains the message's, 32+ characters: `[{id, title}]`, to purge by hand), `first_user_message`. Never text |
-| `GET /holds` | admin | every withheld row whose stone is pending, in the scope, with its evidence and never its text: `{message, session, title (null when hidden), position, role, at, content_chars, state, rule, withheld_message:{id, position, role, at, content_chars}, compare: identical text\|different text\|nothing to compare, neighbours}`. `withheld_message` is described only when it is in the admin's scope; otherwise `{id: null, position: null, role, at: null, content_chars: null}` (an admin without the sensitive-data permission learns nothing of a Credit Repair or restricted row) |
+| `GET /holds` | admin | every withheld row whose stone is pending, in the scope, with its evidence and never its text: `{message, session, title (null when hidden), position, role, at, content_chars, state, rule, withheld_message:{id, position, role, at, content_chars}, compare: identical text\|different text\|contains the withheld text\|nothing to compare, evidence, neighbours}`. `withheld_message` is described only when it is in the admin's scope; otherwise `{id: null, position: null, role, at: null, content_chars: null}` (an admin without the sensitive-data permission learns nothing of a Credit Repair or restricted row) |
 | `POST /holds/{id}/keep` | admin | 409 during an import. The stone becomes `kept` (permanent) → `archive.hold_kept {message, session, anchor, rule}` |
 | `POST /holds/{id}/release` | admin | 409 during an import. 400 when a certain stone names its JARVIS row ("it is the same message as a withheld one: it cannot be released"). Deletes the pending stone, writes the exemption, sets the release marker; its text comes back at the next import of a backup holding it; promoted copies emptied meanwhile stay empty → `archive.hold_released {message, session, anchor, rule}` |
 | `POST /messages/{id}/promote` | operator | `{kind, title, agent?}` → a pending item: origin `promoted`, `import_run_id NULL`, `source_ref = "JARVIS session <source id> · message <position>"`, sensitivity = the highest of the message and its session → `memory.promoted`. A withheld message, or one with an admin's withhold tombstone → 400; since 0.6.2 also a row that is the same JARVIS message as a withheld one (its key has a stone, its JARVIS row is a stone's binding, or its uid is a stone's uid with an equal or unknown role and no release of that group names it) → 400 "this message is the same JARVIS message as one an admin withheld: it cannot be promoted". A readable row with identical text that the admin saw stays promotable. The message's row is locked: a withhold of it waits for the promote and then empties the new item, or the promote waits for the withhold and is refused. |
