@@ -290,7 +290,8 @@ async def test_0008_fresh_database_applies_with_0006_0007_and_writes_no_audit(sc
         assert done["cause"] == "migration"
         pending = json.loads(await conn.fetchval("SELECT brain_withhold_pending()"))
         assert pending == {"readable_by_key": 0, "readable_by_jarvis_row": 0, "readable_by_fold": 0,
-                           "readable_in_restricted_sessions": 0, "unbound_stones": 0,
+                           "readable_in_restricted_sessions": 0, "readable_copies_at_a_withheld_time": 0,
+                           "unbound_stones": 0,
                            "withheld_with_text_fingerprint": 0, "held_for_review": 0, "repair_done": True}
         await _version_row(conn, "quarantined")  # 0007's CHECK still in force
     finally:
@@ -346,8 +347,10 @@ async def test_0008_holds_heuristic_hits_for_review_and_members_the_rest(scratch
         assert {i: r for i, (r, _) in reviews.items() if r} == {i: "pending" for i in HELD}
         assert all(via == "upgrade: same text" for i, (_, via) in reviews.items() if i in HELD)
         # The certain ones: by key (163, 181: the importer's own duplicate records), by JARVIS row (191, 200, 211, 247,
-        # 248), a restricted conversation (245, no stone of its own).
-        assert reviews[163] == ("", "duplicate") and reviews[181] == ("", "duplicate")
+        # 248), a restricted conversation (245, no stone of its own). 163's record is 0.6.1's carried-on link (importer
+        # 1.0.1 paired it by its text alone): still certain, labelled so; the next import compares its uid (review 2,
+        # S6). 181 is an adjacent repeat.
+        assert reviews[163] == ("", "upgrade: carried copy, text only") and reviews[181] == ("", "duplicate")
         for row in (191, 200, 211, 247, 248):
             assert reviews[row] == ("", "upgrade: same JARVIS row"), row
         assert 245 not in reviews

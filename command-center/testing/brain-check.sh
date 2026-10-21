@@ -689,8 +689,9 @@ step_precheck_again() {  # 11. the same report after the test: same fingerprint 
   check_fp "precheck again"
 }
 
-step_restore_reapply() {  # 0.6.2 (spec 9.3, review 1): restore.ps1 saves the removals and the users' access first (a
-  # helper container of the api image), and applies them again after pg_restore, BEFORE start.ps1 (a helper again).
+step_restore_reapply() {  # 0.6.2 (spec 9.3, reviews 1 and 2): restore.ps1 stops the application, then saves the
+  # removals and the users' access (a helper container of the api image), and applies them again after pg_restore,
+  # BEFORE start.ps1 (a helper again).
   # restore.ps1 works on the project of its own folder (the live one's name): here it runs in a copy of the test folder
   # with a stand-in "docker" function that only records the calls and answers like the CLI. Nothing is stopped,
   # restored or started; backup.ps1 and start.ps1 are stand-ins too. (tests/unit/test_restore_ps1.py runs the same.)
@@ -709,6 +710,7 @@ function global:docker {
   $line = ($args | ForEach-Object { "$_" }) -join " "
   $global:Calls.Add($line); $global:LASTEXITCODE = 0
   if ($line -match "version = '0006_brain'") { "1"; return }
+  if ($line -match "FROM pg_locks") { "0"; return }
   if ($line -match 'restore-carry export') { "access and audit exported: users 4, audit entries 10"; return }
   if ($line -match 'decisions-export --removals-only') { "removals exported (withheld messages and purged items, keys and JARVIS ids only): 3; releases: 1; purges by item id: 1; purge fingerprints: 1"; return }
   if ($line -match '^cp cc-restore-helper-\S+:(\S+) (.+)$') { Set-Content -LiteralPath $Matches[2] -Value '{}'; return }
@@ -729,18 +731,19 @@ EOF
     echo "$out" > "$LOGS/restore-$scenario.log"
     local calls export stop restore apply start
     calls=$(sed -n '/^--- calls/,$p' <<<"$out" | grep -n .)  # numbered, in the order restore.ps1 made them
-    export=$(grep 'decisions-export --removals-only' <<<"$calls" | head -1 | cut -d: -f1)
-    stop=$(grep ':compose stop ' <<<"$calls" | head -1 | cut -d: -f1)
-    restore=$(grep 'pg_restore' <<<"$calls" | head -1 | cut -d: -f1)
-    apply=$(grep 'decisions-apply --removals-only' <<<"$calls" | head -1 | cut -d: -f1)
-    start=$(grep ':start.ps1$' <<<"$calls" | head -1 | cut -d: -f1)
+    # A call that is not made (start.ps1 after a failed re-apply) finds nothing: no match must not end the check.
+    export=$(grep 'decisions-export --removals-only' <<<"$calls" | head -1 | cut -d: -f1 || true)
+    stop=$(grep ':compose stop ' <<<"$calls" | head -1 | cut -d: -f1 || true)
+    restore=$(grep 'pg_restore' <<<"$calls" | head -1 | cut -d: -f1 || true)
+    apply=$(grep 'decisions-apply --removals-only' <<<"$calls" | head -1 | cut -d: -f1 || true)
+    start=$(grep ':start.ps1$' <<<"$calls" | head -1 | cut -d: -f1 || true)
     if [ "$scenario" = works ]; then
-      [[ -n "$export" && -n "$apply" && -n "$start" && "$export" -lt "$stop" && "$stop" -lt "$restore" \
+      [[ -n "$export" && -n "$apply" && -n "$start" && "$stop" -lt "$export" && "$export" -lt "$restore" \
          && "$restore" -lt "$apply" && "$apply" -lt "$start" \
          && "$out" == *"were applied again (3)"* && "$out" == *"exit=0"* && "$(grep -c '^sleep 10' <<<"$out")" = 2 \
          && -n "$(ls "$dir/backups"/removals-before-restore-*.json 2>/dev/null)" \
          && -n "$(ls "$dir/backups"/access-before-restore-*.json 2>/dev/null)" ]] \
-        && pass "restore.ps1: removals and access saved before the stop (helper container), kept in backups\\, applied again after pg_restore and before start.ps1 (tried again while something held the lock)" \
+        && pass "restore.ps1: the application stopped first, then removals and access saved (helper container), kept in backups\\, applied again after pg_restore and before start.ps1 (tried again while something held the lock)" \
         || { fail "restore.ps1 removals (export $export, stop $stop, restore $restore, apply $apply, start $start)"; tail -20 "$LOGS/restore-$scenario.log"; }
     else
       [[ "$out" == *"NOT applied again"* && "$out" == *"decisions-apply --removals-only --in /tmp/removals.json --yes"* \

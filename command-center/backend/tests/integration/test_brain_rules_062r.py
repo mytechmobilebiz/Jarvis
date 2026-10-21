@@ -18,7 +18,7 @@ from pathlib import Path
 
 import asyncpg
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.bootstrap import check_withheld_copies
@@ -1484,12 +1484,18 @@ async def test_c5_a_fold_survivors_uid_never_takes_the_other_constituent(client,
         assert (await s.scalars(select(BrainWithholdExemption))).all() == []
 
 
-async def test_c6_uidless_tail_copy_identical_to_an_archived_withheld_row_is_a_releasable_hold(client, fx):
+@pytest.mark.parametrize("decision", ["left_readable", "none_recorded"])
+async def test_c6_uidless_tail_copy_identical_to_an_archived_withheld_row_is_a_releasable_hold(client, fx, decision):
     """(Attack finding 6, x7.) A backup without message ids: the admin withholds row 4 ("Yes, go ahead."); row 8 is
     another message with the same text, left readable. An in-place compaction archives rows 0-7 and rewinds the
     protected tail 8-11. The tail copy of row 8 is its rewound twin's copy, never a carried-on copy of the archived
     withheld row 4: at most a 'same text' hold (no uid to tell them apart), listed, and its release sticks across
-    imports and the next compaction."""
+    imports and the next compaction.
+
+    Since review 2 (S21) the admin's choice in the withhold dialog (row 8 shown as identical text, left readable) is
+    kept as an exemption, and it follows row 8 to its tail copy as a release does: that copy is readable from the start
+    and through the next compaction (left_readable). none_recorded removes that exemption after the withhold (a
+    database without the choice) and keeps the original check: a 'same text' hold whose release sticks."""
     yes = "Yes, go ahead. zqc6yes62"
     turns = [("user", "Morning. Let us go through the clinic list."), ("assistant", "Sure, where do we start?"),
              ("user", "The lab results first."), ("assistant", "Should I share the biopsy result with your sister?"),
@@ -1501,18 +1507,24 @@ async def test_c6_uidless_tail_copy_identical_to_an_archived_withheld_row_is_a_r
            enumerate(turns)]
     await run(fx)
     await withhold(client, (await message_of("c6u", ids[4]))[0].id)
+    if decision == "none_recorded":
+        async with session_scope() as s:
+            await s.execute(delete(BrainWithholdExemption))
     bj.hermes_compact(fx["db"], "c6u", head_n=3, tail_n=4, ts=T + DAY)
     await run(fx)
     await run(fx)
     [copy8] = [r for r in bj.rows(fx["db"], "c6u") if r["content"] == yes and r["active"] == 1]
     key = "jarvis:message:c6u:%d" % copy8["id"]
     assert not [r for r in await recs(key) if r[2] == identity.CARRIED]  # never linked to the withheld row
-    assert (await _state("c6u", copy8["id"]))[2:] == ("same text", identity.PENDING)
-    [row] = await message_of("c6u", copy8["id"])
-    await as_(client, "admin")
-    assert (await client.post("/api/brain/holds/%d/release" % row.id)).status_code == 200
-    await run(fx)
-    await run(fx)
+    if decision == "none_recorded":
+        assert (await _state("c6u", copy8["id"]))[2:] == ("same text", identity.PENDING)
+        [row] = await message_of("c6u", copy8["id"])
+        await as_(client, "admin")
+        assert (await client.post("/api/brain/holds/%d/release" % row.id)).status_code == 200
+        await run(fx)
+        await run(fx)
+    else:
+        assert await holds_listed(client) == []
     assert (await _state("c6u", copy8["id"]))[:2] == (False, yes)
     bj.add_row(fx["db"], "c6u", "user", "One more thing.", T + 2 * DAY, uid=False)
     bj.hermes_compact(fx["db"], "c6u", head_n=0, tail_n=1, ts=T + 3 * DAY)

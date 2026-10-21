@@ -360,6 +360,11 @@ async def _brain_command(args: argparse.Namespace) -> int:
             return 0
         if args.command == "decisions-export":
             out = await imp.decisions_export(args.out, removals_only=args.removals_only)
+            entries = _entry_keys(args.out)
+            if entries:  # review 2, S17: say what in the file is derived from text
+                print("note: %d purged memory entr%s in this file: each key carries a 64-bit digest of the entry's "
+                      "text; keep the file like a backup and delete it once it is applied"
+                      % (entries, "y is" if entries == 1 else "ies are"))
             if args.removals_only:
                 # scripts/restore.ps1 reads this line (tests/unit/test_brain_ops.py runs its pattern against it).
                 print("removals exported (withheld messages and purged items, keys and JARVIS ids only): %d; "
@@ -448,6 +453,17 @@ RESTORE_CARRY_HELP = """python -m app.cli restore-carry COMMAND ...
 
 Exit codes: 0 done, 1 failed, 2 refused before any change.
 """
+
+
+def _entry_keys(path: str) -> int:
+    """How many removals in a decisions file are purged memory entries (their keys carry a digest of the text)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return 0
+    removals = data.get("removals") if isinstance(data, dict) else None
+    return sum(1 for r in removals or [] if isinstance(r, dict) and "#entry-" in str(r.get("source_key") or ""))
 
 
 def restore_carry(argv: list[str]) -> int:

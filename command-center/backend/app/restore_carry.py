@@ -50,6 +50,56 @@ class Refused(Exception):
     """Nothing was changed; the message is safe to show."""
 
 
+# restore.ps1's mark in the database (brain_maintenance, review 2 S18): written right after pg_restore, with a part for
+# each file to apply again ("access": restore-carry apply, "removals": decisions-apply --removals-only); each command
+# clears its own part once it has applied it, and the mark goes when no part is left. While it is there the api and the
+# worker refuse to start (bootstrap.bootstrap): whoever starts them, from whichever folder, never serves restored data
+# without the decisions made after the backup.
+PENDING = "restore_reapply_pending"
+PARTS = ("access", "removals")
+
+
+class RestorePending(RuntimeError):
+    """The restored database waits for what the restore must not undo: nothing may serve it yet."""
+
+
+async def pending_restore(s: Any) -> dict[str, Any] | None:
+    """The mark's detail (the parts still to apply, the files' names, the backup folder's name), or None."""
+    if await s.scalar(text("SELECT to_regclass('public.brain_maintenance')")) is None:
+        return None
+    detail = await s.scalar(text("SELECT detail::text FROM brain_maintenance WHERE name = :n"), {"n": PENDING})
+    if detail is None:
+        return None
+    try:
+        out = json.loads(detail)
+    except ValueError:
+        return {}
+    return out if isinstance(out, dict) else {}
+
+
+async def finish_part(s: Any, part: str) -> bool:
+    """This part of the mark is applied again (in the caller's transaction): cleared, and the mark deleted when no
+    part is left. Whether a mark was there."""
+    if await pending_restore(s) is None:
+        return False
+    await s.execute(text("UPDATE brain_maintenance SET detail = detail || jsonb_build_object(CAST(:p AS text), false) "
+                         "WHERE name = :n"), {"p": part, "n": PENDING})
+    await s.execute(text("DELETE FROM brain_maintenance WHERE name = :n AND NOT EXISTS (SELECT 1 FROM "
+                         "jsonb_each(detail) e WHERE e.key = ANY(CAST(:parts AS text[])) AND e.value = 'true'::jsonb)"),
+                    {"n": PENDING, "parts": list(PARTS)})
+    return True
+
+
+def pending_message(detail: dict[str, Any]) -> str:
+    """Why nothing starts, for the log (file names and the backup folder's name only)."""
+    files = [str(detail.get(p + "_file") or "") for p in PARTS if detail.get(p) is True]
+    return ("a restore did not finish: what it must not undo (withholds, purges and access changes made after the "
+            "backup%s) is not applied again yet, so nothing may serve the restored data. Finish it: in the Command "
+            "Center folder, powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\restore.ps1 "
+            "-FinishPending (docs/DEPLOY_WINDOWS.md, Backup and restore)"
+            % ("; files: " + ", ".join(f for f in files if f) if any(files) else ""))
+
+
 def _password_fp(password_hash: str) -> str:
     # A fingerprint of the stored hash, to tell that a password changed after the backup. Never the hash itself.
     return hashlib.sha256(("restore-carry/v1:" + (password_hash or "")).encode("utf-8")).hexdigest()[:24]
@@ -206,5 +256,6 @@ async def apply(in_path: str, *, apply: bool, migrate: bool = True) -> dict[str,
         await audit.record(s, ACTOR, "system.restore_carried", "system", "", {
             "access_kept": len(out["kept"]), "reverted": len(out["reverted"]), "skipped": len(out["skipped"]),
             "sessions_ended": out["sessions_ended"], "audit_kept": out["audit_kept"]})
+        await finish_part(s, "access")  # with the changes above: applied again, so its part of the mark goes
         await (s.commit() if apply else s.rollback())
     return out

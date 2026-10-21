@@ -26,6 +26,7 @@
 --   R5 readable rows left in a restricted conversation are withheld (finding 3);
 --   R6 withheld rows and their rollback copies keep no text fingerprint: source_fp becomes 'w1:<state>';
 --   their rollback copies are blanked, their sessions marked for recompute, one audit entry with counts.
+--   R7 every bound stone keeps the time of the JARVIS row it names (a time, never text: Hermes keeps it in each copy).
 -- The start-up step (app/brain/identity.repair) then empties promoted copies, scrubs quotes and recomputes the
 -- marked sessions. A BEFORE INSERT OR UPDATE trigger keeps every row a stone names without text, whatever code
 -- writes it.
@@ -45,6 +46,12 @@ ALTER TABLE brain_tombstones ADD COLUMN IF NOT EXISTS after_run         BIGINT  
 -- the admin hid the conversation's title with this withhold (an admin's own stone): an import that creates the
 -- conversation again (after a rollback or a restore), and its continuations and branches, keep it hidden
 ALTER TABLE brain_tombstones ADD COLUMN IF NOT EXISTS title_hidden      BOOLEAN NOT NULL DEFAULT FALSE;
+-- the time of the JARVIS row the stone is bound to (a time, never text): Hermes keeps a row's timestamp in every copy
+-- it makes, so a copy whose link to the withheld row is broken is still found at that time, as a hold (review 2, S1)
+ALTER TABLE brain_tombstones ADD COLUMN IF NOT EXISTS source_at         TIMESTAMPTZ;
+-- when an import learned the stone's uid (it had none): Hermes's own time of the newest message in that backup; a
+-- later row under another uid is another message (review 2, S9)
+ALTER TABLE brain_tombstones ADD COLUMN IF NOT EXISTS uid_learned_at    TIMESTAMPTZ;
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'brain_tombstones'::regclass
@@ -182,6 +189,9 @@ DECLARE
     c_carried CONSTANT text := 'carried-on copy of a compacted message';
     c_repeat CONSTANT text := 'same as the previous message';
     c_row_key CONSTANT text := '^jarvis:message:(?!uid:)(.+):([0-9]+)$';
+    -- importer 1.1.0 (0.6.2) or later: its carried-on pairing checks uids (identity.CARRIED_UID_SINCE)
+    c_carried_uid CONSTANT text := '^(1\.([1-9]|\d{2,})|[2-9]|\d{2,})';
+    c_text_only CONSTANT text := 'upgrade: carried copy, text only';
     v_actor text := 'system (' || p_cause || ')';
     v_full boolean;
     v_watermark bigint;
@@ -291,11 +301,17 @@ BEGIN
 
     -- R3. Keys an import recorded as a carried-on copy or an adjacent repeat of a row of a withheld message, to a
     -- fixed point (a copy that came back as a row of its own can have copies too).
+    -- Only certain stones lead: a hold's copies are the import's to judge (a stone here would be certain). A carried-on
+    -- link an importer older than 1.1.0 made (0.6.0, 0.6.1: paired by the text alone, no uid check) stays certain, with
+    -- via 'upgrade: carried copy, text only', and the next import compares its uid with the backup
+    -- (importer.Processor._check_text_only_carried); one whose stored row carries its own uid, which no certain stone of
+    -- the group has, is never stoned (another Hermes message), nor one an import already compared and released
+    -- (review 2, S6).
     LOOP
         WITH stoned AS (
             SELECT t.source_key, CASE WHEN t.anchor_key = '' THEN t.source_key ELSE t.anchor_key END AS anchor,
                    t.role, t.after_run, t.purged_at
-              FROM brain_tombstones t WHERE t.reason = c_wh
+              FROM brain_tombstones t WHERE t.reason = c_wh AND t.review <> 'pending'
         ), held AS (
             SELECT m.id AS row_id, m.session_id, sd.* FROM stoned sd JOIN archive_messages m ON m.source_key = sd.source_key
             UNION
@@ -307,7 +323,9 @@ BEGIN
         )
         INSERT INTO brain_tombstones (source_key, purged_at, purged_by, reason, anchor_key, via, after_run,
                                       source_session_id, source_row_id, role, message_uid, uid_known, bound)
-        SELECT DISTINCT ON (d.source_key) d.source_key, h.purged_at, v_actor, c_wh, h.anchor, 'duplicate', h.after_run,
+        SELECT DISTINCT ON (d.source_key) d.source_key, h.purged_at, v_actor, c_wh, h.anchor,
+               CASE WHEN d.reason = c_carried AND coalesce(r.importer_version, '') !~ c_carried_uid
+                    THEN c_text_only ELSE 'duplicate' END, h.after_run,
                left(coalesce((regexp_match(d.source_key, c_row_key))[1], s.source_session_id, ''), 200),
                left(coalesce((regexp_match(d.source_key, c_row_key))[2], ''), 200),
                h.role,
@@ -315,10 +333,32 @@ BEGIN
                false, true
           FROM import_records d
           JOIN held h ON h.row_id = d.target_id
+          LEFT JOIN import_runs r ON r.id = d.run_id
+          LEFT JOIN archive_messages dm ON dm.source_key = d.source_key
           LEFT JOIN archive_sessions s ON s.id = h.session_id
          WHERE d.record_type = 'message' AND d.action = 'duplicate' AND d.target_table = 'archive_messages'
            AND d.reason IN (c_carried, c_repeat)
            AND NOT EXISTS (SELECT 1 FROM brain_tombstones t WHERE t.source_key = d.source_key)
+           -- an import compared it with the backup and found another message: never stoned again
+           AND NOT EXISTS (SELECT 1 FROM brain_withhold_exemptions e WHERE e.anchor_key = h.anchor
+                              AND ((e.source_session_id, e.source_row_id)
+                                       = (coalesce((regexp_match(d.source_key, c_row_key))[1], ''),
+                                          coalesce((regexp_match(d.source_key, c_row_key))[2], ''))
+                                   OR (d.source_key LIKE 'jarvis:message:uid:%'
+                                       AND e.source_uid = substring(d.source_key FROM 20))))
+           -- a text-only link whose stored row carries its own uid, which no certain stone of the group has
+           AND NOT (d.reason = c_carried AND coalesce(r.importer_version, '') !~ c_carried_uid
+                    AND coalesce(nullif(dm.source_uid, ''), CASE WHEN d.source_key LIKE 'jarvis:message:uid:%'
+                                                                   THEN substring(d.source_key FROM 20) END, '') <> ''
+                    AND EXISTS (SELECT 1 FROM brain_tombstones g WHERE g.reason = c_wh AND g.review <> 'pending'
+                                   AND CASE WHEN g.anchor_key = '' THEN g.source_key ELSE g.anchor_key END = h.anchor
+                                   AND g.message_uid <> ''
+                                   AND g.via NOT IN ('merged into another message',
+                                                     'upgrade: merged into another message', c_text_only))
+                    AND NOT EXISTS (SELECT 1 FROM brain_tombstones g WHERE g.reason = c_wh
+                                       AND CASE WHEN g.anchor_key = '' THEN g.source_key ELSE g.anchor_key END = h.anchor
+                                       AND g.message_uid = coalesce(nullif(dm.source_uid, ''),
+                                                                    substring(d.source_key FROM 20))))
          ORDER BY d.source_key, h.anchor
         ON CONFLICT (source_key) DO NOTHING;
         GET DIAGNOSTICS n = ROW_COUNT;
@@ -357,6 +397,8 @@ BEGIN
       JOIN archive_messages m ON m.source_uid = t.message_uid
       JOIN archive_sessions s ON s.id = m.session_id
      WHERE t.reason = c_wh AND t.message_uid <> '' AND t.role IN ('', m.role) AND NOT m.withheld
+       -- a hold's uid is the held row's own: it says nothing of the withheld message (identity.uid_stones; review 2 S8)
+       AND t.review <> 'pending'
        -- a fold's uid is the survivor's own message (another Hermes message), never the withheld one's
        AND t.via NOT IN ('merged into another message', 'upgrade: merged into another message')
        AND NOT EXISTS (SELECT 1 FROM brain_withhold_exemptions e
@@ -423,7 +465,11 @@ BEGIN
      WHERE NOT m.withheld
        AND (coalesce(m.import_run_id, 0) > ai.after_run
             OR EXISTS (SELECT 1 FROM import_records x WHERE x.target_table = 'archive_messages' AND x.target_id = m.id
-                          AND x.action = 'updated' AND x.run_id > ai.after_run))
+                          AND x.action = 'updated' AND x.run_id > ai.after_run
+                          -- a change of its text (a key JARVIS reused); a state change alone (a compaction archived
+                          -- it) leaves the text the admin saw and left readable (review 2, S12)
+                          AND (x.before ->> 'content' IS DISTINCT FROM m.content
+                               OR x.before -> 'tool_calls' IS DISTINCT FROM m.tool_calls)))
        AND (ai.known_uid = ''                                      -- the withheld message's uid is unknown
             OR coalesce(nullif(m.source_uid, ''), CASE WHEN m.source_key LIKE 'jarvis:message:uid:%'
                                                         THEN substring(m.source_key FROM 20) END, '')
@@ -477,16 +523,18 @@ BEGIN
     n_stones_added := n_stones_added + n;
 
     -- Their rollback copies lose the text too: only copies of the same JARVIS row (a copy of another row a key once
-    -- named, C3, keeps its text: that text is readable in its own row).
+    -- named, C3, keeps its text: that text is readable in its own row). A copy keeps its sensitivity: one message is
+    -- withheld, not restricted data in its conversation (a rollback that puts it back never makes the whole
+    -- conversation restricted: review 2, S13).
     WITH blanked AS (
         UPDATE import_records x
            SET before = CASE WHEN x.before ? 'deleted_row' THEN
                             jsonb_set(x.before, '{deleted_row}', (x.before -> 'deleted_row')
                                 || jsonb_build_object('content', '', 'tool_calls', '[]'::jsonb, 'labels', '[]'::jsonb,
-                                                      'withheld', true, 'sensitivity', 'restricted', 'truncated', false,
+                                                      'withheld', true, 'truncated', false,
                                                       'source_fp', 'w1:' || coalesce(x.before -> 'deleted_row' ->> 'state', 'live')))
                         ELSE x.before || jsonb_build_object('content', '', 'tool_calls', '[]'::jsonb, 'labels', '[]'::jsonb,
-                                                             'withheld', true, 'sensitivity', 'restricted', 'truncated', false,
+                                                             'withheld', true, 'truncated', false,
                                                              'source_fp', 'w1:' || coalesce(x.before ->> 'state', 'live'))
                         END
          WHERE x.record_type = 'message' AND x.before <> '{}'::jsonb
@@ -556,6 +604,25 @@ BEGIN
        AND coalesce(x.before -> 'deleted_row' ->> 'source_fp', x.before ->> 'source_fp', 'w1:') NOT LIKE 'w1:%';
     GET DIAGNOSTICS n_records_fp = ROW_COUNT;
 
+    -- R7. Every bound stone learns the time of the JARVIS row it names (a time, never text), from a stored row of it
+    -- or, when an import deleted every one, from a rollback copy: Hermes keeps that time in each copy it makes
+    -- (review 2, S1). Never changed once known. Last, so the stones R3 and R4 added above get theirs in this same
+    -- run (a second run changes nothing).
+    UPDATE brain_tombstones t SET source_at = m.at
+      FROM archive_sessions s JOIN archive_messages m ON m.session_id = s.id
+     WHERE t.reason = c_wh AND t.source_at IS NULL AND t.source_row_id <> ''
+       AND s.source_session_id = t.source_session_id AND m.source_message_id = t.source_row_id
+       AND t.role IN ('', m.role) AND m.at IS NOT NULL;
+    UPDATE brain_tombstones t SET source_at = (x.before -> 'deleted_row' ->> 'at')::timestamptz
+      FROM archive_sessions s JOIN import_records x
+           ON x.record_type = 'message' AND x.before ? 'deleted_row'
+          AND (x.before -> 'deleted_row' ->> 'session_id') = s.id::text
+     WHERE t.reason = c_wh AND t.source_at IS NULL AND t.source_row_id <> ''
+       AND s.source_session_id = t.source_session_id
+       AND (x.before -> 'deleted_row' ->> 'source_message_id') = t.source_row_id
+       AND t.role IN ('', coalesce(x.before -> 'deleted_row' ->> 'role', ''))
+       AND coalesce(x.before -> 'deleted_row' ->> 'at', '') ~ '^\d{4}-\d\d-\d\d';
+
     INSERT INTO brain_maintenance (name, done_at, detail)
     VALUES ('withhold_identity', now(), jsonb_build_object('records_to', v_max_record, 'cause', p_cause))
     ON CONFLICT (name) DO UPDATE SET done_at = EXCLUDED.done_at, detail = EXCLUDED.detail;
@@ -592,6 +659,31 @@ CREATE OR REPLACE FUNCTION brain_withhold_pending() RETURNS jsonb LANGUAGE sql S
                                 AND NOT m.withheld),
         'readable_in_restricted_sessions', (SELECT count(*) FROM archive_messages m JOIN archive_sessions s ON s.id = m.session_id
                                              WHERE s.sensitivity = 'restricted' AND NOT m.withheld),
+        -- a readable row of another conversation's copied history (a continuation or branch, at or before its start)
+        -- at the very role, call and time of the JARVIS row a certain stone names: a copy JARVIS made whose link to
+        -- the withheld row is broken (a branch of a deleted branch, a test copy's withhold carried to live), which the
+        -- next import holds (review 2, S1). Never one an admin released, nor one whose parent holds the readable row
+        -- it copies (the same role, call, time and text), nor one whose own uid another stored conversation's row
+        -- carries (a uid-keeping copy of that row): JARVIS copied a readable row there (identity.same_time_rows).
+        'readable_copies_at_a_withheld_time', (SELECT count(DISTINCT m.id) FROM brain_tombstones t
+                JOIN archive_messages m ON m.at = t.source_at AND m.role = t.role AND m.tool_call_id = t.tool_call_id
+                JOIN archive_sessions s ON s.id = m.session_id
+               WHERE t.reason = 'withheld by an admin' AND t.review <> 'pending' AND t.source_at IS NOT NULL
+                 AND t.role <> '' AND NOT m.withheld
+                 AND t.via NOT IN ('merged into another message', 'upgrade: merged into another message')
+                 AND s.lineage IN ('continuation', 'branch') AND s.started_at IS NOT NULL AND m.at <= s.started_at
+                 AND s.source_session_id <> t.source_session_id
+                 AND NOT EXISTS (SELECT 1 FROM brain_withhold_exemptions e
+                                  WHERE e.anchor_key = CASE WHEN t.anchor_key = '' THEN t.source_key ELSE t.anchor_key END
+                                    AND e.source_session_id = s.source_session_id
+                                    AND e.source_row_id = m.source_message_id)
+                 AND NOT EXISTS (SELECT 1 FROM archive_sessions ps JOIN archive_messages o ON o.session_id = ps.id
+                                  WHERE ps.source_session_id = s.parent_source_session_id AND NOT o.withheld
+                                    AND o.role = m.role AND o.tool_call_id = m.tool_call_id AND o.at = m.at
+                                    AND o.content = m.content AND o.tool_calls = m.tool_calls)
+                 AND NOT (m.source_uid <> '' AND m.source_uid <> t.message_uid
+                          AND EXISTS (SELECT 1 FROM archive_messages o WHERE o.source_uid = m.source_uid
+                                         AND o.session_id <> m.session_id))),
         'unbound_stones', (SELECT count(*) FROM brain_tombstones WHERE reason = 'withheld by an admin' AND NOT bound),
         'withheld_with_text_fingerprint', (SELECT count(*) FROM archive_messages WHERE withheld AND source_fp NOT LIKE 'w1:%'
                                                                                AND source_fp <> ''),
@@ -621,5 +713,24 @@ $fn$;
 DROP TRIGGER IF EXISTS brain_refuse_old_importer ON import_runs;
 CREATE TRIGGER brain_refuse_old_importer BEFORE INSERT ON import_runs
     FOR EACH ROW EXECUTE FUNCTION brain_refuse_old_importer();
+
+-- 8. A purge by older code is refused on this schema (review 2, S22). 0.6.0 and 0.6.1 purge with a tombstone only: no
+-- purge ledger row (brain_purged_items) and no keyed fingerprint (brain_purged_content), which is what keeps a purge
+-- through a restore of an older backup and a renamed file. Going back to 0.6.1 with the data kept is supported, so its
+-- code can reach this database: removing a deleted item for good is refused unless the connection says it keeps
+-- those records (app/db.py sets cc.brain_purge_ledger = 'on' on every connection of 0.6.2 and later). The deleted item
+-- stays deleted (no reader lists it) until it is purged with 0.6.2. TRUNCATE (the tests) fires no row trigger.
+CREATE OR REPLACE FUNCTION brain_refuse_old_purge() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF OLD.deleted_at IS NOT NULL AND coalesce(current_setting('cc.brain_purge_ledger', true), '') <> 'on' THEN
+        RAISE EXCEPTION 'this database keeps 0.6.2 purge records (migration 0008_brain_withhold_identity): purge with '
+                        'Command Center 0.6.2 or later; the deleted item stays deleted until then';
+    END IF;
+    RETURN OLD;
+END
+$fn$;
+DROP TRIGGER IF EXISTS brain_refuse_old_purge ON memory_items;
+CREATE TRIGGER brain_refuse_old_purge BEFORE DELETE ON memory_items
+    FOR EACH ROW EXECUTE FUNCTION brain_refuse_old_purge();
 
 SELECT brain_withhold_repair('migration');

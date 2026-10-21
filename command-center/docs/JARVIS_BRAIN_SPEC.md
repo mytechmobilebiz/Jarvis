@@ -285,7 +285,11 @@ Since 0.6.1:
   has an admin's withhold tombstone comes back without its text, flagged
   `withheld_by_admin`, keeping its sensitivity; its promoted items are emptied
   (`archive.withhold_copies`, cause `rollback`). The result and the audit entry
-  add `withheld_reinserted` (a count);
+  add `withheld_reinserted` (a count). A blanked rollback copy of one message keeps
+  its sensitivity (0.6.2; a copy an earlier build or the repair marked `restricted`
+  takes its conversation's level when it is put back): one withheld message never
+  makes its conversation restricted. Only a conversation withheld for restricted
+  data (`withheld_by_import`, `withheld_by_rescan`) puts its rows back `restricted`;
 - an item emptied because its source message was withheld (`flags.source_withheld`)
   never blocks a rollback and is never reverted by one: it keeps no text and stays
   as it is. The result and the audit entry list it in `kept_withheld_copies`
@@ -359,7 +363,8 @@ It reports counts and writes the audit entry `brain.rescanned`.
   redacted versions.
 - **Version 4 (0.6.2).** A withhold travels as every stone (2.9) that is certain or
   kept: `{source_key, reason, anchor, session, row, role, tool_call_id, uid,
-  uid_known, via, review}` (`review` `''` or `kept`); a purge as `{source_key,
+  uid_known, via, review, at_row, uid_learned_at}` (`review` `''` or `kept`;
+  `at_row` the time of the JARVIS row it names, a time and never text); a purge as `{source_key,
   reason}`; and `releases: [{anchor, session, row}]` (the exemptions). Holds still
   pending are not exported (the live import finds them again). No text and no
   fingerprint. `--removals-only` writes only `removals` and `releases`
@@ -371,8 +376,13 @@ It reports counts and writes the audit entry `brain.rescanned`.
   then the rows it names (`identity.rows_for`: by key, and by JARVIS row with an
   equal or unknown role) are withheld with `review.withhold_message`; a row that
   only shares its uid is held for review (`review.hold_message`, audited
-  `archive.message_held`, outcome `held for review`); with no row, its copies are
-  emptied (`kept for later imports`). Releases come after the removals: the
+  `archive.message_held`, outcome `held for review`); with no row, the importer's
+  rewound twin of it (only rows stored by the run that deleted the original: the
+  twin a member, any other row of that text there a hold), else the rows at its
+  very role, call id and time (`at_row`) in its conversation (a hold `same
+  conversation, role and time; nothing to compare`) or in a copied history whose
+  link to it is broken (a hold `copied by JARVIS, nothing to compare`); with none,
+  its copies are emptied (`kept for later imports`). Releases come after the removals: the
   exemption, then a row held in that group for that JARVIS row is released as the
   API releases it (`released`); otherwise `kept for later imports` or `already
   done`. The result and `brain.decisions_applied` count `releases` too.
@@ -395,6 +405,18 @@ It reports counts and writes the audit entry `brain.rescanned`.
   purges again the very item a restore brought back (same id **and** creation
   time; `purged`, else `already done`), and writes back on every stone, tombstone
   and purge record it added the file's `by`, `at` and (withholds) `via`.
+- (review 2) Each release also carries `reason` (released, or identical text left
+  readable), `by` and `at`; with `--removals-only` its exemption keeps them (the
+  test copy's file: the admin applying it, now). Every withhold carries `kept_by` and
+  `kept_at` (`''` unless kept; from its row's flag); a row the restored database still flags as held
+  for review gets them back (`review: kept`). Every file has `handling`: what in it
+  is derived from text (a purged memory entry's key) and how to keep it.
+- (review 2) A purge needs a connection that keeps purge records: migration 0008's
+  `BEFORE DELETE` trigger on `memory_items` refuses to remove a deleted item for good
+  unless `cc.brain_purge_ledger = 'on'` (set by `app/db.py` on every connection), so a
+  purge by 0.6.0 or 0.6.1 code, which writes no ledger row and no keyed fingerprint,
+  is refused whole (the item stays deleted) instead of being lost by a restore or a
+  rename.
 
 **Audit actions:** `brain.import_started`, `brain.import_completed`,
 `brain.import_failed`, `brain.import_rolled_back`, `brain.rescanned`,
@@ -499,7 +521,11 @@ database password (2.3) and audits how many.
 - **A newly restricted conversation** blanks every readable row of it (also rows the
   backup no longer holds), and the items promoted from its deleted rows are emptied.
 - **Title.** A session flagged `title_withheld` (an admin hid it with a withhold)
-  keeps an empty title through later imports. A history answer names a
+  keeps an empty title through later imports. A continuation or branch hides it too
+  when it carries the hidden title, when its flagged parent is no longer in the backup
+  (JARVIS deleted it: nothing to compare the title with), and when its first user
+  message is withheld by provenance in a withhold that hid its title (a member, or a
+  hold by the message id or the very time; never a text-only hold). A history answer names a
   conversation by its title ("(source: <title> · message N)"); once the title is
   hidden, every quote of the conversation's other messages names it as recall names
   one without a title ("(source: session <id> · message N)"), the quote itself kept:
@@ -732,7 +758,12 @@ was taken). Every reader that honours a tombstone by key honours a stone.
 admin's release, bound to the content released (`source_uid`, `content_chars`, -1 while
 unknown, and `content_fp`, an HMAC of the released row's readable text keyed from the
 database password, set once that row is readable and dropped when that text is withheld
-again): a later version of the row with other content is not covered.
+again): a later version of the row with other content is not covered. The digest is
+`r1:<key id>:<hex>`; one made with another key (another database password, a restore onto
+another installation, the test copy seeded from live) binds by uid and length only until
+the next import that finds the released row readable binds it again under this key. A
+stone also keeps `source_at`, the time of the JARVIS row it is bound to (a time, never
+text), and a learned uid its `uid_learned_at`.
 
 **Rules** (`importer.Processor.held_rows`, per JARVIS session):
 
@@ -741,13 +772,15 @@ again): a later version of the row with other content is not covered.
 | key | the row's key has a stone bound to this JARVIS row, or unbound, or bound to a row gone from the backup with the same role | the stone's review; bound to another present row → key collision (2.2) |
 | JARVIS row | `(session, row id)` is a stone's binding, role equal or unknown | member |
 | fold | a uid in `absorbed_message_uids` is a certain stone's uid (never a fold member's own uid: that is the survivor's message) | member, never releasable; from a fold only its own copies (its uid and its text) |
-| prune twin | an archived (`compacted` 1) row of the conversation of the admin's own bound row, with its uid, role, call id and timestamp and a higher row id, while that bound row is a tool or assistant row Hermes rewrote in place since the withhold (its length differs from the stored withheld row's) and holds other text | member `pruned by JARVIS: the original` (Hermes `rewrite_pruned_rows` provenance) |
-| link | the importer's duplicate of a matched row, or its rewound twin | the matched row's review |
+| prune twin | an archived (`compacted` 1) row of the conversation of a certain stone's bound row (the admin's own, or a member's own JARVIS row: a continuation's copy Hermes then pruned there), with its uid, role, call id and timestamp and a higher row id, while that bound row is a tool or assistant row Hermes rewrote in place since the withhold (its length differs from the stored withheld row's) and holds other text | member `pruned by JARVIS: the original` (Hermes `rewrite_pruned_rows` provenance) |
+| link | the importer's duplicate of a matched row, or its rewound twin | the matched row's review. A carried-on link an importer older than 1.1.0 recorded (0.6.0, 0.6.1 paired by text alone) is a member `upgrade: carried copy, text only` until an import compares its uid: one whose own uid no certain stone of the group has is released, audited |
 | uid | the row's uid is a certain stone's uid, role equal or unknown | member when its text equals the group's (in memory) or is Hermes's restatement of it under that uid; else a hold: `same message id, nothing to compare` (no text of the message in the backup), `same message id, contains the withheld text`, or `same message id, different text` |
-| restated | a user row starting with Hermes's replay header whose request equals a group's text, in the message's conversation family, under a new uid | a hold `restated after a compaction, new message id` |
-| same text | identical (role, tool call, content, tool calls) to a member of the group in this conversation or a continuation or branch ancestor (no depth limit) | member `copied by JARVIS` in a copy position (a twin, or a child row timed at or before the child started); else a hold `same text`. Never for a row the admin saw (stored by a run up to `after_run`), an exempted row, or a row with its own uid when the group's uid was known |
+| time | the conversation of a certain stone whose bound JARVIS row this backup no longer holds: a row with the stone's role, call id and very time (`brain_tombstones.source_at`) that no rule above matched | a hold `same conversation, role and time; nothing to compare` (Hermes keeps a row's time when it writes it again: a compaction's tail, `replace_messages`, `/retry`); never a row whose own uid differs from the stone's |
+| restated | a user row starting with Hermes's replay header whose request equals a group's text, in the message's conversation family, under a new uid | a hold `restated after a compaction, new message id`. A restatement under the uid of another row of its conversation (the in-flight row Hermes copied) is that row's copy: withheld as that row is, never by its words |
+| same text | identical (role, tool call, content, tool calls) to a member of the group in this conversation or a continuation or branch ancestor (no depth limit) | member `copied by JARVIS` in a copy position (a twin, or a child row timed at or before the child started); else a hold `same text`. Never for a row the admin saw (stored by a run up to `after_run`), an exempted row, or a row with its own uid when the group's uid was known, or, when it was only learned from a later backup (Hermes's uid backfill), when the row was written after that backup's newest row (`uid_learned_at`) |
+| lost origin | a copy-position row of a continuation or branch at the role, call id and time of a withheld row its ancestors no longer hold (the archive's withheld row, or a stone's `source_at`); when the ancestor chain is broken (a parent in neither the backup nor the archive), of any certain withhold | a hold `copied by JARVIS, nothing to compare`; never one whose parent holds the readable row it copies (same text and time) or whose own uid another stored conversation's row carries |
 
-Holds come only from the uid, restated and same-text rules and the upgrade heuristics,
+Holds come only from the uid, time, restated, same-text and lost-origin rules and the upgrade heuristics,
 and an admin keeps or releases them (3); each carries an `evidence` sentence. Certain
 matches (provenance only) are never releasable. A release writes an exemption; the hold
 rules skip that JARVIS row for that group from then on while it holds the content
@@ -756,7 +789,12 @@ released.
 **Invariants.** I1 a row whose key has a stone is withheld; I2 a row whose JARVIS row
 is a stone's binding is withheld; I3 no withheld row or copy keeps a text fingerprint;
 I4 an exempted row is never held again by the hold rules; I5 nothing outside the
-database (decisions files, API responses, audit, logs) holds a fingerprint.
+database (decisions files, API responses, audit, logs) holds a fingerprint, except the
+64-bit digest of a purged memory entry's text in its key (`#entry-<16 hex>`, the key
+since 0.6.0): the decisions file says so in `handling`, and `decisions-export` prints
+it. An item's `flags.rejected_source_sha256` (an incoming version rejected) is returned
+as a count, `rejected_versions`, never as hashes; a purge of an incoming version keeps
+none (its keyed fingerprint keeps it out).
 
 **Database guard.** A `BEFORE INSERT OR UPDATE` trigger on `archive_messages` blanks
 any row I1 or I2 names, whatever code writes it, and stamps
@@ -777,7 +815,12 @@ read-only.
 
 **Withhold** (an admin, decisions-apply): `identity.group_rows` follows, to a fixed
 point (capped at 1,000 rows), the same JARVIS row, the same uid (member when the text
-equals, else a hold) and the importer's duplicates; each gets a stone in the admin's
+equals, else a hold), JARVIS's copies into a direct continuation or branch child (the
+same text at the row's very time) and, upwards, the origin of a copy in a child (the
+parent's readable row with the same role, call and text at the copy's time for a branch,
+or at that time or later for a rotation, whose donor timestamp is the first identical
+parent row's: a member when exactly one parent row can be it, otherwise each a hold), and
+the importer's duplicates; each gets a stone in the admin's
 group and loses its text; keys of copies without a row get stones too, including the
 keys of rows of the message an import deleted and kept only as rollback copies
 (`identity.deleted_copies`: the same uid and role with the same text, or an archived
@@ -786,11 +829,22 @@ conversation deleted as rewound by the run that stored this one or an earlier on
 the same text), so the withhold blanks those copies at once and a rollback puts the row
 back withheld. Another message with the same words keeps its rollback copy. Identical text
 elsewhere in the lineage is withheld only when the admin ticks it
-(`include_identical`). The title is hidden by default for the conversation's first
-user message (`hide_title`).
+(`include_identical`); left unticked in the API (the admin's own withhold, after the
+preview), each identical row the preview listed gets an exemption of the group (reason
+`left readable by an admin (identical text seen at the withhold)`, bound to its uid,
+length and digest like a release, and followed to that row's own copies as a release
+is), so the same-text rules never hold it after a rollback and a re-import, or a
+restore; decisions files carry it with its reason, who and when. decisions-apply's
+withhold writes none (nobody saw those rows there; the test copy's choices arrive in the
+file). The title is hidden by default for the conversation's
+first user message (`hide_title`), and so is the title of every other conversation whose
+first user message is a member (a branch's parent: Hermes derived its title from that
+message); the member's stone keeps `title_hidden`, so a rollback, a restore or a
+re-import hides it again.
 
 **Fail-closed on purpose:** an adjacent verbatim repeat; in a backup without uids, a
-later verbatim repeat in the lineage (a hold); a same-role uid collision with nothing
+later verbatim repeat in the lineage (a hold), and after Hermes's uid backfill a repeat
+written before the backup the withheld message's uid was learned from (a hold); a same-role uid collision with nothing
 to compare; a fold composite; 0.6.1's victim of a reused uid; the upgrade heuristics
 (holds). **Always readable:** identical text in another conversation, similar text,
 identical text the admin saw, a later repeat with its own uid, parallel tool results,
@@ -838,7 +892,7 @@ per case, are `tests/integration/test_brain_withhold_identity.py` and
 | `GET /sessions` | operator | `q, staff, agent, origin, label, since, until, limit ≤ 200, offset` → `{sessions, total}` |
 | `GET /sessions/{id}` | operator | `limit ≤ 500, offset` → `{session, messages, total, hidden}`. `hidden` = messages outside the scope. |
 | `GET /messages/{id}/promoted` | admin | `{message, count, items:[{id, status, deleted}]}`: every memory item promoted from the message (what a withhold empties); `items` lists those in the admin's scope |
-| `POST /messages/{id}/withhold` | admin | 409 while an import, a rollback or a rescan holds the lock. Optional body `{include_identical: false, hide_title: null}`. Content `''`, `withheld`, flags note, admin tombstone (its stone, 2.9), and every other stored row of the same JARVIS message withheld too (2.9: members, and holds for the same uid with other text); identical text elsewhere only with `include_identical`; the title hidden with `hide_title` (default: when it is the conversation's first user message); its rollback copies blanked (also under older row ids); every promoted item emptied (below); quotes removed; session derived fields recomputed → `{message, session, copies:{items, versions_blanked}, answers_scrubbed, rollback_copies_blanked, also_withheld, held_for_review, identical_withheld, keys_tombstoned, title_hidden}`, `archive.message_withheld` (the same keys), `memory.source_withheld` per emptied item. All or nothing |
+| `POST /messages/{id}/withhold` | admin | 409 while an import, a rollback, a rescan or another admin's withhold, keep, release, purge or redaction holds the lock (the message names them all). Optional body `{include_identical: false, hide_title: null}`. Content `''`, `withheld`, flags note, admin tombstone (its stone, 2.9), and every other stored row of the same JARVIS message withheld too (2.9: members, and holds for the same uid with other text); identical text elsewhere only with `include_identical`; the title hidden with `hide_title` (default: when it is the conversation's first user message); its rollback copies blanked (also under older row ids); every promoted item emptied (below); quotes removed; session derived fields recomputed → `{message, session, copies:{items, versions_blanked}, answers_scrubbed, rollback_copies_blanked, also_withheld, held_for_review, identical_withheld, keys_tombstoned, title_hidden}`, `archive.message_withheld` (the same keys), `memory.source_withheld` per emptied item. All or nothing |
 | `GET /messages/{id}/withhold-preview` | admin | read-only: `same_message_rows`, `held_rows`, `identical_text_rows` (ids, positions, roles, times, states; rows outside the scope counted in one total, `rows_outside_your_scope`, never per list), `rowless_copies` (a count, including rows of the message an import deleted, kept only as rollback copies), `items_with_this_text` (imported items in the scope whose text contains the message's, 32+ characters: `[{id, title}]`, to purge by hand), `first_user_message`. Never text |
 | `GET /holds` | admin | every withheld row whose stone is pending, in the scope, with its evidence and never its text: `{message, session, title (null when hidden), position, role, at, content_chars, state, rule, withheld_message:{id, position, role, at, content_chars}, compare: identical text\|different text\|contains the withheld text\|nothing to compare, evidence, neighbours}`. `withheld_message` is described only when it is in the admin's scope; otherwise `{id: null, position: null, role, at: null, content_chars: null}` (an admin without the sensitive-data permission learns nothing of a Credit Repair or restricted row) |
 | `POST /holds/{id}/keep` | admin | 409 during an import. The stone becomes `kept` (permanent) → `archive.hold_kept {message, session, anchor, rule}` |
@@ -1273,15 +1327,29 @@ production fingerprint is compared before and after.
 - Undo is the importer rollback. Restore is disaster recovery: it loses everything
   since the dump.
 
-**`scripts/restore.ps1` (0.6.2, review 1).** Before stopping anything, in a helper
-container of the api image (`docker compose run -d --no-deps --name
-cc-restore-helper-<time> api`, removed afterwards; the api need not run), it runs
-`restore-carry export` (users' access and the audit log) and, when
-`schema_migrations` holds `0006_brain`, `decisions-export --removals-only`, and keeps
-the files as `backups\access-before-restore-<time>.json` and
-`backups\removals-before-restore-<time>.json`. A file it cannot save stops the
-restore before any change, unless `-KeepRestoredAccess` / `-SkipBrainRemovals`
-accepts that loss (printed). After `pg_restore`, and BEFORE `start.ps1`, a helper runs
+**`scripts/restore.ps1` (0.6.2, reviews 1 and 2).** After the safety backup, it reads
+whether `schema_migrations` holds `0006_brain` (a probe that fails stops the restore:
+it never counts as "no JARVIS Brain"), refuses while an advisory lock of the importer
+`(LOCK_KEY, run or 0)` is held (an import, rollback or rescan), and stops api, worker,
+dashboard and n8n. Only then (nothing can be decided between the save and the stop), in
+a helper container of the api image (`docker compose run -d --no-deps --name
+cc-restore-helper-<time> api`, removed afterwards; only the database runs), it runs
+`decisions-export --removals-only` (when 0006 is there) and then `restore-carry export`
+(users' access and the audit log, which then holds the export's own audit entry), and
+keeps the files as `backups\removals-before-restore-<time>.json` and
+`backups\access-before-restore-<time>.json`. A file it cannot save starts the services
+again and stops the restore before any change, unless `-KeepRestoredAccess` /
+`-SkipBrainRemovals` accepts that loss (printed). From before `pg_restore` until the
+files are applied again, `backups\restore-pending.json` names them, and right after the
+`pg_restore` of `command_center` the database gets `brain_maintenance`
+`restore_reapply_pending` (a part per file; `restore-carry apply` and
+`decisions-apply --removals-only` each clear their own part when it is applied in full,
+and the mark goes with the last part). While the file is there, `start.ps1` starts
+nothing; while the mark is there, `bootstrap` refuses (the api and the worker do not
+start). A later `restore.ps1` applies the pending files first and never exports from the
+restored data; `restore.ps1 -FinishPending` only applies them and starts the services;
+the database's mark without the file stops a restore before any change. After
+`pg_restore`, and BEFORE `start.ps1`, a helper runs
 `restore-carry apply --in ... --yes` (audit entries made after the backup put back when
 the backup is an earlier state of this database; `migrate`; deactivations, revoked
 permissions and lowered roles made after the backup applied again, when the restored

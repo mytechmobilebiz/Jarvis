@@ -265,8 +265,10 @@ Keep a copy of `.env` with your backups: the encryption keys in it are needed
 to read stored credentials and Credit Repair data.
 
 **What a restore keeps (0.6.2).** A restore replaces the whole database with
-the backup, but `restore.ps1` keeps what must not be undone. Before it stops
-anything it saves, in `backups\` (keys, ids, e-mail addresses and the audit
+the backup, but `restore.ps1` keeps what must not be undone. It takes the
+safety backup, refuses while a JARVIS Brain import, rollback or rescan is
+running, stops the application, and only then (so nothing can be decided in
+between) saves, in `backups\` (keys, ids, e-mail addresses and the audit
 log; never message text, never a password hash):
 
 - `removals-before-restore-<time>.json`: every message an admin withheld (with
@@ -288,14 +290,31 @@ restore does revert: a user created, reactivated, given a permission or a
 higher role, or a password changed, after the backup. Redo those on the Users
 page if they are still wanted.
 
-If it cannot save these files (for example the api image is missing), it stops
-before changing anything. If it cannot apply them again, it leaves the
-services stopped, prints the commands that apply the files by hand, and ends
-with an error. Two switches accept the loss explicitly, and the script says
-what is lost: `-SkipBrainRemovals` (withholds and purges made after the backup
-are undone, their text readable again) and `-KeepRestoredAccess` (users and
-permissions exactly as in the backup). Use the `restore.ps1` of 0.6.2 or
+If it cannot save these files (for example the api image is missing), or
+cannot read the database to find out what to save, it starts the application
+again and stops before changing anything. If it cannot apply them again, it
+leaves the services stopped, prints the commands that apply the files by hand,
+and ends with an error. Two switches accept the loss explicitly, and the script
+says what is lost: `-SkipBrainRemovals` (withholds and purges made after the
+backup are undone, their text readable again) and `-KeepRestoredAccess` (users
+and permissions exactly as in the backup). Use the `restore.ps1` of 0.6.2 or
 later; older versions do none of this.
+
+If a restore is interrupted (Ctrl+C, a closed window, a reboot), nothing is
+lost: `backups\restore-pending.json` names the files it saved, and the
+database keeps a mark too. Until they are applied, `start.ps1` starts nothing
+and the api and the worker refuse to start (their log says why). Finish it
+with `.\scripts\restore.ps1 -FinishPending` (it applies them, then starts the
+services), or run `restore.ps1` again: it applies them first, never exports
+again from the restored data. Only if those files are lost for good, and you
+accept that the withholds, purges and access changes made after that backup
+stay undone: delete `backups\restore-pending.json` and run
+`docker compose exec -T postgres psql -U postgres -d command_center -c "DELETE FROM brain_maintenance WHERE name = 'restore_reapply_pending'"`.
+
+Keep the `removals-before-restore-*.json` and `access-before-restore-*.json`
+files like backups and delete them when you no longer need them: they hold
+no text, but the key of a purged memory entry carries a 64-bit digest of the
+entry's text.
 
 (Prefix each with `powershell -NoProfile -ExecutionPolicy Bypass -File` if
 script execution is restricted.)
@@ -540,7 +559,8 @@ schedule on.
 **8. Clean-up.** Remove the test copy (type `REMOVE TEST COPY` when asked).
 Then delete the restored JARVIS files (they are plain text), the test copy's
 secrets file, the review decisions file (it holds the text of the items you
-edited) and, once the live import is verified and reviewed, the pre-import
+edited, and the key of a purged memory entry carries a digest of the entry's
+text) and, once the live import is verified and reviewed, the pre-import
 dump (it holds your whole live database, unencrypted):
 
 ```powershell

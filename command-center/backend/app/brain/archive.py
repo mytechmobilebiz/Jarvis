@@ -137,7 +137,10 @@ def blank_before(before: dict[str, Any]) -> dict[str, Any]:
         return {**before, "deleted_row": blank_before(dict(before["deleted_row"]))}
     out = {**before, **({"title": ""} if "title" in before else {})}
     if "content" in before:
-        out.update(WITHHELD_ROW)
+        # The copy keeps its sensitivity: one message is withheld, not restricted data in its conversation (a rollback
+        # that puts it back never makes the whole conversation restricted: review 2, S13). A conversation withheld
+        # for restricted data is marked so on the session (withheld_later), and a rollback applies WITHHELD_ROW whole.
+        out.update({k: v for k, v in WITHHELD_ROW.items() if k != "sensitivity"})
         if "source_fp" in before:
             out["source_fp"] = "w1:%s" % (before.get("state") or "live")
     return out

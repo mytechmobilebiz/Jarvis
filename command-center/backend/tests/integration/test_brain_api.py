@@ -1265,12 +1265,20 @@ async def test_purge_refuses_an_item_whose_conflict_decision_a_rollback_reverts(
 
 
 async def test_purging_a_newer_copy_of_a_changed_file_rejects_that_copy_for_good(client):
+    """The purged copy is kept out by its keyed fingerprint (identity.remember_purge), never by a plain SHA-256 of its
+    bytes on the item it would replace (0.6.2 review 2, S16: that hash was returned to every reader of the item and
+    confirms guesses of the purged text offline); test_brain_review2_062.py imports it again to show it stays out."""
+    from app.brain import identity
+    from app.models import BrainPurgedContent
+
     ids = await seed_conflicts()
     await as_(client, "admin")
     assert (await client.delete("/api/brain/items/%d" % ids["q"])).status_code == 200
     assert (await client.delete("/api/brain/items/%d/purge" % ids["q"])).status_code == 200
     async with session_scope() as s:
-        assert (await s.get(MemoryItem, ids["p"])).flags["rejected_source_sha256"] == [NEW_SHA]
+        assert "rejected_source_sha256" not in ((await s.get(MemoryItem, ids["p"])).flags or {})
+        fps = list((await s.scalars(select(BrainPurgedContent.fp))).all())
+    assert fps == [identity.purge_fp(identity.purge_key(), NEW_SHA)] and NEW_SHA not in fps[0]
 
 
 async def test_a_date_alone_covers_the_whole_day(client):

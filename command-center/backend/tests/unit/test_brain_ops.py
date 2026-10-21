@@ -350,15 +350,26 @@ def test_restore_saves_first_and_applies_again_before_anything_starts():
     an override names what is lost; a failure to apply again leaves the services stopped and names the commands.
     tests/unit/test_restore_ps1.py runs the script."""
     text = script("restore.ps1")
-    order = ['& (Join-Path $PSScriptRoot "backup.ps1")', "version = '0006_brain'",
-             "Invoke-Helper restore-carry export --out $inside", 'docker cp "${helper}:$inside" $target',
-             "Invoke-Helper brain-import decisions-export --removals-only --out $inside", "if ($missing.Count -gt 0)",
-             "docker compose stop api worker dashboard n8n", "pg_restore -U postgres",
-             "Invoke-Helper restore-carry apply --in /tmp/access.json --yes",
-             "Invoke-Helper brain-import decisions-apply --removals-only --in /tmp/removals.json --yes",
-             "if ($problems.Count -gt 0)", '& (Join-Path $PSScriptRoot "start.ps1") -NoBuild']
-    at = [text.index(o) for o in order]
-    assert at == sorted(at), order
+    # Review 2: an unfinished restore is finished first (S18); the application is stopped BEFORE the export (S19),
+    # after a probe that fails closed (S20) and a check that no import runs; the apply is one function (Invoke-Reapply)
+    # used for both, and a marker names the saved files from before pg_restore until they are applied again.
+    reapply = text[text.index("function Invoke-Reapply"):text.index("function Show-Reapply")]
+    assert reapply.index("Invoke-Helper restore-carry apply --in /tmp/access.json --yes") < reapply.index(
+        "Invoke-Helper brain-import decisions-apply --removals-only --in /tmp/removals.json --yes")
+    order = ["if (Test-Path -LiteralPath $pendingFile -PathType Leaf)", "Invoke-Reapply $pendingAccess $pendingRemovals",
+             '& (Join-Path $PSScriptRoot "backup.ps1")', "version = '0006_brain'", "FROM pg_locks",
+             "docker compose stop api worker dashboard n8n",
+             "Invoke-Helper brain-import decisions-export --removals-only --out $inside",
+             'docker cp "${helper}:$inside" $target', "Invoke-Helper restore-carry export --out $inside",
+             'docker cp "${helper}:$inside" $target', "if ($missing.Count -gt 0)",
+             "Set-Content -LiteralPath $pendingFile -Value $marker", "pg_restore -U postgres",
+             "INSERT INTO brain_maintenance (name, detail) VALUES ('restore_reapply_pending'",
+             "Invoke-Reapply $access $removals", "if ($script:problems.Count -gt 0)",
+             "Remove-Item -LiteralPath $pendingFile -Force }", '& (Join-Path $PSScriptRoot "start.ps1") -NoBuild']
+    at = 0
+    for o in order:  # each one after the one before it
+        assert o in text[at:], (o, order)
+        at = text.index(o, at) + len(o)
     assert "docker compose run -d --no-deps --name $helper api" in text
     assert "--status running api" not in text and "compose exec -T api" not in text  # the api need not run
     assert '"removals-before-restore-$stamp.json"' in text and '"access-before-restore-$stamp.json"' in text
@@ -366,7 +377,7 @@ def test_restore_saves_first_and_applies_again_before_anything_starts():
     assert "[switch]$SkipBrainRemovals" in text and "[switch]$KeepRestoredAccess" in text
     assert "for ($try = 1; $try -le 4; $try++)" in text and "Start-Sleep -Seconds 10" in text
     assert "$text -notmatch 'is running'" in text and "$code -ne 2" in text
-    assert text.count("Show-Reapply") == 2  # defined, and called when something was not applied again
+    assert text.count("Show-Reapply") == 3  # defined, and called when something was not applied again (twice)
     assert "-Mode Status" in text and "were applied again" in text
     assert '($failed -notcontains "command_center")' in text  # an unchanged database needs nothing applied again
     assert ".env" not in text.replace("Use the same .env the backup was taken with.", "")
@@ -387,7 +398,7 @@ def test_the_precheck_reads_keys_brain_withhold_pending_returns():
     precheck = script("brain-precheck.ps1")
     read = set(re.findall(r"\$pending\.(\w+)", precheck))
     assert read == {"readable_by_key", "readable_by_jarvis_row", "readable_by_fold", "readable_in_restricted_sessions",
-                    "held_for_review", "repair_done"}
+                    "readable_copies_at_a_withheld_time", "held_for_review", "repair_done"}
     sql = (ROOT / "backend" / "app" / "migrations" / "0008_brain_withhold_identity.sql").read_text()
     pending = sql[sql.index("FUNCTION brain_withhold_pending()"):]
     built = set(re.findall(r"'(\w+)',", pending))

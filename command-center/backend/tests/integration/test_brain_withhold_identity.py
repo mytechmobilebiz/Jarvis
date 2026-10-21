@@ -605,8 +605,9 @@ async def test_decisions_v4_file_holds_no_text_and_no_fingerprint(client, fx, tm
         data = json.loads(flat)
         assert ("decisions" in data) is not removals_only and data.get("removals_only", False) is removals_only
         assert result["releases"] == 1 and len(data["releases"]) == 1
-        # rules062-confirm: a release travels bound to the content it released, by its uid and length (no digest)
-        assert set(data["releases"][0]) == {"anchor", "session", "row", "uid", "chars"}
+        # rules062-confirm: a release travels bound to the content it released, by its uid and length (no digest);
+        # review 2 (S21, S23): with why, who and when (a label, an e-mail address and a time, never text)
+        assert set(data["releases"][0]) == {"anchor", "session", "row", "uid", "chars", "reason", "by", "at"}
         assert data["releases"][0]["session"] == "prune_01" and data["releases"][0]["chars"] == len(STUB)
         withholds = [r for r in data["removals"] if r["reason"] == identity.WITHHELD_BY_ADMIN]
         purges = [r for r in data["removals"] if r["reason"] != identity.WITHHELD_BY_ADMIN]

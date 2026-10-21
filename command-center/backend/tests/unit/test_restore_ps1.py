@@ -35,6 +35,7 @@ function global:docker {
   $line = ($args | ForEach-Object { "$_" }) -join " "
   $global:Calls.Add($line); $global:LASTEXITCODE = 0
   if ($line -match "version = '0006_brain'") { "1"; return }
+  if ($line -match "FROM pg_locks") { "0"; return }  # no import, rollback or rescan running (review 2, S19)
   if ($line -match "FILTER \(WHERE reason") { "3 withheld messages and copies, 1 purged items with a source key"; return }
   if ($line -match '^compose run -d --no-deps --name (\S+) api ') {
     if ($global:Scenario -eq "nohelper") { "no such image"; $global:LASTEXITCODE = 1 }
@@ -112,10 +113,12 @@ def at(calls: list[str], pattern: str) -> int:
 
 
 def test_the_removals_and_access_are_saved_first_and_applied_again_before_anything_starts(tmp_path):
-    """R23, R31: export (helper) < stop < pg_restore < restore-carry apply < decisions-apply (helper) < start.ps1."""
+    """R23, R31, review 2 S19: stop < export (helper: the removals, then the access and the audit log, which then
+    holds the export's own audit entry) < pg_restore < restore-carry apply < decisions-apply (helper) < start.ps1.
+    Stopped before the export: nothing decided between the export and the stop is lost."""
     out, calls, code = run_restore(tmp_path, "works")
-    order = [at(calls, r"^backup\.ps1$"), at(calls, r"restore-carry export"),
-             at(calls, r"decisions-export --removals-only"), at(calls, r"^compose stop api worker dashboard n8n"),
+    order = [at(calls, r"^backup\.ps1$"), at(calls, r"^compose stop api worker dashboard n8n"),
+             at(calls, r"decisions-export --removals-only"), at(calls, r"restore-carry export"),
              at(calls, r"pg_restore -U postgres"), at(calls, r"restore-carry apply --in /tmp/access\.json --yes"),
              at(calls, r"decisions-apply --removals-only --in /tmp/removals\.json --yes"), at(calls, r"^start\.ps1$")]
     assert -1 not in order and order == sorted(order), (order, calls)
@@ -123,7 +126,8 @@ def test_the_removals_and_access_are_saved_first_and_applied_again_before_anythi
     assert at(calls, r"^compose run -d --no-deps --name cc-restore-helper-") >= 0
     rms = [n for n, c in enumerate(calls) if c.startswith("rm -f cc-restore-helper-")]
     runs = [n for n, c in enumerate(calls) if c.startswith("compose run -d --no-deps --name cc-restore-helper-")]
-    assert len(runs) == len(rms) == 2 and runs[0] < rms[0] < order[3] < runs[1] < order[6] < rms[1] < order[7], calls
+    assert len(runs) == len(rms) == 2 and order[1] < runs[0] < order[2] < rms[0] < order[4] < runs[1] < order[6] \
+        < rms[1] < order[7], calls
     assert "were applied again (3)" in out and code == 0, out
     assert sum(1 for c in calls if c == "sleep 10") == 2  # tried again while something held the lock
     backups = os.listdir(tmp_path / "w-works-" / "InfiniteAI-CommandCenter" / "backups")
@@ -150,9 +154,11 @@ def test_a_failed_reapply_leaves_the_services_stopped_and_ends_with_exit_1(tmp_p
 @pytest.mark.parametrize("scenario", ["nohelper", "noexport"])
 def test_nothing_is_changed_when_the_removals_cannot_be_saved(tmp_path, scenario):
     """R24: the api being down no longer matters (a helper container exports); when even that fails, the restore
-    stops before anything is stopped or restored, and names the override."""
+    stops before anything is restored, and names the override. Since review 2 (S19) the application is stopped
+    before the export, so it is started again (start.ps1) before the restore stops."""
     out, calls, code = run_restore(tmp_path, scenario)
-    assert code == 1 and at(calls, r"compose stop") == -1 and at(calls, r"pg_restore") == -1, calls
+    assert code == 1 and at(calls, r"pg_restore") == -1, calls
+    assert 0 <= at(calls, r"^compose stop") < at(calls, r"^start\.ps1$"), calls
     assert "nothing was changed" in out and "-SkipBrainRemovals" in out
     assert "Restore complete" not in out
 

@@ -104,9 +104,12 @@ or a purge brought the text back silently.
   fresh one at the row's very time; also when they were stored before the
   withhold), a message merged into another (also one stored before the
   withhold), the same message id with the same text (also restated after a
-  compaction under that id), and the original JARVIS keeps when it prunes the
-  withheld row in place (the full output it moves to an archived copy of the
-  very row, with the same message id, call and time).
+  compaction under that id), the original JARVIS keeps when it prunes the
+  withheld row, or a continuation's certain copy of it, in place (the full
+  output it moves to an archived copy of the very row, with the same message id,
+  call and time), and, for a withhold made in a branch or continuation, the
+  parent's row JARVIS copied (the only parent row with that text at the copy's
+  time).
 - **Uncertain matches are held for review**, never withheld for good on a
   guess, and each says in one sentence what links it: the same message id
   with different text, with text that contains the withheld text, or with
@@ -135,7 +138,9 @@ or a purge brought the text back silently.
   decisions file carries only the message id and length). When JARVIS
   rewrites that row in place (a prune) or an older backup holds other text
   under the same row, that other text is not released: it is held. Each copy it covers is recorded, so it outlives the
-  original. An upgrade hold the next import disproves (another tool call,
+  original, also when JARVIS renumbers the released row (a /retry). The digest's key is derived from the database
+  password and carries a key id: after a password change (or on the test copy seeded from live) a release covers the
+  same message id and length until the next import binds it again under the new key, never lost. An upgrade hold the next import disproves (another tool call,
   another message id) is released by that import, audited.
 - **No fingerprint of a withheld text is kept.** A withheld row keeps only its
   state (`w1:live`, `w1:compacted`, `w1:rewound`); 0.6.x fingerprints are
@@ -163,11 +168,18 @@ or a purge brought the text back silently.
 of the same JARVIS message (withheld too) and those held for your review. It
 offers:
 - "Also withhold K other messages with exactly this text in this
-  conversation and its continuations and branches", unticked;
+  conversation and its continuations and branches", unticked. Left unticked,
+  the rows you saw stay readable for good: the choice is kept with the
+  withhold (a rollback and a re-import, or a restore and the next import,
+  never hold them for review again); a repeat JARVIS stores later is another
+  row and is held for your review;
 - "Hide the conversation title", ticked when the message is the conversation's
   first user message (a title can repeat it). It also hides the title in the
   continuations and branches that carry it (JARVIS moves the title to a
-  continuation and names a branch "title #2"), and it is kept with the
+  continuation and names a branch "title #2"; also when JARVIS deleted the
+  parent before the next import), and the title of every other conversation
+  whose first user message is the same JARVIS message (a branch's parent, whose
+  title JARVIS derived from it, also after a rollback). It is kept with the
   withhold: a conversation imported again (after a rollback or a restore) and
   the live installation (decisions file) hide it too. A history answer or
   request summary that quoted another message of that conversation keeps the
@@ -202,6 +214,11 @@ until the start-up check or a rescan empties it; 0.6.1 listed it to admins.
 **Purges.**
 - A purged memory entry is recognised in any memory file by the digest
   already in its key.
+- Purging the incoming version of a changed file keeps no plain hash of it:
+  the API shows how many changed versions were rejected, never their hashes;
+  the keyed fingerprint leaves that version out of the next import, and a
+  later change of the file still arrives for review (the item it would
+  replace is never purged with it, also not by a restore).
 - A copy of a purged file in the same backup is recognised by its bytes.
 - A purged file that is renamed later is recognised by a keyed fingerprint of
   its bytes. The key is derived from the database password, so a fingerprint
@@ -215,21 +232,38 @@ until the start-up check or a rescan empties it; 0.6.1 listed it to admins.
 **Decisions from the test copy (file version 4).** Each withhold travels with
 the JARVIS row it names and the admin's title choice, as do the holds an
 admin kept, the holds still waiting for review (held for review on live too)
-and the rows an admin released; never text or a fingerprint. When live
+and the rows an admin released (with who released them, when, and whether an
+admin left identical text readable). It holds no text and no fingerprint of a
+message or a file; a purged memory entry's key, as every memory entry key
+since 0.6.0, carries a 64-bit digest of the entry's text, which confirms a
+guess of the entry offline. The file says so (`handling`), and
+`decisions-export` prints it: keep the file like a backup and delete it once
+it is applied. When live
 stores no row of a withheld message, decisions-apply still withholds what the
 live import stored of it: the copy JARVIS wrote again of a row the import
-deleted as rewound, and a message JARVIS merged it into. Version 3 files
+deleted as rewound (only what that same import stored: another message with
+the same words is at most held for review), and a message JARVIS merged it into.
+When live never stored that row at all (the test copy's backup predates
+JARVIS's message ids, or JARVIS renumbered or rewound the row first), the rows
+of that conversation at the withheld message's very role and time, and a copy
+in a branch whose link to it is broken, are held for review at once (the
+decisions file carries the row's time, never its text). Version 3 files
 (0.6.0, 0.6.1) are still read, but a version 3 withhold names only a key:
 export again with 0.6.2.
 
-**Restores.** Before it stops anything, `restore.ps1` saves every withhold
+**Restores.** `restore.ps1` takes the safety backup, checks that no JARVIS
+Brain import, rollback or rescan is running, and stops the application. Only
+then (so nothing can be decided in between) does it save every withhold
 (with the title choice), every purge (by key, and by item id and creation time,
 so manual and promoted items and incoming versions are covered too), every
-release, the keyed purge fingerprints, who decided each and when
+release and every identical text an admin left readable, every keep, the keyed
+purge fingerprints, who decided each and when
 (`backups\removals-before-restore-<time>.json`, keys and ids only), and the
-users' access and the audit log (`backups\access-before-restore-<time>.json`,
-e-mail addresses and audit entries; no password hash). It uses a helper
-container of the api image, so the api need not be running. After the restore,
+users' access and the audit log, including the entry of that export
+(`backups\access-before-restore-<time>.json`, e-mail addresses and audit
+entries; no password hash). It uses a helper container of the api image, so
+the api need not be running. A probe of the database that fails stops the
+restore before any change (it never counts as "no JARVIS Brain"). After the restore,
 **before any service starts**, the helper puts back the audit entries made
 after the backup, applies again every deactivation, revoked sensitive-data
 permission and lowered role made after it (never leaving no active admin),
@@ -243,6 +277,16 @@ services stopped (exit 1, with the commands to run) when it cannot apply them
 again; `-SkipBrainRemovals` and `-KeepRestoredAccess` accept the loss
 explicitly and say what is lost.
 
+An interrupted restore (Ctrl+C, a closed window, a reboot, a Docker restart
+after `pg_restore`) is never mistaken for a finished one:
+`backups\restore-pending.json`, written before the restore and deleted only
+once the saved files are applied again, names them, and the database keeps a
+mark of its own. While either is there, `start.ps1` starts nothing, and the api
+and the worker refuse to start (also after a plain `docker compose up` or from
+another folder). The next `restore.ps1` applies those files first, never
+exporting again from the restored data; `restore.ps1 -FinishPending` only
+applies them and starts the services.
+
 **Importer and scripts.**
 - New commands: `brain-import repair [--yes]`, `brain-import fingerprints
   --forget-other-key [--yes]`, `decisions-export --removals-only` and
@@ -250,7 +294,12 @@ explicitly and say what is lost.
   `python -m app.cli restore-carry export|apply` (restore.ps1: the users'
   access and the audit log across a restore).
 - An importer older than 1.1.0 (0.6.0, 0.6.1) is refused on a 0.6.2 database
-  (migration `0008`), before it writes anything.
+  (migration `0008`), before it writes anything; so is a purge by 0.6.0 or
+  0.6.1 code (section 5).
+- When two changes to the JARVIS Brain meet (two admins at once, or an admin
+  and an import), the second is refused with a message that names what can
+  hold it (an import, rollback or rescan, or an admin's withhold, release,
+  keep, purge or redaction); 0.6.1 always said an import was running.
 - `brain-import status` prints one more line: migration
   `0008_brain_withhold_identity`, whether the identity repair is done,
   readable rows matching a withhold, held for review, withheld rows with a
@@ -299,13 +348,22 @@ Each default can be changed later without a migration.
 **Withheld on purpose (fail-closed), also when it might not be the message:**
 - a verbatim repeat right after the withheld message;
 - in a backup without message ids, a later verbatim repeat in the same
-  conversation (held: you can release it);
+  conversation (held: you can release it); after JARVIS gave its old messages
+  ids (its message id backfill), a repeat written before the first backup
+  that carried the withheld message's id (held: you can release it);
 - a message sharing the message id with the same role when nothing in the
   backup can be compared (in its own conversation, continuations and
   branches; elsewhere it is held); decisions-apply does the same on live
   when no row of the withheld message is stored there;
 - a copy in a branch or continuation at the very time of a withheld row
-  that JARVIS no longer has (held: you can release it);
+  that JARVIS no longer has, also through a branch JARVIS deleted, after a
+  rollback of the import that stored the withheld row, or on live after
+  decisions-apply (held: you can release it);
+- a row of the withheld message's own conversation at its very role and time
+  when no row of the withheld message is stored any more (JARVIS renumbered or
+  retried it; held: you can release it);
+- when the withhold is made in a branch or continuation, the parent's row that
+  JARVIS copied (withheld with it; held when two parent rows could be it);
 - a message JARVIS merged another one into;
 - a row that 0.6.1 itself rewrote and withheld under a reused id;
 - what the upgrade repair finds by the old fingerprints or message ids (held:
@@ -315,7 +373,11 @@ Each default can be changed later without a migration.
 that is all."); similar text; identical text stored before the withhold; a
 later repeat with its own message id; parallel tool results; an unrelated row
 that took over a key; the same id with another role; copies of messages that
-are not withheld; the paired tool result, compaction summary and other turns;
+are not withheld (also a carried-on copy that 0.6.0 or 0.6.1 paired by its text
+alone, once an import finds its own message id; and JARVIS's restatement of an
+unfinished request under that request's own message id); a later repeat with its
+own message id written after JARVIS gave old messages ids; an identical message
+the admin saw that a compaction only archived; the paired tool result, compaction summary and other turns;
 new turns of a continuation or branch; a delegated (subagent) conversation;
 the parent of a restricted branch; a repeat first seen already compacted with
 its own id; a released hold; a memory entry with other text or a file with the
@@ -353,7 +415,11 @@ same name and other bytes; an unrelated row's rollback copy.
   code is NO-GO for imports: import nothing until you are on 0.6.2 again
   (`jarvis-import.ps1` of 0.6.2 refuses a live installation without importer
   1.1.0, and the 0.6.2 database itself refuses an import run of an older
-  importer before it writes anything). Back on 0.6.2, its start repairs what
+  importer before it writes anything). Purge nothing with that code either:
+  0.6.0 and 0.6.1 keep no purge ledger and no keyed fingerprint, so such a
+  purge would not survive a restore of an older backup or a renamed file. The
+  0.6.2 database refuses it (the item stays deleted and hidden); purge it again
+  once you are on 0.6.2. Back on 0.6.2, its start repairs what
   0.6.1 code left readable by key, JARVIS row or uid; a copy an older import
   stored under a new key with no uid is repaired by the next 0.6.2 import.
 - **To 0.5.0:** as the 0.5.0 section of the 0.6.2 guide describes; 0.5.0
@@ -411,7 +477,10 @@ Synthetic data only, never real JARVIS data.
 - **0.6.1's victim of a reused id** (a row it rewrote and withheld) stays
   withheld.
 - **Memory entry keys** keep a 64-bit digest of the entry's text, as since
-  0.6.0; re-keying them is planned for 0.7.x.
+  0.6.0; re-keying them is planned for 0.7.x. A purged entry's key is in the
+  database, in backups, in decisions files and in restore.ps1's
+  `removals-before-restore-<time>.json`: keep and delete those files like
+  backups.
 - **One upgrade gap until the next import:** a copy that shares only its
   message id with the withheld message, under a row key, whose fingerprint
   changed (for example its compaction state) stays readable after the upgrade

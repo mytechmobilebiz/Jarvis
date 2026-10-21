@@ -86,8 +86,24 @@ FOLD_VIAS = (FOLD, "upgrade: " + FOLD)
 # copied, compacted=1). That twin is the very row the admin withheld: Hermes provenance, not text matching.
 PRUNE_TWIN = "pruned by JARVIS: the original"
 PRUNABLE_ROLES = ("tool", "assistant")  # the only rows rewrite_pruned_rows rewrites in place
+# A member the upgrade made from a carried-on link an importer older than 1.1.0 recorded (0.6.0, 0.6.1 paired rows by
+# their text alone, with no uid check: review 2, S6). Certain until an import compares its uid with the backup
+# (importer.Processor._check_text_only_carried): another Hermes message is then released, audited.
+TEXT_ONLY_CARRIED = "upgrade: carried copy, text only"
+CARRIED_UID_SINCE = (1, 1, 0)  # the first importer whose carried-on pairing checks uids (0.6.2)
+# A hold (review 2, S2): a stored row of the withheld message's own JARVIS conversation with its role, call id and very
+# time, when no row of the withheld message is stored here (decisions-apply on live; an import whose backup lost the
+# withheld row). Hermes keeps a row's timestamp when it writes it again (a compaction's tail, replace_messages, /retry),
+# but nothing here can compare the text.
+SAME_TIME = "same conversation, role and time; nothing to compare"
 HOLD_VIA = ("same message id, different text", CONTAINS_SHORT, "same text", COPY_UNCOMPARED, UID_UNCOMPARED,
-            RESTATED, "same message id", "upgrade: same message id", "upgrade: same text")
+            RESTATED, "same message id", "upgrade: same message id", "upgrade: same text", SAME_TIME)
+
+
+def importer_older(version: str | None, floor: tuple[int, ...] = CARRIED_UID_SINCE) -> bool:
+    """Whether an import run's importer_version ('1.0.1') is older than floor (none or unparsable: older)."""
+    found = re.match(r"^(\d+)\.(\d+)\.(\d+)", version or "")
+    return found is None or tuple(int(x) for x in found.groups()) < floor
 # What a hold's rule tells the admin (the holds list): the evidence, honestly; never text.
 EVIDENCE = {
     "same message id, different text": "same message id; its text differs from the withheld message's",
@@ -100,6 +116,9 @@ EVIDENCE = {
     "same text": "identical text, but nothing links it to the withheld message",
     "upgrade: same text": "identical text (found by the upgrade), but nothing links it to the withheld message",
     COPY_UNCOMPARED: "copied by JARVIS from a withheld row this backup no longer holds; nothing to compare",
+    SAME_TIME: "the withheld message's own JARVIS conversation, role and time (JARVIS keeps a row's time when it "
+               "writes it again), but no row of the withheld message is here to compare the text with; probably the "
+               "same message",
 }
 LINEAGE = ("continuation", "branch")  # a child that copied its parent's history (never "delegated")
 ENTRY = re.compile(r"#entry-([0-9a-f]{16})(?:-[0-9]+)?$")  # a memory entry's key ends with its digest
@@ -113,6 +132,17 @@ TITLE_SUFFIX = re.compile(r" #[0-9]+$")  # Hermes names a branch '<title> #N' (g
 
 def now() -> datetime:
     return datetime.now(UTC)
+
+
+def when(value: Any) -> datetime | None:
+    """A time read back from JSON (a rollback copy's 'at', a decisions file's 'at_row'): an aware datetime, or None."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    try:
+        at = datetime.fromisoformat(value) if isinstance(value, str) and value else None
+    except ValueError:
+        return None
+    return at if at is None or at.tzinfo is not None else at.replace(tzinfo=UTC)
 
 
 # --- Pure helpers --------------------------------------------------------------------------------------------------
@@ -200,15 +230,22 @@ def release_key(settings: Settings | None = None) -> bytes | None:
     return hmac.new(RELEASE_KEY_LABEL, str(password).encode("utf-8"), hashlib.sha256).digest()
 
 
+def release_prefix(key: bytes | None) -> str:
+    """'r1:<key id>:', the prefix of the release digests made with this key ('' without a key): a digest made with
+    another database password (an owner's rotation, a restore onto another installation, the test copy seeded from
+    live) is recognised as such, never taken for other content (review 2, S11). The key id as purge_key_id()."""
+    return "r1:%s:" % hmac.new(key, b"key id", hashlib.sha256).hexdigest()[:8] if key else ""
+
+
 def release_fp(text: tuple[str, str, str, str], key: bytes | None = None) -> str:
-    """The keyed digest of a RELEASED row's stored readable text (message_text()): 'r1:<hex>', or '' without a key.
-    Only ever computed from readable text (the released row is readable); an exemption whose row is withheld again
-    loses it (unbind_withheld)."""
+    """The keyed digest of a RELEASED row's stored readable text (message_text()): 'r1:<key id>:<hex>', or '' without
+    a key. Only ever computed from readable text (the released row is readable); an exemption whose row is withheld
+    again loses it (unbind_withheld)."""
     key = key if key is not None else release_key()
     if not key:
         return ""
-    return "r1:" + hmac.new(key, json.dumps(list(text), ensure_ascii=False).encode("utf-8"),
-                            hashlib.sha256).hexdigest()
+    return release_prefix(key) + hmac.new(key, json.dumps(list(text), ensure_ascii=False).encode("utf-8"),
+                                          hashlib.sha256).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -221,10 +258,16 @@ class Binding:
 
     def covers(self, chars: int | None, text: tuple[str, str, str, str] | None = None,
                key: bytes | None = None) -> bool:
-        """Whether a row with this length (and, when it is readable, this stored text) is the content released."""
+        """Whether a row with this length (and, when it is readable, this stored text) is the content released. A
+        digest made with another key (another database password, or a 0.6.2 build before key ids) cannot be compared:
+        the release is bound by its uid and length only until bind_exemptions() binds it again under this key, as a
+        release carried from another installation is."""
         if self.chars >= 0 and chars is not None and self.chars != chars:
             return False
         if self.fp and text is not None:
+            key = key if key is not None else release_key()
+            if not key or not self.fp.startswith(release_prefix(key)):
+                return True
             return release_fp(text, key) == self.fp
         return True
 
@@ -259,6 +302,8 @@ class Stone:
     bound: bool = False
     after_run: int = 0
     title_hidden: bool = False  # the admin hid the conversation's title with this withhold
+    at: datetime | None = None  # the time of the JARVIS row it is bound to (Hermes keeps it in every copy)
+    uid_learned_at: datetime | None = None  # a learned uid: Hermes's time of the newest row in the learning backup
 
     @property
     def group(self) -> str:
@@ -292,7 +337,8 @@ def _stone(r: Any) -> Stone:
     return Stone(key=r.source_key, anchor=r.anchor_key or "", session=r.source_session_id or "",
                  row=r.source_row_id or "", role=r.role or "", tool_call_id=r.tool_call_id or "",
                  uid=r.message_uid or "", uid_known=bool(r.uid_known), via=r.via or "", review=r.review or "",
-                 bound=bool(r.bound), after_run=int(r.after_run or 0), title_hidden=bool(r.title_hidden))
+                 bound=bool(r.bound), after_run=int(r.after_run or 0), title_hidden=bool(r.title_hidden),
+                 at=r.source_at, uid_learned_at=r.uid_learned_at)
 
 
 class Identities:
@@ -383,17 +429,21 @@ class Identities:
         if not new.bound and st.bound:
             new = Stone(**{**new.__dict__, "session": st.session, "row": st.row, "role": st.role,
                            "tool_call_id": st.tool_call_id, "uid": st.uid, "uid_known": st.uid_known, "bound": True})
+        if new.at is None and st.at is not None and (new.session, new.row) == (st.session, st.row):
+            new = Stone(**{**new.__dict__, "at": st.at})
         if new != old:
             self._unindex(old)
             self._index(new)
         return new
 
-    def learn_uid(self, st: Stone, uid: str, absorbed: tuple[str, ...] = ()) -> Stone:
+    def learn_uid(self, st: Stone, uid: str, absorbed: tuple[str, ...] = (),
+                  learned_at: datetime | None = None) -> Stone:
         """A stone bound to a row whose uid it did not know: the uid of that row in this backup (learned, so
-        uid_known stays false), and the uids that row absorbed."""
+        uid_known stays false; learned_at: Hermes's time of the newest row in that backup), and the uids that row
+        absorbed."""
         new = st
         if uid and not st.uid:
-            new = Stone(**{**st.__dict__, "uid": uid})
+            new = Stone(**{**st.__dict__, "uid": uid, "uid_learned_at": learned_at})
             self._unindex(st)
             self._index(new)
         if new.certain:
@@ -407,10 +457,20 @@ class Identities:
     def known_uids(self, anchor: str) -> set[str]:
         return {st.uid for st in self.groups.get(anchor, ()) if st.uid and st.uid_known}
 
-    def independent(self, anchor: str, uid: str) -> bool:
-        """R-text's guard: this row carries its own uid, the withheld message's uid was known, and it is another one
-        (a separate Hermes message)."""
-        return bool(uid) and bool(self.known_uids(anchor)) and uid not in self.group_uids(anchor)
+    def independent(self, anchor: str, uid: str, at: datetime | None = None) -> bool:
+        """R-text's guard: this row carries its own uid, another one than every uid of the withheld message's group (a
+        separate Hermes message), when that message's uid was known when the admin decided; or, when it was only
+        learned since (Hermes's uid backfill gives every legacy row a random uid, so a uid-less-era copy or repeat
+        carries one too), when the row was written after the backup the uid was learned from: its time `at` is after
+        the newest row there (Hermes's own clock), so its uid is its own, never a backfilled one (review 2, S9). A
+        row of the uid-less era (at or before that time) stays held: nothing tells it apart."""
+        if not uid or uid in self.group_uids(anchor):
+            return False
+        if self.known_uids(anchor):
+            return True
+        learned = [st.uid_learned_at for st in self.groups.get(anchor, ())
+                   if st.uid and not st.uid_known and st.uid_learned_at is not None]
+        return bool(learned) and at is not None and at > max(learned)
 
     def uid_stones(self, uid: str, role: str, *, folds: bool = False) -> list[Stone]:
         """The certain stones with this uid and an equal or unknown role, the admin's own first. A hold's uid is the
@@ -490,7 +550,7 @@ async def put_stone(s: AsyncSession, binding: Stone, *, actor: str) -> bool:
               "role": binding.role[:40], "tool_call_id": binding.tool_call_id[:200], "message_uid": binding.uid[:200],
               "uid_known": binding.uid_known, "anchor_key": binding.anchor, "via": binding.via[:200],
               "review": binding.review, "bound": bool(binding.row or binding.uid), "after_run": binding.after_run,
-              "title_hidden": binding.title_hidden}
+              "title_hidden": binding.title_hidden, "source_at": binding.at, "uid_learned_at": binding.uid_learned_at}
     stmt = pg_insert(BrainTombstone).values(**values)
     stmt = stmt.on_conflict_do_update(
         index_elements=[BrainTombstone.source_key],
@@ -514,6 +574,11 @@ async def put_stone(s: AsyncSession, binding: Stone, *, actor: str) -> bool:
             BrainTombstone.source_key == binding.key, BrainTombstone.reason == WITHHELD_BY_ADMIN,
             BrainTombstone.title_hidden.is_(False)).values(title_hidden=True))
         changed = changed or bool(hid.rowcount)
+    if binding.at is not None and binding.row:  # the bound row's time, once known (never changed after)
+        await s.execute(update(BrainTombstone).where(
+            BrainTombstone.source_key == binding.key, BrainTombstone.reason == WITHHELD_BY_ADMIN,
+            BrainTombstone.source_at.is_(None), BrainTombstone.source_session_id == binding.session[:200],
+            BrainTombstone.source_row_id == binding.row[:200]).values(source_at=binding.at))
     return changed
 
 
@@ -545,7 +610,7 @@ def binding_of(row: Any, source_session_id: str, *, anchor: str = "", via: str =
     """The stone for a stored row: its key and the JARVIS row it is (session, row id, role, tool_call_id, uid)."""
     return Stone(key=row.source_key, anchor=anchor, session=source_session_id or "", row=row.source_message_id or "",
                  role=row.role or "", tool_call_id=row.tool_call_id or "", uid=row_uid(row), uid_known=uid_known,
-                 via=via, review=review, bound=True, after_run=after_run)
+                 via=via, review=review, bound=True, after_run=after_run, at=row.at)
 
 
 @dataclass
@@ -792,6 +857,41 @@ async def group_rows(s: AsyncSession, message: ArchiveMessage, sess: ArchiveSess
                         continue  # the copy of another row with this text and time: that row's uid says so
                     if take(other, other_sid, "copied by JARVIS", CERTAIN):
                         nxt.append((other, other_sid, fold, own))
+            # The ORIGIN of a copy JARVIS made (the rule above, upwards; review 2, S14): this row sits in a DIRECT
+            # continuation or branch child, at or before the child's start, so the parent's readable row with the
+            # same role, call and text is the row JARVIS copied (a gateway /branch and a rotation of uid-less rows give
+            # the copy a fresh uid or none: the uid rule cannot reach it). A /branch copies each row's time verbatim
+            # (gateway _BRANCH_COPIED_FIELDS): the parent's row at this very time. A rotation gives a carried row the
+            # time of the FIRST parent row with the same content (Hermes _carry_parent_timestamps, first match wins),
+            # so the origin is the parent's row at this time or a later one with that text. A member only when exactly
+            # one parent row can be it; otherwise each candidate is a hold (which one was copied cannot be told).
+            # Text alone never decides: the copy's position and time must match a parent row's.
+            if sid and row.at is not None and want is not None:
+                me = (await s.execute(select(ArchiveSession.lineage, ArchiveSession.parent_source_session_id,
+                                             ArchiveSession.started_at)
+                                      .where(ArchiveSession.source_session_id == sid))).first()
+                if (me is not None and me.lineage in LINEAGE and me.parent_source_session_id
+                        and me.started_at is not None and row.at <= me.started_at):
+                    same_text = [(o, osid) for o, osid in (await s.execute(locked(
+                        select(ArchiveMessage, ArchiveSession.source_session_id)
+                        .join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
+                        .where(ArchiveSession.source_session_id == me.parent_source_session_id,
+                               ArchiveMessage.role == row.role,
+                               ArchiveMessage.tool_call_id == (row.tool_call_id or ""),
+                               ArchiveMessage.withheld.is_(False)).order_by(ArchiveMessage.id)))).all()
+                        if message_text(o) == want]
+                    own_uid = uid if not fold else ""
+                    timed = [(o, osid) for o, osid in same_text if o.at == row.at]
+                    cands = (timed if me.lineage == "branch" else
+                             [(o, osid) for o, osid in same_text if o.at is not None and o.at >= row.at])
+                    if not timed or (own_uid and any(row_uid(o) == own_uid for o, _ in same_text)):
+                        cands = []  # no parent row at this time; or one with its uid, which the uid rule took
+                    sure = len(cands) == 1 and len(timed) == 1 and (me.lineage == "branch" or len(same_text) == 1)
+                    for o, osid in cands:
+                        if exempt(o, osid):
+                            continue  # an admin released this content: no shortcut overrides that (I4)
+                        if take(o, osid, "copied by JARVIS", CERTAIN if sure else PENDING):
+                            nxt.append((o, osid, fold, own))
             # Rows of it an import deleted, kept only as a rollback copy (review 1 R29), under the same principle: a
             # member by provenance only (its uid and the very text, or without uids the importer's rewound twin);
             # from a fold, its own copies only (the fold's uid is the survivor's message).
@@ -811,28 +911,40 @@ async def group_rows(s: AsyncSession, message: ArchiveMessage, sess: ArchiveSess
                                       row=gone_row or parts.row, role=row.role,
                                       tool_call_id=gone.get("tool_call_id") or "", uid=uid,
                                       via=FOLD if fold else "same message id" if uid else "copied by JARVIS",
-                                      bound=True)
+                                      bound=True, at=when(gone.get("at")))
         # The importer's duplicates of any row the members' keys were stored as.
         members = [message] + [g.row for g in found.values() if g.review == CERTAIN]
         targets = {int(m.id) for m in members} | await archive._older_rows(
             s, sorted({m.source_key for m in members if m.source_key}))
         dup_keys: set[str] = set()
+        # Carried-on links an importer older than 1.1.0 made (0.6.0, 0.6.1): paired by the text alone, with no uid
+        # check, so never provenance against a uid (review 2, S6).
+        text_only: set[str] = set()
         for chunk in (sorted(targets)[i:i + 1000] for i in range(0, len(targets), 1000)):
-            for key_ in (await s.scalars(select(ImportRecord.source_key).where(
+            for key_, reason_, version_ in (await s.execute(select(
+                    ImportRecord.source_key, ImportRecord.reason, ImportRun.importer_version)
+                    .outerjoin(ImportRun, ImportRun.id == ImportRecord.run_id).where(
                     ImportRecord.record_type == "message", ImportRecord.action == "duplicate",
                     ImportRecord.target_table == "archive_messages", ImportRecord.reason.in_(PROVENANCE_REASONS),
                     ImportRecord.target_id.in_(chunk)).order_by(ImportRecord.id))).all():
                 if key_ and key_ not in keys and key_ not in rowless:
                     dup_keys.add(key_)
+                    if reason_ == CARRIED and importer_older(version_):
+                        text_only.add(key_)
         if dup_keys:
             by_key = {r.source_key: (r, sid) for r, sid in (await s.execute(locked(
                 select(ArchiveMessage, ArchiveSession.source_session_id)
                 .join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
                 .where(ArchiveMessage.source_key.in_(sorted(dup_keys)))))).all()}
+            group_uids = {u for u in (row_uid(m) for m in members) if u}
             for key_ in sorted(dup_keys):
+                if key_ in text_only:
+                    mine = row_uid(by_key[key_][0]) if key_ in by_key else parse_key(key_).uid
+                    if mine and group_uids and mine not in group_uids:
+                        continue  # paired by its text alone, and its own uid says it is another Hermes message
                 if key_ in by_key:
                     row, sid = by_key[key_]
-                    if take(row, sid, "duplicate", CERTAIN):
+                    if take(row, sid, TEXT_ONLY_CARRIED if key_ in text_only else "duplicate", CERTAIN):
                         # a duplicate repeats its target's text: of a fold when that is not the message's own
                         mine = None if row.withheld else message_text(row)
                         dup_fold = mine is None or mine != text
@@ -840,7 +952,8 @@ async def group_rows(s: AsyncSession, message: ArchiveMessage, sess: ArchiveSess
                 else:  # a duplicate repeats its target's role (Processor.dup_fp): every member has the message's
                     parts = parse_key(key_)
                     rowless[key_] = Stone(key=key_, session=parts.session or sess.source_session_id, row=parts.row,
-                                          role=message.role, uid=parts.uid, via="duplicate",
+                                          role=message.role, uid=parts.uid,
+                                          via=TEXT_ONLY_CARRIED if key_ in text_only else "duplicate",
                                           bound=bool(parts.row or parts.uid))
         frontier = nxt
     if request:
@@ -854,6 +967,17 @@ async def group_rows(s: AsyncSession, message: ArchiveMessage, sess: ArchiveSess
                        ArchiveMessage.withheld.is_(False),
                        func.strpos(ArchiveMessage.content, REPLAY_HEADER) > 0).order_by(ArchiveMessage.id)))).all():
             if other.id in found or restated(other.content) != request or exempt(other, other_sid):
+                continue
+            ouid = row_uid(other)
+            owner = await s.scalar(select(ArchiveMessage.id).where(
+                or_(ArchiveMessage.source_uid == ouid, ArchiveMessage.source_key == UID_KEY + ouid),
+                ArchiveMessage.id != other.id).order_by(ArchiveMessage.id).limit(1)) if ouid else None
+            if owner is not None:
+                # Hermes restated the in-flight row under its OWN uid (_fresh_compaction_message_copy keeps it): the
+                # restatement is that row's copy (a member's was taken above, by the same uid); a hold's restatement
+                # is held with it; another message's stays as that message is (review 2, S7).
+                if owner in found and found[owner].review == PENDING:
+                    take(other, other_sid, found[owner].rule, PENDING)
                 continue
             take(other, other_sid, RESTATED, PENDING)
     out.rows = [found[k] for k in sorted(found)]
@@ -942,12 +1066,16 @@ async def bind_exemptions(s: AsyncSession, *, archive_session_id: int | None = N
             sids.add(sid)
     if not sids:
         return 0
+    key = release_key()
+    prefix = release_prefix(key)
+    # A digest made with another key (another database password; a 0.6.2 build before key ids) is bound again under
+    # this one once the released content is readable here (review 2, S11).
     todo = (await s.scalars(select(BrainWithholdExemption).where(
         BrainWithholdExemption.source_session_id.in_(sorted(sids)),
-        or_(BrainWithholdExemption.content_chars < 0, BrainWithholdExemption.content_fp == "")))).all()
+        or_(BrainWithholdExemption.content_chars < 0, BrainWithholdExemption.content_fp == "",
+            *((~BrainWithholdExemption.content_fp.startswith(prefix),) if prefix else ()))))).all()
     if not todo:
         return 0
-    key = release_key()
     changed = 0
     for e in todo:
         q = (select(ArchiveMessage).join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
@@ -965,7 +1093,10 @@ async def bind_exemptions(s: AsyncSession, *, archive_session_id: int | None = N
             continue
         new_chars = row.content_chars if e.content_chars < 0 else e.content_chars
         new_uid = e.source_uid or row_uid(row)
-        new_fp = e.content_fp or ("" if row.withheld else release_fp(message_text(row), key))
+        stale = bool(e.content_fp) and bool(prefix) and not e.content_fp.startswith(prefix)
+        if stale and row.withheld:
+            continue  # bound again once the released content is readable here
+        new_fp = (e.content_fp if not stale else "") or ("" if row.withheld else release_fp(message_text(row), key))
         if (new_chars, new_uid, new_fp) != (e.content_chars, e.source_uid, e.content_fp):
             e.content_chars, e.source_uid, e.content_fp = new_chars, new_uid[:200], new_fp
             changed += 1
@@ -980,14 +1111,18 @@ async def unbind_withheld(s: AsyncSession, rows: Iterable[tuple[str, str, tuple[
     blanked): an exemption whose digest is of that very text keeps no digest of it (no fingerprint of withheld text;
     its length stays, which is none). A digest of OTHER content (the release covered another version) stays."""
     key = key if key is not None else release_key()
+    prefix = release_prefix(key)
     n = 0
     for sid, rid, text in rows:
         fp = release_fp(text, key)
         if sid and rid and fp:
+            # the digest of that very text, or one made with another key (it cannot be compared: it may be of it)
             n += (await s.execute(update(BrainWithholdExemption).where(
                 BrainWithholdExemption.source_session_id == sid[:200],
                 BrainWithholdExemption.source_row_id == rid[:200],
-                BrainWithholdExemption.content_fp == fp).values(content_fp=""))).rowcount or 0
+                or_(BrainWithholdExemption.content_fp == fp,
+                    and_(BrainWithholdExemption.content_fp != "",
+                         ~BrainWithholdExemption.content_fp.startswith(prefix)))).values(content_fp=""))).rowcount or 0
     return n
 
 
@@ -1035,36 +1170,108 @@ async def folds_of(s: AsyncSession, binding: Stone) -> list[ArchiveMessage]:
 async def rewound_twins(s: AsyncSession, binding: Stone) -> list[tuple[ArchiveMessage, str]]:
     """The importer's twin link from stored data (decisions-apply, when no row of a carried withhold is stored here):
     an import deleted the message's row as rewound (Hermes's in-place compaction, a retry) and kept its rollback copy
-    with its text, and the same conversation holds a readable row with that very text stored by that run or later
-    (the copy Hermes wrote again). Its review: a member, or a hold when both rows carry uids and they differ (another
-    Hermes message, or a re-send). Compared in memory only, while the rollback copy still holds the text."""
+    with its text; Hermes writes the copy in the very operation that rewinds the original, so only the readable rows
+    of that conversation with that very text stored by THAT run are candidates (review 2, S10). The twin, a member:
+    the candidate with the original's uid, else the candidate at this original's rank among that run's rewound
+    originals of the same text (the importer pairs the n-th original with the n-th copy) unless their uids differ.
+    That rank's candidate under another uid is a hold (a /retry re-send), and every other candidate a hold ('same text':
+    nothing links it), unless it carries a uid of its own that differs from the original's (another Hermes message:
+    nothing). Compared in memory only, while the rollback copy still holds the text."""
     if binding.review == PENDING:
         return []
     out: dict[int, tuple[ArchiveMessage, str]] = {}
-    for run_id, before in (await s.execute(select(ImportRecord.run_id, ImportRecord.before).where(
-            ImportRecord.source_key == binding.key, ImportRecord.record_type == "message",
-            ImportRecord.reason == "rewound since an earlier import").order_by(ImportRecord.id))).all():
+    for rec_id, run_id, before in (await s.execute(select(ImportRecord.id, ImportRecord.run_id, ImportRecord.before)
+                                                   .where(ImportRecord.source_key == binding.key,
+                                                          ImportRecord.record_type == "message",
+                                                          ImportRecord.reason == REWOUND_REASON)
+                                                   .order_by(ImportRecord.id))).all():
         gone = (before or {}).get("deleted_row") or {}
         if not gone or gone.get("withheld") or not gone.get("session_id"):
             continue
-        text = (gone.get("role") or "", gone.get("tool_call_id") or "", norm(gone.get("content")),
-                json.dumps(gone.get("tool_calls") or [], sort_keys=True))
+        text = gone_text(gone)
         if not text[2] and text[3] == "[]":
             continue
         words = [w for w in text[2].split(" ") if w]
         query = select(ArchiveMessage).where(
             ArchiveMessage.session_id == int(gone["session_id"]), ArchiveMessage.withheld.is_(False),
-            ArchiveMessage.role == text[0], ArchiveMessage.import_run_id >= run_id)
+            ArchiveMessage.role == text[0], ArchiveMessage.import_run_id == run_id)
         if words:
             query = query.where(func.strpos(ArchiveMessage.content, max(words, key=len)) > 0)
         sid = await s.scalar(select(ArchiveSession.source_session_id).where(
             ArchiveSession.id == int(gone["session_id"])))
-        for row in (await s.scalars(query.order_by(ArchiveMessage.id))).all():
-            if message_text(row) != text or row.id in out or await exempt_covers(s, binding.group, sid or "", row):
-                continue  # another text, or a row an admin released for this withhold
-            mine, theirs = row_uid(row), gone.get("source_uid") or parse_key(binding.key).uid
-            out[row.id] = (row, PENDING if mine and theirs and mine != theirs else CERTAIN)
+        cands = [row for row in (await s.scalars(query.order_by(ArchiveMessage.position, ArchiveMessage.id))).all()
+                 if message_text(row) == text]
+        originals = [rid for rid, b in (await s.execute(select(ImportRecord.id, ImportRecord.before).where(
+            DELETED_COPY, deleted_field("session_id") == str(gone["session_id"]), ImportRecord.run_id == run_id,
+            ImportRecord.reason == REWOUND_REASON).order_by(ImportRecord.id))).all()
+            if gone_text((b or {}).get("deleted_row") or {}) == text]
+        rank = originals.index(rec_id) if rec_id in originals else -1
+        theirs = gone.get("source_uid") or parse_key(binding.key).uid
+        same = [row for row in cands if theirs and row_uid(row) == theirs]
+        at_rank = cands[rank] if 0 <= rank < len(cands) else None
+        twin = same[0] if same else (at_rank if at_rank is not None and not (
+            row_uid(at_rank) and theirs and row_uid(at_rank) != theirs) else None)
+        resend = at_rank if twin is None else None  # its twin under another uid: a re-send (/retry)
+        for row in cands:
+            if row.id in out or await exempt_covers(s, binding.group, sid or "", row):
+                continue  # a row an admin released for this withhold
+            if twin is not None and row.id == twin.id:
+                out[row.id] = (row, CERTAIN)  # the copy Hermes wrote again
+            elif resend is not None and row.id == resend.id:
+                out[row.id] = (row, PENDING)
+            elif not (row_uid(row) and theirs and row_uid(row) != theirs):
+                out[row.id] = (row, PENDING)  # the same text, nothing links it: held (as an import's R-text)
     return [out[k] for k in sorted(out)]
+
+
+def readable_origin(m: Any, s_: Any) -> Any:
+    """SQL: the readable row of the parent conversation that copy-position row m of session s_ copies verbatim (the
+    same role, call, time and text): JARVIS copied a readable row, never a withheld one."""
+    o = ArchiveMessage.__table__.alias("origin")
+    p = ArchiveSession.__table__.alias("origin_session")
+    return select(o.c.id).select_from(o.join(p, p.c.id == o.c.session_id)).where(
+        p.c.source_session_id == s_.parent_source_session_id, o.c.withheld.is_(False), o.c.role == m.role,
+        o.c.tool_call_id == m.tool_call_id, o.c.at == m.at, o.c.content == m.content,
+        o.c.tool_calls == m.tool_calls).exists()
+
+
+async def same_time_rows(s: AsyncSession, binding: Stone) -> list[tuple[ArchiveMessage, str]]:
+    """decisions-apply, when no stored row of a carried withhold was found by its key, its JARVIS row, its uid or the
+    importer's twin link (review 2, S1/S2): the readable rows at the very role, call id and time of the JARVIS row it
+    names (at_row; Hermes keeps a row's time in every copy it writes: a compaction's tail, replace_messages, /retry, a
+    /branch, a rotation), each a hold, never a member (nothing here can compare the text):
+    - in that JARVIS conversation: SAME_TIME, unless its own uid differs from the withheld message's;
+    - in the copied history of a continuation or branch (at or before its start) elsewhere: COPY_UNCOMPARED, unless
+      its parent holds the readable row it copies (the same role, call, time and text: a copy of that row), or its own
+      uid is another stored conversation's row's (a uid-keeping copy of that row).
+    Never a row an admin released for the group."""
+    if binding.at is None or not binding.role or not binding.session or binding.review == PENDING:
+        return []
+    out: list[tuple[ArchiveMessage, str]] = []
+    for row, sess_ in (await s.execute(
+            select(ArchiveMessage, ArchiveSession).join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
+            .where(ArchiveMessage.at == binding.at, ArchiveMessage.role == binding.role,
+                   ArchiveMessage.tool_call_id == binding.tool_call_id, ArchiveMessage.withheld.is_(False))
+            .order_by(ArchiveMessage.id))).all():
+        uid = row_uid(row)
+        if sess_.source_session_id == binding.session:
+            if uid and binding.uid and uid != binding.uid:
+                continue
+            rule = SAME_TIME
+        elif (sess_.lineage in LINEAGE and sess_.started_at is not None and row.at <= sess_.started_at
+              and sess_.parent_source_session_id):
+            if await s.scalar(select(readable_origin(row, sess_))):
+                continue
+            if uid and uid != binding.uid and await s.scalar(select(ArchiveMessage.id).where(
+                    ArchiveMessage.source_uid == uid, ArchiveMessage.session_id != row.session_id).limit(1)):
+                continue
+            rule = COPY_UNCOMPARED
+        else:
+            continue
+        if await exempt_covers(s, binding.group, sess_.source_session_id, row):
+            continue
+        out.append((row, rule))
+    return out
 
 
 async def rewound_originals(s: AsyncSession, row: ArchiveMessage, text: tuple[str, str, str, str]) -> list[int]:
@@ -1394,7 +1601,8 @@ async def pending(s: AsyncSession) -> dict[str, Any]:
     out["readable_rows_matching_a_withhold"] = (int(out.get("readable_by_key", 0))
                                                 + int(out.get("readable_by_jarvis_row", 0))
                                                 + int(out.get("readable_by_fold", 0))
-                                                + int(out.get("readable_in_restricted_sessions", 0)))
+                                                + int(out.get("readable_in_restricted_sessions", 0))
+                                                + int(out.get("readable_copies_at_a_withheld_time", 0)))
     out["withheld_copies_with_text_fingerprint"] = int(await s.scalar(sql(
         "SELECT count(*) FROM import_records x WHERE x.record_type = 'message' AND x.before <> '{}'::jsonb "
         "AND coalesce(x.before -> 'deleted_row' ->> 'withheld', x.before ->> 'withheld') = 'true' "

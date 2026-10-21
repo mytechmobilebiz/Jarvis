@@ -103,8 +103,14 @@ def item_needs_admin(item: MemoryItem) -> bool:
 
 
 def item_out(item: MemoryItem, **extra: Any) -> dict[str, Any]:
-    """MemoryItemOut (spec 3)."""
+    """MemoryItemOut (spec 3). Never a hash of a version's bytes: the rejected versions are counted (review 2, S16: a
+    plain SHA-256 of a short file confirms guesses of its text offline)."""
     out = {k: _iso(getattr(item, k)) for k in ITEM_FIELDS}
+    if isinstance(out.get("flags"), dict) and "rejected_source_sha256" in out["flags"]:
+        flags = dict(out["flags"])
+        rejected = flags.pop("rejected_source_sha256")
+        flags["rejected_versions"] = len(rejected) if isinstance(rejected, list) else 1
+        out["flags"] = flags
     out["kind_label"] = KINDS.get(item.kind, item.kind)
     out["needs_admin"] = item_needs_admin(item)
     out.update(extra)
@@ -325,6 +331,9 @@ class Withheld:
     title_hidden: bool = False
 
 
+LEFT_READABLE = "left readable by an admin (identical text seen at the withhold)"  # an exemption's reason (S21)
+
+
 def _blank(row: ArchiveMessage, flag: dict[str, Any]) -> None:
     """A stored row without its text and without a fingerprint of it (source_fp 'w1:<state>')."""
     row.content = ""
@@ -338,7 +347,8 @@ def _blank(row: ArchiveMessage, flag: dict[str, Any]) -> None:
 
 async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, actor: str = "admin",
                            cause: str = "admin", ip: str = "", include_identical: bool = False,
-                           hide_title: bool | None = None, via: str = "admin") -> Withheld:
+                           hide_title: bool | None = None, via: str = "admin",
+                           keep_identical_readable: bool = False) -> Withheld:
     """Removes a message's text (and tool calls and labels) for good, with every other stored row that is the same
     JARVIS message (identity.group_rows: the same JARVIS row, the same uid, the importer's duplicates; a row with the
     same uid but other text is held for an admin's review) and, when the admin asks for it (include_identical), the
@@ -347,7 +357,10 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
     brings none of them back with text. Then everything that copied them (archive.withhold_copies: rollback copies,
     the memory items promoted from them, emptied, and the answers and notes quoting either) goes, and their sessions
     are recomputed. The conversation's title is hidden too (hide_title; by default when this is the conversation's
-    first user message, which a title can paraphrase). All or nothing in the caller's transaction."""
+    first user message, which a title can paraphrase). With keep_identical_readable (the API: the admin saw the
+    preview and left the identical rows readable) that choice is kept as exemptions of the group; decisions-apply
+    never passes it (nobody saw those rows here: the test copy's choices travel in the file). All or nothing in the
+    caller's transaction."""
     if message.withheld:
         raise BrainError("this message is already withheld")
     sess = await session.get(ArchiveSession, message.session_id)
@@ -381,6 +394,24 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
     st0 = await session.get(BrainTombstone, message.source_key) if message.source_key else None
     root = (st0.anchor_key if st0 is not None and st0.reason == WITHHELD_BY_ADMIN and st0.anchor_key
             and st0.anchor_key != message.source_key else message.source_key)
+    if root and keep_identical_readable and not include_identical:
+        # The rows with exactly this text the admin saw in the preview and chose to leave readable: a decision that
+        # outlives the stored rows (review 2, S21). An exemption of the group names each one's JARVIS row, bound to the
+        # content left readable (its uid and length now, its keyed digest by bind_exemptions), so the same-text rules
+        # skip it after a rollback and a re-import, or a restore and the next import; decisions files carry it.
+        left = await identity.identical_rows(session, message, sess, text, exclude=[g.row.id for g in group.rows])
+        left_sids = dict((await session.execute(select(ArchiveSession.id, ArchiveSession.source_session_id).where(
+            ArchiveSession.id.in_(sorted({r.session_id for r in left}))))).all()) if left else {}
+        for r in left:
+            if not (r.source_message_id and left_sids.get(r.session_id)):
+                continue
+            await session.execute(pg_insert(BrainWithholdExemption).values(
+                anchor_key=root, source_session_id=left_sids[r.session_id][:200],
+                source_row_id=r.source_message_id[:200], reason=LEFT_READABLE, decided_by=actor[:200],
+                source_uid=identity.row_uid(r)[:200],
+                content_chars=int(r.content_chars if r.content_chars is not None else -1)).on_conflict_do_nothing())
+        if left_sids:
+            await identity.bind_exemptions(session, source_session_ids=set(left_sids.values()))
     at = now().isoformat()
     out = Withheld(None, bool(written))
     blanked: list[ArchiveMessage] = []
@@ -420,6 +451,23 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
         # each child that carries its parent's title is hidden too, down the lineage (a visited set ends a cycle).
         seen, frontier = {sess.source_session_id}, [(sess.source_session_id, old_title)]
         hidden_ids.append(sess.id)
+        # A member that is ITS conversation's first user message (a branch parent's original, a rotation's parent)
+        # names a title that can repeat the text too (Hermes derives a title from the first user message): hidden,
+        # with that conversation's own title-carrying children, and kept by its stone, so a rollback, a restore or a
+        # re-import hides it again (importer._title_hidden_for; review 2, S15).
+        for g in group.members:
+            other = await session.get(ArchiveSession, g.row.session_id)
+            if (other is None or other.source_session_id in seen
+                    or not await identity.first_user_message(session, g.row)):
+                continue
+            seen.add(other.source_session_id)
+            frontier.append((other.source_session_id, other.title or ""))
+            hidden_ids.append(other.id)
+            other.title = ""
+            other.flags = {**(other.flags or {}), "title_withheld": True}
+            if g.row.source_key:
+                await session.execute(update(BrainTombstone).where(BrainTombstone.source_key == g.row.source_key)
+                                      .values(title_hidden=True))
         while frontier:
             nxt: list[tuple[str, str]] = []
             for parent_sid, parent_title in frontier:
@@ -599,7 +647,8 @@ async def keep_hold(session: AsyncSession, message: ArchiveMessage, *, actor: st
 
 
 async def release_hold(session: AsyncSession, message: ArchiveMessage, sess: ArchiveSession, *,
-                       actor: str) -> BrainTombstone:
+                       actor: str, decided_by: str | None = None, decided_at: datetime | None = None,
+                       reason: str = "released by an admin") -> BrainTombstone:
     """An admin releases a held row: its pending stone goes and an exemption names its JARVIS row for that group, so
     the hold rules (the same uid with other text, the same text, the upgrade heuristics) skip it; the next import of
     a backup holding that row brings its text back (importer release branch). Refused for a row a certain rule
@@ -625,19 +674,22 @@ async def release_hold(session: AsyncSession, message: ArchiveMessage, sess: Arc
     # Bound to the content released: this row's uid and length now, and its readable text's keyed digest once the
     # next import brings it back (identity.bind_exemptions). A later version of the row with other text is not covered;
     # an admin who releases such a version too rebinds the release to it (the latest decision on the row holds).
+    # Who decided it and when: the admin now, or (decisions-apply after a restore) the admin and time the restore file
+    # names (review 2, S23).
+    by, when = (decided_by or actor)[:200], decided_at or now()
     stmt = pg_insert(BrainWithholdExemption).values(
         anchor_key=anchor, source_session_id=sess.source_session_id,
-        source_row_id=(message.source_message_id or "")[:200], reason="released by an admin",
-        decided_by=actor[:200], source_uid=identity.row_uid(message)[:200],
+        source_row_id=(message.source_message_id or "")[:200], reason=reason[:200],
+        decided_by=by, decided_at=when, source_uid=identity.row_uid(message)[:200],
         content_chars=int(message.content_chars if message.content_chars is not None else -1))
     await session.execute(stmt.on_conflict_do_update(
         index_elements=[BrainWithholdExemption.anchor_key, BrainWithholdExemption.source_session_id,
                         BrainWithholdExemption.source_row_id],
         set_={"source_uid": stmt.excluded.source_uid, "content_chars": stmt.excluded.content_chars,
               "content_fp": "", "reason": stmt.excluded.reason, "decided_by": stmt.excluded.decided_by,
-              "decided_at": func.now()}))
+              "decided_at": stmt.excluded.decided_at}))
     flag = dict((message.flags or {}).get("withheld_by_admin") or {})
-    flag.update(released_at=now().isoformat(), released_by=actor[:200])
+    flag.update(released_at=when.isoformat(), released_by=by)
     message.flags = {**(message.flags or {}), "withheld_by_admin": flag}
     message.source_fp = ""  # its release marker: the next import restores it from the source
     await session.flush()
@@ -715,7 +767,18 @@ async def purge(session: AsyncSession, item: MemoryItem, *, actor: str, purged_a
         if existing is not None:
             flags = dict(existing.flags or {})
             rejected = list(flags.get("rejected_source_sha256") or [])
-            if item.source_sha256 not in rejected:
+            if item.origin == "import" and identity.purge_key() is not None:
+                # Its keyed fingerprint (remember_purge, below) keeps it out at the next import (the existing item and
+                # its key stay as they are): no plain hash of purged bytes is kept, also not one an earlier
+                # keep_existing put there (review 2, S16).
+                if item.source_sha256 in rejected:
+                    rejected = [h for h in rejected if h != item.source_sha256]
+                    if rejected:
+                        flags["rejected_source_sha256"] = rejected
+                    else:
+                        flags.pop("rejected_source_sha256", None)
+                    existing.flags = flags
+            elif item.source_sha256 not in rejected:  # no database password: no key, the plain hash keeps it out
                 flags["rejected_source_sha256"] = rejected + [item.source_sha256]
                 existing.flags = flags
     tombstone = False

@@ -17,6 +17,8 @@ log = logging.getLogger(__name__)
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 # Arbitrary constant so concurrent API/worker start-ups apply migrations once.
 MIGRATION_LOCK_ID = 7_314_002_211
+# Set on every connection: migration 0008's brain_refuse_old_purge() lets only code that keeps purge records purge.
+PURGE_LEDGER_SETTING = "cc.brain_purge_ledger"
 
 _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
@@ -34,6 +36,9 @@ def get_engine() -> AsyncEngine:
             # can still carry row values: PostgreSQL's DETAIL ("Failing row contains ...") is part of str(exc), so
             # errors are logged with describe_error(), never str(exc).
             hide_parameters=True,
+            # This code keeps the purge records (review.purge: the ledger and the keyed fingerprint); migration 0008
+            # refuses a purge on a connection that does not say so (0.6.0 and 0.6.1 code: review 2, S22).
+            connect_args={"server_settings": {PURGE_LEDGER_SETTING: "on"}},
         )
         _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine

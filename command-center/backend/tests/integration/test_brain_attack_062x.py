@@ -360,9 +360,11 @@ async def test_x7_uidless_first_tail_row_identical_to_an_archived_withheld_row(c
     held_ok = stone is not None and stone.review == identity.PENDING
     assert await readable_with(yes) or held_ok, (
         "row 8's text (another message the admin left readable) is readable nowhere, and not even held")
-    assert (stone.via, stone.review) == ("same text", identity.PENDING), (stone.via, stone.review)
+    # Review 2 (S21): the admin's choice in the withhold dialog (row 8 left readable) is kept, and follows row 8 to its
+    # tail copy as a release does: readable, not even held (it was a listed 'same text' hold before that fix).
+    assert st[:2] == (False, yes) and not held_ok, (st, stone and (stone.via, stone.review))
     [copy_row] = await message_of("x7", copy8["id"])
-    assert copy_row.id in [m for m, _ in await holds_listed(client)]
+    assert copy_row.id not in [m for m, _ in await holds_listed(client)]
 
 
 

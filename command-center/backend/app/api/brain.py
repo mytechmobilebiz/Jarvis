@@ -344,9 +344,10 @@ async def restore_item(item_id: int, request: Request, caller: Caller = Depends(
 
 async def _no_import_running(session: AsyncSession) -> None:
     """The import lock until the request's transaction ends; 409 while an import, a rollback or a rescan holds it (it
-    could write back what this request removes: a purged item from its source, a redacted version's old text)."""
+    could write back what this request removes: a purged item from its source, a redacted version's old text), or
+    another admin's withhold, keep, release, purge or redaction does (the message says which can: review 2, S24)."""
     if not await importer.try_xact_lock(session, importer.GLOBAL_LOCK):
-        raise HTTPException(409, "an import, rollback or rescan is running: try again when it has finished")
+        raise HTTPException(409, importer.LOCK_BUSY)
 
 
 @router.delete("/items/{item_id}/purge")
@@ -515,8 +516,10 @@ async def withhold_message(message_id: int, request: Request, body: WithholdBody
     await _no_import_running(session)  # it could write the message back with its text
     body = body or WithholdBody()
     message, _ = await _message(session, caller, message_id, lock=True)
+    # The admin's own choice in the withhold dialog: identical text left readable is a decision to keep (review 2, S21).
     done = await review.withhold_message(session, message, actor=caller.name, ip=client_ip(request),
-                                         include_identical=body.include_identical, hide_title=body.hide_title)
+                                         include_identical=body.include_identical, hide_title=body.hide_title,
+                                         keep_identical_readable=not body.include_identical)
     sess = done.session
     assert sess is not None
     copies = [c["item"] for c in done.copies]

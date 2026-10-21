@@ -8,6 +8,7 @@ import { pageTitle } from "../shell/nav";
 import {
   CUSTOMER_PILL,
   emptiedCopy,
+  FlagChips,
   hiddenText,
   HOLDS_INTRO,
   holdRuleText,
@@ -596,6 +597,15 @@ describe("JARVIS Brain: withholding the same JARVIS message (0.6.2)", () => {
     expect(withheldByAdmin({ review: "kept" })).toBe("withheld by an admin (kept after review)");
   });
 
+  it("shows how many changed versions were rejected, never a hash (review 2, S16)", () => {
+    const { container } = render(<FlagChips flags={{ rejected_versions: 2 }} />);
+    expect(within(container).getByText("2 changed versions were rejected before")).toBeInTheDocument();
+    cleanup();
+    const one = render(<FlagChips flags={{ rejected_versions: 1 }} />);
+    expect(within(one.container).getByText("a changed version was rejected before")).toBeInTheDocument();
+    expect(one.container.textContent).not.toMatch(/[0-9a-f]{64}/);
+  });
+
   it("puts every count into words", () => {
     expect(previewText(preview({ same_message_rows: [], held_rows: [], rowless_copies: 0 }))).toEqual([]);
     expect(previewText(preview({ same_message_rows: [row(1, 1), row(2, 2)], held_rows: [], rowless_copies: 0 }))).toEqual([
@@ -671,6 +681,12 @@ describe("JARVIS Brain: held for review (0.6.2)", () => {
   it("says when a hold's text contains the withheld message's text (rules062)", () => {
     expect(holdRuleText("same message id, contains the withheld text")).toBe(
       "It shares the withheld message's JARVIS id and its text contains the withheld message's text, with more around it. Releasing brings back the withheld text too.",
+    );
+  });
+
+  it("says what a same-time hold is: the withheld message's conversation, role and time, nothing to compare (review 2, S2)", () => {
+    expect(holdRuleText("same conversation, role and time; nothing to compare")).toBe(
+      "It is in the withheld message's own JARVIS conversation, with its role and very time (JARVIS keeps a message's time when it writes it again), but no row of the withheld message is here to compare it with: probably the same message. Releasing brings back whatever it holds.",
     );
   });
 

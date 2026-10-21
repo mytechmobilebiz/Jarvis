@@ -602,6 +602,13 @@ class BrainTombstone(Base):
     after_run: Mapped[int] = mapped_column(BigInteger, default=0)
     # 0008: the admin hid the conversation's title with this withhold (an admin's own stone only)
     title_hidden: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 0008 (review 2, S1/S2): the time of the JARVIS row the stone is bound to (a time, never text). Hermes keeps a
+    # row's timestamp in every copy it makes (a /branch, a rotation, a compaction's tail, a /retry), so a copy whose
+    # link to the withheld row is broken is still found at that time, as a hold.
+    source_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 0008 (review 2, S9): when an import learned the stone's uid (message_uid was ''): Hermes's own time of the newest
+    # message in that backup. A row of the conversation family written after it, under another uid, is another message.
+    uid_learned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class BrainWithholdExemption(Base):

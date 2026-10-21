@@ -111,10 +111,25 @@ async def check_withheld_copies() -> bool:
         return False
 
 
+async def refuse_while_a_restore_is_pending() -> None:
+    """restore.ps1's mark (review 2, S18): a restore replaced the data and what it must not undo (withholds, purges,
+    access changes made after the backup) is not applied again yet. Nothing may serve that data: the api and the
+    worker stop here, whoever started them (start.ps1 refuses too; a plain "docker compose up" or another folder's
+    start would not know)."""
+    from .restore_carry import RestorePending, pending_message, pending_restore
+
+    async with session_scope() as session:
+        detail = await pending_restore(session)
+    if detail is not None:
+        log.error("%s", pending_message(detail))
+        raise RestorePending(pending_message(detail))
+
+
 async def bootstrap(settings: Settings) -> dict[str, bool]:
     applied = await run_migrations()
     if applied:
         log.info("applied migrations: %s", ", ".join(applied))
+    await refuse_while_a_restore_is_pending()
     complete = await check_withheld_copies()
     await ensure_admin(settings)
     from .credit_repair import store as credit_repair_store

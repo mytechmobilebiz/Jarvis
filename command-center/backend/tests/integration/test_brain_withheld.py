@@ -54,8 +54,10 @@ async def test_a_rollback_never_brings_back_a_message_an_admin_withheld(fx):
         await review.withhold_message(s, await s.get(ArchiveMessage, record.target_id))
     async with session_scope() as s:
         copy = (await s.get(ImportRecord, record.id)).before
-        assert (copy["content"], copy["tool_calls"], copy["withheld"], copy["sensitivity"]) == ("", [], True,
-                                                                                                "restricted")
+        # no text; the copy keeps its own sensitivity: one message withheld, not restricted data in the conversation
+        # (review 2, S13: a 'restricted' copy made the whole conversation restricted when a rollback put it back)
+        assert (copy["content"], copy["tool_calls"], copy["withheld"]) == ("", [], True)
+        assert copy["sensitivity"] != "restricted"
     async with session_scope() as s:
         await imp.rollback_run(s, run_id, ADMIN)
     async with session_scope() as s:

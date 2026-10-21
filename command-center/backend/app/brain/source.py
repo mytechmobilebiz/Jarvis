@@ -549,6 +549,20 @@ class Backup:
             out.append(m)
         return out
 
+    def latest_time(self) -> datetime | None:
+        """Hermes's own time of the newest message in this backup (its clock, not ours): a row written after it is
+        newer than everything here (a uid it carries is its own, never one Hermes's uid backfill gave an older row)."""
+        if "timestamp" not in self.columns["messages"]:
+            return None
+        newest: datetime | None = None
+        for (value,) in self.con.execute(  # numbers (epoch seconds) and text (ISO) each have their own maximum
+                "SELECT max(timestamp) FROM messages WHERE typeof(timestamp) IN ('real', 'integer') "
+                "UNION ALL SELECT max(timestamp) FROM messages WHERE typeof(timestamp) = 'text'"):
+            at, _ = parse_time(value, self.tz) if value is not None else (None, False)
+            if at is not None and (newest is None or at > newest):
+                newest = at
+        return newest
+
     def has_row(self, session_id: str, row_id: str) -> bool:
         """Whether this JARVIS row (session id, row id as text) is in the backup. The ids of a session are read once."""
         ids = self._row_ids.get(session_id)

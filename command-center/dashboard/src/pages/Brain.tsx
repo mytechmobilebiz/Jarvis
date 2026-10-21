@@ -154,6 +154,8 @@ export function holdRuleText(rule: string): string {
       return "Found when 0.6.2 was installed: an earlier version stored the withheld message's exact text here. Releasing brings back that text.";
     case "same message id, nothing to compare":
       return "It shares the withheld message's JARVIS id, but the withheld original is not in this backup, so the texts could not be compared: probably the same message. Releasing brings back whatever it holds.";
+    case "same conversation, role and time; nothing to compare":
+      return "It is in the withheld message's own JARVIS conversation, with its role and very time (JARVIS keeps a message's time when it writes it again), but no row of the withheld message is here to compare it with: probably the same message. Releasing brings back whatever it holds.";
     case "restated after a compaction, new message id":
       return "JARVIS restated the withheld request after a compaction as a new message with a new id: its text contains the withheld request. Releasing brings back the withheld text too.";
     case "upgrade: same message id":
@@ -342,7 +344,8 @@ const FLAG_TEXT: Record<string, string | ((v: unknown) => string)> = {
   reasoning_removed: "reasoning removed",
   from_content_folder: "from the content folder",
   time_assumed_local: "time assumed local",
-  rejected_source_sha256: "a changed version was rejected before",
+  // 0.6.2: the API counts the rejected versions and never returns their hashes (review 2, S16).
+  rejected_versions: (v) => (typeof v === "number" && v > 1 ? `${v} changed versions were rejected before` : "a changed version was rejected before"),
   restricted: "restricted data removed",
   withheld: "withheld by an admin",
   source_withheld: "source message withheld",

@@ -5,6 +5,20 @@ param([switch]$NoBuild)
 
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+# A restore that did not finish (0.6.2): restore.ps1 keeps this file until what the restore must not undo (withholds,
+# purges, access changes made after the backup) is applied again. Starting now would serve the restored data without
+# them; the api and the worker refuse to start then too (the database keeps the same mark).
+$pendingFile = Join-Path (Join-Path $root "backups") "restore-pending.json"
+if (Test-Path -LiteralPath $pendingFile -PathType Leaf) {
+  Write-Host "Nothing was started: an earlier restore did not finish applying what it must not undo ($pendingFile)." -ForegroundColor Red
+  try { $pending = Get-Content -Raw -LiteralPath $pendingFile | ConvertFrom-Json } catch { $pending = $null }
+  if ($null -ne $pending) {
+    foreach ($file in @("$($pending.removals)", "$($pending.access)")) { if ($file) { Write-Host "  not applied yet: $file" -ForegroundColor Red } }
+  }
+  Write-Host "Finish it first (it applies them, then starts the services):" -ForegroundColor Red
+  Write-Host "  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\restore.ps1 -FinishPending" -ForegroundColor Red
+  exit 1
+}
 if (-not (Test-Path ".env")) { Write-Host "No .env yet. Run .\scripts\init-env.ps1 first." -ForegroundColor Red; exit 1 }
 
 $envValues = @{}
