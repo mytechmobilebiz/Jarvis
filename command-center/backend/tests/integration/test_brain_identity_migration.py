@@ -9,13 +9,17 @@ REQUIRE_DOCKER_TESTS=1 makes a missing docker or container a failure instead."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 
 import asyncpg
 import pytest
+from sqlalchemy import text
 
 from app import db
+from app.brain import identity
+from app.db import session_scope
 
 from .test_brain_schema import _container, _migrate, _pg, _version_row, needs_docker
 
@@ -614,3 +618,91 @@ async def test_restore_of_a_0_6_2_dump_keeps_functions_and_trigger(scratch, dump
         assert await conn.fetchval("SELECT content FROM archive_messages WHERE id = 158") == ""
     finally:
         await conn.close()
+
+
+# --- Review 1 R34 and R35: the SQL repair's uid rule holds, and its lineage guard (brain_withhold_repair) ----------
+
+
+async def _r_session(s, sid: str, *, lineage: str = "", parent: str = "") -> int:
+    return (await s.execute(text(
+        "INSERT INTO archive_sessions (source_system, source_key, source_session_id, lineage, parent_source_session_id,"
+        " started_at, sensitivity, labels, flags) VALUES ('jarvis', :k, :sid, :lin, :par, now() - interval '1 day', "
+        "'general', '{}'::jsonb, '{}'::jsonb) RETURNING id"),
+        {"k": "jarvis:session:" + sid, "sid": sid, "lin": lineage, "par": parent})).scalar()
+
+
+async def _r_message(s, sess: int, key: str, row: str, role: str, content: str, *, uid: str = "", fp: str = "",
+                     withheld: bool = False, run: int | None = None, pos: int = 1) -> int:
+    return (await s.execute(text(
+        "INSERT INTO archive_messages (session_id, source_key, source_message_id, source_fp, position, role, content,"
+        " withheld, source_uid, import_run_id, tool_calls, labels, flags, redactions, at) VALUES (:s, :k, :r, :fp, :p,"
+        " :role, :c, :w, :u, :run, '[]'::jsonb, '{}', '{}'::jsonb, '{}'::jsonb, now()) RETURNING id"),
+        {"s": sess, "k": key, "r": row, "fp": fp, "p": pos, "role": role, "c": content, "w": withheld, "u": uid,
+         "run": run})).scalar()
+
+
+async def _r_stone(s, key: str, sid: str, row: str, role: str, uid: str, *, after: int = 0,
+                   uid_known: bool = False) -> None:
+    await s.execute(text(
+        "INSERT INTO brain_tombstones (source_key, purged_at, purged_by, reason, source_session_id, source_row_id, "
+        "role, tool_call_id, message_uid, uid_known, anchor_key, via, review, bound, after_run) VALUES (:k, "
+        "now() - interval '2 hours', 'admin', 'withheld by an admin', :sid, :row, :role, '', :uid, :uk, '', 'admin',"
+        " '', true, :after)"),
+        {"k": key, "sid": sid, "row": row, "role": role, "uid": uid, "uk": uid_known, "after": after})
+
+
+@pytest.mark.usefixtures("clean_db")
+async def test_r34_the_repair_holds_a_row_that_only_shares_a_withheld_uid_for_review():
+    """Review 1 R34 (tests-integrity #5): a readable row under another key and another JARVIS row that shares a
+    certain stone's uid is caught by the SQL repair's uid rule (R4c) alone, and as a hold for an admin's review, never
+    as a member: the row is blanked, its key gets a pending stone ('upgrade: same message id'), counted once."""
+    mark = "zqr34uidrow"
+    async with session_scope() as s:
+        sr = await _r_session(s, "R34")
+        await _r_message(s, sr, "jarvis:message:R34:101", "101", "assistant", "", uid="u-r34-probe", withheld=True,
+                         fp="w1:live", pos=1)
+        other = await _r_message(s, sr, "jarvis:message:uid:u-r34-probe", "205", "assistant",
+                                 "The pin is %s." % mark, uid="u-r34-probe", pos=2)
+        await _r_stone(s, "jarvis:message:R34:101", "R34", "101", "assistant", "u-r34-probe", uid_known=True)
+    async with session_scope() as s:
+        counts = await identity.repair_rows(s, cause="test")
+    async with session_scope() as s:
+        row = (await s.execute(text("SELECT withheld, content FROM archive_messages WHERE id = :i"),
+                               {"i": other})).one()
+        stone = (await s.execute(text("SELECT review, via FROM brain_tombstones WHERE source_key = :k"),
+                                 {"k": "jarvis:message:uid:u-r34-probe"})).one_or_none()
+    assert (row.withheld, row.content) == (True, ""), tuple(row)
+    assert stone is not None and (stone.review, stone.via) == ("pending", "upgrade: same message id"), stone
+    assert counts.get("held_by_message_id") == 1, counts
+
+
+@pytest.mark.usefixtures("clean_db")
+async def test_r35_the_repair_follows_a_continuation_never_a_delegated_child():
+    """Review 1 R35 (tests-integrity #6): 0.6.1's plain same-text fingerprint (R4d) holds a continuation's copy of a
+    withheld row for review, but never a delegated child's row: a sub-agent's conversation is not a copy of its
+    parent's history (owner requirement 2). Fails both without the lineage guard and without R4d."""
+    words = "The fence gate closes at nine and opens at seven every single day of the week."
+    fp = hashlib.sha256(words.encode()).hexdigest()  # a 0.6.1-shaped plain fingerprint
+    async with session_scope() as s:
+        run1 = (await s.execute(text("INSERT INTO import_runs (status, started_at, finished_at) VALUES "
+                                     "('completed', now() - interval '3 hours', now() - interval '3 hours') "
+                                     "RETURNING id"))).scalar()
+        run2 = (await s.execute(text("INSERT INTO import_runs (status, started_at, finished_at) VALUES "
+                                     "('completed', now() - interval '1 hour', now() - interval '1 hour') "
+                                     "RETURNING id"))).scalar()
+        parent = await _r_session(s, "R35P")
+        await _r_message(s, parent, "jarvis:message:R35P:7", "7", "assistant", "", fp=fp, withheld=True, run=run1)
+        await _r_stone(s, "jarvis:message:R35P:7", "R35P", "7", "assistant", "", after=run1)
+        rows = {}
+        for lineage in ("delegated", "continuation"):
+            child = await _r_session(s, "R35" + lineage[:3].upper(), lineage=lineage, parent="R35P")
+            rows[lineage] = await _r_message(s, child, "jarvis:message:R35%s:3" % lineage[:3].upper(), "3",
+                                             "assistant", words, fp=fp, run=run2)
+    async with session_scope() as s:
+        counts = await identity.repair_rows(s, cause="test")
+    async with session_scope() as s:
+        got = {k: tuple((await s.execute(text("SELECT withheld, content = '' FROM archive_messages WHERE id = :i"),
+                                         {"i": i})).one()) for k, i in rows.items()}
+    assert got["delegated"] == (False, False), got  # a sub-agent's own row: never held for the parent's text
+    assert got["continuation"] == (True, True), got  # the control: a continuation's copy is held
+    assert counts.get("held_by_same_text") == 1, counts

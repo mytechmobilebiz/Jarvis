@@ -21,16 +21,21 @@ LOCAL_ONLY_VIEWER_SUMMARY = "Answer about JARVIS's history (visible to operators
 async def request_view(session: AsyncSession, req: SupervisorRequest, principal: Principal) -> dict:
     """A request as the API returns it. The summary of a history request keeps only the quoting lines its tasks still
     hold once quotes of removed JARVIS Brain sources are left out (the read-time guard: quotes.strip_summary over the
-    tasks as task_views() serves them); a viewer reads a placeholder instead."""
+    tasks as task_views() serves them; a line task_views() serves changed, such as a quote naming a conversation by a
+    title an admin hid, is changed in the summary the same way); a viewer reads a placeholder instead."""
     out = to_dict(req)
     if (req.plan or {}).get("local_only") and out.get("summary"):
         tasks = list((await session.scalars(select(Task).where(Task.request_id == req.id).order_by(Task.id))).all())
         held: set[str] = set()
-        for view in await task_views(session, tasks):
+        changes: list[tuple[str, str]] = []
+        for task, view in zip(tasks, await task_views(session, tasks)):
             answer = ((view.get("result") or {}).get("data") or {}).get("answer")
             if isinstance(answer, list):
                 held |= {str(line) for line in answer}
-        out["summary"] = quotes.strip_summary(out["summary"], held)
+                stored = ((task.result or {}).get("data") or {}).get("answer")
+                if isinstance(stored, list):
+                    changes += [(str(a), str(b)) for a, b in zip(stored, answer) if str(a) != str(b)]
+        out["summary"] = quotes.strip_summary(quotes.replace_lines(out["summary"], changes), held)
     if principal.role not in OPERATOR_ROLES and (req.plan or {}).get("local_only"):
         out["summary"] = LOCAL_ONLY_VIEWER_SUMMARY
     return out

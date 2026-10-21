@@ -35,8 +35,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import String, and_, func, literal_column, or_, select, update
 from sqlalchemy import text as sql
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -476,6 +477,60 @@ class Group:
         return [g for g in self.rows if g.review == PENDING]
 
 
+REWOUND_REASON = "rewound since an earlier import"  # importer.Processor: a row deleted as rewound (its rollback copy)
+# A rollback copy of a deleted row, with its keys written literally: 0008's partial expression indexes
+# (import_records_deleted_uid_idx, import_records_deleted_session_idx) match only literal keys and predicates.
+DELETED_COPY = and_(ImportRecord.record_type == literal_column("'message'"),
+                    ImportRecord.before.op("?")(literal_column("'deleted_row'")))
+
+
+def deleted_field(name: str) -> Any:
+    """SQL: before -> 'deleted_row' ->> name, the keys written literally (DELETED_COPY)."""
+    assert name.isidentifier()
+    return (ImportRecord.before.op("->", return_type=JSONB)(literal_column("'deleted_row'"))
+            .op("->>", return_type=String)(literal_column(f"'{name}'")))
+
+
+def gone_text(gone: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    """message_text() of a rollback copy's deleted row (a dict)."""
+    return (gone.get("role") or "", gone.get("tool_call_id") or "", norm(gone.get("content")),
+            json.dumps(gone.get("tool_calls") or [], sort_keys=True))
+
+
+def deleted_copies_query(row: Any, uid: str) -> Any:
+    """The query of deleted_copies() (None when there is nothing to look for)."""
+    conds = [DELETED_COPY, ImportRecord.source_key != "", deleted_field("role") == row.role,
+             ~select(ArchiveMessage.id).where(ArchiveMessage.source_key == ImportRecord.source_key).exists()]
+    if uid:
+        conds.append(or_(ImportRecord.source_key == UID_KEY + uid, deleted_field("source_uid") == uid))
+    elif row.import_run_id:
+        conds += [ImportRecord.reason == REWOUND_REASON, deleted_field("session_id") == str(row.session_id),
+                  func.coalesce(deleted_field("source_uid"), "") == "", ~ImportRecord.source_key.like(UID_KEY + "%"),
+                  ImportRecord.run_id <= row.import_run_id]
+    else:
+        return None
+    return select(ImportRecord.source_key, ImportRecord.before).where(*conds).order_by(ImportRecord.id)
+
+
+async def deleted_copies(s: AsyncSession, row: ArchiveMessage, uid: str) -> list[tuple[str, str, dict[str, Any]]]:
+    """(key, source session id, deleted row) of the rollback copies of rows an import deleted that may be this row's
+    message, under a key no stored row holds: with a uid, those of the same uid and role (Hermes keeps a message's uid
+    in every copy: an in-place compaction's rewound original, a CLI branch child's rewound copy); without one, the
+    importer's rewound twin (identity.rewound_twins the other way): a row of the same conversation and role, without a
+    uid, deleted as rewound by the run that stored this row or an earlier one. Text is compared by the caller, in
+    memory. Found through 0008's partial indexes on deleted rows (never a scan of every rollback copy)."""
+    query = deleted_copies_query(row, uid)
+    if query is None:
+        return []
+    found = (await s.execute(query)).all()
+    gone = [(key, (before or {}).get("deleted_row") or {}) for key, before in found]
+    ids = {int(g["session_id"]) for _, g in gone if str(g.get("session_id") or "").isdigit()}
+    names = dict((await s.execute(select(ArchiveSession.id, ArchiveSession.source_session_id).where(
+        ArchiveSession.id.in_(sorted(ids))))).all()) if ids else {}
+    return [(key, names.get(int(g["session_id"]), "") if str(g.get("session_id") or "").isdigit() else "", g)
+            for key, g in gone]
+
+
 async def group_rows(s: AsyncSession, message: ArchiveMessage, sess: ArchiveSession,
                      text: tuple[str, str, str, str], *, lock: bool = True) -> Group:
     """Every stored row that is the same JARVIS message as `message`, to a fixed point from each member:
@@ -490,7 +545,11 @@ async def group_rows(s: AsyncSession, message: ArchiveMessage, sess: ArchiveSess
     - a fold that absorbed a member's uid (Hermes absorbed_message_uids: a compaction carrier, a micro-compaction
       merge): it holds the text, a member ('merged into another message');
     - the importer's duplicates of any row the member's key was stored as (a carried-on copy, an adjacent repeat): a
-      member, or a key with no row (Group.rowless).
+      member, or a key with no row (Group.rowless);
+    - a row of it an import deleted, kept only as a rollback copy under a key no stored row holds (deleted_copies():
+      the same uid with the same text, or an archived generation in the family; without uids, the rewound twin with
+      the same text): a key with no row (Group.rowless), so the withhold blanks that copy and a rollback puts the row
+      back withheld.
     Holds are not followed. Rows already withheld are followed and get a stone, never blanked again; one that only
     shares the uid is left alone (no text to compare). Identical text elsewhere is never part of the group
     (identical_rows: the admin's choice). Locked FOR UPDATE with lock (a promote of one waits, then is refused).
@@ -607,6 +666,21 @@ async def group_rows(s: AsyncSession, message: ArchiveMessage, sess: ArchiveSess
                         continue  # the copy of another row with this text and time: that row's uid says so
                     if take(other, other_sid, "copied by JARVIS", CERTAIN):
                         nxt.append((other, other_sid))
+            # Rows of it an import deleted, kept only as a rollback copy (review 1 R29).
+            for key, gone_sid, gone in await deleted_copies(s, row, uid):
+                if key in keys or key in rowless or gone.get("withheld") is True:
+                    continue
+                gone_row = str(gone.get("source_message_id") or "")[:200]
+                if gone_sid and (gone_sid, gone_row) in released:
+                    continue  # an admin released that JARVIS row for this withhold (I4)
+                if not (gone_text(gone) == text
+                        or (uid and gone.get("state") == "compacted" and gone_sid in family)):
+                    continue
+                parts = parse_key(key)
+                rowless[key] = Stone(key=key, session=gone_sid or parts.session or sess.source_session_id,
+                                     row=gone_row or parts.row, role=row.role,
+                                     tool_call_id=gone.get("tool_call_id") or "", uid=uid,
+                                     via="same message id" if uid else "copied by JARVIS", bound=True)
         # The importer's duplicates of any row the members' keys were stored as.
         members = [message] + [g.row for g in found.values() if g.review == CERTAIN]
         targets = {int(m.id) for m in members} | await archive._older_rows(

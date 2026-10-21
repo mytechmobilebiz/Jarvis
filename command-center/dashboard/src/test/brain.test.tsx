@@ -521,7 +521,8 @@ describe("JARVIS Brain: withholding the same JARVIS message (0.6.2)", () => {
     expect(await within(confirm).findByText("1 other stored row is the same JARVIS message and is withheld too; 2 are held for your review.")).toBeInTheDocument();
     expect(within(confirm).getByText(/1 copy JARVIS keeps without a stored row/)).toBeInTheDocument();
     const identical = within(confirm).getByRole("checkbox", { name: identicalLabel(2) });
-    expect(identicalLabel(2)).toBe("Also withhold 2 other messages with exactly this text in this conversation");
+    // Review 1 R15: identical rows can be in a continuation or a branch, and the label says so.
+    expect(identicalLabel(2)).toBe("Also withhold 2 other messages with exactly this text in this conversation and its continuations and branches");
     expect(identical).not.toBeChecked();
     const title = within(confirm).getByRole("checkbox", { name: "Hide the conversation title" });
     expect(title).toBeChecked();
@@ -597,10 +598,24 @@ describe("JARVIS Brain: withholding the same JARVIS message (0.6.2)", () => {
 
   it("puts every count into words", () => {
     expect(previewText(preview({ same_message_rows: [], held_rows: [], rowless_copies: 0 }))).toEqual([]);
-    expect(previewText(preview({ same_message_rows: [row(1, 1), row(2, 2)], same_message_rows_hidden: 1, held_rows: [], rowless_copies: 0 }))).toEqual([
-      "3 other stored rows are the same JARVIS message and are withheld too; 0 are held for your review.",
+    expect(previewText(preview({ same_message_rows: [row(1, 1), row(2, 2)], held_rows: [], rowless_copies: 0 }))).toEqual([
+      "2 other stored rows are the same JARVIS message and are withheld too; 0 are held for your review.",
     ]);
-    expect(identicalLabel(1)).toBe("Also withhold 1 other message with exactly this text in this conversation");
+    expect(identicalLabel(1)).toBe("Also withhold 1 other message with exactly this text in this conversation and its continuations and branches");
+  });
+
+  it("counts rows outside the admin's scope in one sentence of their own, never per list (review 1 R19)", () => {
+    // One total: a count per list would tell whether a hidden row's text equals this one (same message) or not (held).
+    expect(previewText(preview({ same_message_rows: [row(1, 1)], held_rows: [], rowless_copies: 0, rows_outside_your_scope: 1 }))).toEqual([
+      "1 other stored row is the same JARVIS message and is withheld too; 0 are held for your review.",
+      "1 stored row outside what you may open is not listed; the withhold treats it by the same rules.",
+    ]);
+    expect(previewText(preview({ same_message_rows: [], held_rows: [], rowless_copies: 0, rows_outside_your_scope: 2 }))).toEqual([
+      "2 stored rows outside what you may open are not listed; the withhold treats them by the same rules.",
+    ]);
+    // The old per-list fields, if a server still sent them, add nothing to the visible counts.
+    const old = { ...preview({ same_message_rows: [], held_rows: [], rowless_copies: 0 }), same_message_rows_hidden: 1, held_rows_hidden: 0 };
+    expect(previewText(old)).toEqual([]);
   });
 });
 

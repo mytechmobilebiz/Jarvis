@@ -499,9 +499,12 @@ async def withhold_preview(message_id: int, caller: Caller = Depends(admin),
     if message.withheld:
         raise HTTPException(400, "this message is already withheld")
     out = await review.withhold_preview(session, message, sess, caller.scope)
+    # Rows outside the admin's scope are counted in one total, never per list: a count per list would tell whether a
+    # hidden row's text equals this one (same message) or not (held).
+    out["rows_outside_your_scope"] = 0
     for key in ("same_message_rows", "held_rows", "identical_text_rows"):
         visible = set(await _in_scope(session, caller, [r["id"] for r in out[key]]))
-        out[key + "_hidden"] = sum(1 for r in out[key] if r["id"] not in visible)
+        out["rows_outside_your_scope"] += sum(1 for r in out[key] if r["id"] not in visible)
         out[key] = [r for r in out[key] if r["id"] in visible]
     return out
 

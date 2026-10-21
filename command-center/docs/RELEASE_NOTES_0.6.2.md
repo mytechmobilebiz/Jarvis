@@ -130,6 +130,12 @@ or a purge brought the text back silently.
   state (`w1:live`, `w1:compacted`, `w1:rewound`); 0.6.x fingerprints are
   removed by the migration. Texts are compared only in memory, during an
   import or a withhold.
+- **Rollback copies.** The withhold also blanks, at once, the rollback copy
+  of a row of the message that an import deleted (the original JARVIS rewound
+  in an in-place compaction, a branch's rewound copy: the same message id and
+  text, or, without message ids, the rewound row the same import wrote
+  again). A rollback of that import brings the row back withheld. Another
+  message with the same words keeps its rollback copy.
 - **A database guard** blanks any row the withhold names, whatever code writes
   it. `verify` reports it if the guard ever had to act.
 - **Repair.** Every database where 0.6.0 or 0.6.1 let the text come back is
@@ -146,19 +152,26 @@ or a purge brought the text back silently.
 of the same JARVIS message (withheld too) and those held for your review. It
 offers:
 - "Also withhold K other messages with exactly this text in this
-  conversation", unticked;
+  conversation and its continuations and branches", unticked;
 - "Hide the conversation title", ticked when the message is the conversation's
   first user message (a title can repeat it). It also hides the title in the
   continuations and branches that carry it (JARVIS moves the title to a
   continuation and names a branch "title #2"), and it is kept with the
   withhold: a conversation imported again (after a rollback or a restore) and
-  the live installation (decisions file) hide it too;
+  the live installation (decisions file) hide it too. A history answer or
+  request summary that quoted another message of that conversation keeps the
+  quote but names the conversation as "session <id>" instead of the hidden
+  title, at once, and the start-up check does the same for older answers;
 - the imported memory items whose text contains the message, as links, so you
   can purge them. Nothing is purged automatically.
 
 **Held for review** is a new panel for admins. It shows each held row's
 evidence and never its text: where it is, its length, the rule that held it,
-the withheld message it may be, and its neighbours. **Keep withheld** makes it
+the withheld message it may be, and its neighbours. The withheld message is
+described only to an admin who may open it (an admin without the
+sensitive-data permission sees no id, position, time or length of a Credit
+Repair or restricted message), and the withhold dialog counts rows outside
+your access in one sentence of their own. **Keep withheld** makes it
 permanent. **Release** asks for confirmation; its text comes back at the next
 import of a backup that holds it, and promoted copies emptied meanwhile stay
 empty. Certain matches are never listed and cannot be released.
@@ -170,8 +183,8 @@ held row's message id until you have reviewed the hold.
 admins (search, conversations, history answers, request summaries), agents
 (memory, AI prompts, reference notes), the Supervisor's recall and every API
 route. History answers and request summaries are checked again when they are
-read, so a quote of a removed source is never served even before the
-start-up check has run. A memory item promoted from a withheld message that
+read, so a quote of a removed source, or one naming a hidden title, is never
+served even before the start-up check has run. A memory item promoted from a withheld message that
 still holds its text (one 0.6.0 left) is listed to nobody, admins included,
 until the start-up check or a rescan empties it; 0.6.1 listed it to admins.
 

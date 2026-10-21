@@ -68,18 +68,22 @@ def task_view(task: Task, principal: Principal | None = None) -> dict[str, Any]:
 async def task_views(session: AsyncSession, tasks: list[Task], principal: Principal | None = None
                      ) -> list[dict[str, Any]]:
     """task_view() of each task, without the answer lines that quote a withheld, deleted or emptied JARVIS Brain
-    source and without reference notes naming such an item (quotes.dead_sources, one lookup per page): the read-time
-    guard, for quotes a start-up check has not removed yet (skipped while a task held the quote lock, or a database
-    0.6.0 left behind). The stored result is not changed."""
+    source and without reference notes naming such an item (quotes.dead_sources, one lookup per page), and with each
+    quote of a conversation whose title an admin hid naming it without that title (quotes.hidden_titles): the
+    read-time guard, for quotes a start-up check has not changed yet (skipped while a task held the quote lock, or a
+    database 0.6.0 left behind). The stored result is not changed."""
     datas = [d for t in tasks if isinstance(d := (t.result or {}).get("data"), dict)]
     dead_m, dead_i = await quotes.dead_sources(session, datas) if datas else (set(), set())
+    quoted = {s["message"] for d in datas for s in d.get("sources") or []
+              if isinstance(s, dict) and isinstance(s.get("message"), int)}
+    hidden = await quotes.hidden_titles(session, quoted) if quoted else {}
     out = []
     for t in tasks:
         view = task_view(t, principal)
         result = view.get("result")
         data = result.get("data") if isinstance(result, dict) else None
-        if isinstance(data, dict) and (dead_m or dead_i):
-            view["result"] = {**result, "data": quotes.strip_dead(data, dead_m, dead_i)}
+        if isinstance(data, dict) and (dead_m or dead_i or hidden):
+            view["result"] = {**result, "data": quotes.strip_dead(data, dead_m, dead_i, hidden)}
         out.append(view)
     return out
 

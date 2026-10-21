@@ -1,16 +1,18 @@
 """Upgrading to 0.6.2 (spec 3.3, 19.3): from 0.5.0, 0.6.0 and 0.6.1, with and without data, withholds and tombstones;
 and the leak states the real 0.6.1 importer leaves, closed by the migration before the first request.
 
-The legacy_061 fixture runs the exact 0.6.1 importer (the release commit d4f36746, extracted with `git archive`, read
-only) in a process of its own against a scratch database: it imports a synthetic JARVIS backup, withholds messages as
-0.6.1's API did, then imports a later backup in which Hermes compacted, edited and backfilled uids. That database
-holds every leak state the confirmed findings describe (A-tail, B, C1), made by the code that made them. 0.6.2 then
-migrates it, runs its start-up step and imports again. Skipped when the repository (git) is not at hand; synthetic
-data only.
+The legacy_061 fixture runs the exact 0.6.1 importer (the release commit d4f36746: its backend/app, vendored in
+tests/fixtures and checked against a pinned SHA-256, or extracted with `git archive`, read only) in a process of its
+own against a scratch database: it imports a synthetic JARVIS backup, withholds messages as 0.6.1's API did, then
+imports a later backup in which Hermes compacted, edited and backfilled uids. That database holds every leak state the
+confirmed findings describe (A-tail, B, C1), made by the code that made them. 0.6.2 then migrates it, runs its start-up
+step and imports again. The vendored copy runs these tests outside a git checkout too (a copied tree, a shallow clone);
+with neither, they fail under REQUIRE_DOCKER_TESTS=1 (the release run) instead of skipping. Synthetic data only.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -32,6 +34,10 @@ from .test_brain_schema import _migrate
 
 BACKEND = Path(__file__).resolve().parents[2]
 RELEASE_061 = "d4f36746"
+# `git archive --format=tar d4f36746 command-center/backend/app | gzip -9n`: the 0.6.1 release's backend/app, so the
+# upgrade tests run without the repository (review 1 R36). Pinned: a changed copy is a failure, never a skip.
+VENDORED_061 = Path(__file__).resolve().parents[1] / "fixtures" / "release-0.6.1-backend-app.tar.gz"
+VENDORED_061_SHA256 = "c3eee2bbd7cbd2df921b347856ab6af3f48633b444411dabee3561b66612be39"
 SCRATCH = os.environ["TEST_DATABASE_URL"].rsplit("/", 1)[1] + "_upgrade"
 T = 1795000000.0
 MARKS = {"tail": "zqupgtail61", "repeat": "zqupgrepeat61", "uid": "zqupguid61"}
@@ -130,25 +136,75 @@ asyncio.run(main())
 '''
 
 
+def _missing(reason: str) -> None:
+    """A prerequisite the release run must have: a failure under REQUIRE_DOCKER_TESTS=1, a skip otherwise."""
+    (pytest.fail if os.environ.get("REQUIRE_DOCKER_TESTS") == "1" else pytest.skip)(reason)
+
+
+def _vendored_061_ok() -> bool:
+    if not VENDORED_061.is_file():
+        return False
+    found = hashlib.sha256(VENDORED_061.read_bytes()).hexdigest()
+    if found != VENDORED_061_SHA256:
+        pytest.fail("the vendored 0.6.1 release (%s) was changed: sha256 %s" % (VENDORED_061.name, found))
+    return True
+
+
 def _release_061(dest: Path) -> Path:
-    """The 0.6.1 backend, extracted read-only from the release commit (no checkout, no change to the repository)."""
+    """The 0.6.1 backend (its app package), read-only: the vendored copy of the release commit when it is there (its
+    SHA-256 checked), else extracted from the release commit with git archive (no checkout, no change to the
+    repository). With neither, a failure under REQUIRE_DOCKER_TESTS=1 and a skip otherwise (review 1 R36)."""
+    dest.mkdir(parents=True, exist_ok=True)
+    if _vendored_061_ok():
+        with tarfile.open(VENDORED_061) as tar:
+            tar.extractall(dest / "tree", filter="data")
+        return dest / "tree" / "command-center" / "backend"
     git = shutil.which("git")
     if not git:
-        pytest.skip("needs git to extract the 0.6.1 release")
+        _missing("the 0.6.1 release: no vendored copy (%s) and no git to extract it" % VENDORED_061.name)
     top = subprocess.run([git, "-C", str(BACKEND), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
     if top.returncode != 0:
-        pytest.skip("not a git checkout")
+        _missing("the 0.6.1 release: no vendored copy (%s) and not a git checkout" % VENDORED_061.name)
     prefix = os.path.relpath(BACKEND, top.stdout.strip())
-    dest.mkdir(parents=True, exist_ok=True)
     archive = dest / "release.tar"
     with open(archive, "wb") as f:
         done = subprocess.run([git, "-C", top.stdout.strip(), "archive", RELEASE_061, prefix], stdout=f,
                               stderr=subprocess.PIPE)
     if done.returncode != 0:
-        pytest.skip("the 0.6.1 release commit is not in this repository")
+        _missing("the 0.6.1 release: no vendored copy (%s) and commit %s is not in this repository"
+                 % (VENDORED_061.name, RELEASE_061))
     with tarfile.open(archive) as tar:
         tar.extractall(dest / "tree", filter="data")
     return dest / "tree" / prefix
+
+
+def test_the_vendored_0_6_1_release_is_the_release_commit():
+    """Review 1 R36: the vendored copy is there and unchanged (its pinned SHA-256, everywhere) and, where the
+    repository holds the release commit, file for file the commit's backend/app."""
+    assert _vendored_061_ok(), "the vendored 0.6.1 release is missing: %s" % VENDORED_061
+    git = shutil.which("git")
+    top = subprocess.run([git, "-C", str(BACKEND), "rev-parse", "--show-toplevel"], capture_output=True,
+                         text=True) if git else None
+    if top is None or top.returncode != 0:
+        return  # a copied tree: the pin above is the check (it was taken from the commit's git archive)
+    prefix = os.path.relpath(BACKEND / "app", top.stdout.strip())
+    done = subprocess.run([git, "-C", top.stdout.strip(), "archive", "--format=tar", RELEASE_061, prefix],
+                          capture_output=True)
+    if done.returncode != 0:
+        return  # a shallow clone without the release commit: the pin above is the check
+    import gzip
+    import io
+    with tarfile.open(fileobj=io.BytesIO(done.stdout)) as a, tarfile.open(fileobj=io.BytesIO(
+            gzip.decompress(VENDORED_061.read_bytes()))) as b:
+        def files(t: tarfile.TarFile) -> dict[str, bytes]:
+            out = {}
+            for m in t.getmembers():
+                if m.isfile():
+                    f = t.extractfile(m)
+                    assert f is not None
+                    out[m.name.split("/backend/app/", 1)[-1]] = f.read()
+            return out
+        assert files(a) == files(b)
 
 
 def _legacy(backend: Path, url: str, *args: str) -> None:

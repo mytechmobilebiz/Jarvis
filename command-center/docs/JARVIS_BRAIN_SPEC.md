@@ -499,7 +499,13 @@ database password (2.3) and audits how many.
 - **A newly restricted conversation** blanks every readable row of it (also rows the
   backup no longer holds), and the items promoted from its deleted rows are emptied.
 - **Title.** A session flagged `title_withheld` (an admin hid it with a withhold)
-  keeps an empty title through later imports.
+  keeps an empty title through later imports. A history answer names a
+  conversation by its title ("(source: <title> · message N)"); once the title is
+  hidden, every quote of the conversation's other messages names it as recall names
+  one without a title ("(source: session <id> · message N)"), the quote itself kept:
+  at the withhold, at start-up and after a rescan (`quotes.relabel_hidden_titles`,
+  counted in `quotes_of_removed_sources` until then), and at read time in every task
+  and request reader (`quotes.hidden_titles`).
 
 ### 2.3 Profile files → memory items
 
@@ -765,7 +771,13 @@ read-only.
 **Withhold** (an admin, decisions-apply): `identity.group_rows` follows, to a fixed
 point (capped at 1,000 rows), the same JARVIS row, the same uid (member when the text
 equals, else a hold) and the importer's duplicates; each gets a stone in the admin's
-group and loses its text; keys of copies without a row get stones too. Identical text
+group and loses its text; keys of copies without a row get stones too, including the
+keys of rows of the message an import deleted and kept only as rollback copies
+(`identity.deleted_copies`: the same uid and role with the same text, or an archived
+generation in the family; without uids, the importer's rewound twin, a row of the same
+conversation deleted as rewound by the run that stored this one or an earlier one, with
+the same text), so the withhold blanks those copies at once and a rollback puts the row
+back withheld. Another message with the same words keeps its rollback copy. Identical text
 elsewhere in the lineage is withheld only when the admin ticks it
 (`include_identical`). The title is hidden by default for the conversation's first
 user message (`hide_title`).
@@ -820,8 +832,8 @@ per case, are `tests/integration/test_brain_withhold_identity.py` and
 | `GET /sessions/{id}` | operator | `limit ≤ 500, offset` → `{session, messages, total, hidden}`. `hidden` = messages outside the scope. |
 | `GET /messages/{id}/promoted` | admin | `{message, count, items:[{id, status, deleted}]}`: every memory item promoted from the message (what a withhold empties); `items` lists those in the admin's scope |
 | `POST /messages/{id}/withhold` | admin | 409 while an import, a rollback or a rescan holds the lock. Optional body `{include_identical: false, hide_title: null}`. Content `''`, `withheld`, flags note, admin tombstone (its stone, 2.9), and every other stored row of the same JARVIS message withheld too (2.9: members, and holds for the same uid with other text); identical text elsewhere only with `include_identical`; the title hidden with `hide_title` (default: when it is the conversation's first user message); its rollback copies blanked (also under older row ids); every promoted item emptied (below); quotes removed; session derived fields recomputed → `{message, session, copies:{items, versions_blanked}, answers_scrubbed, rollback_copies_blanked, also_withheld, held_for_review, identical_withheld, keys_tombstoned, title_hidden}`, `archive.message_withheld` (the same keys), `memory.source_withheld` per emptied item. All or nothing |
-| `GET /messages/{id}/withhold-preview` | admin | read-only: `same_message_rows`, `held_rows`, `identical_text_rows` (ids, positions, roles, times, states; rows outside the scope counted in `<list>_hidden`), `rowless_copies` (a count), `items_with_this_text` (imported items in the scope whose text contains the message's, 32+ characters: `[{id, title}]`, to purge by hand), `first_user_message`. Never text |
-| `GET /holds` | admin | every withheld row whose stone is pending, in the scope, with its evidence and never its text: `{message, session, title (null when hidden), position, role, at, content_chars, state, rule, withheld_message:{id, position, role, at, content_chars}, compare: identical text\|different text\|nothing to compare, neighbours}` |
+| `GET /messages/{id}/withhold-preview` | admin | read-only: `same_message_rows`, `held_rows`, `identical_text_rows` (ids, positions, roles, times, states; rows outside the scope counted in one total, `rows_outside_your_scope`, never per list), `rowless_copies` (a count, including rows of the message an import deleted, kept only as rollback copies), `items_with_this_text` (imported items in the scope whose text contains the message's, 32+ characters: `[{id, title}]`, to purge by hand), `first_user_message`. Never text |
+| `GET /holds` | admin | every withheld row whose stone is pending, in the scope, with its evidence and never its text: `{message, session, title (null when hidden), position, role, at, content_chars, state, rule, withheld_message:{id, position, role, at, content_chars}, compare: identical text\|different text\|nothing to compare, neighbours}`. `withheld_message` is described only when it is in the admin's scope; otherwise `{id: null, position: null, role, at: null, content_chars: null}` (an admin without the sensitive-data permission learns nothing of a Credit Repair or restricted row) |
 | `POST /holds/{id}/keep` | admin | 409 during an import. The stone becomes `kept` (permanent) → `archive.hold_kept {message, session, anchor, rule}` |
 | `POST /holds/{id}/release` | admin | 409 during an import. 400 when a certain stone names its JARVIS row ("it is the same message as a withheld one: it cannot be released"). Deletes the pending stone, writes the exemption, sets the release marker; its text comes back at the next import of a backup holding it; promoted copies emptied meanwhile stay empty → `archive.hold_released {message, session, anchor, rule}` |
 | `POST /messages/{id}/promote` | operator | `{kind, title, agent?}` → a pending item: origin `promoted`, `import_run_id NULL`, `source_ref = "JARVIS session <source id> · message <position>"`, sensitivity = the highest of the message and its session → `memory.promoted`. A withheld message, or one with an admin's withhold tombstone → 400; since 0.6.2 also a row that is the same JARVIS message as a withheld one (its key has a stone, its JARVIS row is a stone's binding, or its uid is a stone's uid with an equal or unknown role and no release of that group names it) → 400 "this message is the same JARVIS message as one an admin withheld: it cannot be promoted". A readable row with identical text that the admin saw stays promotable. The message's row is locked: a withhold of it waits for the promote and then empties the new item, or the promote waits for the withhold and is refused. |
@@ -1044,9 +1056,10 @@ lets the test copy use `cc_session_brain_test`.
 - promote and withhold on messages.
 
 **Withhold dialog (0.6.2):** it loads `withhold-preview` and states "N other stored rows
-are the same JARVIS message and are withheld too; M are held for your review"; the
+are the same JARVIS message and are withheld too; M are held for your review", and, in a
+sentence of its own, how many rows outside the admin's scope it does not list; the
 unticked box "Also withhold K other messages with exactly this text in this
-conversation"; "Hide the conversation title" (ticked for the first user message); the
+conversation and its continuations and branches"; "Hide the conversation title" (ticked for the first user message); the
 imported memory items that contain the text, as links. When the preview cannot be
 loaded, the withhold still works (the server decides the title).
 

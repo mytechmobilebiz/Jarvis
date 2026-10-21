@@ -6,6 +6,14 @@ or a rollback): a restore of an older backup re-applies every withhold, purge, r
 narrowing and audit entry made after that backup; a rollback keeps an admin's title choice; an older importer is
 refused on a 0.6.2 database.
 
+Stage 2, readers, titles and test gaps (R15-R19, R29, R30, R32; R34 and R35 are in test_brain_identity_migration.py,
+R36 in test_brain_upgrade_062.py): JARVIS's copies made before a withhold are withheld (R15); a hidden title stays
+hidden on the live installation, after a restore to a fresh database and in continuation and branch children (R16,
+R17), and no quote of another message names it (R18); the holds list and the preview tell an admin without the
+sensitive-data permission nothing about a row outside the scope (R19); a withhold blanks the rollback copies of rows an
+import deleted and a rollback brings them back withheld (R29); verify's checks 9-12 fail on the state each exists to
+catch (R30); a stoned key JARVIS gave to an unrelated row is never written under it (R32).
+
 The restore tests take a real pg_dump of the test database (the restore point: "the nightly backup"), make the
 admin's decisions, export what restore.ps1 exports, pg_restore with restore.ps1's own flags, and apply what
 restore.ps1 applies, in its order (restore-carry apply, then decisions-apply --removals-only), before any reader.
@@ -18,6 +26,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -29,10 +38,13 @@ from app.brain import identity, store
 from app.brain import importer as imp
 from app.db import session_scope
 from app.models import (
+    ArchiveMessage,
     ArchiveSession,
     AuditLog,
     BrainPurgedContent,
     BrainPurgedItem,
+    BrainTombstone,
+    ImportRecord,
     ImportRun,
     MemoryItem,
     User,
@@ -692,10 +704,13 @@ async def test_r28_audit_entries_are_not_put_back_into_another_databases_backup(
 
 
 @pytest.mark.parametrize("how", ["rotate", "cli_branch"])
-async def test_r33_rollback_puts_back_a_copy_that_only_shares_the_uid_held(client, tmp_path, how):
+async def test_r33_rollback_puts_back_a_copy_that_only_shares_the_uid_held(client, tmp_path, monkeypatch, how):
     """R33 (tests-integrity #4): a continuation or CLI /branch child's copies are rewound and deleted by run 2; the
     admin withholds the parent's answer; run 2 is rolled back. The child's copy (another key, another JARVIS row,
-    the same uid) comes back withheld, held for review: Identities.match_row's uid branch."""
+    the same uid) comes back withheld, held for review: Identities.match_row's uid branch. Since review 1 R29 the
+    withhold itself stones and blanks such a rollback copy; the test recreates the state an earlier withhold left (the
+    copy with its text, no stone on its key: deleted_copies switched off for the withhold), so the uid branch stays
+    covered for that state and for decisions carried over."""
     mark = "zqrevrbuid"
     await allow_ai_context()
     fx = bj.mini(tmp_path / "j")
@@ -714,8 +729,15 @@ async def test_r33_rollback_puts_back_a_copy_that_only_shares_the_uid_held(clien
             "SELECT x.source_session_id, m.id FROM archive_messages m JOIN archive_sessions x ON x.id = m.session_id "
             "WHERE m.content LIKE :m ORDER BY m.id"), {"m": "%" + mark + "%"})).all()
     assert [r[0] for r in rows] == ["r33_p"], rows
+    real = identity.deleted_copies
+
+    async def before_r29(s, row, uid):
+        return []
+
+    monkeypatch.setattr(identity, "deleted_copies", before_r29)
     await as_(client, "admin")
     assert (await client.post("/api/brain/messages/%d/withhold" % rows[0][1])).status_code == 200
+    monkeypatch.setattr(identity, "deleted_copies", real)
     # The state before review 1's rules: no stone on the child's copy keys (only the uid links them).
     async with session_scope() as s:
         await s.execute(text("DELETE FROM brain_tombstones WHERE source_key LIKE 'jarvis:message:r33_c:%'"))
@@ -732,3 +754,623 @@ async def test_r33_rollback_puts_back_a_copy_that_only_shares_the_uid_held(clien
         assert mark not in (await client.get("/api/brain/search", params={"q": mark})).text, who
     assert await bj.nowhere(mark) == []
 
+
+
+# =================================================================================================================
+# Stage 2: readers, titles and test gaps
+# =================================================================================================================
+
+ALL = imp.Selection(all=True)
+DAY = 86400.0
+
+
+async def rows_of(sid: str) -> list[ArchiveMessage]:
+    async with session_scope() as s:
+        return list((await s.scalars(select(ArchiveMessage).join(
+            ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id).where(
+            ArchiveSession.source_session_id == sid).order_by(ArchiveMessage.id))).all())
+
+
+# ======================= R15: JARVIS's copies made before the withhold ===========================================
+
+
+def r15_secret(mark: str) -> str:
+    return "Review note: the %s supplier deal closes at ninety one thousand euros." % mark
+
+
+def r15_family(db: str, how: str, mark: str, *, later_repeat: bool = False) -> None:
+    """A parent holding the secret and a child JARVIS made BEFORE any import or withhold: a gateway /branch (fresh
+    uids, copied timestamps), a rotation in a backup without a uid column, or (control) a CLI /branch (same uids)."""
+    bj.add_session(db, "r15_p", started=T)
+    bj.add_row(db, "r15_p", "user", "What about the supplier?", T + 1)
+    bj.add_row(db, "r15_p", "assistant", r15_secret(mark), T + 2)
+    bj.add_row(db, "r15_p", "user", "ok thanks", T + 3)
+    if how == "gateway_branch":
+        bj.gateway_branch(db, "r15_p", "r15_c", started_at=T + DAY)
+    elif how == "cli_branch_control":
+        bj.cli_branch(db, "r15_p", "r15_c", started_at=T + DAY)
+    else:
+        bj.drop_uid_column(db)
+        bj.change(db, "UPDATE sessions SET end_reason = 'compression' WHERE id = ?", "r15_p")
+        bj.add_session(db, "r15_c", started=T + DAY, parent="r15_p", title="Continuation")
+        for r in bj.rows(db, "r15_p"):
+            bj.add_row(db, "r15_c", r["role"], r["content"], r["timestamp"], uid=False)
+    if later_repeat:  # the user types the words again later in the child: not a copy (another role, another time)
+        bj.add_row(db, "r15_c", "user", r15_secret(mark), T + DAY + 10, uid=False)
+    else:
+        bj.add_row(db, "r15_c", "user", "a new turn in the child", T + DAY + 10)
+
+
+@pytest.mark.parametrize("how", ["gateway_branch", "rotation_no_uids", "cli_branch_control"])
+async def test_r15_a_copy_jarvis_made_before_the_withhold_is_withheld_and_never_promoted(client, tmp_path, how):
+    """R15 (readers-privacy #0): the child's copy, stored by the same import before the admin's withhold, is withheld
+    by the withhold itself (listed as the same message), stays withheld through a re-import and a later backup, is
+    read by no reader (sessions, Supervisor history, recall), cannot be promoted, and verify and status agree."""
+    from .test_brain_agents import ask
+    mark = "zqr15" + how.replace("_", "")[:9]
+    fx = bj.mini(tmp_path / "fx")
+    r15_family(fx["db"], how, mark)
+    await imp.run(bj.paths(fx), ALL)
+    [orig] = [m for m in await rows_of("r15_p") if mark in (m.content or "")]
+    [copy] = [m for m in await rows_of("r15_c") if mark in (m.content or "")]
+    await as_(client, "admin")
+    preview = (await client.get("/api/brain/messages/%d/withhold-preview" % orig.id)).json()
+    assert [r["id"] for r in preview["same_message_rows"]] == [copy.id], preview
+    assert preview["identical_text_rows"] == [], preview
+    w = await client.post("/api/brain/messages/%d/withhold" % orig.id)
+    assert w.status_code == 200 and w.json()["also_withheld"] == [copy.id], w.text
+    await imp.run(bj.paths(fx), ALL)
+    bj.add_row(fx["db"], "r15_p", "user", "one more question later", T + 2 * DAY)
+    later = await imp.run(bj.paths(fx), ALL)
+    async with session_scope() as s:
+        c = await s.get(ArchiveMessage, copy.id)
+        assert c.withheld and mark not in (c.content or "")
+        hits, _ = await store.AgentMemory(s, "supervisor").history(mark)
+        assert not any(mark in (h.message.content or "") for h in hits)
+    assert mark not in json.dumps((await ask("what did JARVIS say about the %s supplier" % mark)).data)
+    for who in ("operator", "admin", "admin+"):
+        await as_(client, who)
+        assert mark not in (await client.get("/api/brain/sessions/%d" % c.session_id)).text, who
+    await as_(client, "operator")
+    promote = await client.post("/api/brain/messages/%d/promote" % copy.id, json={"kind": "project", "title": "P"})
+    assert promote.status_code in (400, 404), promote.text
+    assert (await imp.verify(later["run_id"], bj.paths(fx)))["passed"]
+    assert (await imp.status())["readable_rows_matching_a_withhold"] == 0
+    assert await bj.nowhere(mark) == []
+
+
+@pytest.mark.parametrize("how", ["gateway_branch", "rotation_no_uids"])
+async def test_r15_the_next_import_repairs_a_copy_an_earlier_withhold_missed(client, tmp_path, monkeypatch, how):
+    """R15: a database where the withhold already missed the copy (as 0.6.2 before review 1 did: the lineage walk is
+    switched off for the withhold) is repaired by the next import (a copy JARVIS made is never a row the admin saw),
+    and the user's own later repeat of the words in the child stays readable (another role: not a copy)."""
+    mark = "zqr15rep" + how[:4]
+    fx = bj.mini(tmp_path / "fx")
+    r15_family(fx["db"], how, mark, later_repeat=True)
+    await imp.run(bj.paths(fx), ALL)
+    [orig] = [m for m in await rows_of("r15_p") if mark in (m.content or "")]
+    real = identity.lineage
+
+    async def only_self(s, ids):
+        return {i: "self" for i in ids}
+
+    monkeypatch.setattr(identity, "lineage", only_self)
+    await as_(client, "admin")
+    assert (await client.post("/api/brain/messages/%d/withhold" % orig.id)).status_code == 200
+    monkeypatch.setattr(identity, "lineage", real)
+    [missed] = [m for m in await rows_of("r15_c") if m.role == "assistant" and mark in (m.content or "")]
+    await imp.run(bj.paths(fx), ALL)
+    after = {m.id: m for m in await rows_of("r15_c")}
+    assert after[missed.id].withheld and mark not in (after[missed.id].content or "")
+    repeat = [m for m in after.values() if m.role == "user" and mark in (m.content or "")]
+    assert len(repeat) == 1 and not repeat[0].withheld, "the user's own later words were withheld by text alone"
+
+
+# ======================= R16 / R17: the hidden title on live, after a restore, and in children ====================
+
+
+def r16_first(mark: str) -> str:
+    return "Contract %s with the vendor is worth sixty two thousand dollars, keep it quiet." % mark
+
+
+def r16_derived(mark: str) -> str:  # Hermes's derive_title: the first 48 characters of the first user message
+    return r16_first(mark)[:48].rstrip() + "…"
+
+
+async def title_readers(client, mark: str) -> dict[str, list[str]]:
+    """Which routes show the marker, for operator, admin and admin+: the sessions list, its search, the search page
+    and every conversation."""
+    async with session_scope() as s:
+        ids = list((await s.scalars(select(ArchiveSession.id))).all())
+    out: dict[str, list[str]] = {}
+    for who in ("operator", "admin", "admin+"):
+        await as_(client, who)
+        seen = []
+        if mark in (await client.get("/api/brain/sessions", params={"limit": 200})).text:
+            seen.append("GET /sessions")
+        if mark in (await client.get("/api/brain/sessions", params={"q": "vendor", "limit": 200})).text:
+            seen.append("GET /sessions?q=vendor")
+        if mark in (await client.get("/api/brain/search", params={"q": "vendor"})).text:
+            seen.append("GET /search?q=vendor")
+        for i in ids:
+            if mark in (await client.get("/api/brain/sessions/%d" % i)).text:
+                seen.append("GET /sessions/%d" % i)
+        if seen:
+            out[who] = seen
+    return out
+
+
+async def test_r16_restore_to_a_fresh_database_keeps_the_title_hidden(client, tmp_path):
+    """R16 (c), restore.ps1's flow: the removals are exported (--removals-only), the database is empty again, they are
+    applied before the conversation exists ('kept for later imports'), then the backup is imported: the first user
+    message comes back withheld and the title (derived from it) hidden."""
+    from .test_brain_withhold_identity import _fresh_production
+    mark = "zqr16rest"
+    fx = bj.mini(tmp_path / "fx")
+    bj.add_session(fx["db"], "r16_a", started=T, title=r16_derived(mark))
+    bj.add_row(fx["db"], "r16_a", "user", r16_first(mark), T + 1)
+    bj.add_row(fx["db"], "r16_a", "assistant", "Understood, noted.", T + 2)
+    await imp.run(bj.paths(fx), ALL)
+    [m] = [r for r in await rows_of("r16_a") if r.role == "user"]
+    await as_(client, "admin")
+    assert (await client.post("/api/brain/messages/%d/withhold" % m.id)).json()["title_hidden"] is True
+    out = tmp_path / "removals.json"
+    await imp.decisions_export(str(out), removals_only=True)
+    await _fresh_production()
+    await imp.decisions_apply(str(out), None, actor=None, apply=True, removals_only=True)
+    await imp.run(bj.paths(fx), ALL)
+    [back] = [r for r in await rows_of("r16_a") if r.role == "user"]
+    assert back.withheld
+    assert await title_flag("r16_a") is True and (await session_titles(client))["r16_a"] == ""
+    assert await title_readers(client, mark) == {} and await bj.nowhere(mark) == []
+
+
+async def test_r16_an_explicit_hide_title_travels_from_the_test_copy_to_live(client, tmp_path):
+    """R16 (d): the admin withholds a message that is not the first user message and ticks 'Hide the conversation
+    title' on the test copy; on live (a fresh database, the same backup, decisions-apply) the title stays hidden."""
+    from app.brain.importer import decisions_apply, decisions_export
+
+    from ..conftest import ADMIN
+    from .test_brain_withhold_identity import _fresh_production
+    mark = "zqr16exp"
+    fx = bj.mini(tmp_path / "fx")
+    bj.add_session(fx["db"], "r16_b", started=T, title="Vendor %s deal: sixty two thousand" % mark)
+    bj.add_row(fx["db"], "r16_b", "user", "Hello there.", T + 1)
+    bj.add_row(fx["db"], "r16_b", "assistant", "Vendor %s deal: sixty two thousand dollars agreed." % mark, T + 2)
+    await imp.run(bj.paths(fx), ALL)
+    [m] = [r for r in await rows_of("r16_b") if r.role == "assistant"]
+    await as_(client, "admin")
+    r = await client.post("/api/brain/messages/%d/withhold" % m.id, json={"hide_title": True})
+    assert r.status_code == 200 and r.json()["title_hidden"] is True, r.text
+    out = tmp_path / "decisions.json"
+    await decisions_export(str(out))
+    assert [x.get("title_hidden") for x in json.loads(out.read_text())["removals"]] == [True]
+    await _fresh_production()
+    live = await imp.run(bj.paths(fx), ALL)
+    await decisions_apply(str(out), live["run_id"], actor=ADMIN[0], apply=True)
+    assert await title_flag("r16_b") is True
+    assert await title_readers(client, mark) == {} and await bj.nowhere(mark) == []
+
+
+@pytest.mark.parametrize("how", ["rotation", "gateway_branch", "gateway_branch_after"])
+async def test_r17_a_child_that_carries_the_hidden_title_hides_it_too(client, tmp_path, how):
+    """R17 (readers-privacy #2): Hermes carries the title to a rotation's continuation (and clears the parent's) and
+    names a /branch '<title> #2'. Hiding the parent's title hides the child's, also for a branch made after the
+    withhold and imported later; no reader shows it, and a re-import keeps it hidden."""
+    mark = "zqr17" + how[:3] + ("a" if how.endswith("after") else "")
+    fx = bj.mini(tmp_path / "fx")
+    db = fx["db"]
+    bj.add_session(db, "r17_p", started=T, title=r16_derived(mark))
+    bj.add_row(db, "r17_p", "user", r16_first(mark), T + 1)
+    bj.add_row(db, "r17_p", "assistant", "Noted, I will keep the vendor figure private.", T + 2)
+
+    def make_child() -> None:
+        if how == "rotation":
+            bj.rotate(db, "r17_p", "r17_c", started_at=T + DAY)
+            bj.change(db, "UPDATE sessions SET title = ? WHERE id = 'r17_c'", r16_derived(mark))
+            bj.change(db, "UPDATE sessions SET title = NULL WHERE id = 'r17_p'")  # Hermes moves the title
+        else:
+            bj.gateway_branch(db, "r17_p", "r17_c", started_at=T + DAY)
+            bj.change(db, "UPDATE sessions SET title = ? WHERE id = 'r17_c'", r16_derived(mark) + " #2")
+        bj.add_row(db, "r17_c", "user", "A later turn in the child.", T + DAY + 5)
+
+    if how != "gateway_branch_after":
+        make_child()
+    await imp.run(bj.paths(fx), ALL)
+    [m] = [r for r in await rows_of("r17_p") if r.role == "user"]
+    await as_(client, "admin")
+    assert (await client.post("/api/brain/messages/%d/withhold" % m.id)).json()["title_hidden"] is True
+    if how == "gateway_branch_after":
+        make_child()
+    await imp.run(bj.paths(fx), ALL)
+    assert await title_flag("r17_c") is True
+    assert await title_readers(client, mark) == {}
+    await imp.run(bj.paths(fx), ALL)
+    assert await bj.nowhere(mark) == []
+
+
+# ======================= R18: quotes naming a hidden title =======================================================
+
+
+R18_T0 = datetime(2026, 3, 2, 15, 0, tzinfo=UTC)
+
+
+async def r18_conversation(mark: str, sid: str) -> int:
+    """A conversation titled with its first user message (Hermes's derived title) and a readable accomplishment a
+    history answer quotes. Returns the first user message's id."""
+    from app.brain.archive import recompute_session
+    async with session_scope() as s:
+        sess = ArchiveSession(source_key="jarvis:session:" + sid, source_session_id=sid, title=r16_derived(mark),
+                              staff="jarvis", agent="supervisor", sensitivity="general", started_at=R18_T0)
+        s.add(sess)
+        await s.flush()
+        rows = [ArchiveMessage(session_id=sess.id, source_key="jarvis:message:%s:%d" % (sid, p),
+                               source_message_id=str(p), position=p, role=r, content=c,
+                               at=R18_T0 + timedelta(minutes=p), labels=lab)
+                for p, r, c, lab in ((0, "user", r16_first(mark), []),
+                                     (1, "assistant", "The certificate was renewed and the site is up again.",
+                                      ["accomplishment"]),
+                                     (2, "assistant", "Closing the ticket now.", []))]
+        s.add_all(rows)
+        await s.flush()
+        await recompute_session(s, sess.id)
+        return rows[0].id
+
+
+async def r18_lines(mark: str) -> list[str]:
+    """Every stored answer line and summary line that holds the marker or quotes message 1 of r18_*."""
+    async with session_scope() as s:
+        answers = [str(line) for a in (await s.scalars(text(
+            "SELECT result -> 'data' -> 'answer' FROM tasks WHERE result -> 'data' ? 'answer'"))).all()
+            for line in (a or [])]
+        summaries = [line for x in (await s.scalars(text("SELECT summary FROM supervisor_requests"))).all()
+                     for line in (x or "").split("\n")]
+    return [line for line in answers + summaries if mark in line or "· message 1)" in line]
+
+
+async def test_r18_hiding_a_title_rewrites_every_quote_that_names_it(client, make_worker, service_headers):
+    """R18 (readers-privacy #3): a history answer quotes a readable message of a conversation and names its source by
+    the conversation's title; the admin then withholds the first user message (title hidden). At once, before any
+    start-up check, no task result and no request summary holds the title, and the quote itself stays, naming the
+    conversation as recall names one without a title."""
+    from .test_brain_quotes_readers import quote_everything, sweep
+    mark = "zqr18now"
+    first = await r18_conversation(mark, "r18_a")
+    await quote_everything(client, make_worker)
+    assert [c for c in await bj.nowhere(mark) if c.startswith(("tasks.", "supervisor_requests."))]  # precondition
+    await as_(client, "admin")
+    w = await client.post("/api/brain/messages/%d/withhold" % first)
+    assert w.status_code == 200 and w.json()["title_hidden"] is True, w.text
+    left = [c for c in await bj.nowhere(mark) if c.startswith(("tasks.", "supervisor_requests."))]
+    assert left == [], "the hidden title is still stored in %s" % left
+    lines = await r18_lines(mark)
+    assert lines and all("(source: session r18_a · message 1)" in line for line in lines), lines
+    assert any("The certificate was renewed" in line for line in lines), "the readable quote itself was lost"
+    assert await sweep(client, service_headers, (mark,)) == {}
+
+
+async def test_r18_quotes_made_before_a_title_was_hidden_are_counted_hidden_at_read_time_and_rewritten_at_start_up(
+        client, make_worker, service_headers):
+    """R18 (2): a title hidden without rewriting its quotes (0.6.1's withhold, or a start-up check that could not run)
+    is counted by status, never served by a task or request reader (the read-time guard), and rewritten in the stored
+    answers and summaries by the start-up check."""
+    from .test_brain_quotes_readers import quote_everything, sweep
+    mark = "zqr18old"
+    await r18_conversation(mark, "r18_b")
+    await quote_everything(client, make_worker)
+    async with session_scope() as s:  # what 0.6.1's hide did: the title only
+        await s.execute(text("UPDATE archive_sessions SET title = '', flags = flags || '{\"title_withheld\": true}' "
+                             "WHERE source_session_id = 'r18_b'"))
+    assert [c for c in await bj.nowhere(mark) if c.startswith(("tasks.", "supervisor_requests."))]
+    assert (await imp.status())["quotes_of_removed_sources"] >= 1
+    assert await sweep(client, service_headers, (mark,)) == {}, "a reader served the hidden title"
+    await as_(client, "operator")
+    async with session_scope() as s:
+        rid = await s.scalar(text("SELECT id FROM supervisor_requests ORDER BY id LIMIT 1"))
+    summary = (await client.get("/api/supervisor/requests/%d" % rid)).json()["request"]["summary"]
+    assert "(source: session r18_b · message 1)" in summary, summary  # the quote stays, without the title
+    assert await check_withheld_copies() is True
+    assert [c for c in await bj.nowhere(mark) if c.startswith(("tasks.", "supervisor_requests."))] == []
+    assert (await imp.status())["quotes_of_removed_sources"] == 0
+
+
+# ======================= R19: the holds list and the preview, outside the admin's scope ========================
+
+
+R19_T0 = datetime(2026, 3, 5, 15, 0, tzinfo=UTC)
+R19_UID = "c0ffee00c0ffee00c0ffee00c0ffee19"
+
+
+async def r19_plant(key: str, agent: str, staff: str, words: str, at: datetime) -> tuple[int, int]:
+    from app.brain.archive import recompute_session
+    async with session_scope() as s:
+        sess = ArchiveSession(source_key="jarvis:session:%s" % key, source_session_id=key, title="t " + key,
+                              staff=staff, agent=agent, sensitivity="general", started_at=at)
+        s.add(sess)
+        await s.flush()
+        rows = [ArchiveMessage(session_id=sess.id, source_key="jarvis:message:%s:%d" % (key, p),
+                               source_message_id=str(p), position=p, role=r, content=c, at=at + timedelta(minutes=p),
+                               source_uid=u, content_chars=len(c))
+                for p, r, c, u in ((0, "user", "Opening line for %s." % key, ""), (1, "assistant", words, R19_UID))]
+        s.add_all(rows)
+        await s.flush()
+        await recompute_session(s, sess.id)
+        return sess.id, rows[1].id
+
+
+async def test_r19_an_admin_without_the_sensitive_data_permission_learns_nothing_of_a_row_outside_the_scope(client):
+    """R19 (readers-privacy #4): a Credit Repair row and a general row share a uid (planted). The plain admin (404 on
+    the Credit Repair conversation) previews the general row: rows outside the scope are one total, never per list
+    (a per-list count told whether the hidden text was equal). admin+ withholds the Credit Repair row, which holds the
+    general one; the plain admin's holds list names the hold but not the withheld message's id, position, time or
+    length. admin+ (in scope) still sees them."""
+    cr_sess, cr_msg = await r19_plant("r19_cr", "credit_repair", "sarah",
+                                      "Dispute letter for the client sent, balance 4410 dollars.", R19_T0)
+    _, gen_msg = await r19_plant("r19_gen", "supervisor", "jarvis", "A different general answer.",
+                                 R19_T0 + timedelta(days=1))
+    await as_(client, "admin")
+    assert (await client.get("/api/brain/sessions/%d" % cr_sess)).status_code == 404
+    preview = (await client.get("/api/brain/messages/%d/withhold-preview" % gen_msg)).json()
+    assert not [k for k in preview if k.endswith("_hidden")], preview
+    assert preview["rows_outside_your_scope"] == 1 and preview["held_rows"] == [], preview
+    await as_(client, "admin+")
+    w = await client.post("/api/brain/messages/%d/withhold" % cr_msg)
+    assert w.status_code == 200 and w.json()["held_for_review"] == [gen_msg], w.text
+    await as_(client, "admin")
+    [hold] = (await client.get("/api/brain/holds")).json()["holds"]
+    assert hold["message"] == gen_msg
+    assert hold["withheld_message"] == {"id": None, "position": None, "role": "assistant", "at": None,
+                                        "content_chars": None}, hold
+    await as_(client, "admin+")
+    [hold] = (await client.get("/api/brain/holds")).json()["holds"]
+    assert hold["withheld_message"]["id"] == cr_msg and hold["withheld_message"]["position"] == 1
+
+
+# ======================= R29: rollback copies of rows an import deleted =========================================
+
+
+R29_MARK = "zqr29tailmark"
+
+
+async def r29_records(mark: str) -> list[tuple]:
+    async with session_scope() as s:
+        return [tuple(r) for r in (await s.execute(text(
+            "SELECT id, source_key, reason FROM import_records WHERE before::text LIKE :m ORDER BY id"),
+            {"m": "%" + mark + "%"})).all()]
+
+
+@pytest.mark.parametrize("via", ["api", "direct"])
+async def test_r29_a_withhold_blanks_the_rollback_copy_of_the_rewound_original_at_once(client, tmp_path, via):
+    """R29 (tests-integrity #0): Hermes's in-place compaction rewinds the protected tail and writes it again; the next
+    import deletes the rewound original and keeps its rollback copy under its uid key. The admin then withholds the
+    live copy: right after the withhold no rollback copy holds the text and status says 0 (not only after the next
+    start-up check)."""
+    from ..conftest import ADMIN
+    await allow_ai_context()
+    fx = bj.mini(tmp_path / "j")
+    bj.add_session(fx["db"], "r29_a", started=T)
+    convo = [("user", "Start the weekly plan."), ("assistant", "Started."), ("user", "List the chores."),
+             ("assistant", "Chores listed."), ("user", "Tell me the locker combo."),
+             ("assistant", "The locker combo is %s." % R29_MARK), ("user", "Thanks.")]
+    for n, (role, content) in enumerate(convo):
+        bj.add_row(fx["db"], "r29_a", role, content, T + n + 1)
+    await imp.run(bj.paths(fx), ALL)
+    bj.hermes_compact(fx["db"], "r29_a", head_n=2, tail_n=3, ts=T + 500)
+    await imp.run(bj.paths(fx), ALL)
+    [live] = [m for m in await rows_of("r29_a") if R29_MARK in (m.content or "")]
+    assert [r[2] for r in await r29_records(R29_MARK)] == ["rewound since an earlier import"]  # precondition
+    if via == "api":
+        await as_(client, "admin")
+        assert (await client.post("/api/brain/messages/%d/withhold" % live.id)).status_code == 200
+    else:
+        from app.brain import review
+        async with session_scope() as s:
+            await review.withhold_message(s, await s.get(ArchiveMessage, live.id), actor=ADMIN[0])
+    assert await bj.nowhere(R29_MARK) == []
+    assert (await imp.status())["withheld_rollback_copies_with_text"] == 0
+
+
+async def test_r29_a_branch_childs_rewound_copy_is_blanked_by_the_withhold(client, tmp_path):
+    """R29, the CLI /branch variant: the child's copy (the parent's uid, a key of its own) was rewound and deleted by
+    an import before the withhold. The withhold of the parent's row blanks that rollback copy at once."""
+    mark = "zqr29branch"
+    await allow_ai_context()
+    fx = bj.mini(tmp_path / "j")
+    bj.add_session(fx["db"], "r29_p", started=T)
+    bj.add_row(fx["db"], "r29_p", "user", "What is the alarm code?", T + 1)
+    bj.add_row(fx["db"], "r29_p", "assistant", "The alarm code is %s." % mark, T + 2)
+    child = bj.cli_branch(fx["db"], "r29_p", "r29_c", T + 10)
+    bj.add_row(fx["db"], "r29_c", "user", "Thanks, branching here.", T + 11)
+    await imp.run(bj.paths(fx), ALL)
+    bj.change(fx["db"], "UPDATE messages SET active = 0, compacted = 0 WHERE id = ?", child[1])  # rewound
+    await imp.run(bj.paths(fx), ALL)
+    [parent] = [m for m in await rows_of("r29_p") if mark in (m.content or "")]
+    assert len(await r29_records(mark)) == 1  # precondition: the child's deleted copy holds the text
+    await as_(client, "admin")
+    assert (await client.post("/api/brain/messages/%d/withhold" % parent.id)).status_code == 200
+    assert await bj.nowhere(mark) == []
+    assert (await imp.status())["withheld_rollback_copies_with_text"] == 0
+
+
+@pytest.mark.parametrize("uids", [True, False])
+async def test_r29_rolling_back_the_compaction_run_brings_the_original_back_withheld(client, tmp_path, uids):
+    """R29: after the withhold, a rollback of the run that deleted the rewound original puts it back withheld, without
+    text, and no reader shows it, also for a backup whose rows carry no message_uid (the rewound twin in the same
+    conversation, deleted by the run that stored the live copy)."""
+    mark = "zqr29rb" + ("uid" if uids else "nouid")
+    await allow_ai_context()
+    fx = bj.mini(tmp_path / "j")
+    bj.add_session(fx["db"], "r29_r", started=T)
+    convo = [("user", "Start."), ("assistant", "Ok."), ("user", "Combo?"),
+             ("assistant", "The combo is %s." % mark), ("user", "Thanks.")]
+    for n, (role, content) in enumerate(convo):
+        bj.add_row(fx["db"], "r29_r", role, content, T + n + 1, uid=None if uids else False)
+    await imp.run(bj.paths(fx), ALL)
+    bj.hermes_compact(fx["db"], "r29_r", head_n=1, tail_n=3, ts=T + 500)
+    second = await imp.run(bj.paths(fx), ALL)
+    [live] = [m for m in await rows_of("r29_r") if mark in (m.content or "")]
+    await as_(client, "admin")
+    assert (await client.post("/api/brain/messages/%d/withhold" % live.id)).status_code == 200
+    assert await bj.nowhere(mark) == []
+    await imp.rollback(second["run_id"], discard_reviewed=True, confirm=True)
+    for who in ("viewer", "operator", "admin"):
+        await as_(client, who)
+        assert mark not in (await client.get("/api/brain/search", params={"q": mark})).text, who
+    assert await bj.nowhere(mark) == []
+    back = [m for m in await rows_of("r29_r") if m.role == "assistant" and m.withheld]
+    assert back, "the rewound original did not come back withheld"
+
+
+async def test_r29_inverse_an_identical_message_with_its_own_uid_keeps_its_rollback_copy(client, tmp_path):
+    """R29 inverse (owner requirement 2): another Hermes message with the same words (its own uid) that an import
+    deleted as rewound is not the withheld message: the withhold writes no stone on its key and leaves its rollback
+    copy as it is."""
+    mark = "zqr29inverse"
+    await allow_ai_context()
+    fx = bj.mini(tmp_path / "j")
+    bj.add_session(fx["db"], "r29_i", started=T)
+    bj.add_row(fx["db"], "r29_i", "user", "Read it out.", T + 1)
+    bj.add_row(fx["db"], "r29_i", "assistant", "The code is %s." % mark, T + 2)
+    bj.add_row(fx["db"], "r29_i", "user", "Again please.", T + 3)
+    other = bj.add_row(fx["db"], "r29_i", "assistant", "The code is %s." % mark, T + 4)
+    await imp.run(bj.paths(fx), ALL)
+    bj.change(fx["db"], "UPDATE messages SET active = 0, compacted = 0 WHERE id = ?", other)  # rewound
+    await imp.run(bj.paths(fx), ALL)
+    [first] = [m for m in await rows_of("r29_i") if mark in (m.content or "")]
+    [(rec_id, key, _)] = await r29_records(mark)
+    await as_(client, "admin")
+    assert (await client.post("/api/brain/messages/%d/withhold" % first.id)).status_code == 200
+    async with session_scope() as s:
+        assert await s.get(BrainTombstone, key) is None, "an independent identical message's key got a stone"
+        assert mark in json.dumps((await s.get(ImportRecord, rec_id)).before)
+
+
+async def test_r29_a_withhold_finds_deleted_copies_through_the_partial_indexes():
+    """R29: the withhold's lookup of rollback copies of deleted rows never scans every rollback copy (an import writes
+    one record per message). The query is prepared exactly as the driver sends it (values as parameters) and planned
+    generically (as a reused prepared statement is): its plan reads one of 0008's partial indexes of deleted rows
+    (which one depends on the table's statistics), by uid and by conversation. With the JSON keys or the record type
+    sent as parameters, no partial index applies."""
+    from types import SimpleNamespace
+
+    def literal(v: object) -> str:
+        return str(v) if isinstance(v, int) else "'%s'" % str(v).replace("'", "''")
+
+    row = SimpleNamespace(role="assistant", import_run_id=3, session_id=7)
+    async with session_scope() as s:
+        conn = await s.connection()
+        await conn.exec_driver_sql("SET LOCAL enable_seqscan = off")
+        await conn.exec_driver_sql("SET LOCAL plan_cache_mode = force_generic_plan")
+        for n, uid in enumerate(("u-r29-plan", "")):
+            compiled = identity.deleted_copies_query(row, uid).compile(dialect=conn.dialect)
+            params = compiled.construct_params()
+            values = [params[k] for k in compiled.positiontup or []]
+            await conn.exec_driver_sql("PREPARE r29_plan_%d AS %s" % (n, compiled))
+            plan = "\n".join((await conn.exec_driver_sql("EXPLAIN EXECUTE r29_plan_%d(%s)" % (
+                n, ", ".join(literal(v) for v in values)))).scalars())
+            await conn.exec_driver_sql("DEALLOCATE r29_plan_%d" % n)
+            assert "import_records_deleted_" in plan and "Seq Scan on import_records" not in plan, plan
+
+
+# ======================= R30: verify's checks 9-12 fail on their own leak state =================================
+
+
+R30_CHECKS = ("withheld_identity_holds", "withheld_hold_no_fingerprint", "purged_stay_purged", "database_guard_quiet")
+
+
+@pytest.fixture(scope="module")
+def built_r30(tmp_path_factory):
+    return bj.build(tmp_path_factory.mktemp("r30") / "fx")
+
+
+@pytest.mark.parametrize("case, check", [
+    ("stone_after_a_readable_row", "withheld_identity_holds"),
+    ("plain_fingerprint_on_a_withheld_row", "withheld_hold_no_fingerprint"),
+    ("purged_item_imported_again", "purged_stay_purged"),
+    ("database_guard_blanked_a_row", "database_guard_quiet")])
+async def test_r30_each_identity_check_fails_on_the_state_it_exists_to_catch(built_r30, case, check):
+    """R30 (tests-integrity #1): after a clean import (verify passes), the leak state of one check is planted; verify
+    fails, that check fails, and no other identity check does (exact set: a false positive fails too)."""
+    done = await imp.run(bj.paths(built_r30), ALL)
+    run_id = done["run_id"]
+
+    async def failed() -> tuple[bool, set[str]]:
+        v = await imp.verify(run_id, bj.paths(built_r30))
+        return v["passed"], {k for k, c in v["verification"]["checks"].items() if not c["ok"]}
+
+    ok, bad = await failed()
+    assert ok and not bad, bad
+    async with session_scope() as s:
+        m = await s.scalar(select(ArchiveMessage).where(ArchiveMessage.import_run_id == run_id,
+                                                        ArchiveMessage.withheld.is_(False),
+                                                        ArchiveMessage.content != "").order_by(ArchiveMessage.id))
+        sid = await s.scalar(select(ArchiveSession.source_session_id).where(ArchiveSession.id == m.session_id))
+        if case == "stone_after_a_readable_row":
+            await s.execute(text(
+                "INSERT INTO brain_tombstones (source_key, purged_at, purged_by, reason, source_session_id, "
+                "source_row_id, role, tool_call_id, message_uid, uid_known, anchor_key, via, review, bound, after_run) "
+                "VALUES (:k, now(), 'admin', 'withheld by an admin', :sid, :row, :role, '', :uid, false, '', 'admin', "
+                "'', true, 0)"), {"k": m.source_key, "sid": sid, "row": m.source_message_id, "role": m.role,
+                                  "uid": m.source_uid or ""})
+        elif case == "plain_fingerprint_on_a_withheld_row":
+            w = await s.scalar(select(ArchiveMessage).where(ArchiveMessage.withheld.is_(True)).limit(1))
+            assert w is not None, "the fixture has a withheld row"
+            await s.execute(text("UPDATE archive_messages SET source_fp = repeat('ab', 32) WHERE id = :i"),
+                            {"i": w.id})
+        elif case == "purged_item_imported_again":
+            item = await s.scalar(select(MemoryItem).where(MemoryItem.import_run_id == run_id,
+                                                           MemoryItem.source_key.is_not(None)).order_by(MemoryItem.id))
+            await s.execute(text("INSERT INTO brain_tombstones (source_key, purged_at, purged_by, reason) "
+                                 "VALUES (:k, now() - interval '3 days', 'admin', 'purged by an admin')"),
+                            {"k": item.source_key})
+        else:
+            await s.execute(text("UPDATE archive_messages SET flags = flags || "
+                                 "'{\"withheld_by_admin\": {\"guard\": \"key\"}}'::jsonb WHERE id = :i"), {"i": m.id})
+    ok, bad = await failed()
+    assert ok is False and bad & set(R30_CHECKS) == {check}, (ok, bad)
+
+
+# ======================= R32: a withheld message's key that JARVIS gave to another row ==========================
+
+
+async def test_r32_a_stoned_key_given_to_an_unrelated_row_is_never_written_under_it(client, tmp_path):
+    """R32 (tests-integrity #3): the admin withholds an answer stored under its uid key; its run is rolled back (the
+    stone stays, no row); JARVIS then gives that uid to an earlier, unrelated user row while the answer is still in
+    the backup. The import excludes the key as reassigned: nothing is stored under it, the database guard blanks
+    nothing, the user's words stay readable, and verify passes."""
+    mark, ask_words = "zqr32moved", "zqr32askwords"
+    await allow_ai_context()
+    fx = bj.mini(tmp_path / "j")
+    bj.add_session(fx["db"], "r32", started=T)
+    bj.add_row(fx["db"], "r32", "user", "Hello there.", T + 1)
+    ask_id = bj.add_row(fx["db"], "r32", "user", "Please tell me the vault phrase %s now." % ask_words, T + 2)
+    ans_id = bj.add_row(fx["db"], "r32", "assistant", "The vault phrase is %s." % mark, T + 3)
+    bj.add_row(fx["db"], "r32", "user", "Thanks.", T + 4)
+    first = await imp.run(bj.paths(fx), ALL)
+    [ans] = [m for m in await rows_of("r32") if mark in (m.content or "")]
+    key = ans.source_key
+    assert key.startswith(identity.UID_KEY) and ask_id < ans_id
+    await as_(client, "admin")
+    assert (await client.post("/api/brain/messages/%d/withhold" % ans.id)).status_code == 200
+    await imp.rollback(first["run_id"], discard_reviewed=True, confirm=True)
+    async with session_scope() as s:
+        assert await s.get(BrainTombstone, key) is not None
+    bj.change(fx["db"], "UPDATE messages SET message_uid = ? WHERE id = ?", key[len(identity.UID_KEY):], ask_id)
+    second = await imp.run(bj.paths(fx), ALL)
+    async with session_scope() as s:
+        records = [tuple(r) for r in (await s.execute(select(ImportRecord.action, ImportRecord.reason).where(
+            ImportRecord.run_id == second["run_id"], ImportRecord.source_key == key))).all()]
+        stored = (await s.execute(text("SELECT id FROM archive_messages WHERE source_key = :k"), {"k": key})).all()
+        guarded = (await s.execute(text("SELECT id FROM archive_messages "
+                                        "WHERE flags -> 'withheld_by_admin' ? 'guard'"))).all()
+        asked = (await s.execute(text(
+            "SELECT m.withheld FROM archive_messages m JOIN archive_sessions x ON x.id = m.session_id "
+            "WHERE x.source_session_id = 'r32' AND m.source_message_id = :i"), {"i": str(ask_id)})).all()
+    assert records == [("excluded", "key collision: JARVIS gave the key of a withheld message to another row")]
+    assert stored == [] and guarded == [], (stored, guarded)
+    # The unrelated row is left out under that key (spec 17), never stored there and never withheld.
+    assert not any(w for (w,) in asked), "the unrelated user row was withheld"
+    assert second["report"]["key_reassigned"] == 1, second["report"]
+    v = await imp.verify(second["run_id"], bj.paths(fx))
+    assert v["passed"], [k for k, c in v["verification"]["checks"].items() if not c["ok"]]
+    assert await bj.nowhere(mark) == []

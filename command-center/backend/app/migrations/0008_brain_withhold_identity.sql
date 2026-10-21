@@ -83,6 +83,13 @@ ALTER TABLE archive_messages ADD COLUMN IF NOT EXISTS absorbed_uids TEXT[] NOT N
 CREATE INDEX IF NOT EXISTS archive_messages_absorbed_uids_idx ON archive_messages USING gin (absorbed_uids);
 CREATE INDEX IF NOT EXISTS archive_sessions_parent_idx ON archive_sessions (parent_source_session_id)
     WHERE parent_source_session_id <> '';
+-- The rollback copies of rows an import deleted (a rewound original, a branch child's rewound copy): a withhold finds
+-- those of the same message by uid, or by the conversation for its rewound twin (identity.group_rows, review 1 R29).
+CREATE INDEX IF NOT EXISTS import_records_deleted_uid_idx ON import_records ((before -> 'deleted_row' ->> 'source_uid'))
+    WHERE record_type = 'message' AND before ? 'deleted_row';
+CREATE INDEX IF NOT EXISTS import_records_deleted_session_idx
+    ON import_records ((before -> 'deleted_row' ->> 'session_id'))
+    WHERE record_type = 'message' AND before ? 'deleted_row';
 
 -- 3. Purges: keyed fingerprints (HMAC, app/brain/identity.purge_fp) of purged imported items, never a plain hash ------
 CREATE TABLE IF NOT EXISTS brain_purged_content (

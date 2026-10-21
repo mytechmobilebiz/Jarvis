@@ -46,7 +46,7 @@ from ..worker.scheduler import valid_cron
 from . import AGENTS, KINDS, identity, store
 from . import text as brain_text
 from .archive import WITHHELD_BY_ADMIN, promoted_ref, recompute_session, withhold_copies
-from .quotes import scrub_quotes
+from .quotes import relabel_hidden_titles, scrub_quotes
 from .policy import (
     POLICIES,
     SENSITIVE_AGENT,
@@ -400,6 +400,7 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
         written += int(await identity.put_stone(session, identity.Stone(**{
             **st.__dict__, "anchor": root if root != st.key else "", "after_run": after}), actor=actor))
     _blank(message, {"at": at, "note": "withheld by an admin on the JARVIS Brain page; the text was removed"})
+    hidden_ids: list[int] = []
     if hide_title:
         old_title = sess.title or ""
         sess.title = ""
@@ -408,7 +409,7 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
         # Hermes carries the title on: to a continuation (clearing the parent's) and, as '<title> #N', to a branch;
         # each child that carries its parent's title is hidden too, down the lineage (a visited set ends a cycle).
         seen, frontier = {sess.source_session_id}, [(sess.source_session_id, old_title)]
-        hidden_ids = [sess.id]
+        hidden_ids.append(sess.id)
         while frontier:
             nxt: list[tuple[str, str]] = []
             for parent_sid, parent_title in frontier:
@@ -438,6 +439,8 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
     rowless = [st.key for st in group.rowless] + [k for k in uid_keys if k not in stored]
     done = await withhold_copies(session, messages=[message, *blanked], source_keys=rowless, actor=actor, cause=cause,
                                  ip=ip)
+    if hidden_ids:  # a history answer quoting another message of these conversations names them by the hidden title
+        await relabel_hidden_titles(session, session_ids=hidden_ids)
     for sid in sorted({r.session_id for r in blanked} - {message.session_id}):
         await recompute_session(session, sid)
     out.session = await recompute_session(session, message.session_id)
@@ -523,7 +526,11 @@ async def holds(session: AsyncSession, scope: PersonScope) -> list[dict[str, Any
     out = []
     for row, sess, stone in found:
         anchor = stone.anchor_key or stone.source_key
-        original = await session.scalar(select(ArchiveMessage).where(ArchiveMessage.source_key == anchor))
+        # The withheld message is described only when the admin may open it (an admin without the sensitive-data
+        # permission never learns the id, position, time or length of a Credit Repair or restricted row).
+        original = await session.scalar(select(ArchiveMessage).join(
+            ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id).where(
+            ArchiveMessage.source_key == anchor, person_sessions(scope), person_messages(scope)))
         anchor_stone = await session.get(BrainTombstone, anchor)
         readable = and_(ArchiveMessage.session_id == row.session_id, ArchiveMessage.withheld.is_(False),
                         person_messages(scope))

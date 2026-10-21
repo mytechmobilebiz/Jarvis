@@ -114,13 +114,17 @@ export function withholdText(count: number | null, error?: string | null): strin
  * the admin's review; copies with no row of their own. Empty when the message is stored once. */
 export function previewText(p: WithholdPreview | null | undefined): string[] {
   if (!p) return [];
-  const n = p.same_message_rows.length + (p.same_message_rows_hidden ?? 0);
-  const m = p.held_rows.length + (p.held_rows_hidden ?? 0);
+  const n = p.same_message_rows.length;
+  const m = p.held_rows.length;
+  const k = p.rows_outside_your_scope ?? 0;
   const lines: string[] = [];
   if (n || m) {
     lines.push(
       `${plural(n, "other stored row")} ${n === 1 ? "is" : "are"} the same JARVIS message and ${n === 1 ? "is" : "are"} withheld too; ${m.toLocaleString()} ${m === 1 ? "is" : "are"} held for your review.`,
     );
+  }
+  if (k > 0) {
+    lines.push(`${plural(k, "stored row")} outside what you may open ${k === 1 ? "is" : "are"} not listed; the withhold treats ${k === 1 ? "it" : "them"} by the same rules.`);
   }
   if (p.rowless_copies > 0) {
     lines.push(`${plural(p.rowless_copies, "copy", "copies")} JARVIS keeps without a stored row of its own will never be imported with this text either.`);
@@ -128,10 +132,11 @@ export function previewText(p: WithholdPreview | null | undefined): string[] {
   return lines;
 }
 
-/** "Also withhold 2 other messages with exactly this text in this conversation" (unticked by default: identical words
- * elsewhere are not the same message). */
+/** "Also withhold 2 other messages with exactly this text in this conversation and its continuations and branches"
+ * (unticked by default: identical words elsewhere are not the same message). The rows can be in a continuation or a
+ * branch of the conversation, so the label says so. */
 export function identicalLabel(k: number): string {
-  return `Also withhold ${plural(k, "other message")} with exactly this text in this conversation`;
+  return `Also withhold ${plural(k, "other message")} with exactly this text in this conversation and its continuations and branches`;
 }
 
 /** What a hold's rule means: what releasing it brings back. */
@@ -1147,7 +1152,7 @@ function WithholdChoices({
       </p>
     );
   }
-  const identical = p.identical_text_rows.length + (p.identical_text_rows_hidden ?? 0);
+  const identical = p.identical_text_rows.length;
   const items = p.items_with_this_text ?? [];
   return (
     <>

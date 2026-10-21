@@ -716,18 +716,17 @@ export interface WithholdRow {
 }
 
 /** GET /api/brain/messages/{id}/withhold-preview (admin, read-only, 0.6.2): what a withhold would also take. Rows outside
- * the admin's scope are counted in the *_hidden fields, never named. */
+ * the admin's scope are counted in one total (rows_outside_your_scope), never named and never per list. */
 export interface WithholdPreview {
   message: number;
   /** Other stored rows of the same JARVIS message: withheld too. */
   same_message_rows: WithholdRow[];
-  same_message_rows_hidden?: number;
   /** Rows sharing its JARVIS id with other text: withheld and held for an admin's review. */
   held_rows: WithholdRow[];
-  held_rows_hidden?: number;
   /** Readable rows with exactly this text in the conversation and its continuations or branches: only when asked for. */
   identical_text_rows: WithholdRow[];
-  identical_text_rows_hidden?: number;
+  /** Rows of the three lists above that are outside the admin's scope: one total, so it never tells which list. */
+  rows_outside_your_scope?: number;
   /** Copies the importer stored only as duplicates (no row of their own). */
   rowless_copies: number;
   /** Imported memory items whose text contains the message's text (to purge separately; nothing is automatic). */

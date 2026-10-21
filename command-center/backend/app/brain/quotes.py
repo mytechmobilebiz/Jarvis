@@ -9,6 +9,12 @@ After a rescan, and at start-up, refresh_quotes() re-cleans every quoting line w
 and removes a request summary's quoting line that no task holds any more (QUOTE_LINE: a line 0.6.0's unlocked
 summary copied after the withhold had already removed it from the task).
 
+A quote also names its source: recall writes "(source: <conversation title> · message N)". When an admin later hides
+that conversation's title (a withhold's hide_title, down the lineage), the title stays in every quote of the
+conversation's other, readable messages. relabel_hidden_titles() rewrites such a line's source as recall writes it for
+a conversation without a title ("(source: session <id> · message N)"; the quote itself stays): at the withhold, at
+start-up and after a rescan (refresh_quotes), and at read time (hidden_titles(), strip_dead()).
+
 Every reader applies the same rule at read time (dead_sources(), strip_dead(), strip_summary(): app/api/work.py
 task_views and app/api/supervisor.py request_view), so a quote a start-up check could not reach yet (it was skipped
 while a task held the quote lock) is never served either.
@@ -32,7 +38,7 @@ from sqlalchemy import text as sql
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import ArchiveMessage, MemoryItem, SupervisorRequest, Task
+from ..models import ArchiveMessage, ArchiveSession, MemoryItem, SupervisorRequest, Task
 from . import text as brain_text
 
 REMOVED = "- [removed: its source was withheld, changed or deleted in the JARVIS Brain]"
@@ -40,6 +46,8 @@ QUOTE_LOCK = -1  # the advisory lock (importer.LOCK_KEY, -1): import runs hold (
 # The shapes of supervisor.recall's quoting lines (_message_line, _item_line), at the end of a line. Only these are
 # quotes: a summary's other lines (the digest of other agents' results, which may say "(source: ...)" too) stay.
 QUOTE_LINE = re.compile(r"\(source: .+ · message \d+\)$|\(source: .+, item #\d+\)$")
+MESSAGE_TAIL = re.compile(r" · message (\d+)\)$")  # the end of a message quote (recall._message_line)
+SOURCE_START = " (source: "
 
 
 # The tasks that can quote a message or an item are found through tasks_quotes_idx (0007_brain_withhold.sql). Its
@@ -119,6 +127,124 @@ async def scrub_quotes(session: AsyncSession, *, message_ids: Iterable[int] = ()
     return changed
 
 
+def hidden_label(line: str, source_session_id: str) -> str:
+    """A message quote line naming its conversation as recall names one without a title ("session <id>"), for a
+    conversation whose title an admin hid. Everything from the line's first " (source: " on is replaced, so nothing of
+    the hidden title stays even when the title or the quote holds that text itself (the quote may then lose its end:
+    fail closed). REMOVED when the line is not a message quote. Unchanged when it already names the session."""
+    end = MESSAGE_TAIL.search(line.rstrip())
+    start = line.find(SOURCE_START)
+    if end is None or start < 0 or start > end.start():
+        return REMOVED
+    return f"{line[:start]}{SOURCE_START}session {source_session_id} · message {end.group(1)})"
+
+
+async def hidden_titles(session: AsyncSession, messages: Iterable[int],
+                        session_ids: Iterable[int] | None = None) -> dict[int, str]:
+    """{message id: source session id} of these quoted messages whose conversation's title an admin hid
+    (flags.title_withheld); with session_ids, only messages of those conversations."""
+    wanted = sorted({int(m) for m in messages})
+    out: dict[int, str] = {}
+    only = None if session_ids is None else sorted({int(i) for i in session_ids})
+    for i in range(0, len(wanted), 1000):
+        query = (select(ArchiveMessage.id, ArchiveSession.source_session_id)
+                 .join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
+                 .where(ArchiveMessage.id.in_(wanted[i:i + 1000]),
+                        ArchiveSession.flags["title_withheld"].astext == "true"))
+        if only is not None:
+            query = query.where(ArchiveSession.id.in_(only))
+        out.update({int(m): str(sid) for m, sid in (await session.execute(query)).all()})
+    return out
+
+
+def relabel(data: dict[str, Any], hidden: dict[int, str]) -> tuple[dict[str, Any], list[tuple[str, str]]]:
+    """A task result's data whose quote lines of the `hidden` messages name the conversation without its hidden title
+    (hidden_label()), and the (old line, new line) pairs it changed. A copy; the data given is not changed."""
+    answer, sources = list(data.get("answer") or []), list(data.get("sources") or [])
+    changes: list[tuple[str, str]] = []
+    for i, source in enumerate(sources):
+        if i >= len(answer) or not isinstance(source, dict) or not isinstance(source.get("message"), int):
+            continue
+        sid = hidden.get(source["message"])
+        if sid is None:
+            continue
+        line = str(answer[i])
+        new = hidden_label(line, sid)
+        if new != line:
+            changes.append((line, new))
+            answer[i] = new
+            if new == REMOVED:
+                sources[i] = None
+    if not changes:
+        return data, []
+    return {**data, "answer": answer, "sources": sources}, changes
+
+
+def replace_lines(summary: str, changes: Iterable[tuple[str, str]]) -> str:
+    """A request summary with each of its lines that equals an old line replaced by the new one."""
+    swap = dict(changes)
+    if not swap or not summary:
+        return summary
+    return "\n".join(swap.get(line, line) for line in summary.split("\n"))
+
+
+async def _quoting_tasks(session: AsyncSession, messages: set[int] | None) -> list[Task]:
+    """The tasks whose answer quotes one of these messages (every task with an answer's sources for None)."""
+    if messages is None:
+        return list((await session.scalars(select(Task).where(Task.result["data"].has_key("sources"))
+                                           .order_by(Task.id))).all())
+    found: dict[int, Task] = {}
+    for conds in _quoting(messages, set()):
+        for task in (await session.scalars(select(Task).where(or_(*conds)))).all():
+            found.setdefault(task.id, task)
+    return [found[k] for k in sorted(found)]
+
+
+def _quoted_messages(task: Task) -> set[int]:
+    data = (task.result or {}).get("data") or {}
+    return {s["message"] for s in data.get("sources") or [] if isinstance(s, dict) and isinstance(s.get("message"), int)}
+
+
+async def relabel_hidden_titles(session: AsyncSession, *, session_ids: Iterable[int] | None = None,
+                                apply: bool = True) -> int:
+    """Rewrites every stored quote line that names a conversation by a title an admin has hidden (hidden_label()), in
+    task results and in their requests' summaries; with session_ids, only quotes of those conversations' messages (a
+    withhold that just hid them). With apply=False only counts (brain-import status: no lock, nothing changed).
+    Returns how many task results changed (or would)."""
+    if apply:
+        await lock_quotes(session)
+    only = None if session_ids is None else {int(i) for i in session_ids}
+    if only is not None and not only:
+        return 0
+    messages = None if only is None else set((await session.scalars(select(ArchiveMessage.id).where(
+        ArchiveMessage.session_id.in_(sorted(only))))).all())
+    if messages is not None and not messages:
+        return 0
+    tasks = await _quoting_tasks(session, messages)
+    quoted = {task.id: _quoted_messages(task) for task in tasks}
+    every = await hidden_titles(session, set().union(*quoted.values()) if quoted else set(), only)
+    changed = 0
+    for task in tasks:
+        hidden = {m: every[m] for m in quoted[task.id] if m in every}
+        if not hidden:
+            continue
+        result: dict[str, Any] = dict(task.result or {})
+        data, changes = relabel(dict(result.get("data") or {}), hidden)
+        if not changes:
+            continue
+        changed += 1
+        if not apply:
+            continue
+        task.result = {**result, "data": data}
+        if task.request_id:
+            request = await session.get(SupervisorRequest, task.request_id)
+            if request is not None and request.summary:
+                request.summary = replace_lines(request.summary, changes)
+    if apply:
+        await session.flush()
+    return changed
+
+
 async def refresh_quotes(session: AsyncSession) -> int:
     """After a rescan, and at start-up: a quoting line that the current detectors would change, or whose source is
     gone, withheld or deleted, is removed as scrub_quotes() removes it; so is a reference note naming an item that is
@@ -130,6 +256,7 @@ async def refresh_quotes(session: AsyncSession) -> int:
     await lock_quotes(session)
     stale_messages, stale_items = await _stale_sources(session)
     changed = await scrub_quotes(session, message_ids=stale_messages, item_ids=stale_items)
+    changed += await relabel_hidden_titles(session)  # quotes naming a conversation by a title an admin hid
     for request in await _orphan_summaries(session):
         request.summary = strip_summary(request.summary, await held_lines(session, request.id))
         changed += 1
@@ -144,7 +271,8 @@ async def removed_sources(session: AsyncSession) -> int:
     found: set[int] = set()
     for conds in _quoting(stale_messages, stale_items):
         found |= set((await session.scalars(select(Task.id).where(or_(*conds)))).all())
-    return len(found) + len(await _orphan_summaries(session))
+    titled = await relabel_hidden_titles(session, apply=False)  # quotes naming a hidden title
+    return len(found) + titled + len(await _orphan_summaries(session))
 
 
 async def _orphan_summaries(session: AsyncSession) -> list[SupervisorRequest]:
@@ -202,9 +330,12 @@ async def dead_sources(session: AsyncSession, datas: Iterable[dict[str, Any]]) -
     return dead_m, dead_i
 
 
-def strip_dead(data: dict[str, Any], dead_m: set[int], dead_i: set[int]) -> dict[str, Any]:
+def strip_dead(data: dict[str, Any], dead_m: set[int], dead_i: set[int],
+               hidden: dict[int, str] | None = None) -> dict[str, Any]:
     """A task result's data without the lines quoting a dead source (each becomes REMOVED, as scrub_quotes() writes
-    it) and without the notes naming a dead item. A copy; the stored result is not changed."""
+    it), without the notes naming a dead item, and with the quote lines of `hidden` messages (hidden_titles(): their
+    conversation's title was hidden) naming the conversation without that title. A copy; the stored result is not
+    changed."""
     out = dict(data)
     answer, sources = list(data.get("answer") or []), list(data.get("sources") or [])
     if any(isinstance(src, dict) and (src.get("message") in dead_m or src.get("item") in dead_i) for src in sources):
@@ -216,6 +347,8 @@ def strip_dead(data: dict[str, Any], dead_m: set[int], dead_i: set[int]) -> dict
     notes = data.get("memory_notes")
     if isinstance(notes, list):
         out["memory_notes"] = [n for n in notes if not (isinstance(n, dict) and n.get("id") in dead_i)]
+    if hidden:
+        out, _ = relabel(out, hidden)
     return out
 
 
