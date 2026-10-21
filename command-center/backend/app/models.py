@@ -628,6 +628,19 @@ class BrainPurgedContent(Base):
     via: Mapped[str] = mapped_column(Text, default="")
 
 
+class BrainPurgedItem(Base):
+    """Every purge, with or without a source key: the item's id and creation time (no text, no hash), so that
+    decisions-apply --removals-only purges the very same item again when a restore brought it back (0008)."""
+
+    __tablename__ = "brain_purged_items"
+    item_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    item_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    origin: Mapped[str] = mapped_column(Text, default="")
+    replaces_source_key: Mapped[str] = mapped_column(Text, default="")
+    purged_at: Mapped[datetime] = _now_col()
+    purged_by: Mapped[str] = mapped_column(Text, default="")
+
+
 class BrainMaintenance(Base):
     """One-time brain steps that are done (identity repair, purge identity)."""
 

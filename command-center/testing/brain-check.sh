@@ -689,14 +689,16 @@ step_precheck_again() {  # 11. the same report after the test: same fingerprint 
   check_fp "precheck again"
 }
 
-step_restore_reapply() {  # 0.6.2 (spec 9.3): restore.ps1 exports the removals first and applies them after the start
+step_restore_reapply() {  # 0.6.2 (spec 9.3, review 1): restore.ps1 saves the removals and the users' access first (a
+  # helper container of the api image), and applies them again after pg_restore, BEFORE start.ps1 (a helper again).
   # restore.ps1 works on the project of its own folder (the live one's name): here it runs in a copy of the test folder
   # with a stand-in "docker" function that only records the calls and answers like the CLI. Nothing is stopped,
-  # restored or started; backup.ps1 and start.ps1 are stand-ins too.
+  # restored or started; backup.ps1 and start.ps1 are stand-ins too. (tests/unit/test_restore_ps1.py runs the same.)
   local dir="$WORK/restore-check/InfiniteAI-CommandCenter" scenario out
   mkdir -p "$dir/scripts" "$dir/backups/old"
   cp "$TEST/scripts/restore.ps1" "$dir/scripts/"
-  printf 'exit 0\r\n' > "$dir/scripts/backup.ps1"; printf 'param([switch]$NoBuild)\r\nexit 0\r\n' > "$dir/scripts/start.ps1"
+  printf 'exit 0\r\n' > "$dir/scripts/backup.ps1"
+  printf 'param([switch]$NoBuild)\r\n$global:Calls.Add("start.ps1")\r\nexit 0\r\n' > "$dir/scripts/start.ps1"
   : > "$dir/backups/old/command_center.dump"
   cat > "$WORK/restore-stub.ps1" <<'EOF'
 param([string]$Dir, [string]$Scenario)
@@ -707,9 +709,10 @@ function global:docker {
   $line = ($args | ForEach-Object { "$_" }) -join " "
   $global:Calls.Add($line); $global:LASTEXITCODE = 0
   if ($line -match "version = '0006_brain'") { "1"; return }
-  if ($line -match '^compose ps -q --status running api') { "0123abcd"; return }
-  if ($line -match 'decisions-export --removals-only') { "removals exported (withheld messages and purged items, keys and JARVIS ids only): 3; releases: 1"; return }
-  if ($line -match '^compose cp api:(\S+) (.+)$') { Set-Content -LiteralPath $Matches[2] -Value '{}'; return }
+  if ($line -match 'restore-carry export') { "access and audit exported: users 4, audit entries 10"; return }
+  if ($line -match 'decisions-export --removals-only') { "removals exported (withheld messages and purged items, keys and JARVIS ids only): 3; releases: 1; purges by item id: 1; purge fingerprints: 1"; return }
+  if ($line -match '^cp cc-restore-helper-\S+:(\S+) (.+)$') { Set-Content -LiteralPath $Matches[2] -Value '{}'; return }
+  if ($line -match 'restore-carry apply') { "access changes made after the backup, applied again: 0"; return }
   if ($line -match 'decisions-apply --removals-only') {
     $global:Tries++
     if ($Scenario -eq "fails") { "failed: OperationalError"; $global:LASTEXITCODE = 1; return }
@@ -724,21 +727,25 @@ EOF
   for scenario in works fails; do
     out=$(docker run --rm -v "$WORK:$WORK" -w "$dir" "$PWSH_IMAGE" pwsh -NoProfile -File "$WORK/restore-stub.ps1" "$dir" "$scenario" 2>&1 || true)
     echo "$out" > "$LOGS/restore-$scenario.log"
-    local calls export stop restore apply
+    local calls export stop restore apply start
     calls=$(sed -n '/^--- calls/,$p' <<<"$out" | grep -n .)  # numbered, in the order restore.ps1 made them
     export=$(grep 'decisions-export --removals-only' <<<"$calls" | head -1 | cut -d: -f1)
     stop=$(grep ':compose stop ' <<<"$calls" | head -1 | cut -d: -f1)
     restore=$(grep 'pg_restore' <<<"$calls" | head -1 | cut -d: -f1)
     apply=$(grep 'decisions-apply --removals-only' <<<"$calls" | head -1 | cut -d: -f1)
+    start=$(grep ':start.ps1$' <<<"$calls" | head -1 | cut -d: -f1)
     if [ "$scenario" = works ]; then
-      [[ -n "$export" && -n "$apply" && "$export" -lt "$stop" && "$stop" -lt "$restore" && "$restore" -lt "$apply" \
+      [[ -n "$export" && -n "$apply" && -n "$start" && "$export" -lt "$stop" && "$stop" -lt "$restore" \
+         && "$restore" -lt "$apply" && "$apply" -lt "$start" \
          && "$out" == *"were applied again (3)"* && "$out" == *"exit=0"* && "$(grep -c '^sleep 10' <<<"$out")" = 2 \
-         && -n "$(ls "$dir/backups"/removals-before-restore-*.json 2>/dev/null)" ]] \
-        && pass "restore.ps1: removals exported before the stop, kept in backups\\, applied again after the start (tried again while the start-up check held the lock)" \
-        || { fail "restore.ps1 removals (export $export, stop $stop, restore $restore, apply $apply)"; tail -20 "$LOGS/restore-$scenario.log"; }
+         && -n "$(ls "$dir/backups"/removals-before-restore-*.json 2>/dev/null)" \
+         && -n "$(ls "$dir/backups"/access-before-restore-*.json 2>/dev/null)" ]] \
+        && pass "restore.ps1: removals and access saved before the stop (helper container), kept in backups\\, applied again after pg_restore and before start.ps1 (tried again while something held the lock)" \
+        || { fail "restore.ps1 removals (export $export, stop $stop, restore $restore, apply $apply, start $start)"; tail -20 "$LOGS/restore-$scenario.log"; }
     else
-      [[ "$out" == *"NOT applied again"* && "$out" == *"decisions-apply --removals-only --in /tmp/removals.json --yes"* && "$out" == *"exit=1"* ]] \
-        && pass "restore.ps1: a failed re-apply names the commands to run and ends with exit 1" \
+      [[ "$out" == *"NOT applied again"* && "$out" == *"decisions-apply --removals-only --in /tmp/removals.json --yes"* \
+         && "$out" == *"exit=1"* && -z "$start" ]] \
+        && pass "restore.ps1: a failed re-apply leaves the services stopped, names the commands to run and ends with exit 1" \
         || { fail "restore.ps1 failed re-apply"; tail -20 "$LOGS/restore-$scenario.log"; }
     fi
   done

@@ -30,6 +30,7 @@ from ..config import Settings
 from ..models import (
     ArchiveMessage,
     ArchiveSession,
+    BrainPurgedItem,
     BrainTombstone,
     BrainWithholdExemption,
     ImportRecord,
@@ -364,6 +365,12 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
         written = int(await identity.put_stone(session, replace(identity.binding_of(
             message, sess.source_session_id, via=via, after_run=after, uid_known=bool(uid)),
             title_hidden=bool(hide_title)), actor=actor))
+    # The group's root: this message's own key, unless this row is already a stone that joined another admin's
+    # withhold (decisions-apply after a restore, or an import, reached it first as a copy): then that withhold's key,
+    # so a copy never becomes the root of the message it copies, and the rows below join the admin's own group.
+    st0 = await session.get(BrainTombstone, message.source_key) if message.source_key else None
+    root = (st0.anchor_key if st0 is not None and st0.reason == WITHHELD_BY_ADMIN and st0.anchor_key
+            and st0.anchor_key != message.source_key else message.source_key)
     at = now().isoformat()
     out = Withheld(None, bool(written))
     blanked: list[ArchiveMessage] = []
@@ -374,8 +381,8 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
         member = g.review == identity.CERTAIN
         if g.row.source_key:
             written += int(await identity.put_stone(session, identity.binding_of(
-                g.row, g.source_session_id, anchor=message.source_key, via=g.rule, review=g.review, after_run=after,
-                uid_known=member and bool(identity.row_uid(g.row))), actor=actor))
+                g.row, g.source_session_id, anchor=root if root != g.row.source_key else "", via=g.rule,
+                review=g.review, after_run=after, uid_known=member and bool(identity.row_uid(g.row))), actor=actor))
         if g.row.withheld:
             continue  # withheld already (no text): its key joins the group, the row stays as it is
         flag: dict[str, Any] = {"at": at, "note": identity.NOTE, "via": g.rule}
@@ -391,7 +398,7 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
             out.held_for_review.append(g.row.id)
     for st in group.rowless:
         written += int(await identity.put_stone(session, identity.Stone(**{
-            **st.__dict__, "anchor": message.source_key, "after_run": after}), actor=actor))
+            **st.__dict__, "anchor": root if root != st.key else "", "after_run": after}), actor=actor))
     _blank(message, {"at": at, "note": "withheld by an admin on the JARVIS Brain page; the text was removed"})
     if hide_title:
         old_title = sess.title or ""
@@ -636,10 +643,14 @@ def _effect_items(effects: dict[str, Any]) -> list[int]:
     return [e["id"] for e in effects.get("items") or [] if isinstance(e, dict) and isinstance(e.get("id"), int)]
 
 
-async def purge(session: AsyncSession, item: MemoryItem, *, actor: str) -> dict[str, Any]:
+async def purge(session: AsyncSession, item: MemoryItem, *, actor: str, purged_at: datetime | None = None
+                ) -> dict[str, Any]:
     """Deletes a soft-deleted item, its versions and its conflicts, and tombstones its source key so a later import
     does not bring it back. An item promoted from a message has no source key, so no tombstone: the audit entry
-    records the purge, and the message itself is withheld separately (never by a purge)."""
+    records the purge, and the message itself is withheld separately (never by a purge). Every purge, with or without
+    a source key, is kept in brain_purged_items (the item's id and creation time, no text): restore.ps1 carries it, so
+    a restore of an older dump that brings the item back purges it again (decisions-apply --removals-only, which
+    passes the purge's own time as purged_at)."""
     if item.deleted_at is None:
         raise BrainError("delete the item first; only deleted items can be purged")
     names = or_(MemoryConflict.incoming_item_id == item.id,
@@ -672,8 +683,8 @@ async def purge(session: AsyncSession, item: MemoryItem, *, actor: str) -> dict[
     tombstone = False
     if item.source_key:
         if await session.get(BrainTombstone, item.source_key) is None:
-            session.add(BrainTombstone(source_key=item.source_key, purged_at=now(), purged_by=actor[:200],
-                                       reason="purged by an admin"))
+            session.add(BrainTombstone(source_key=item.source_key, purged_at=purged_at or now(),
+                                       purged_by=actor[:200], reason="purged by an admin"))
         tombstone = True
     if item.origin == "import" and item.source_sha256:
         # The keyed fingerprint of its bytes (never a plain hash): a later import recognises the same text under
@@ -681,6 +692,10 @@ async def purge(session: AsyncSession, item: MemoryItem, *, actor: str) -> dict[
         await identity.remember_purge(session, source_key=item.source_key or "", sha256_hex=item.source_sha256,
                                       kind=identity.purge_kind(item.source_key or replaces or ""), actor=actor,
                                       via="purge")
+    await session.execute(pg_insert(BrainPurgedItem).values(
+        item_id=item.id, item_created_at=item.created_at, origin=(item.origin or "")[:40],
+        replaces_source_key=str(replaces or "")[:500], purged_at=purged_at or now(), purged_by=actor[:200])
+        .on_conflict_do_nothing())
     await store.purge_item(session, item)
     answers = await scrub_quotes(session, item_ids=[item.id])
     return {"versions_removed": versions, "conflicts_removed": int(conflicts or 0), "tombstone": tombstone,

@@ -264,18 +264,38 @@ Docker Desktop if nothing else uses them.
 Keep a copy of `.env` with your backups: the encryption keys in it are needed
 to read stored credentials and Credit Repair data.
 
-**Restore and the JARVIS Brain (0.6.2).** Before it restores, `restore.ps1`
-exports every message an admin withheld, every item an admin purged and every
-held row an admin released (keys and ids only, never text) to
-`backups\removals-before-restore-<time>.json`, and after the restart it applies
-them again, so restoring an older backup does not bring back what was removed
-after it. It prints how many it applied again and asks you to run
-`.\scripts\jarvis-import.ps1 -Target Production -Mode Status`. If that step
-fails, it prints the two commands that apply the file by hand and ends with an
-error; the restore itself is done. If the api was not running before the
-restore, nothing could be exported: it says so, and withholds and purges made
-after the backup must be made again. Use the `restore.ps1` of 0.6.2 or later;
-older versions do not do this.
+**What a restore keeps (0.6.2).** A restore replaces the whole database with
+the backup, but `restore.ps1` keeps what must not be undone. Before it stops
+anything it saves, in `backups\` (keys, ids, e-mail addresses and the audit
+log; never message text, never a password hash):
+
+- `removals-before-restore-<time>.json`: every message an admin withheld (with
+  the title choice), every item an admin purged (also manual and promoted items
+  and incoming versions of a changed file), every held row an admin released,
+  and the purge fingerprints;
+- `access-before-restore-<time>.json`: who may sign in and what they may read,
+  and the audit log.
+
+After the restore, **before any service starts**, it applies them again in a
+helper container of the api image (nothing serves the restored data yet): the
+audit entries made after the backup are put back, every deactivation, revoked
+sensitive-data permission and lowered role made after the backup is applied
+again (never one that would leave no active admin), every sign-in is ended
+(everyone signs in again), and the withholds, purges and releases are applied
+again with who decided them and when. Then it starts the services. It prints
+how many it applied again, and a **WARNING** listing the user changes the
+restore does revert: a user created, reactivated, given a permission or a
+higher role, or a password changed, after the backup. Redo those on the Users
+page if they are still wanted.
+
+If it cannot save these files (for example the api image is missing), it stops
+before changing anything. If it cannot apply them again, it leaves the
+services stopped, prints the commands that apply the files by hand, and ends
+with an error. Two switches accept the loss explicitly, and the script says
+what is lost: `-SkipBrainRemovals` (withholds and purges made after the backup
+are undone, their text readable again) and `-KeepRestoredAccess` (users and
+permissions exactly as in the backup). Use the `restore.ps1` of 0.6.2 or
+later; older versions do none of this.
 
 (Prefix each with `powershell -NoProfile -ExecutionPolicy Bypass -File` if
 script execution is restricted.)

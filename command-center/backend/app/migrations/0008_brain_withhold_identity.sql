@@ -94,6 +94,19 @@ CREATE TABLE IF NOT EXISTS brain_purged_content (
     via         TEXT NOT NULL DEFAULT ''              -- purge, decisions-apply, import
 );
 
+-- Every purge, with or without a source key (a manual or a promoted item, an incoming version of a changed file): the
+-- item's id and creation time, no text and no hash. restore.ps1 exports it, and decisions-apply --removals-only purges
+-- again the very same item (same id and creation time) when a restore of an older dump brought it back.
+CREATE TABLE IF NOT EXISTS brain_purged_items (
+    item_id              BIGINT NOT NULL,
+    item_created_at      TIMESTAMPTZ NOT NULL,
+    origin               TEXT NOT NULL DEFAULT '',
+    replaces_source_key  TEXT NOT NULL DEFAULT '',
+    purged_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    purged_by            TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (item_id, item_created_at)  -- a restore resets the id sequence: an id names an item with its time
+);
+
 -- 4. One-time steps that are done, and how far the rollback copies were converted ---------------------------------
 CREATE TABLE IF NOT EXISTS brain_maintenance (
     name     TEXT PRIMARY KEY,
@@ -560,5 +573,25 @@ CREATE OR REPLACE FUNCTION brain_withhold_pending() RETURNS jsonb LANGUAGE sql S
                                  FROM brain_tombstones WHERE reason = 'withheld by an admin' AND review = 'pending') h),
         'repair_done', EXISTS (SELECT 1 FROM brain_maintenance WHERE name = 'withhold_identity'));
 $fn$;
+
+-- 7. An older importer is refused on this schema. 0.6.0 (importer 1.0.0) and 0.6.1 (1.0.1) know nothing of the stones'
+-- bindings: run on this database (back to 0.6.1 code), they would store Hermes's live copy of a withheld message with its
+-- text under a new key and row id that neither the guard above nor the repair can tell from an unrelated row. Their
+-- start_run inserts the run first, so the refusal comes before any change.
+CREATE OR REPLACE FUNCTION brain_refuse_old_importer() RETURNS trigger LANGUAGE plpgsql AS $fn$
+DECLARE
+    v int[];
+BEGIN
+    v := string_to_array(substring(NEW.importer_version FROM '^\d+\.\d+\.\d+'), '.')::int[];
+    IF v IS NOT NULL AND v < ARRAY[1, 1, 0] THEN
+        RAISE EXCEPTION 'this database holds 0.6.2 withholds (migration 0008_brain_withhold_identity): import with the '
+                        '0.6.2 importer (1.1.0 or later); importer % is refused', NEW.importer_version;
+    END IF;
+    RETURN NEW;
+END
+$fn$;
+DROP TRIGGER IF EXISTS brain_refuse_old_importer ON import_runs;
+CREATE TRIGGER brain_refuse_old_importer BEFORE INSERT ON import_runs
+    FOR EACH ROW EXECUTE FUNCTION brain_refuse_old_importer();
 
 SELECT brain_withhold_repair('migration');

@@ -143,7 +143,8 @@ async def test_removals_only_needs_no_run_and_no_admin_and_audits_restore(client
     key = await _purge_vendors()
     out = tmp_path / "removals.json"
     assert await imp.decisions_export(str(out), removals_only=True) == {"removals": 2, "releases": 0,
-                                                                         "removals_only": True}
+                                                                         "removals_only": True, "purged_items": 1,
+                                                                         "purge_fingerprints": 1}  # (review 1)
     data = json.loads(out.read_text())
     assert "decisions" not in data and data["removals_only"] is True
     data["decisions"] = [{"source_key": "jarvis:file:profile/x.md", "content_hash": "0", "status": "approved"}]

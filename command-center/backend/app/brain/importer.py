@@ -91,6 +91,7 @@ from ..models import (
     ArchiveMessage,
     ArchiveSession,
     BrainPurgedContent,
+    BrainPurgedItem,
     BrainTombstone,
     BrainWithholdExemption,
     ImportRecord,
@@ -3672,9 +3673,11 @@ PURGED_BY_ADMIN = "purged by an admin"  # review.purge()'s tombstone reason
 DECISIONS_VERSION = 4  # 4 (0.6.2): withholds carry their JARVIS row, and releases travel; 3 (0.6.0, 0.6.1) still read
 RESTORE_ACTOR = "system (restore)"  # decisions-apply --removals-only: restore.ps1 applies the removals again
 RESTORE_NOTE = "decision applied again after a restore"
-# What a withhold carries in a version 4 file: its key and binding (spec 2.1), never text or a fingerprint.
+# What a withhold carries in a version 4 file: its key and binding (spec 2.1), never text or a fingerprint, and who
+# decided and when (by, at: a restore puts them back).
 WITHHOLD_FIELDS = ("source_key", "reason", "anchor", "session", "row", "role", "tool_call_id", "uid", "uid_known",
-                   "via", "review", "title_hidden")
+                   "via", "review", "title_hidden", "by", "at")
+PURGE_FIELDS = ("source_key", "reason", "by", "at")
 
 
 async def decisions_export(out_path: str, *, actor: str = DEFAULT_ACTOR, removals_only: bool = False
@@ -3688,8 +3691,11 @@ async def decisions_export(out_path: str, *, actor: str = DEFAULT_ACTOR, removal
     and never a fingerprint): every withhold (an admin's own, with whether it hid the conversation's title; the rows
     that are the same message; a hold an admin kept) and every hold still waiting for review (review 'pending': held
     there for review too), each with the JARVIS row it names (version 4), and the items an admin purged; and the
-    releases of held rows (and the rows a release follows). With removals_only, only the removals and releases
-    (restore.ps1, before a restore)."""
+    releases of held rows (and the rows a release follows). Each removal says who decided and when ('by', 'at') and
+    how a withhold's stone joined ('via'): a restore puts them back as they were. With removals_only, only the
+    removals and releases (restore.ps1, before a restore), plus what only this same installation can use again: every
+    purge by item id and creation time (also of items without a source key: manual and promoted items, incoming
+    versions), and the keyed purge fingerprints (HMACs keyed by this database's password, never text)."""
     if os.path.exists(out_path):
         raise Refused("the output file already exists; nothing is overwritten")
     decisions, skipped, not_exported = [], 0, 0
@@ -3727,15 +3733,26 @@ async def decisions_export(out_path: str, *, actor: str = DEFAULT_ACTOR, removal
         removals: list[dict[str, Any]] = []
         for t in (await s.scalars(select(BrainTombstone).where(BrainTombstone.reason.in_((
                 WITHHELD_BY_ADMIN, PURGED_BY_ADMIN))).order_by(BrainTombstone.source_key))).all():
+            who = {"by": t.purged_by or "", "at": _iso(t.purged_at)}  # who decided, and when: ids and times only
             if t.reason == PURGED_BY_ADMIN:
-                removals.append({"source_key": t.source_key, "reason": t.reason})
+                removals.append({"source_key": t.source_key, "reason": t.reason, **who})
                 continue
             # title_hidden: whether the admin's own withhold hid the conversation's title (False on other stones)
             removals.append({"source_key": t.source_key, "reason": t.reason, "anchor": t.anchor_key or "",
                              "session": t.source_session_id or "", "row": t.source_row_id or "", "role": t.role or "",
                              "tool_call_id": t.tool_call_id or "", "uid": t.message_uid or "",
                              "uid_known": bool(t.uid_known), "via": t.via or "", "review": t.review or "",
-                             "title_hidden": bool(t.title_hidden)})
+                             "title_hidden": bool(t.title_hidden), **who})
+        purged_items: list[dict[str, Any]] = []
+        fingerprints: list[dict[str, Any]] = []
+        if removals_only:
+            purged_items = [{"item": p.item_id, "created_at": _iso(p.item_created_at), "by": p.purged_by or "",
+                             "at": _iso(p.purged_at)} for p in (await s.scalars(select(BrainPurgedItem).order_by(
+                                 BrainPurgedItem.item_id, BrainPurgedItem.item_created_at))).all()]
+            fingerprints = [{"fp": p.fp, "source_key": p.source_key or "", "kind": p.kind or "", "by": p.purged_by or "",
+                             "at": _iso(p.purged_at), "via": p.via or ""} for p in (await s.scalars(
+                                 select(BrainPurgedContent).where(identity.live_fingerprints())
+                                 .order_by(BrainPurgedContent.fp))).all()]
         releases = [{"anchor": a, "session": sid, "row": row} for a, sid, row in (await s.execute(select(
             BrainWithholdExemption.anchor_key, BrainWithholdExemption.source_session_id,
             BrainWithholdExemption.source_row_id).order_by(BrainWithholdExemption.anchor_key,
@@ -3745,14 +3762,14 @@ async def decisions_export(out_path: str, *, actor: str = DEFAULT_ACTOR, removal
                                "exported_at": now().isoformat(), "importer_version": IMPORTER_VERSION,
                                "removals": removals, "releases": releases}
     if removals_only:
-        content["removals_only"] = True
+        content.update(removals_only=True, purged_items=purged_items, purge_fingerprints=fingerprints)
     else:
         content["decisions"] = decisions
     with open(out_path, "x", encoding="utf-8") as f:
         json.dump(content, f, indent=2, sort_keys=True)
     out: dict[str, Any] = {"removals": len(removals), "releases": len(releases)}
     if removals_only:
-        out["removals_only"] = True
+        out.update(removals_only=True, purged_items=len(purged_items), purge_fingerprints=len(fingerprints))
     else:
         out.update(exported=len(decisions), skipped_without_source_key=skipped, edits_not_exported=not_exported)
     async with sessionmaker()() as s:
@@ -3780,7 +3797,11 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
     (also for what this database has not imported yet). Releases of held rows apply too.
 
     With removals_only (restore.ps1, after a restore: spec 9.3) only the removals and releases apply, no run is needed
-    and the actor is "system (restore)" unless an admin is named."""
+    and the actor is "system (restore)" unless an admin is named. The admins' own withholds apply first, so a copy's
+    stone never takes the place of the message it is a copy of (whatever order the keys sort in). The restore file of
+    this same installation also brings back every purge by item id and creation time (an item without a source key
+    the restore brought back is purged again), the keyed purge fingerprints made with this database's password, and
+    who decided each removal and when."""
     from . import review  # imports the task service and the scheduler: not needed by the import itself
     try:
         with open(in_path, "rb") as f:
@@ -3822,6 +3843,17 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
                 else:
                     applied += 1
         after = await identity.current_after_run(s)
+        removals = data.get("removals") or []
+        removals = removals if isinstance(removals, list) else []
+        # What this database held before this apply: a removal that adds a stone or a purge writes, with removals_only,
+        # who decided it and when (below), never over what was here already.
+        had_keys = set((await s.scalars(select(BrainTombstone.source_key))).all()) if removals_only else set()
+        had_purges = {(int(i), at) for i, at in (await s.execute(select(
+            BrainPurgedItem.item_id, BrainPurgedItem.item_created_at))).all()} if removals_only else set()
+        carried_fps: Counter[str] = Counter()
+        if removals_only:
+            # The purge fingerprints first: a purge applied again below finds its own and keeps the purge's time.
+            carried_fps = await _carry_fingerprints(s, data.get("purge_fingerprints"))
         # The releases first, as exemptions only: a withhold below must see them (an admin's release outlives every
         # rule but the withheld message's own row and text). The rows they free are released after the removals.
         releases = data.get("releases") or []
@@ -3837,13 +3869,27 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
                         fresh.add(row)
         removed: Counter[str] = Counter()
         removals_listed: dict[str, list[int]] = {}
-        removals = data.get("removals") or []
-        for n, r in enumerate(removals if isinstance(removals, list) else [], 1):
+        # The admins' own withholds first, then the stones that join them, then purges (the file lists them by key, and
+        # a copy's row-form key sorts before the uid-form key of the message it copies): numbered as in the file.
+        for n, r in sorted(enumerate(removals, 1), key=_removal_order):
             outcome = await _apply_removal(s, r, decider, review, via=via, after=after)
             if outcome in REMOVAL_DONE:
                 removed[outcome] += 1
             else:
                 removals_listed.setdefault(outcome, []).append(n)
+        purges_listed: dict[str, list[int]] = {}
+        purged_items: Counter[str] = Counter()
+        if removals_only:
+            items = data.get("purged_items") or []
+            for n, p in enumerate(items if isinstance(items, list) else [], 1):
+                outcome = await _apply_purged_item(s, p, decider, review)
+                if outcome in PURGE_DONE:
+                    purged_items[outcome] += 1
+                    if outcome == "purged":  # one more removal applied again (restore.ps1 counts the removals line)
+                        removed[outcome] += 1
+                else:
+                    purges_listed.setdefault(outcome, []).append(n)
+            await _carry_provenance(s, removals, data.get("purged_items"), had_keys, had_purges)
         released: Counter[str] = Counter()
         releases_listed: dict[str, list[int]] = {}
         for n, r in enumerate(releases if isinstance(releases, list) else [], 1):
@@ -3861,7 +3907,8 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
                 detail.update(releases=dict(released),
                               releases_not_applied={k: len(v) for k, v in releases_listed.items()})
             if removals_only:
-                detail["via"] = "restore"
+                detail.update(via="restore", purge_fingerprints=dict(carried_fps), purged_items=dict(purged_items),
+                              purged_items_not_applied={k: len(v) for k, v in purges_listed.items()})
             await audit.record(s, decider.email, "brain.decisions_applied", "import_run" if run_id else "brain",
                                run_id if run_id else "", detail)
             await s.commit()
@@ -3869,10 +3916,121 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
             await s.rollback()  # the removals ran to count them: nothing is kept
     return {"applied" if apply else "would_apply": applied, "not_applied": listed, "removals": dict(removed),
             "removals_not_applied": removals_listed, "releases": dict(released),
-            "releases_not_applied": releases_listed}
+            "releases_not_applied": releases_listed, "purged_items": dict(purged_items),
+            "purged_items_not_applied": purges_listed, "purge_fingerprints": dict(carried_fps)}
+
+
+def _removal_order(nr: tuple[int, Any]) -> tuple[bool, bool, str]:
+    r = nr[1] if isinstance(nr[1], dict) else {}
+    return (r.get("reason") != WITHHELD_BY_ADMIN, bool(r.get("anchor")) and r.get("anchor") != r.get("source_key"),
+            str(r.get("source_key")))
+
+
+async def _carry_fingerprints(s: AsyncSession, entries: Any) -> Counter[str]:
+    """The restore file's keyed purge fingerprints (identity.live_fingerprints of this installation), stored again
+    when they were made with this database's password: a renamed or copied purged file stays out after a restore
+    that predates its import. A fingerprint made with another password is counted, not stored (it would only make
+    the importer refuse: identity.PurgeIndex)."""
+    out: Counter[str] = Counter()
+    key = identity.purge_key()
+    prefix = "k1:%s:" % identity.purge_key_id(key) if key else None
+    for e in entries if isinstance(entries, list) else []:
+        if not isinstance(e, dict) or not isinstance(e.get("fp"), str) or not e["fp"].startswith("k1:"):
+            continue
+        if prefix is None or not e["fp"].startswith(prefix):
+            out["other database password"] += 1
+            continue
+        values: dict[str, Any] = {"fp": e["fp"][:200], "source_key": str(e.get("source_key") or "")[:2000],
+                                  "kind": str(e.get("kind") or "")[:40], "purged_by": str(e.get("by") or "")[:200],
+                                  "via": str(e.get("via") or "restore")[:40]}
+        at = _when(e.get("at"))
+        if at is not None:
+            values["purged_at"] = at
+        added = (await s.execute(pg_insert(BrainPurgedContent).values(**values).on_conflict_do_nothing(
+            index_elements=[BrainPurgedContent.fp]))).rowcount
+        out["carried" if added else "already here"] += 1
+    return out
+
+
+def _when(value: Any) -> datetime | None:
+    try:
+        at = datetime.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        return None
+    return at if at is None or at.tzinfo is not None else at.replace(tzinfo=UTC)
+
+
+async def _apply_purged_item(s: AsyncSession, p: Any, user: Any, review: Any) -> str:
+    """One purge from the restore file, by item id and creation time: the very same item, brought back by the restore
+    of an older dump, is deleted and purged again (review.purge: its versions and conflicts, its tombstone and
+    fingerprint when it has them, an incoming version's hash rejected on the item it would replace). An item of that id
+    with another creation time is another item (a restore resets the id sequence): never touched."""
+    if not isinstance(p, dict) or not isinstance(p.get("item"), int) or isinstance(p.get("item"), bool):
+        return "not a purge"
+    created = _when(p.get("created_at"))
+    if created is None:
+        return "not a purge"
+    item = await s.get(MemoryItem, p["item"])
+    if item is None or item.created_at != created:
+        return "not here"
+    try:
+        async with s.begin_nested():
+            if SENSITIVE_AGENT == item.agent and not user.can_access_sensitive:
+                raise store.BrainError("needs the sensitive-data permission")
+            if item.deleted_at is None:
+                await store.delete_item(s, item, actor=user.email, note=RESTORE_NOTE)
+            flags = dict(item.flags or {})
+            detail = {"item": item.id, "kind": item.kind, "agent": item.agent}
+            origin = {"origin": item.origin, "message": flags.get("message_id"),
+                      "source_withheld": bool(flags.get("source_withheld"))}
+            result = await review.purge(s, item, actor=user.email, purged_at=_when(p.get("at")))
+            answers = result.pop("answers_scrubbed")
+            await audit.record(s, user.email, "memory.purged", "memory_item", detail["item"],
+                               {**detail, **result, **origin, "answers_scrubbed": answers, "via": "restore"})
+    except store.BrainError as exc:
+        return "purged before the restore, refused here: %s" % exc
+    except (DataError, IntegrityError):
+        return "purged before the restore, refused here by the database"
+    return "purged"
+
+
+async def _carry_provenance(s: AsyncSession, removals: list[Any], purged_items: Any, had_keys: set[str],
+                            had_purges: set[tuple[int, datetime]]) -> None:
+    """After a restore: who decided each removal and when, and how a withhold's stone joined, as the restore file says,
+    on every stone, tombstone and purge record this apply wrote (never on one the restored database already held, and
+    only where the stone is what the file says: the same group and review). The brain.decisions_applied audit entry
+    records the restore itself."""
+    for r in removals:
+        if not isinstance(r, dict) or not isinstance(r.get("source_key"), str) or r["source_key"] in had_keys:
+            continue
+        by, at = r.get("by"), _when(r.get("at"))
+        if not isinstance(by, str) or not by or at is None:
+            continue
+        values: dict[str, Any] = {"purged_by": by[:200], "purged_at": at}
+        where = [BrainTombstone.source_key == r["source_key"], BrainTombstone.reason == r.get("reason")]
+        if r.get("reason") == WITHHELD_BY_ADMIN:
+            anchor = r.get("anchor") if isinstance(r.get("anchor"), str) and r.get("anchor") != r["source_key"] else ""
+            review_ = {identity.KEPT: identity.KEPT, identity.PENDING: identity.PENDING}.get(r.get("review"),
+                                                                                          identity.CERTAIN)
+            where += [BrainTombstone.anchor_key == anchor, BrainTombstone.review == review_]
+            if isinstance(r.get("via"), str) and r["via"]:
+                values["via"] = r["via"][:200]
+        elif r.get("reason") != PURGED_BY_ADMIN:
+            continue
+        await s.execute(update(BrainTombstone).where(*where).values(**values))
+    for p in purged_items if isinstance(purged_items, list) else []:
+        if not isinstance(p, dict) or not isinstance(p.get("item"), int):
+            continue
+        created, at, by = _when(p.get("created_at")), _when(p.get("at")), p.get("by")
+        if created is None or at is None or not isinstance(by, str) or not by or (p["item"], created) in had_purges:
+            continue
+        await s.execute(update(BrainPurgedItem).where(BrainPurgedItem.item_id == p["item"],
+                                                      BrainPurgedItem.item_created_at == created)
+                        .values(purged_by=by[:200], purged_at=at))
 
 
 REMOVAL_DONE = ("withheld", "held for review", "purged", "already done", "kept for later imports")
+PURGE_DONE = ("purged", "not here")  # a purge by item id: the item purged again, or not in this database (any more)
 RELEASE_DONE = ("released", "already done", "kept for later imports")
 
 

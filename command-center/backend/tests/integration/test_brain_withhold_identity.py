@@ -609,13 +609,19 @@ async def test_decisions_v4_file_holds_no_text_and_no_fingerprint(client, fx, tm
         withholds = [r for r in data["removals"] if r["reason"] == identity.WITHHELD_BY_ADMIN]
         purges = [r for r in data["removals"] if r["reason"] != identity.WITHHELD_BY_ADMIN]
         assert all(set(r) == set(imp.WITHHOLD_FIELDS) for r in withholds)
-        assert [set(r) for r in purges] == [{"source_key", "reason"}]
+        assert [set(r) for r in purges] == [set(imp.PURGE_FIELDS)]
         # Holds waiting for review travel as holds (rules062, finding R4: live holds them too).
         assert pending <= {r["source_key"] for r in withholds if r["review"] == identity.PENDING}
         assert {r["review"] for r in withholds} == {"", identity.KEPT} | ({identity.PENDING} if pending else set())
         assert any(r["via"] == "duplicate" for r in withholds)  # the carried-on copy's key, with no row
+        # The restore file of this same installation also carries the keyed purge fingerprints (review 1, R25: HMACs
+        # keyed by this database's password, which the safety backup holds too), and nothing else of them.
+        carried = {p["fp"] for p in data.get("purge_fingerprints") or []}
+        assert bool(carried) is removals_only and carried <= kept and all(fp.startswith("k1:") for fp in carried)
+        rest = json.dumps({k: v for k, v in data.items() if k != "purge_fingerprints"})
         for value in (mark, tool_mark, kept_mark, purge_mark, STUB, "REPORT", "w1:", "k1:", *kept):
-            assert value not in flat, value
+            assert value not in rest, value
+        assert mark not in flat and purge_mark not in flat and "w1:" not in flat
         ids_only = json.dumps([data["removals"], data["releases"]])
         assert not re.search(r"[0-9a-f]{40}", ids_only)  # no hash at all (uids are 32 hex digits)
 

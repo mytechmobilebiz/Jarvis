@@ -151,6 +151,8 @@ python -m app.cli brain-import fingerprints --forget-other-key [--yes]   # 0.6.2
 python -m app.cli brain-import decisions-export --out FILE [--removals-only]  # review decisions keyed by source_key (test copy)
 python -m app.cli brain-import decisions-apply  --in FILE --run ID --actor ADMIN_EMAIL [--yes]  # after the production import
 python -m app.cli brain-import decisions-apply  --in FILE --removals-only [--actor ADMIN_EMAIL] [--yes]  # restore.ps1
+python -m app.cli restore-carry export --out FILE                 # restore.ps1: users' access and the audit log
+python -m app.cli restore-carry apply  --in FILE [--yes]          # restore.ps1: after pg_restore, before the start
 ```
 
 **Selection** (`SELECTION`):
@@ -379,6 +381,20 @@ It reports counts and writes the audit entry `brain.rescanned`.
   permission: every decision in the file was an admin's) unless `--actor` names an
   active admin; `brain.decisions_applied` has target `brain` and `"via":
   "restore"`, and every withhold and purge is audited with `via: restore`.
+- (review 1) Every removal carries `by` and `at` (who decided, when; ids and times
+  only). Removals apply with the admins' own withholds first (`anchor` empty), then
+  the stones that join them, then purges, whatever order the keys sort in; and
+  `review.withhold_message` anchors a group to the admin's own stone when the row
+  it withholds is already a member stone, so a copy never becomes a group's root.
+  The `--removals-only` file of the same installation also carries
+  `purged_items: [{item, created_at, by, at}]` (every purge, from
+  `brain_purged_items`, also of items without a source key) and
+  `purge_fingerprints: [{fp, source_key, kind, by, at, via}]` (the live keyed
+  fingerprints; HMACs, never text). Apply then stores the fingerprints made with
+  this database's password (others are counted: `other database password`),
+  purges again the very item a restore brought back (same id **and** creation
+  time; `purged`, else `already done`), and writes back on every stone, tombstone
+  and purge record it added the file's `by`, `at` and (withholds) `via`.
 
 **Audit actions:** `brain.import_started`, `brain.import_completed`,
 `brain.import_failed`, `brain.import_rolled_back`, `brain.rescanned`,
@@ -1237,15 +1253,26 @@ production fingerprint is compared before and after.
 - Undo is the importer rollback. Restore is disaster recovery: it loses everything
   since the dump.
 
-**`scripts/restore.ps1` (0.6.2).** Before stopping the application, when the api runs
-and `schema_migrations` holds `0006_brain`, it runs `decisions-export --removals-only`
-in the api container and keeps the file as
-`backups\removals-before-restore-<time>.json`; after `start.ps1` it copies it back and
-runs `decisions-apply --removals-only --yes`, tried again ten seconds later (three
-times) while the start-up check holds the import lock. It prints how many removals it
-applied again (`already done` is not counted). A failed export is a warning (the
-restore goes on; the safety backup holds the decisions); a failed re-apply prints the
-two commands to run and ends with exit 1. Windows PowerShell 5.1, ASCII only.
+**`scripts/restore.ps1` (0.6.2, review 1).** Before stopping anything, in a helper
+container of the api image (`docker compose run -d --no-deps --name
+cc-restore-helper-<time> api`, removed afterwards; the api need not run), it runs
+`restore-carry export` (users' access and the audit log) and, when
+`schema_migrations` holds `0006_brain`, `decisions-export --removals-only`, and keeps
+the files as `backups\access-before-restore-<time>.json` and
+`backups\removals-before-restore-<time>.json`. A file it cannot save stops the
+restore before any change, unless `-KeepRestoredAccess` / `-SkipBrainRemovals`
+accepts that loss (printed). After `pg_restore`, and BEFORE `start.ps1`, a helper runs
+`restore-carry apply --in ... --yes` (audit entries made after the backup put back when
+the backup is an earlier state of this database; `migrate`; deactivations, revoked
+permissions and lowered roles made after the backup applied again, when the restored
+users are this database's own, never leaving no active admin; every sign-in ended;
+the reverted widening changes listed) and `decisions-apply --removals-only --yes`
+(tried again ten seconds later, three times, if the import lock is held). Any failure,
+or a `not applied` line, leaves the services stopped, prints the commands to run, and
+ends with exit 1. It prints how many removals it applied again (`already done` is not
+counted) and, after the start, the user changes the restore reverts. Windows
+PowerShell 5.1, ASCII only. `tests/unit/test_restore_ps1.py` runs it under PowerShell
+with a stand-in `docker`.
 
 **Paths** go in through the environment variables of 6.5. No path is written into a
 `-v` string.
@@ -1268,9 +1295,9 @@ It runs under PowerShell 7 in Docker:
 10. Remove;
 11. the production fingerprint is unchanged throughout, and no planted value is in
     the test database (`pg_dump` of the brain tables, grep).
-12. (0.6.2) `restore.ps1` with a stand-in `docker`: removals exported before the
-    stop, applied again after the start (retried while the lock is held), and a
-    failed re-apply ending with exit 1; after the import, a message withheld through
+12. (0.6.2) `restore.ps1` with a stand-in `docker`: removals and access saved before
+    the stop, applied again after `pg_restore` and before `start.ps1` (retried while
+    the lock is held), and a failed re-apply leaving the services stopped with exit 1; after the import, a message withheld through
     the API stays withheld through a re-import of the same backup (verify checks 9
     to 12), `Status` prints the 0.6.2 line, `-Mode Repair` runs, and the version 4
     decisions file names its JARVIS row and holds no text.

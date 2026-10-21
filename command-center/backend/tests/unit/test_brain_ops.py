@@ -301,18 +301,23 @@ def test_decisions_apply_needs_a_run_and_an_admin_unless_removals_only(monkeypat
 
 @pytest.mark.parametrize("removals", [{}, {"withheld": 2, "held for review": 1, "purged": 3, "already done": 4,
                                           "kept for later imports": 1}])
-def test_restore_reads_what_decisions_apply_and_export_print(monkeypatch, capsys, tmp_path, removals):
+@pytest.mark.parametrize("not_applied", [{}, {"removals_not_applied": {"refused here": [2]}},
+                                         {"purged_items_not_applied": {"purged before the restore, refused here: x": [1]}},
+                                         {"releases_not_applied": {"not a release": [3]}}])
+def test_restore_reads_what_decisions_apply_and_export_print(monkeypatch, capsys, tmp_path, removals, not_applied):
     """restore.ps1 counts what was applied again from decisions-apply's removals line (what the restored backup
-    already held is "already done", not counted), the same way PowerShell does: these are its own patterns."""
+    already held is "already done", not counted), and treats any "not applied" line (a removal, a purge by item id or a
+    release it could not apply again) as a failure, the same way PowerShell does: these are its own patterns."""
     from app import cli
     from app.brain import importer
 
     async def apply(in_path, run_id, *, actor, apply, removals_only=False):
         return {"applied": 0, "not_applied": {}, "removals": removals, "removals_not_applied": {},
-                "releases": {"released": 1}, "releases_not_applied": {}}
+                "releases": {"released": 1}, "releases_not_applied": {}, "purged_items_not_applied": {},
+                "purge_fingerprints": {"carried": 1}, **not_applied}
 
     async def export(out_path, *, actor="", removals_only=False):
-        return {"removals": 5, "releases": 1, "removals_only": True}
+        return {"removals": 5, "releases": 1, "removals_only": True, "purged_items": 2, "purge_fingerprints": 1}
 
     monkeypatch.setattr(importer, "decisions_apply", apply)
     monkeypatch.setattr(importer, "decisions_export", export)
@@ -320,8 +325,10 @@ def test_restore_reads_what_decisions_apply_and_export_print(monkeypatch, capsys
                      "--yes"]) == 0
     printed = capsys.readouterr().out
     text = script("restore.ps1")
-    line = re.search(r"\$text -match '([^']+)'\) \{", text).group(1)
+    line = re.search(r"\$text -match '(\(\?m\)\^removals applied: [^']+)'\) \{", text).group(1)
     part = re.search(r"\$part -match '([^']+)' -and \$Matches\[1\] -ne \"already done\"", text).group(1)
+    failed = re.search(r"\$text -match '([^']+not applied)'\) \{", text).group(1)
+    assert bool(re.search(failed.replace("(?m)", ""), printed, re.M)) is bool(not_applied), printed
     found = re.search(line, printed)
     again = 0
     if found:
@@ -331,29 +338,37 @@ def test_restore_reads_what_decisions_apply_and_export_print(monkeypatch, capsys
                 again += int(m.group(2))
     assert again == sum(n for k, n in removals.items() if k != "already done")
     assert found is not None and "releases applied: released 1" in printed  # "removals applied: none" counts 0
+    assert "purge fingerprints: carried 1" in printed
     assert cli.main(["cli", "brain-import", "decisions-export", "--out", str(tmp_path / "r"), "--removals-only"]) == 0
     assert "removals exported" in capsys.readouterr().out
 
 
-def test_restore_exports_the_removals_first_and_applies_them_after_the_start():
-    """spec 9.3: the removals are exported while the api still runs (and only when the database has the JARVIS Brain),
-    kept next to the backups, and applied again after start.ps1, tried again while the start-up check holds the
-    import lock; a failure names the commands to run, and the restore then ends with exit 1."""
+def test_restore_saves_first_and_applies_again_before_anything_starts():
+    """spec 9.3 (review 1, R23, R24, R27): the removals and the users' access are saved with a helper container of the
+    api image (the api need not run) before anything is stopped, kept next to the backups, and applied again after
+    pg_restore and BEFORE start.ps1, in a helper again; a failure to save stops the restore before any change unless
+    an override names what is lost; a failure to apply again leaves the services stopped and names the commands.
+    tests/unit/test_restore_ps1.py runs the script."""
     text = script("restore.ps1")
-    order = ['& (Join-Path $PSScriptRoot "backup.ps1")', "version = '0006_brain'", "ps -q --status running api",
-             "decisions-export --removals-only --out $inside", 'docker compose cp "api:$inside" $target',
+    order = ['& (Join-Path $PSScriptRoot "backup.ps1")', "version = '0006_brain'",
+             "Invoke-Helper restore-carry export --out $inside", 'docker cp "${helper}:$inside" $target',
+             "Invoke-Helper brain-import decisions-export --removals-only --out $inside", "if ($missing.Count -gt 0)",
              "docker compose stop api worker dashboard n8n", "pg_restore -U postgres",
-             '& (Join-Path $PSScriptRoot "start.ps1") -NoBuild', 'docker compose cp $removals "api:$inside"',
-             "decisions-apply --removals-only --in $inside --yes"]
+             "Invoke-Helper restore-carry apply --in /tmp/access.json --yes",
+             "Invoke-Helper brain-import decisions-apply --removals-only --in /tmp/removals.json --yes",
+             "if ($problems.Count -gt 0)", '& (Join-Path $PSScriptRoot "start.ps1") -NoBuild']
     at = [text.index(o) for o in order]
     assert at == sorted(at), order
-    assert '$inside = "/tmp/removals-before-restore-$stamp.json"' in text  # never one an earlier restore left
-    assert '"removals-before-restore-$stamp.json"' in text and '(Join-Path $root "backups")' in text
+    assert "docker compose run -d --no-deps --name $helper api" in text
+    assert "--status running api" not in text and "compose exec -T api" not in text  # the api need not run
+    assert '"removals-before-restore-$stamp.json"' in text and '"access-before-restore-$stamp.json"' in text
+    assert "$backups = Join-Path $root \"backups\"" in text
+    assert "[switch]$SkipBrainRemovals" in text and "[switch]$KeepRestoredAccess" in text
     assert "for ($try = 1; $try -le 4; $try++)" in text and "Start-Sleep -Seconds 10" in text
     assert "$text -notmatch 'is running'" in text and "$code -ne 2" in text
-    assert text.count("Show-Reapply") == 3  # defined, after a failed apply, after a failed start
+    assert text.count("Show-Reapply") == 2  # defined, and called when something was not applied again
     assert "-Mode Status" in text and "were applied again" in text
-    assert '$failed -notcontains "command_center"' in text  # an unchanged database needs nothing applied again
+    assert '($failed -notcontains "command_center")' in text  # an unchanged database needs nothing applied again
     assert ".env" not in text.replace("Use the same .env the backup was taken with.", "")
 
 

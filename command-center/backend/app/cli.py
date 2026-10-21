@@ -6,6 +6,7 @@
     python -m app.cli brain-import   # the JARVIS import (plan, run, resume, verify, rollback, status, rescan,
                                      # repair, fingerprints, decisions-export, decisions-apply); brain-import --help
                                      # lists them
+    python -m app.cli restore-carry  # restore.ps1: users' access and the audit log across a restore (export, apply)
 """
 
 from __future__ import annotations
@@ -362,7 +363,8 @@ async def _brain_command(args: argparse.Namespace) -> int:
             if args.removals_only:
                 # scripts/restore.ps1 reads this line (tests/unit/test_brain_ops.py runs its pattern against it).
                 print("removals exported (withheld messages and purged items, keys and JARVIS ids only): %d; "
-                      "releases: %d" % (out["removals"], out["releases"]))
+                      "releases: %d; purges by item id: %d; purge fingerprints: %d"
+                      % (out["removals"], out["releases"], out.get("purged_items", 0), out.get("purge_fingerprints", 0)))
                 return 0
             print("decisions exported: %d (items without a source key skipped: %d; edits of customer or Credit "
                   "Repair items not exported, to redo by hand: %d); removals (withheld messages and purged items, "
@@ -386,6 +388,13 @@ async def _brain_command(args: argparse.Namespace) -> int:
                                        _counts_line(out["removals"]) if out["removals"] else "none"))
             for reason, numbers in sorted(out["removals_not_applied"].items()):
                 print("  removal not applied (%s): removals %s" % (reason, ", ".join(str(n) for n in numbers)))
+            # scripts/restore.ps1 reads every "not applied" line: a removal it could not apply again fails the restore.
+            if out.get("purged_items"):
+                print("purges by item id: " + _counts_line(out["purged_items"]))
+            for reason, numbers in sorted((out.get("purged_items_not_applied") or {}).items()):
+                print("  purge not applied (%s): purged items %s" % (reason, ", ".join(str(n) for n in numbers)))
+            if out.get("purge_fingerprints"):
+                print("purge fingerprints: " + _counts_line(out["purge_fingerprints"]))
             if out["releases"] or out["releases_not_applied"]:
                 print("releases %s: %s" % ("applied" if args.yes else "that would apply",
                                            _counts_line(out["releases"]) if out["releases"] else "none"))
@@ -429,6 +438,78 @@ def brain_import(argv: list[str]) -> int:
         return 1
 
 
+# --- restore-carry: what restore.ps1 keeps across a restore besides the brain's removals (app/restore_carry.py) ----
+RESTORE_CARRY_HELP = """python -m app.cli restore-carry COMMAND ...
+
+  export --out FILE        the users' access state and the audit log (restore.ps1, before the restore)
+  apply  --in FILE [--yes] after pg_restore, before the services start: the audit entries of the undone period put back,
+                           the database migrated, deactivations, revoked permissions and lowered roles made after the
+                           backup applied again, every sign-in ended; everything else the restore reverts is listed
+
+Exit codes: 0 done, 1 failed, 2 refused before any change.
+"""
+
+
+def restore_carry(argv: list[str]) -> int:
+    from . import restore_carry as rc
+    from .db import dispose_engine
+
+    parser = _Parser(prog="restore-carry", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    p = sub.add_parser("export", add_help=False)
+    p.add_argument("--out", required=True)
+    p = sub.add_parser("apply", add_help=False)
+    p.add_argument("--in", dest="in_path", required=True)
+    p.add_argument("--yes", action="store_true")
+    if not argv or argv[0] in ("help", "-h", "--help"):
+        print(RESTORE_CARRY_HELP)
+        return 0
+    try:
+        args = parser.parse_args(argv)
+    except _UsageError as exc:
+        print("refused: %s\n" % exc + RESTORE_CARRY_HELP)
+        return 2
+
+    async def go() -> int:
+        try:
+            if args.command == "export":
+                out = await rc.export(args.out)
+                print("access and audit exported: users %d, audit entries %d" % (out["users"], out["audit_entries"]))
+                return 0
+            out = await rc.apply(args.in_path, apply=args.yes)
+            done = "" if args.yes else " (nothing was changed; add --yes)"
+            # scripts/restore.ps1 prints these lines and repeats the "reverted:" and "not applied again:" ones at the end.
+            if out["audit_not_kept"]:
+                print("audit entries made after the backup NOT put back (%s): they stay in the file%s"
+                      % (out["audit_not_kept"], done))
+            else:
+                print("audit entries made after the backup, put back: %d%s" % (out["audit_kept"], done))
+            if out["access_not_carried"]:
+                print("access: %s" % out["access_not_carried"])
+            print("access changes made after the backup, applied again: %d%s" % (len(out["kept"]), done))
+            for line in out["kept"]:
+                print("  kept: " + line)
+            for line in out["skipped"]:
+                print("  not applied again: " + line)
+            print("user changes the restore reverts (redo them on the Users page if still wanted): %d"
+                  % len(out["reverted"]))
+            for line in out["reverted"]:
+                print("  reverted: " + line)
+            print("sign-in sessions ended: %d (everyone signs in again)%s" % (out["sessions_ended"], done))
+            return 0
+        except rc.Refused as exc:
+            print("refused: %s" % exc)
+            return 2
+        finally:
+            await dispose_engine()
+
+    try:
+        return asyncio.run(go())
+    except Exception as exc:  # the message could name a user's data: the class only
+        print("failed: %s (the details are not shown)" % exc.__class__.__name__)
+        return 1
+
+
 def main(argv: list[str]) -> int:
     command = argv[1] if len(argv) > 1 else "help"
     if command == "check-config":
@@ -447,6 +528,8 @@ def main(argv: list[str]) -> int:
         return 0
     if command == "brain-import":
         return brain_import(argv[2:])
+    if command == "restore-carry":
+        return restore_carry(argv[2:])
     print(__doc__)
     return 0 if command == "help" else 2
 

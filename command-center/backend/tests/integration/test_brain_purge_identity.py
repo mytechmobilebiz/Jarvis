@@ -15,7 +15,7 @@ import re
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.brain import identity, review, store
 from app.brain import importer as imp
@@ -180,8 +180,11 @@ async def test_legacy_entry_already_back_is_quarantined_by_r8(fx):
         await s.execute(BrainPurgedContent.__table__.delete())  # a 0.6.1 purge: no fingerprint
         await s.execute(BrainMaintenance.__table__.delete())  # 0.6.2 has not started yet
         later = ImportRun(status="completed", importer_version="1.0.1")  # a 0.6.1 import after the purge
+        # ... made while the database was still 0.6.1's: 0008 refuses an older importer's run (review 1, R26)
+        await s.execute(text("ALTER TABLE import_runs DISABLE TRIGGER brain_refuse_old_importer"))
         s.add(later)
         await s.flush()
+        await s.execute(text("ALTER TABLE import_runs ENABLE TRIGGER brain_refuse_old_importer"))
         back = await store.create_item(
             s, kind="business", title="Storage", body=secret, actor="importer (cli)", origin="import",
             source_system="jarvis", source_key=found.source_key.replace("memories/MEMORY.md", "memories/USER.md"),

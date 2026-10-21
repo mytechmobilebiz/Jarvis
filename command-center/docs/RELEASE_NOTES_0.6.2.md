@@ -198,16 +198,35 @@ deleted as rewound, and a message JARVIS merged it into. Version 3 files
 (0.6.0, 0.6.1) are still read, but a version 3 withhold names only a key:
 export again with 0.6.2.
 
-**Restores.** `restore.ps1` exports every withhold, purge and release before
-it restores (`backups\removals-before-restore-<time>.json`, keys and ids only),
-and applies them again after the restart (`decisions-apply --removals-only`,
-recorded as `system (restore)`). It prints how many it applied again. If that
-step fails, it prints the two commands to run and ends with an error.
+**Restores.** Before it stops anything, `restore.ps1` saves every withhold
+(with the title choice), every purge (by key, and by item id and creation time,
+so manual and promoted items and incoming versions are covered too), every
+release, the keyed purge fingerprints, who decided each and when
+(`backups\removals-before-restore-<time>.json`, keys and ids only), and the
+users' access and the audit log (`backups\access-before-restore-<time>.json`,
+e-mail addresses and audit entries; no password hash). It uses a helper
+container of the api image, so the api need not be running. After the restore,
+**before any service starts**, the helper puts back the audit entries made
+after the backup, applies again every deactivation, revoked sensitive-data
+permission and lowered role made after it (never leaving no active admin),
+ends every sign-in, and applies the removals again
+(`decisions-apply --removals-only`, as `system (restore)`, keeping who decided
+each and when, the admins' own withholds first). Only then do the services
+start. It lists the user changes the restore does revert (a user created, a
+permission granted or a role raised, a password changed after the backup). It
+stops before any change when it cannot save these files, and leaves the
+services stopped (exit 1, with the commands to run) when it cannot apply them
+again; `-SkipBrainRemovals` and `-KeepRestoredAccess` accept the loss
+explicitly and say what is lost.
 
 **Importer and scripts.**
 - New commands: `brain-import repair [--yes]`, `brain-import fingerprints
   --forget-other-key [--yes]`, `decisions-export --removals-only` and
-  `decisions-apply --removals-only` (no import run needed).
+  `decisions-apply --removals-only` (no import run needed), and
+  `python -m app.cli restore-carry export|apply` (restore.ps1: the users'
+  access and the audit log across a restore).
+- An importer older than 1.1.0 (0.6.0, 0.6.1) is refused on a 0.6.2 database
+  (migration `0008`), before it writes anything.
 - `brain-import status` prints one more line: migration
   `0008_brain_withhold_identity`, whether the identity repair is done,
   readable rows matching a withhold, held for review, withheld rows with a
@@ -230,8 +249,11 @@ step fails, it prints the two commands to run and ends with an error.
 and `brain.purge_fingerprints_forgotten`. `archive.message_withheld` adds
 `also_withheld`, `held_for_review`, `identical_withheld`, `keys_tombstoned`
 and `title_hidden`. `brain.decisions_exported` and `brain.decisions_applied`
-count releases, and a restore's re-apply says `"via": "restore"`. No entry
-holds a title, text, note or search query.
+count releases, and a restore's re-apply says `"via": "restore"`. A restore
+also writes `user.updated` (actor `system (restore)`) for each access change it
+applies again and `system.restore_carried` with counts, and keeps the audit
+entries made after the backup. No entry holds a title, text, note or search
+query.
 
 ## 3. The decisions and the defaults
 
@@ -246,7 +268,7 @@ holds a title, text, note or search query.
 | Certain matches | Never releasable |
 | Purges of items that came back | Quarantined for an admin; never purged automatically |
 | Purge fingerprints | Keyed from the database password; no new setting; the importer container still gets only `DATABASE_URL`, `TZ` and `ENVIRONMENT` |
-| Restores | Withholds, purges and releases made after the backup are applied again |
+| Restores | Withholds, purges, releases, title choices, deactivations, revoked permissions, lowered roles and audit entries made after the backup are applied again before anything serves; other user changes it reverts are listed |
 
 Each default can be changed later without a migration.
 
@@ -306,12 +328,16 @@ same name and other bytes; an unrelated row's rollback copy.
   and the database guard keeps blanking every row a withhold names. But that
   code is NO-GO for imports: import nothing until you are on 0.6.2 again
   (`jarvis-import.ps1` of 0.6.2 refuses a live installation without importer
-  1.1.0). The next 0.6.2 start repairs anything left readable.
+  1.1.0, and the 0.6.2 database itself refuses an import run of an older
+  importer before it writes anything). Back on 0.6.2, its start repairs what
+  0.6.1 code left readable by key, JARVIS row or uid; a copy an older import
+  stored under a new key with no uid is repaired by the next 0.6.2 import.
 - **To 0.5.0:** as the 0.5.0 section of the 0.6.2 guide describes; 0.5.0
   ignores the JARVIS Brain tables.
 - **Full restore (disaster only):** `restore.ps1` from the 0.6.2 folder, with
-  a backup taken before the upgrade. It applies again the withholds and
-  purges made after that backup. The `restore.ps1` of an older version does
+  a backup taken before the upgrade. It applies again the withholds, purges,
+  releases and access narrowing made after that backup, before anything
+  serves (section 2, "Restores"). The `restore.ps1` of an older version does
   not; use 0.6.2's.
 
 ## 6. Tests (cloud sandbox)
@@ -369,6 +395,16 @@ Synthetic data only, never real JARVIS data.
   count it; `verify` checks it after that import.
 - **A changed database password** stops imports until it is restored or the
   fingerprints are forgotten (audited); the purges stay either way.
+- **A restore reverts the user changes that widen access** made after the
+  backup: a user created, reactivated, given the sensitive-data permission or
+  a higher role, and a changed password (the older one works again). It lists
+  each one; redo them by hand. (Narrowing changes are applied again, and every
+  sign-in is ended.) A backup of another installation keeps its own users as
+  they are.
+- **Purges made before 0.6.2 of items without a source key** (manual and
+  promoted items, incoming versions) are not in the purge record 0.6.2 starts:
+  a restore of a backup older than such a purge brings the item back, to purge
+  again by hand. Purges with a source key travel by key, as before.
 - **From 0.6.1, still open:** what a withhold cannot reach outside the
   Command Center (the JARVIS backup itself, older `backup.ps1` dumps, saved
   exports, text already sent to an AI model); access logs record request
