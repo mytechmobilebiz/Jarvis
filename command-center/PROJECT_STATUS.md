@@ -106,12 +106,12 @@ installed and running; nothing here changes it.
   container with no network and the JARVIS folders mounted read-only.
 - **The JARVIS Brain (0.6.0)**: see "Completed in 0.6.0" below.
 
-## Built for 0.6.2 (one migration, three small tables; no new keys; pending its verdict)
+## Built for 0.6.2 (one migration, four small tables; no new keys; pending its verdict)
 
 Full list, the decisions and defaults, upgrade from 0.5.0, 0.6.0 or 0.6.1,
 going back, and what stays open:
 [docs/RELEASE_NOTES_0.6.2.md](docs/RELEASE_NOTES_0.6.2.md); step by step on
-Windows: `releases/UPGRADE_0.6.1_TO_0.6.2_WINDOWS.md` (with the package).
+Windows: `releases/UPGRADE_0.5.0_TO_0.6.2_WINDOWS.md` (with the package).
 
 - A withhold records the JARVIS message itself (conversation, row, role, tool
   call, message id) and every other name the importer gave it, so carried-on
@@ -515,8 +515,8 @@ owner's approval; the dashboard and the n8n editor stay bound to localhost.
    (releases/GO_NO_GO_0.6.2.md). Until it says GO, nothing of 0.6.x is
    installed and nothing is imported.
 2. If GO and approved, owner: upgrade the live installation from 0.5.0
-   straight to 0.6.2 with `releases/UPGRADE_0.6.1_TO_0.6.2_WINDOWS.md` (its
-   0.5.0 section: back up, check the zip against its `.sha256`, extract into
+   straight to 0.6.2 with `releases/UPGRADE_0.5.0_TO_0.6.2_WINDOWS.md` (back
+   up, check the zip against its `.sha256`, extract into
    `C:\InfiniteAI\v0.6.2`, copy `.env`, run `install.ps1`). All smoke checks
    should pass, with API and dashboard 0.6.2, and `jarvis-import.ps1 -Target
    Production -Mode Status` should say `identity repair done`. If anything

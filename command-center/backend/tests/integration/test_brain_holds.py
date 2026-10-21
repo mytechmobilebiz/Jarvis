@@ -174,6 +174,34 @@ async def test_release_restores_text_at_next_import_and_audits(client, fx):
     assert v["passed"], {k: c for k, c in v["verification"]["checks"].items() if not c["ok"]}
 
 
+async def _release_digests() -> list[tuple[str, int, str]]:
+    async with session_scope() as s:
+        return [(e.source_row_id, e.content_chars, e.content_fp)
+                for e in (await s.scalars(select(BrainWithholdExemption))).all()]
+
+
+async def test_withholding_released_content_drops_its_digest(client, fx):
+    """Review 2 S27 (tests-integrity #3): a release is bound to the content it released by a keyed digest of the
+    released row's readable text (content_fp 'r1:...'). When an admin later withholds that very content, the withhold
+    drops the digest at once (review.withhold_message -> identity.unbind_withheld): no keyed fingerprint of withheld
+    text is kept, not even until the next import (whose own unbind would clear it later)."""
+    _, stub = await held_stub(client, fx, "zqholdunbind62")
+    await as_(client, "admin")
+    assert (await client.post("/api/brain/holds/%d/release" % stub.id)).status_code == 200
+    await run(fx)
+    [back] = await message_of("prune_01", stub.source_message_id)
+    assert (back.withheld, back.content) == (False, STUB)
+    bound = await _release_digests()
+    assert bound and all(fp.startswith("r1:") for _, _, fp in bound), bound
+    await withhold(client, back.id)  # the admin withholds the released content itself
+    async with session_scope() as s:
+        now_ = await s.get(ArchiveMessage, back.id)
+        assert now_.withheld and now_.content == ""
+    assert all(fp == "" for _, _, fp in await _release_digests()), await _release_digests()  # before any import
+    await run(fx)
+    assert all(fp == "" for _, _, fp in await _release_digests()), await _release_digests()
+
+
 async def test_holds_routes_are_admin_only_and_scoped(client, fx):
     mark = "zqholdscope62"
     full, stub = await held_stub(client, fx, mark)

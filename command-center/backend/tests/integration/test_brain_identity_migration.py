@@ -709,3 +709,179 @@ async def test_r35_the_repair_follows_a_continuation_never_a_delegated_child():
     assert got["delegated"] == (False, False), got  # a sub-agent's own row: never held for the parent's text
     assert got["continuation"] == (True, True), got  # the control: a continuation's copy is held
     assert counts.get("held_by_same_text") == 1, counts
+
+
+# --- Review 2 S25 and S26 (tests-integrity #1, #2): the SQL repair's remaining rules and guards ----------------------
+# Each plants its rows BEFORE the stone (so the database guard never acts first), runs identity.repair_rows (what the
+# migration, the start-up check, every import and rescan --yes run) and checks the rows, the stones and the counters.
+
+
+async def _row_state(s, i: int) -> tuple:
+    return tuple((await s.execute(text("SELECT withheld, content FROM archive_messages WHERE id = :i"),
+                                  {"i": i})).one())
+
+
+async def _stone_of(s, key: str) -> tuple | None:
+    r = (await s.execute(text("SELECT review, via, anchor_key FROM brain_tombstones WHERE source_key = :k"),
+                         {"k": key})).one_or_none()
+    return tuple(r) if r is not None else None
+
+
+@pytest.mark.usefixtures("clean_db")
+async def test_r4e_withholds_a_fold_of_a_certain_uid_and_never_a_fold_of_a_held_rows_uid():
+    """S25 (1) and S26 (2): R4e, a stored readable fold (Hermes absorbed_message_uids) that absorbed the withheld
+    message's uid (a certain stone, uid known) holds its text verbatim: a member, withheld at once. Its guard: a fold
+    that absorbed only a HELD row's own uid (a pending stone) is left alone; that uid says nothing of the withheld
+    message, and a member is never listed for an admin's review (owner requirement 2)."""
+    async with session_scope() as s:
+        sr = await _r_session(s, "R4E")
+        await _r_message(s, sr, "jarvis:message:R4E:10", "10", "user", "", uid="u-r4e-w", withheld=True,
+                         fp="w1:live", pos=1)
+        await _r_message(s, sr, "jarvis:message:R4E:11", "11", "user", "", uid="u-r4e-held", withheld=True,
+                         fp="w1:live", pos=2)
+        fold_a = await _r_message(s, sr, "jarvis:message:R4E:30", "30", "assistant",
+                                  "Summary holding the withheld words zqr4efoldcert.", uid="u-r4e-folda", pos=3)
+        fold_b = await _r_message(s, sr, "jarvis:message:R4E:31", "31", "assistant",
+                                  "Summary of a held row's own words zqr4efoldheld.", uid="u-r4e-foldb", pos=4)
+        await s.execute(text("UPDATE archive_messages SET absorbed_uids = ARRAY['u-r4e-w'] WHERE id = :i"),
+                        {"i": fold_a})
+        await s.execute(text("UPDATE archive_messages SET absorbed_uids = ARRAY['u-r4e-held'] WHERE id = :i"),
+                        {"i": fold_b})
+        await _r_stone(s, "jarvis:message:R4E:10", "R4E", "10", "user", "u-r4e-w", uid_known=True)
+        await s.execute(text(  # the hold: a pending stone of the held row, anchored on the admin's stone
+            "INSERT INTO brain_tombstones (source_key, purged_at, purged_by, reason, source_session_id, source_row_id,"
+            " role, message_uid, uid_known, anchor_key, via, review, bound) VALUES ('jarvis:message:R4E:11', now(), "
+            "'system', 'withheld by an admin', 'R4E', '11', 'user', 'u-r4e-held', true, 'jarvis:message:R4E:10', "
+            "'same message id', 'pending', true)"))
+    async with session_scope() as s:
+        counts = await identity.repair_rows(s, cause="test")
+    async with session_scope() as s:
+        a, b = await _row_state(s, fold_a), await _row_state(s, fold_b)
+        stone_a, stone_b = await _stone_of(s, "jarvis:message:R4E:30"), await _stone_of(s, "jarvis:message:R4E:31")
+    assert a == (True, "") and stone_a == ("", "upgrade: merged into another message", "jarvis:message:R4E:10"), \
+        (a, stone_a)
+    assert b == (False, "Summary of a held row's own words zqr4efoldheld.") and stone_b is None, (b, stone_b)
+    assert counts.get("withheld_by_fold") == 1, counts
+
+
+@pytest.mark.usefixtures("clean_db")
+async def test_r5_blanks_the_rollback_copies_of_rows_it_withholds_for_restricted_data():
+    """S25 (2): R5 withholds a readable row left in a conversation withheld for restricted data, and blanks its
+    rollback copy in the same step (import_records.before), before any settle() or sweep runs: right after the
+    migration's own repair no copy holds the text."""
+    mark = "zqr5copy"
+    async with session_scope() as s:
+        sr = await _r_session(s, "R5C")
+        await s.execute(text("UPDATE archive_sessions SET sensitivity = 'restricted' WHERE id = :i"), {"i": sr})
+        row = await _r_message(s, sr, "jarvis:message:R5C:4", "4", "user", "Now readable %s new." % mark, pos=1)
+        before = {"source_message_id": "4", "source_fp": "", "position": 1, "role": "user",
+                  "content": "The earlier text %s old." % mark, "withheld": False, "state": "live"}
+        run = (await s.execute(text("INSERT INTO import_runs (status, started_at, finished_at) VALUES ('completed', "
+                                    "now() - interval '1 hour', now() - interval '1 hour') RETURNING id"))).scalar()
+        await s.execute(text(
+            "INSERT INTO import_records (run_id, source_key, record_type, action, reason, target_table, target_id, "
+            "before) VALUES (:r, 'jarvis:message:R5C:4', 'message', 'updated', 'changed since an earlier import', "
+            "'archive_messages', :t, CAST(:b AS jsonb))"), {"r": run, "t": row, "b": json.dumps(before)})
+    async with session_scope() as s:
+        counts = await identity.repair_rows(s, cause="test")
+    async with session_scope() as s:
+        got = await _row_state(s, row)
+        copies = (await s.execute(text("SELECT count(*) FROM import_records WHERE before::text LIKE :m"),
+                                  {"m": "%" + mark + "%"})).scalar()
+        copy = (await s.execute(text("SELECT before FROM import_records WHERE target_id = :t"), {"t": row})).scalar()
+    assert got == (True, "") and counts.get("restricted_rows_withheld") == 1, (got, counts)
+    assert copies == 0, copies
+    copy = json.loads(copy) if isinstance(copy, str) else copy
+    assert (copy["content"], copy["withheld"], copy["sensitivity"]) == ("", True, "restricted"), copy
+
+
+@pytest.mark.usefixtures("clean_db")
+@pytest.mark.parametrize("length", ["same", "other"])
+async def test_r4c_a_release_covers_only_the_content_released(length):
+    """S25 (3): R4c's release binding. An admin released a row that shares a certain stone's uid; the release is bound
+    to the content it released (its length here). The same content stays readable with no stone; another version of
+    that JARVIS row (other words, another length) is held for review again ('upgrade: same message id')."""
+    words = "Another version of the row, zqr4crel%s, with its own words." % length
+    async with session_scope() as s:
+        sr = await _r_session(s, "R4C")
+        await _r_message(s, sr, "jarvis:message:R4C:101", "101", "assistant", "", uid="u-r4c", withheld=True,
+                         fp="w1:live", pos=1)
+        row = await _r_message(s, sr, "jarvis:message:uid:u-r4c", "205", "assistant", words, uid="u-r4c", pos=2)
+        await s.execute(text("UPDATE archive_messages SET content_chars = :n WHERE id = :i"),
+                        {"n": len(words), "i": row})
+        released = len(words) if length == "same" else len(words) + 9
+        await s.execute(text(
+            "INSERT INTO brain_withhold_exemptions (anchor_key, source_session_id, source_row_id, source_uid, "
+            "content_chars, content_fp) VALUES ('jarvis:message:R4C:101', 'R4C', '205', 'u-r4c', :n, '')"),
+            {"n": released})
+        await _r_stone(s, "jarvis:message:R4C:101", "R4C", "101", "assistant", "u-r4c", uid_known=True)
+    async with session_scope() as s:
+        counts = await identity.repair_rows(s, cause="test")
+    async with session_scope() as s:
+        got = await _row_state(s, row)
+        stone = await _stone_of(s, "jarvis:message:uid:u-r4c")
+    if length == "same":
+        assert got == (False, words) and stone is None, (got, stone)
+        assert not counts.get("held_by_message_id"), counts
+    else:
+        assert got == (True, "") and stone is not None and stone[:2] == ("pending", "upgrade: same message id"), \
+            (got, stone)
+        assert counts.get("held_by_message_id") == 1, counts
+
+
+@pytest.mark.usefixtures("clean_db")
+async def test_r4b_withholds_the_same_role_and_never_another_role_at_the_row_id():
+    """S26 (1): R4b's role check. Under the withheld row's JARVIS row id (session + row 5), a row of the same role is
+    the message (a member, withheld at once); a row of another role is another message (a state.db from an older
+    backup resets Hermes's id sequence) and stays readable, never a member nobody reviews (owner requirement 2)."""
+    async with session_scope() as s:
+        sr = await _r_session(s, "R4B")
+        await _r_message(s, sr, "jarvis:message:R4B:5", "5", "assistant", "", withheld=True, fp="w1:live", pos=1)
+        other = await _r_message(s, sr, "jarvis:message:uid:u-r4b-user", "5", "user",
+                                 "A new question zqr4brolefive after a restore.", uid="u-r4b-user", pos=2)
+        same = await _r_message(s, sr, "jarvis:message:uid:u-r4b-asst", "5", "assistant",
+                                "The withheld answer again zqr4brolecopy.", uid="u-r4b-asst", pos=3)
+        await _r_stone(s, "jarvis:message:R4B:5", "R4B", "5", "assistant", "")
+    async with session_scope() as s:
+        counts = await identity.repair_rows(s, cause="test")
+    async with session_scope() as s:
+        o, m = await _row_state(s, other), await _row_state(s, same)
+        stone_o = await _stone_of(s, "jarvis:message:uid:u-r4b-user")
+    assert m == (True, "") and counts.get("withheld_by_jarvis_row") == 1, (m, counts)
+    assert o == (False, "A new question zqr4brolefive after a restore.") and stone_o is None, (o, stone_o)
+
+
+@pytest.mark.usefixtures("clean_db")
+@pytest.mark.parametrize("chars", ["unknown", "bound"])
+async def test_r4d_never_holds_again_a_row_an_admin_released(chars):
+    """S26 (3): R4d's release exemption. 0.6.1's plain fingerprint of the withheld row is back on two readable copies
+    in a continuation (an older dump restored: brain_withhold_exemptions is not in it and survives pg_restore --clean).
+    The copy an admin released (length unknown, or bound to its length) stays readable; the control, not released, is
+    held for review (owner requirement 5: the admin's decision is not undone)."""
+    words = "The fence gate zqr4dgate closes at nine and opens at seven every single day."
+    fp = hashlib.sha256(words.encode()).hexdigest()  # a 0.6.1-shaped plain fingerprint
+    async with session_scope() as s:
+        run1 = (await s.execute(text("INSERT INTO import_runs (status, started_at, finished_at) VALUES ('completed', "
+                                     "now() - interval '3 hours', now() - interval '3 hours') RETURNING id"))).scalar()
+        run2 = (await s.execute(text("INSERT INTO import_runs (status, started_at, finished_at) VALUES ('completed', "
+                                     "now() - interval '1 hour', now() - interval '1 hour') RETURNING id"))).scalar()
+        parent = await _r_session(s, "R4DP")
+        await _r_message(s, parent, "jarvis:message:R4DP:7", "7", "assistant", "", fp=fp, withheld=True, run=run1)
+        child = await _r_session(s, "R4DC", lineage="continuation", parent="R4DP")
+        released = await _r_message(s, child, "jarvis:message:R4DC:3", "3", "assistant", words, fp=fp, run=run2,
+                                    pos=1)
+        control = await _r_message(s, child, "jarvis:message:R4DC:9", "9", "assistant", words, fp=fp, run=run2,
+                                   pos=2)
+        await s.execute(text("UPDATE archive_messages SET content_chars = :n WHERE session_id = :c"),
+                        {"n": len(words), "c": child})
+        await s.execute(text(
+            "INSERT INTO brain_withhold_exemptions (anchor_key, source_session_id, source_row_id, content_chars) "
+            "VALUES ('jarvis:message:R4DP:7', 'R4DC', '3', :n)"), {"n": -1 if chars == "unknown" else len(words)})
+        await _r_stone(s, "jarvis:message:R4DP:7", "R4DP", "7", "assistant", "", after=run1)
+    async with session_scope() as s:
+        counts = await identity.repair_rows(s, cause="test")
+    async with session_scope() as s:
+        r, c = await _row_state(s, released), await _row_state(s, control)
+    assert c == (True, ""), c  # the control: R4d holds the continuation's copy
+    assert r == (False, words), r
+    assert counts.get("held_by_same_text") == 1, counts

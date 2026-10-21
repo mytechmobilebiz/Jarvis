@@ -103,9 +103,11 @@ def test_the_scripts_are_ascii_and_never_set_compose_variables_or_write_env(name
     # No path inside a -v string: Docker is never given a mount on the command line (psql's -v sets a variable).
     assert not re.search(r'"(-v|--volume|--mount)",\s*\$', text) and '"--volume"' not in text and '"--mount"' not in text
     for call in re.findall(r"WriteAllText\((\$\w+)", text):
-        assert call in ("$envFile", "$file"), call
+        assert call in ("$envFile", "$file", "$markFile"), call
     if "WriteAllText($envFile" in text:
         assert '$envFile = Join-Path $root ".env.brain-test"' in text
+    if "WriteAllText($markFile" in text:  # restore.ps1: the database mark's SQL, next to the backups (review 3, P1)
+        assert '$markFile = Join-Path $backups "restore-mark-$stamp.sql"' in text
 
 
 @pytest.mark.parametrize("name", CHECKED)
@@ -362,8 +364,14 @@ def test_restore_saves_first_and_applies_again_before_anything_starts():
              "Invoke-Helper brain-import decisions-export --removals-only --out $inside",
              'docker cp "${helper}:$inside" $target', "Invoke-Helper restore-carry export --out $inside",
              'docker cp "${helper}:$inside" $target', "if ($missing.Count -gt 0)",
-             "Set-Content -LiteralPath $pendingFile -Value $marker", "pg_restore -U postgres",
+             "Set-Content -LiteralPath $pendingFile -Value $marker",
+             # review 3, P1: the database's mark is put into the container first, then written by the command that
+             # runs pg_restore, once pg_restore has committed (a killed script never leaves the restore unmarked)
              "INSERT INTO brain_maintenance (name, detail) VALUES ('restore_reapply_pending'",
+             'docker compose cp $markFile "postgres:/tmp/restore-mark.sql"',
+             "pg_restore -U postgres -d command_center --clean --if-exists --single-transaction --exit-on-error "
+             "/tmp/restore-command_center.dump || exit 1; psql -U postgres -d command_center -X -q -1 -v "
+             "ON_ERROR_STOP=1 -f /tmp/restore-mark.sql || exit 97",
              "Invoke-Reapply $access $removals", "if ($script:problems.Count -gt 0)",
              "Remove-Item -LiteralPath $pendingFile -Force }", '& (Join-Path $PSScriptRoot "start.ps1") -NoBuild']
     at = 0

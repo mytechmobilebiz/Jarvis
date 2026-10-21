@@ -1342,7 +1342,9 @@ again and stops the restore before any change, unless `-KeepRestoredAccess` /
 `-SkipBrainRemovals` accepts that loss (printed). From before `pg_restore` until the
 files are applied again, `backups\restore-pending.json` names them, and right after the
 `pg_restore` of `command_center` the database gets `brain_maintenance`
-`restore_reapply_pending` (a part per file; `restore-carry apply` and
+`restore_reapply_pending`, written by the same `sh -c` command in the database container
+once `pg_restore` has committed (its SQL is copied in first), so a killed script or a closed
+window never leaves restored data unmarked (review 3, P1) (a part per file; `restore-carry apply` and
 `decisions-apply --removals-only` each clear their own part when it is applied in full,
 and the mark goes with the last part). While the file is there, `start.ps1` starts
 nothing; while the mark is there, `bootstrap` refuses (the api and the worker do not

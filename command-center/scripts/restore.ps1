@@ -27,6 +27,10 @@
 # exports again from the restored data), and -FinishPending only applies them
 # and starts the services.
 #
+# It runs only from the folder of the installed application: it stops before
+# changing anything when the api image is another version than this folder's
+# VERSION, or the containers were created from another folder.
+#
 # The restore stops before changing anything when these cannot be saved, and
 # ends with exit 1 (services not started) when they cannot be applied again.
 # Overrides for a file that cannot be saved, each saying what it gives up:
@@ -173,6 +177,35 @@ function Show-AccessLists {
 }
 
 if (-not $BackupFolder -and -not $FinishPending) { Fail "name the backup folder: -BackupFolder .\backups\<time> (or -FinishPending)" }
+
+# --- The installed application must be this folder's (checked before anything is changed) --------------------------
+# The helper containers and start.ps1 -NoBuild run the installed images, which every folder tags the same, and the
+# containers are created again from this folder: an installation of another version, or from another folder, would
+# run that code on the restored data under this folder's name, and its own restore marker would not be here.
+$versionFile = Join-Path $root "VERSION"
+$folderVersion = ""
+if (Test-Path -LiteralPath $versionFile -PathType Leaf) { $folderVersion = "$(Get-Content -LiteralPath $versionFile -TotalCount 1)".Trim() }
+if (-not $folderVersion) { Fail "this folder ($root) has no VERSION file: it is not a complete Command Center folder. Nothing was changed." }
+$ids = @(docker compose ps -a -q 2>$null | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+if ($LASTEXITCODE -ne 0) { Fail "could not list the application's containers (docker compose ps failed); nothing was changed. Is Docker running?" }
+$here = $root.Replace('\', '/').TrimEnd('/')
+foreach ($id in $ids) {
+  $labels = $null
+  try { $labels = docker inspect --format '{{json .Config.Labels}}' $id 2>$null | Out-String | ConvertFrom-Json } catch { $labels = $null }
+  if ($null -ne $labels -and "$($labels.'com.docker.compose.oneoff')" -eq "True") { continue }  # a one-off helper
+  $from = if ($null -ne $labels) { "$($labels.'com.docker.compose.project.working_dir')" } else { "" }
+  if (-not $from) { Fail "could not read which folder the application's container $id was created from (docker inspect); nothing was changed." }
+  if ($from.Replace('\', '/').TrimEnd('/') -ne $here) {
+    Fail "the application's containers were created from another folder ($from), not from this one ($root). Run restore.ps1 in that folder, or start this folder's installation first (.\scripts\start.ps1 here). Nothing was changed."
+  }
+}
+$installed = @(docker compose run --rm --no-deps -T api python -c "import app; print(app.__version__)" 2>$null)
+$code = $LASTEXITCODE
+$imageVersion = "$(@($installed | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) | Select-Object -Last 1)"
+if ($code -ne 0 -or $imageVersion -notmatch '^\d+\.\d+\.\d+$') { Fail "could not read the installed application's version (docker compose run api failed); nothing was changed. Is Docker running, and was this folder installed (install.ps1)?" }
+if ($imageVersion -ne $folderVersion) {
+  Fail "the installed application is version $imageVersion (its api image), but this folder ($root) is version $folderVersion. This folder's restore.ps1 would run version $imageVersion's code. Run the restore.ps1 of the installed version, in its own folder (.\scripts\status.ps1 shows which folder runs), or install this folder's version first. Nothing was changed."
+}
 
 # --- 0. An earlier restore that did not finish ----------------------------------------------------------------------
 # Its files are applied first, never exported again: the database holds the restored data without what the restore
@@ -329,6 +362,27 @@ if ($carry) {
     & (Join-Path $PSScriptRoot "start.ps1") -NoBuild
     Fail "could not write $pendingFile; nothing was changed"
   }
+  # The database's own mark: the api and the worker refuse to start until each part is applied again (whoever starts
+  # them, from whichever folder). Created with the table an older dump does not have yet (0008's own). It is written
+  # by the same command in the database container as the pg_restore of command_center, right after it: a closed
+  # window, Ctrl+C or a killed script ends this script but not that command (pg_restore goes on and commits), so the
+  # mark never depends on this script still running then. Put in the container first, as a file (UTF-8, no BOM).
+  $parts = "'access', $(if ($access) { 'true' } else { 'false' }), 'removals', $(if ($removals) { 'true' } else { 'false' }), 'access_file', '$([IO.Path]::GetFileName($access))', 'removals_file', '$([IO.Path]::GetFileName($removals))', 'backup', '$((Split-Path -Leaf $folder).Replace("'", "''"))', 'at', now()"
+  $markSql = "SET client_min_messages = warning; CREATE TABLE IF NOT EXISTS brain_maintenance (name TEXT PRIMARY KEY, done_at TIMESTAMPTZ NOT NULL DEFAULT now(), detail JSONB NOT NULL DEFAULT '{}'::jsonb); INSERT INTO brain_maintenance (name, detail) VALUES ('restore_reapply_pending', jsonb_build_object($parts)) ON CONFLICT (name) DO UPDATE SET detail = EXCLUDED.detail, done_at = now();`n"
+  $markFile = Join-Path $backups "restore-mark-$stamp.sql"
+  $copied = $false
+  try {
+    [IO.File]::WriteAllText($markFile, $markSql)
+    docker compose cp $markFile "postgres:/tmp/restore-mark.sql"
+    $copied = ($LASTEXITCODE -eq 0)
+  } catch { $copied = $false }
+  Remove-Item -LiteralPath $markFile -Force -ErrorAction SilentlyContinue
+  if (-not $copied) {
+    Remove-Item -LiteralPath $pendingFile -Force -ErrorAction SilentlyContinue
+    Write-Host "`nStarting the application again (nothing was restored)..."
+    & (Join-Path $PSScriptRoot "start.ps1") -NoBuild
+    Fail "could not put the database's restore mark into the postgres container (docker compose cp); nothing was changed"
+  }
 }
 
 $failed = @()
@@ -337,16 +391,18 @@ foreach ($db in $dumps) {
   docker compose cp (Join-Path $folder "$db.dump") "postgres:/tmp/restore-$db.dump"
   if ($LASTEXITCODE -ne 0) { $failed += $db; continue }
   # One transaction per database: a failed restore leaves that database as it was.
-  docker compose exec -T postgres pg_restore -U postgres -d $db --clean --if-exists --single-transaction --exit-on-error "/tmp/restore-$db.dump"
-  if ($LASTEXITCODE -ne 0) { $failed += $db }
-  docker compose exec -T postgres rm -f "/tmp/restore-$db.dump"
-  if ($db -eq "command_center" -and $carry -and $failed -notcontains $db) {
-    # The database's own mark: the api and the worker refuse to start until each part is applied again (whoever
-    # starts them, from whichever folder). Created with the table an older dump does not have yet (0008's own).
-    $parts = "'access', $(if ($access) { 'true' } else { 'false' }), 'removals', $(if ($removals) { 'true' } else { 'false' }), 'access_file', '$([IO.Path]::GetFileName($access))', 'removals_file', '$([IO.Path]::GetFileName($removals))', 'backup', '$((Split-Path -Leaf $folder).Replace("'", "''"))', 'at', now()"
-    Invoke-Psql "CREATE TABLE IF NOT EXISTS brain_maintenance (name TEXT PRIMARY KEY, done_at TIMESTAMPTZ NOT NULL DEFAULT now(), detail JSONB NOT NULL DEFAULT '{}'::jsonb); INSERT INTO brain_maintenance (name, detail) VALUES ('restore_reapply_pending', jsonb_build_object($parts)) ON CONFLICT (name) DO UPDATE SET detail = EXCLUDED.detail, done_at = now()" | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Host "  (the database's restore mark could not be written; $pendingFile still guards start.ps1)" -ForegroundColor Yellow }
+  if ($db -eq "command_center" -and $carry) {
+    # pg_restore, then (only once it has committed) the mark, in one command of the database container (see above).
+    docker compose exec -T postgres sh -c "pg_restore -U postgres -d command_center --clean --if-exists --single-transaction --exit-on-error /tmp/restore-command_center.dump || exit 1; psql -U postgres -d command_center -X -q -1 -v ON_ERROR_STOP=1 -f /tmp/restore-mark.sql || exit 97"
+    $code = $LASTEXITCODE
+    if ($code -eq 97) { Write-Host "  (the database's restore mark could not be written; $pendingFile still guards start.ps1)" -ForegroundColor Yellow }
+    elseif ($code -ne 0) { $failed += $db }
+    docker compose exec -T postgres rm -f /tmp/restore-mark.sql
+  } else {
+    docker compose exec -T postgres pg_restore -U postgres -d $db --clean --if-exists --single-transaction --exit-on-error "/tmp/restore-$db.dump"
+    if ($LASTEXITCODE -ne 0) { $failed += $db }
   }
+  docker compose exec -T postgres rm -f "/tmp/restore-$db.dump"
 }
 if ($carry -and $failed -contains "command_center") {
   Remove-Item -LiteralPath $pendingFile -Force  # that database is unchanged: nothing to apply again

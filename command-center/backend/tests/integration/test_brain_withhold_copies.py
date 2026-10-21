@@ -609,11 +609,35 @@ async def test_the_agents_rule_finds_the_same_legacy_copies_as_the_sweep_through
         selected = set(await s.scalars(select(MemoryItem.id).where(policy.withheld_source())))
         assert selected == set(found) and not selected & set(others)
         assert {item.id for item, _ in await archive.withheld_copies(s)} == set(found)
-        await s.execute(text("SET LOCAL enable_seqscan = off"))
         query = select(func.count()).select_from(MemoryItem).where(policy.withheld_source()).compile(
             dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+        # The statement, which planner statistics cannot change (review 2, S28): the legacy rule parses the item's own
+        # source_ref into a session id and a position and compares the indexed columns with them, so each lookup can
+        # go through archive_sessions_source_session_idx and archive_messages_session_idx; it never formats a
+        # source_ref for every withheld message (the regression 0.6.1 removed), nor compares the item's ref with one.
+        sql_ = str(query)
+        assert "format(" not in sql_.lower() and "memory_items.source_ref =" not in sql_, sql_
+        assert "archive_sessions.source_session_id = SUBSTRING(regexp_replace(memory_items.source_ref" in sql_, sql_
+        assert "archive_messages.session_id = archive_sessions.id AND archive_messages.position = CAST(SUBSTRING(" \
+            "regexp_replace(memory_items.source_ref" in sql_, sql_
+        indexes = dict((await s.execute(text(
+            "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname IN "
+            "('archive_sessions_source_session_idx', 'archive_messages_session_idx')"))).all())
+        assert re.search(r"ON public\.archive_sessions USING btree \(source_session_id\)$",
+                         indexes.get("archive_sessions_source_session_idx", "")), indexes
+        assert re.search(r'ON public\.archive_messages USING btree \(session_id, "?position"?\)$',
+                         indexes.get("archive_messages_session_idx", "")), indexes
+        # The plan names the index only while these tables have no planner statistics. With statistics (an ANALYZE,
+        # autovacuum, or pg_statistic that clean_db's TRUNCATE keeps from an earlier test) the planner may read the
+        # few withheld messages once into a hashed subplan instead, so the plan is checked only without them.
+        await s.execute(text("SET LOCAL enable_seqscan = off"))
         plan = "\n".join((await (await s.connection()).exec_driver_sql("EXPLAIN " + str(query))).scalars())
-        assert "archive_sessions_source_session_idx" in plan, plan
+        assert "format(" not in plan, plan
+        analyzed = await s.scalar(text(
+            "SELECT EXISTS (SELECT 1 FROM pg_stats WHERE schemaname = 'public' AND tablename IN "
+            "('archive_sessions', 'archive_messages', 'memory_items'))"))
+        if not analyzed:
+            assert "archive_sessions_source_session_idx" in plan, plan
     assert await withheld_counts() == (2, 2)
 
 

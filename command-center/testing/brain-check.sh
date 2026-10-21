@@ -698,6 +698,7 @@ step_restore_reapply() {  # 0.6.2 (spec 9.3, reviews 1 and 2): restore.ps1 stops
   local dir="$WORK/restore-check/InfiniteAI-CommandCenter" scenario out
   mkdir -p "$dir/scripts" "$dir/backups/old"
   cp "$TEST/scripts/restore.ps1" "$dir/scripts/"
+  cp "$TEST/VERSION" "$dir/"
   printf 'exit 0\r\n' > "$dir/scripts/backup.ps1"
   printf 'param([switch]$NoBuild)\r\n$global:Calls.Add("start.ps1")\r\nexit 0\r\n' > "$dir/scripts/start.ps1"
   : > "$dir/backups/old/command_center.dump"
@@ -709,6 +710,10 @@ function global:Start-Sleep { param([int]$Seconds) $global:Calls.Add("sleep $Sec
 function global:docker {
   $line = ($args | ForEach-Object { "$_" }) -join " "
   $global:Calls.Add($line); $global:LASTEXITCODE = 0
+  # The installed application is this folder's (review 3, P2): its container's folder and its api image's version.
+  if ($line -eq "compose ps -a -q") { "c0ffee01"; return }
+  if ($line -match '^inspect --format \{\{json \.Config\.Labels\}\} c0ffee01$') { @{ "com.docker.compose.project.working_dir" = $Dir } | ConvertTo-Json -Compress; return }
+  if ($line -match '^compose run --rm --no-deps -T api python -c import app; print\(app\.__version__\)$') { (Get-Content -LiteralPath (Join-Path $Dir "VERSION") -TotalCount 1).Trim(); return }
   if ($line -match "version = '0006_brain'") { "1"; return }
   if ($line -match "FROM pg_locks") { "0"; return }
   if ($line -match 'restore-carry export') { "access and audit exported: users 4, audit entries 10"; return }

@@ -4,8 +4,10 @@ Release date: TODO (after its verdict) · upgrade from 0.5.0, 0.6.0 or 0.6.1,
 each straight to 0.6.2 · package `InfiniteAI-CommandCenter-0.6.2-windows.zip`
 in `command-center/releases/` on the GitHub branch `jarvis-migration`, with its
 SHA-256 in the `.sha256` file next to it · step-by-step Windows guide:
-`releases/UPGRADE_0.6.1_TO_0.6.2_WINDOWS.md` (with sections for 0.5.0 and
-0.6.0) · verdict: `releases/GO_NO_GO_0.6.2.md`
+`releases/UPGRADE_0.5.0_TO_0.6.2_WINDOWS.md` (0.5.0 straight to 0.6.2, the
+owner's path; there is no separate 0.6.0 or 0.6.1 guide: an installation of a
+withdrawn 0.6.x is covered by that guide's notes, section 4 below) · verdict:
+`releases/GO_NO_GO_0.6.2.md`
 
 > **Status: pending its verdict.** 0.6.2 replaces 0.6.0 and 0.6.1, which are
 > NO-GO for installation and for any JARVIS import (security notice of
@@ -22,10 +24,17 @@ too. Nothing is withheld only because its words match: section 3 lists exactly
 what is withheld on its own and what waits for an admin.
 
 **What the upgrade changes in your installation.**
-- **One database migration, `0008_brain_withhold_identity`.** It adds columns
-  to the JARVIS Brain's list of removed sources, one column to archived
-  messages, three small tables (releases of held rows, fingerprints of purged
-  items, and repair markers), a database guard and two functions. It runs in
+- **One database migration, `0008_brain_withhold_identity`.** It adds 14
+  columns to the JARVIS Brain's list of removed sources (the JARVIS message a
+  withhold names: conversation, row, role, tool call, message id and time; how
+  it joined, whether it waits for an admin's review, whether it hides the
+  title), two columns to archived messages (the JARVIS message id and the ids
+  a fold absorbed), four small tables (releases of held rows, keyed
+  fingerprints of purged items, every purge by item id and creation time, and
+  repair and restore markers), nine indexes, a database guard (a trigger that
+  keeps every withheld row without text), two refusals (a trigger each: a run
+  of an older importer, a purge by older code) and two functions (the repair
+  and its read-only count of what it would change). It runs in
   the database before the application serves its first request. On a database
   with nothing imported (your PC today) it finds nothing to repair and writes
   no audit entry.
@@ -251,7 +260,11 @@ decisions file carries the row's time, never its text). Version 3 files
 (0.6.0, 0.6.1) are still read, but a version 3 withhold names only a key:
 export again with 0.6.2.
 
-**Restores.** `restore.ps1` takes the safety backup, checks that no JARVIS
+**Restores.** `restore.ps1` first checks that the installed application is
+this folder's: it stops before any change when the api image is another
+version than this folder's `VERSION` (every folder tags its images the same)
+or when the containers were created from another folder. It then takes the
+safety backup, checks that no JARVIS
 Brain import, rollback or rescan is running, and stops the application. Only
 then (so nothing can be decided in between) does it save every withhold
 (with the title choice), every purge (by key, and by item id and creation time,
@@ -281,7 +294,9 @@ An interrupted restore (Ctrl+C, a closed window, a reboot, a Docker restart
 after `pg_restore`) is never mistaken for a finished one:
 `backups\restore-pending.json`, written before the restore and deleted only
 once the saved files are applied again, names them, and the database keeps a
-mark of its own. While either is there, `start.ps1` starts nothing, and the api
+mark of its own, written by the same command in the database container as
+`pg_restore`, once it has committed (a closed window ends the script, not that
+command). While either is there, `start.ps1` starts nothing, and the api
 and the worker refuse to start (also after a plain `docker compose up` or from
 another folder). The next `restore.ps1` applies those files first, never
 exporting again from the restored data; `restore.ps1 -FinishPending` only
@@ -385,10 +400,13 @@ same name and other bytes; an unrelated row's rollback copy.
 
 ## 4. Upgrade
 
-- **From 0.6.1, 0.6.0 or 0.5.0, straight to 0.6.2:** follow
-  `releases/UPGRADE_0.6.1_TO_0.6.2_WINDOWS.md` (its sections for 0.5.0 and
-  0.6.0 cover those). No intermediate release is installed. After
-  `install.ps1`, the last migration is `0008_brain_withhold_identity`.
+- **From 0.5.0, straight to 0.6.2:** follow
+  `releases/UPGRADE_0.5.0_TO_0.6.2_WINDOWS.md` step by step (the owner's
+  path). No intermediate release is installed. After `install.ps1`, the last
+  migration is `0008_brain_withhold_identity`.
+- **From 0.6.0 or 0.6.1 (withdrawn):** there is no separate guide; the same
+  guide's notes cover it. Its step A stops when the API reports 0.6.0 or 0.6.1:
+  send the output of `.\scripts\status.ps1` before going on.
 - **Then check the JARVIS Brain** in the live installation's folder:
   `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Status`.
   It must say `identity repair done`; if it says `not done`, run `-Mode
@@ -422,8 +440,9 @@ same name and other bytes; an unrelated row's rollback copy.
   once you are on 0.6.2. Back on 0.6.2, its start repairs what
   0.6.1 code left readable by key, JARVIS row or uid; a copy an older import
   stored under a new key with no uid is repaired by the next 0.6.2 import.
-- **To 0.5.0:** as the 0.5.0 section of the 0.6.2 guide describes; 0.5.0
-  ignores the JARVIS Brain tables.
+- **To 0.5.0:** as section H of `releases/UPGRADE_0.5.0_TO_0.6.2_WINDOWS.md`
+  describes (H-1, quick rollback, data kept); 0.5.0 ignores the JARVIS Brain
+  tables.
 - **Full restore (disaster only):** `restore.ps1` from the 0.6.2 folder, with
   a backup taken before the upgrade. It applies again the withholds, purges,
   releases and access narrowing made after that backup, before anything

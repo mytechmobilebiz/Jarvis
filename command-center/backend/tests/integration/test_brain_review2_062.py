@@ -38,7 +38,7 @@ from ..conftest import ADMIN
 from .test_brain_agents import allow_ai_context, ask
 from .test_brain_api import as_, client  # noqa: F401 - client is a fixture
 from .test_brain_rules_062r import BACKEND, HEADER, _env, _legacy, rel061, scratch  # noqa: F401 - fixtures
-from .test_brain_schema import _migrate
+from .test_brain_schema import _container, _migrate
 from .test_brain_withhold_identity import DAY, _fresh_production, message_of, run, stones, withhold
 
 pytestmark = pytest.mark.usefixtures("clean_db")
@@ -1308,7 +1308,7 @@ import shutil  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from app import restore_carry  # noqa: E402
-from app.bootstrap import refuse_while_a_restore_is_pending  # noqa: E402
+from app.bootstrap import check_withheld_copies, refuse_while_a_restore_is_pending  # noqa: E402
 from app.models import (  # noqa: E402
     AuditLog,
     BrainPurgedContent,
@@ -1660,6 +1660,14 @@ function global:docker {
   $line = ($args | ForEach-Object { "$_" }) -join " "
   $global:Calls.Add($line); $global:LASTEXITCODE = 0
   $sc = $global:Scenario
+  # The installed application is this folder's (review 3, P2): one container, created here; the image's version.
+  if ($line -eq "compose ps -a -q") { "c0ffee01"; return }
+  if ($line -match '^inspect --format \{\{json \.Config\.Labels\}\} c0ffee01$') {
+    @{ "com.docker.compose.project.working_dir" = $Dir } | ConvertTo-Json -Compress; return
+  }
+  if ($line -match '^compose run --rm --no-deps -T api python -c import app; print\(app\.__version__\)$') {
+    (Get-Content -LiteralPath (Join-Path $Dir "VERSION") -TotalCount 1).Trim(); return
+  }
   if ($line -match "version = '0006_brain'") {
     if ($sc -eq "psqlfail") { "Error response from daemon: container 1f0c is restarting"; $global:LASTEXITCODE = 1; return }
     "1"; return
@@ -1712,6 +1720,7 @@ def restore_runs(tmp_path: Path, plan: str) -> tuple[str, list[list[str]]]:
     (proj / "scripts").mkdir(parents=True)
     (proj / "backups" / "old").mkdir(parents=True)
     shutil.copy(ROOT / "scripts" / "restore.ps1", proj / "scripts" / "restore.ps1")
+    shutil.copy(ROOT / "VERSION", proj / "VERSION")
     (proj / "scripts" / "backup.ps1").write_text("$global:Calls.Add('backup.ps1')\r\nexit 0\r\n")
     (proj / "scripts" / "start.ps1").write_text("param([switch]$NoBuild)\r\n$global:Calls.Add('start.ps1')\r\nexit 0\r\n")
     (proj / "backups" / "old" / "command_center.dump").write_bytes(b"")
@@ -1795,6 +1804,188 @@ def test_s18_start_ps1_starts_nothing_while_a_restore_is_pending(tmp_path):
     tail = done.stdout.split("--- calls", 1)[1].strip().splitlines()
     assert tail == ["exit=1"], out  # no docker call: nothing started, nothing built
     assert "removals-before-restore-1.json" in out and "restore.ps1 -FinishPending" in out
+
+
+# --- Review 3, P1: the console closed while pg_restore runs -----------------------------------------------------------
+# restore.ps1 (the worktree's, under PowerShell) with a stand-in "docker" that answers like the CLI, except that the
+# database container's commands (docker compose cp and exec of postgres) go to the real test container, mapped onto
+# this run's own database and file names. pg_restore waits for a lock the test holds; while it waits, the stand-in
+# kills the docker client and stops the script, as a closed console window would. The command goes on in the
+# container once the lock is gone.
+
+STUB_KILL = r'''
+param([string]$Dir, [string]$Container, [string]$Db, [string]$Prefix)
+# Kept under names of their own: restore.ps1's variables ($db, its loop variable) would hide these in a function.
+$global:KillDir = $Dir; $global:KillContainer = $Container; $global:KillDb = $Db; $global:KillPrefix = $Prefix
+$global:KillDocker = (Get-Command docker -CommandType Application | Select-Object -First 1).Source
+$global:Calls = New-Object System.Collections.Generic.List[string]
+function global:Start-Sleep { param([int]$Seconds) $global:Calls.Add("sleep $Seconds") }
+function global:Start-RealDocker([string[]]$argv, [bool]$read) {
+  $psi = [System.Diagnostics.ProcessStartInfo]::new($global:KillDocker)
+  foreach ($a in $argv) { $psi.ArgumentList.Add($a) }
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $read
+  return [System.Diagnostics.Process]::Start($psi)
+}
+function global:ConvertTo-TestNames([string]$s) {  # restore.ps1's user, database and file names: this test's own
+  return $s.Replace("-U postgres", "-U cc").Replace("-d command_center", "-d $($global:KillDb)").Replace(
+    "/tmp/restore-", "/tmp/$($global:KillPrefix)-restore-")
+}
+function global:docker {
+  $line = ($args | ForEach-Object { "$_" }) -join " "
+  $global:Calls.Add($line); $global:LASTEXITCODE = 0
+  if ($line -eq "compose ps -a -q") { "c0ffee01"; return }
+  if ($line -match '^inspect --format \{\{json \.Config\.Labels\}\} c0ffee01$') {
+    @{ "com.docker.compose.project.working_dir" = $global:KillDir } | ConvertTo-Json -Compress; return
+  }
+  if ($line -match '^compose run --rm --no-deps -T api python -c import app; print\(app\.__version__\)$') {
+    (Get-Content -LiteralPath (Join-Path $global:KillDir "VERSION") -TotalCount 1).Trim(); return
+  }
+  if ($line -match "name = ''restore_reapply_pending''") { return }
+  if ($line -match "version = '0006_brain'") { "1"; return }
+  if ($line -match "FROM pg_locks") { "0"; return }
+  if ($line -match '^compose run -d --no-deps --name (\S+) api ') { return }
+  if ($line -match 'restore-carry export --out') { "access and audit exported: users 4, audit entries 10"; return }
+  if ($line -match 'decisions-export --removals-only') {
+    "removals exported (withheld messages and purged items, keys and JARVIS ids only): 1; releases: 0; purges by item id: 0; purge fingerprints: 0"; return
+  }
+  if ($line -match '^cp cc-restore-helper-\S+:(\S+) (.+)$') { Set-Content -LiteralPath $Matches[2] -Value '{}'; return }
+  if ($line -match '^compose cp (\S+) postgres:(\S+)$') {
+    $p = Start-RealDocker @("cp", $Matches[1], ($global:KillContainer + ":" + (ConvertTo-TestNames $Matches[2]))) $false
+    $p.WaitForExit(); $global:LASTEXITCODE = $p.ExitCode; return
+  }
+  if ($line -match '^compose exec -T postgres (.+)$') {
+    $cmd = if ($args[4] -eq "sh" -and $args[5] -eq "-c") { "$($args[6])" } else { ($args[4..($args.Count - 1)] | ForEach-Object { "$_" }) -join " " }
+    $p = Start-RealDocker @("exec", $global:KillContainer, "sh", "-c", (ConvertTo-TestNames $cmd)) $false
+    if ($cmd -notmatch 'pg_restore') { $p.WaitForExit(); $global:LASTEXITCODE = $p.ExitCode; return }
+    $deadline = (Get-Date).AddSeconds(90)
+    do {
+      [System.Threading.Thread]::Sleep(200)
+      $q = Start-RealDocker @("exec", $global:KillContainer, "psql", "-U", "cc", "-d", "postgres", "-tAc", "SELECT count(*) FROM pg_stat_activity WHERE datname = '$($global:KillDb)' AND application_name = 'pg_restore' AND wait_event_type = 'Lock'") $true
+      $waiting = $q.StandardOutput.ReadToEnd().Trim(); $q.WaitForExit()
+    } until ($waiting -eq "1" -or $p.HasExited -or (Get-Date) -gt $deadline)
+    $global:Calls.Add("pg_restore waiting: $waiting")
+    if (-not $p.HasExited) { $p.Kill(); $p.WaitForExit() }  # the console window is closed: the client dies, then the script
+    $global:Calls.Add("docker client killed")
+    throw "the console window was closed"
+  }
+}
+try {
+  & (Join-Path $Dir "scripts/restore.ps1") -BackupFolder (Join-Path $Dir "backups/old") -Yes
+  $global:Calls.Add("exit=$LASTEXITCODE")
+} catch { $global:Calls.Add("exit=killed") }
+"--- calls"; $global:Calls
+'''
+
+
+def _pwsh_with_docker(work: Path) -> list[str]:
+    """PowerShell that can run the real docker CLI (the stand-in reaches the test container through it)."""
+    docker = shutil.which("docker")
+    pwsh = shutil.which("pwsh")
+    if docker and pwsh:
+        return [pwsh]
+    image = os.environ.get("PWSH_IMAGE", "mcr.microsoft.com/powershell:7.4-ubuntu-22.04")
+    if docker and subprocess.run([docker, "image", "inspect", image], capture_output=True).returncode == 0:
+        return [docker, "run", "--rm", "-v", "/var/run/docker.sock:/var/run/docker.sock",
+                "-v", "%s:/usr/bin/docker:ro" % docker, "-v", "%s:%s" % (work, work), "-w", str(work), image, "pwsh"]
+    (pytest.fail if os.environ.get("REQUIRE_DOCKER_TESTS") == "1" else pytest.skip)(
+        "needs PowerShell and the docker CLI: a local pwsh, or the %s image" % image)
+    return []
+
+
+async def test_p1_a_console_closed_while_pg_restore_runs_still_marks_the_database(client, fx, restore_point, migrated,
+                                                                                  settings, tmp_path):
+    """Review 3, P1 (guide preparation, harness phase H2k): restore.ps1 is killed WHILE pg_restore of command_center
+    runs, before the script could write anything after it. pg_restore goes on in the database container and commits
+    the backup's data, in which the withhold made after the backup is undone. The database is marked all the same (the
+    same container command writes the mark once pg_restore has committed), so whatever starts the api or the worker,
+    a plain 'docker compose up', a Docker restart or another folder's start.ps1, both refuse until the saved files are
+    applied again; then the withhold holds for every reader."""
+    from app.bootstrap import bootstrap
+    from app.main import create_app
+    from app.worker.__main__ import main as worker_main
+
+    from .test_brain_review1_062 import DUMP as POINT_DUMP
+
+    container = _container()
+    mark = "zqp1kill"
+    bj.add_session(fx["db"], "p1k_s", started=T)
+    ids = [bj.add_row(fx["db"], "p1k_s", role, content, T + n + 1) for n, (role, content) in enumerate(
+        [("user", "Hello."), ("assistant", secret(mark)), ("user", "Thanks.")])]
+    await run(fx)
+    restore_point.take()  # the nightly backup, before the withhold
+    [row] = await message_of("p1k_s", ids[1])
+    await api_withhold(client, row.id)
+    files = await restore_point.export()  # what restore.ps1 saved after the stop (applied by hand at the end)
+
+    own = os.environ["TEST_DATABASE_URL"].rsplit("/", 1)[1]
+    prefix = own + "-p1"
+    work = tmp_path / "p1"
+    proj = work / "InfiniteAI-CommandCenter"
+    (proj / "scripts").mkdir(parents=True)
+    (proj / "backups" / "old").mkdir(parents=True)
+    shutil.copy(ROOT / "scripts" / "restore.ps1", proj / "scripts" / "restore.ps1")
+    shutil.copy(ROOT / "VERSION", proj / "VERSION")
+    (proj / "scripts" / "backup.ps1").write_text("exit 0\r\n")
+    (proj / "scripts" / "start.ps1").write_text("param([switch]$NoBuild)\r\n$global:Calls.Add('start.ps1')\r\nexit 0\r\n")
+    got = subprocess.run(["docker", "cp", "%s:%s" % (container, POINT_DUMP), str(proj / "backups" / "old" /
+                                                                                     "command_center.dump")],
+                         capture_output=True, text=True)
+    assert got.returncode == 0, got.stderr
+    stub = work / "stub.ps1"
+    stub.write_text(STUB_KILL)
+    runner = _pwsh_with_docker(work)
+    dsn = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
+    await migrated.dispose()
+    try:
+        lock = await asyncpg.connect(dsn)  # pg_restore --clean must wait for it: it is running when the kill comes
+        try:
+            held = lock.transaction()
+            await held.start()
+            await lock.execute("LOCK TABLE archive_messages IN ACCESS SHARE MODE")
+            proc = await asyncio.create_subprocess_exec(*runner, "-NoProfile", "-File", str(stub), str(proj),
+                                                        container, own, prefix, stdout=asyncio.subprocess.PIPE,
+                                                        stderr=asyncio.subprocess.STDOUT)
+            out = (await asyncio.wait_for(proc.communicate(), 240))[0].decode()
+            await held.rollback()
+        finally:
+            await lock.close()
+        assert "--- calls" in out, out
+        calls = out.split("--- calls", 1)[1].strip().splitlines()
+        assert calls[-3:] == ["pg_restore waiting: 1", "docker client killed", "exit=killed"], "\n".join(calls)
+        assert not any("INSERT INTO brain_maintenance" in c for c in calls), calls  # the script wrote nothing after
+        for _ in range(600):  # pg_restore, and what follows it in that command, go on in the container
+            if subprocess.run(["docker", "exec", container, "pgrep", "-f", prefix + "-restore-"],
+                              capture_output=True).returncode == 1:
+                break
+            await asyncio.sleep(0.2)
+        else:
+            raise AssertionError("pg_restore did not end in the container")
+    finally:
+        subprocess.run(["docker", "exec", container, "sh", "-c", "rm -f /tmp/%s-restore-*" % prefix],
+                       capture_output=True)
+    await migrated.dispose()
+    [back] = await message_of("p1k_s", ids[1])
+    assert (back.withheld, mark in back.content) == (False, True)  # the backup's data: the withhold is undone
+    async with session_scope() as s:
+        detail = await restore_carry.pending_restore(s)
+    assert detail is not None and (detail.get("access"), detail.get("removals")) == (True, True), detail
+    with pytest.raises(restore_carry.RestorePending):  # the api's and the worker's start-up
+        await bootstrap(settings)
+    app = create_app()
+    with pytest.raises(restore_carry.RestorePending):  # the api ("docker compose up": uvicorn runs the lifespan)
+        async with app.router.lifespan_context(app):
+            pass
+    with pytest.raises(restore_carry.RestorePending):  # the worker (python -m app.worker)
+        await worker_main()
+    await restore_carry.apply(files[1], apply=True)
+    await imp.decisions_apply(files[0], None, actor=None, apply=True, removals_only=True)
+    assert not await refused()
+    assert await check_withheld_copies() is True  # the api's start-up, now allowed
+    client.brain_tokens.clear()  # every sign-in ended: the test's roles sign in again
+    client.cookies.clear()
+    assert await seen_by(client, mark) == {}
+    assert await bj.nowhere(mark) == []
 
 
 # --- S19: the application is stopped before the decisions are saved --------------------------------------------------

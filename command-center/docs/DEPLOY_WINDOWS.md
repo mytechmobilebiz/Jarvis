@@ -106,9 +106,10 @@ repairs, before the first request, any database where 0.6.0 or 0.6.1 let the
 text come back (on a PC with nothing imported it finds nothing). It also keeps
 purged items purged when JARVIS moves or renames them, and makes `restore.ps1`
 keep JARVIS Brain decisions (below, "Day to day"). Step by step:
-`releases/UPGRADE_0.6.1_TO_0.6.2_WINDOWS.md` (on GitHub, in
+`releases/UPGRADE_0.5.0_TO_0.6.2_WINDOWS.md` (on GitHub, in
 `command-center/releases/` on the branch `jarvis-migration`, next to the zip;
-it has sections for 0.5.0 and 0.6.0); what changed, the defaults, going back
+from 0.5.0 straight to 0.6.2; for an installation of 0.6.0 or 0.6.1 its notes
+say what to do); what changed, the defaults, going back
 and the tests: [RELEASE_NOTES_0.6.2.md](RELEASE_NOTES_0.6.2.md). Use 0.6.2 on
 the live installation and for the test copy before the JARVIS import below.
 After the upgrade, `jarvis-import.ps1 -Target Production -Mode Status` must
@@ -290,7 +291,11 @@ restore does revert: a user created, reactivated, given a permission or a
 higher role, or a password changed, after the backup. Redo those on the Users
 page if they are still wanted.
 
-If it cannot save these files (for example the api image is missing), or
+Run it from the folder of the installed version: it stops before changing
+anything when the api image is another version than the folder's `VERSION`
+file, or when the containers were created from another folder
+(`.\scripts\status.ps1` shows both). If it cannot save these files (for
+example the api image is missing), or
 cannot read the database to find out what to save, it starts the application
 again and stops before changing anything. If it cannot apply them again, it
 leaves the services stopped, prints the commands that apply the files by hand,
@@ -505,8 +510,8 @@ touched the live installation.
 
 **6. Approval.** Upgrading the live installation to 0.6.2 is a separate step
 that you approve, in a new PowerShell window. Follow
-`UPGRADE_0.6.1_TO_0.6.2_WINDOWS.md` step by step, in its section for the
-version you have (0.5.0, 0.6.0 or 0.6.1; on GitHub in
+`UPGRADE_0.5.0_TO_0.6.2_WINDOWS.md` step by step (from 0.5.0; for 0.6.0 or
+0.6.1 its notes say what to do; on GitHub in
 `command-center/releases/`, branch `jarvis-migration`; it is not in the zip):
 `backup.ps1` in your current folder, check the zip's SHA-256, extract it into
 the new folder `C:\InfiniteAI\v0.6.2`, copy `.env` there, then `install.ps1`,
