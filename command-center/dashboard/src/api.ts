@@ -759,7 +759,7 @@ export interface BrainHold {
   /** The rule that held it: "same message id, different text", "same text", "upgrade: same message id", ... */
   rule: string;
   withheld_message: { id: number | null; position: number | null; role: string; at: string | null; content_chars: number | null };
-  compare: "identical text" | "different text" | "nothing to compare";
+  compare: "identical text" | "different text" | "contains the withheld text" | "nothing to compare";
   /** Ids of the readable messages before and after it. */
   neighbours: number[];
 }

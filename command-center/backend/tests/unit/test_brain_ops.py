@@ -371,8 +371,8 @@ def test_the_precheck_reads_keys_brain_withhold_pending_returns():
     migration 0008 builds (a renamed key would print 0 for ever)."""
     precheck = script("brain-precheck.ps1")
     read = set(re.findall(r"\$pending\.(\w+)", precheck))
-    assert read == {"readable_by_key", "readable_by_jarvis_row", "readable_in_restricted_sessions", "held_for_review",
-                    "repair_done"}
+    assert read == {"readable_by_key", "readable_by_jarvis_row", "readable_by_fold", "readable_in_restricted_sessions",
+                    "held_for_review", "repair_done"}
     sql = (ROOT / "backend" / "app" / "migrations" / "0008_brain_withhold_identity.sql").read_text()
     pending = sql[sql.index("FUNCTION brain_withhold_pending()"):]
     built = set(re.findall(r"'(\w+)',", pending))

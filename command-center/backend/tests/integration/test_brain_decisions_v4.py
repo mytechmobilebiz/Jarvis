@@ -115,7 +115,8 @@ async def test_a_kept_hold_and_a_release_carry_over_to_the_live_installation(cli
     [kept] = await message_of("prune_02", stub2)
     assert kept.withheld and (await stones())[kept.source_key].review == identity.KEPT
     [released] = await message_of("prune_01", stub1)
-    assert released.withheld and released.source_fp == "" and released.source_key not in await stones()
+    # The release is applied before the withholds (rules062): the released row is never blanked here.
+    assert (released.withheld, released.content) == (False, STUB) and released.source_key not in await stones()
     [api, entry] = await audits("archive.hold_released")  # the test copy's admin, then decisions-apply
     assert "via" not in api.detail and entry.detail["via"] == "decisions-apply" and entry.actor == ADMIN[0]
     [applied] = await audits("brain.decisions_applied")
@@ -269,7 +270,7 @@ async def test_restore_of_an_older_backup_then_removals_only_puts_every_decision
     assert await row_with(mark) is None and await row_with(held_mark) is None
     assert await bj.nowhere(purge_mark) == []
     [released] = await message_of("prune_01", stub)
-    assert released.withheld and released.flags["withheld_by_admin"]["released_at"]
+    assert (released.withheld, released.content) == (False, STUB)  # released before the withholds (rules062)
     later = await run(fx)
     [back] = await message_of("prune_01", stub)
     assert (back.withheld, back.content) == (False, STUB)

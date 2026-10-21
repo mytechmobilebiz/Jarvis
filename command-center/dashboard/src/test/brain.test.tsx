@@ -640,6 +640,12 @@ describe("JARVIS Brain: held for review (0.6.2)", () => {
     await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.path === "/api/brain/holds/141/keep")).toBe(true));
   });
 
+  it("says when a hold's text contains the withheld message's text (rules062)", () => {
+    expect(holdRuleText("same message id, contains the withheld text")).toBe(
+      "It shares the withheld message's JARVIS id and its text contains the withheld message's text, with more around it. Releasing brings back the withheld text too.",
+    );
+  });
+
   it("releases a held message only after the admin confirms what comes back", async () => {
     const calls = renderAt("/brain?tab=review", admin, holdRoutes());
     const card = (await screen.findByRole("heading", { name: "Held for review" })).closest(".card") as HTMLElement;

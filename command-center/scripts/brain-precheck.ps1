@@ -162,7 +162,8 @@ if ($pg -and $pg.Status -eq "running") {
         if ($pending) {
           # The live installation's next start (or jarvis-import.ps1 -Mode Repair) withholds the readable rows; an
           # import repairs before it imports. Held rows wait for an admin (JARVIS Brain page, Held for review).
-          $readable = [int]$pending.readable_by_key + [int]$pending.readable_by_jarvis_row + [int]$pending.readable_in_restricted_sessions
+          $readable = [int]$pending.readable_by_key + [int]$pending.readable_by_jarvis_row + [int]$pending.readable_by_fold +
+            [int]$pending.readable_in_restricted_sessions
           $repair = if ($pending.repair_done -eq $true) { "done" } else { "not done (the next start runs it)" }
           Add-Line ("  readable rows matching a withhold: $readable; held for review: $([int]$pending.held_for_review); " +
             "identity repair $repair")

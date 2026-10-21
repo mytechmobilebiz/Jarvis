@@ -285,9 +285,9 @@ async def test_0008_fresh_database_applies_with_0006_0007_and_writes_no_audit(sc
         done = json.loads(await conn.fetchval("SELECT detail FROM brain_maintenance WHERE name = 'withhold_identity'"))
         assert done["cause"] == "migration"
         pending = json.loads(await conn.fetchval("SELECT brain_withhold_pending()"))
-        assert pending == {"readable_by_key": 0, "readable_by_jarvis_row": 0, "readable_in_restricted_sessions": 0,
-                           "unbound_stones": 0, "withheld_with_text_fingerprint": 0, "held_for_review": 0,
-                           "repair_done": True}
+        assert pending == {"readable_by_key": 0, "readable_by_jarvis_row": 0, "readable_by_fold": 0,
+                           "readable_in_restricted_sessions": 0, "unbound_stones": 0,
+                           "withheld_with_text_fingerprint": 0, "held_for_review": 0, "repair_done": True}
         await _version_row(conn, "quarantined")  # 0007's CHECK still in force
     finally:
         await conn.close()

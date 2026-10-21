@@ -184,7 +184,12 @@ def test_twin_links_skip_conflicting_uids():
     held = {original.key: identity.Match(withheld, "key", "")}
     Processor._links(plans, held, by_key)
     assert held[same_uid.key].via == "copied by JARVIS" and held[no_uid.key].via == "copied by JARVIS"
-    assert other.key not in held  # both carry uids and they differ: two Hermes messages
+    # Both carry uids and they differ: never a member (two Hermes messages, or Hermes's /retry re-sending the
+    # withheld text as a new turn): a hold an admin reviews (rules062, finding R3).
+    assert (held[other.key].via, held[other.key].review) == ("same text", "pending")
+    released = {original.key: identity.Match(withheld, "key", "")}
+    Processor._links(plans, released, by_key, lambda group, m: m.key == other.key)
+    assert other.key not in released  # an admin released that row: it stays readable
     # A carried-on copy or an adjacent repeat inherits the review of the row it repeats.
     repeat = msg(8, "the words", key="jarvis:message:S1:8")
     hold = {original.key: identity.Match(withheld, "same text", "pending")}

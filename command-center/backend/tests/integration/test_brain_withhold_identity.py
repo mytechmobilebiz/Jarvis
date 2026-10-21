@@ -610,8 +610,9 @@ async def test_decisions_v4_file_holds_no_text_and_no_fingerprint(client, fx, tm
         purges = [r for r in data["removals"] if r["reason"] != identity.WITHHELD_BY_ADMIN]
         assert all(set(r) == set(imp.WITHHOLD_FIELDS) for r in withholds)
         assert [set(r) for r in purges] == [{"source_key", "reason"}]
-        assert not pending & {r["source_key"] for r in withholds}  # holds waiting for review stay here
-        assert {r["review"] for r in withholds} == {"", identity.KEPT}
+        # Holds waiting for review travel as holds (rules062, finding R4: live holds them too).
+        assert pending <= {r["source_key"] for r in withholds if r["review"] == identity.PENDING}
+        assert {r["review"] for r in withholds} == {"", identity.KEPT} | ({identity.PENDING} if pending else set())
         assert any(r["via"] == "duplicate" for r in withholds)  # the carried-on copy's key, with no row
         for value in (mark, tool_mark, kept_mark, purge_mark, STUB, "REPORT", "w1:", "k1:", *kept):
             assert value not in flat, value

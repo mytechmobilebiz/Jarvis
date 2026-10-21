@@ -18,10 +18,11 @@
 --   R2 every stone gets the JARVIS row it named when the admin withheld it (C2: the first update after the withhold
 --      says which row that was, not the row the key names today);
 --   R3 every key an import recorded as a carried-on copy or an adjacent repeat of a row of the message gets a stone;
---   R4 readable rows that are the same message are withheld: by key, by JARVIS row, by uid (held for review), and,
---      for text 0.6.1 let come back, by 0.6.1's own plain source_fp in the same conversation or a continuation or
---      branch of it, stored after the withhold (held for review; never a row whose own uid key says it is another
---      message);
+--   R4 readable rows that are the same message are withheld: by key, by JARVIS row, by uid (held for review), by
+--      a fold that absorbed its uid (a member), and, for text 0.6.1 let come back, by 0.6.1's own plain source_fp
+--      and tool_call_id in the same conversation or a continuation or branch of it, stored after the withhold (held
+--      for review; never a row whose own uid key says it is another message, unless it is a copy JARVIS made at the
+--      withheld row's own time);
 --   R5 readable rows left in a restricted conversation are withheld (finding 3);
 --   R6 withheld rows and their rollback copies keep no text fingerprint: source_fp becomes 'w1:<state>';
 --   their rollback copies are blanked, their sessions marked for recompute, one audit entry with counts.
@@ -41,6 +42,9 @@ ALTER TABLE brain_tombstones ADD COLUMN IF NOT EXISTS via               TEXT    
 ALTER TABLE brain_tombstones ADD COLUMN IF NOT EXISTS review            TEXT    NOT NULL DEFAULT '';
 ALTER TABLE brain_tombstones ADD COLUMN IF NOT EXISTS bound             BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE brain_tombstones ADD COLUMN IF NOT EXISTS after_run         BIGINT  NOT NULL DEFAULT 0;
+-- the admin hid the conversation's title with this withhold (an admin's own stone): an import that creates the
+-- conversation again (after a rollback or a restore), and its continuations and branches, keep it hidden
+ALTER TABLE brain_tombstones ADD COLUMN IF NOT EXISTS title_hidden      BOOLEAN NOT NULL DEFAULT FALSE;
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'brain_tombstones'::regclass
@@ -73,6 +77,10 @@ UPDATE archive_messages SET source_uid = substring(source_key FROM 20)
  WHERE source_uid = '' AND source_key LIKE 'jarvis:message:uid:%';
 CREATE INDEX IF NOT EXISTS archive_messages_source_row_idx ON archive_messages (session_id, source_message_id);
 CREATE INDEX IF NOT EXISTS archive_messages_source_uid_idx ON archive_messages (source_uid) WHERE source_uid <> '';
+-- The uids a Hermes fold merged into this row (absorbed_message_uids: a compaction carrier, a micro-compaction
+-- merge): the row holds their text, so a withhold of one of them withholds it too (group_rows, repair R4e).
+ALTER TABLE archive_messages ADD COLUMN IF NOT EXISTS absorbed_uids TEXT[] NOT NULL DEFAULT '{}';
+CREATE INDEX IF NOT EXISTS archive_messages_absorbed_uids_idx ON archive_messages USING gin (absorbed_uids);
 CREATE INDEX IF NOT EXISTS archive_sessions_parent_idx ON archive_sessions (parent_source_session_id)
     WHERE parent_source_session_id <> '';
 
@@ -159,6 +167,7 @@ DECLARE
     n_row int := 0;
     n_uid int := 0;
     n_text int := 0;
+    n_fold int := 0;
     n_restricted int := 0;
     n_rows_fp int := 0;
     n_records_fp int := 0;
@@ -332,12 +341,15 @@ BEGIN
                CASE WHEN a.uid_known THEN a.message_uid ELSE '' END AS known_uid
           FROM brain_tombstones a WHERE a.reason = c_wh AND a.anchor_key = ''
     ), plain AS (       -- the withheld message's plain fingerprints, wherever 0.6.x left one
-        SELECT g.anchor, g.source_session_id, m.source_fp AS fp
+        SELECT g.anchor, g.source_session_id, m.source_fp AS fp, m.tool_call_id AS call, m.at
           FROM grp g JOIN archive_messages m ON m.source_key = g.source_key
          WHERE m.withheld AND m.source_fp <> '' AND m.source_fp NOT LIKE 'w1:%'
            AND m.source_message_id = g.source_row_id              -- not a row the key was moved to (C2)
         UNION
-        SELECT g.anchor, g.source_session_id, coalesce(x.before -> 'deleted_row' ->> 'source_fp', x.before ->> 'source_fp')
+        SELECT g.anchor, g.source_session_id, coalesce(x.before -> 'deleted_row' ->> 'source_fp', x.before ->> 'source_fp'),
+               coalesce(x.before -> 'deleted_row' ->> 'tool_call_id', x.before ->> 'tool_call_id', ''),
+               CASE WHEN coalesce(x.before -> 'deleted_row' ->> 'at', x.before ->> 'at', '') <> ''
+                    THEN coalesce(x.before -> 'deleted_row' ->> 'at', x.before ->> 'at')::timestamptz END
           FROM grp g JOIN import_records x ON x.source_key = g.source_key
          WHERE x.record_type = 'message' AND x.before <> '{}'::jsonb
            AND coalesce(x.before -> 'deleted_row' ->> 'source_message_id', x.before ->> 'source_message_id')
@@ -345,9 +357,10 @@ BEGIN
            AND coalesce(x.before -> 'deleted_row' ->> 'withheld', x.before ->> 'withheld') = 'true'
            AND coalesce(x.before -> 'deleted_row' ->> 'source_fp', x.before ->> 'source_fp', '') NOT IN ('')
            AND coalesce(x.before -> 'deleted_row' ->> 'source_fp', x.before ->> 'source_fp') NOT LIKE 'w1:%'
-    ), cand AS (         -- readable rows with that fingerprint, anywhere (few: a fingerprint covers the whole row)
-        SELECT DISTINCT p.anchor, p.source_session_id AS anchor_sid, m.id, m.session_id
-          FROM plain p JOIN archive_messages m ON m.source_fp = p.fp
+    ), cand AS (         -- readable rows with that fingerprint and tool call, anywhere (a fingerprint covers the row
+                         -- but not its tool_call_id: a parallel call's identical result is another message)
+        SELECT DISTINCT p.anchor, p.source_session_id AS anchor_sid, m.id, m.session_id, p.at AS anchor_at
+          FROM plain p JOIN archive_messages m ON m.source_fp = p.fp AND m.tool_call_id = coalesce(p.call, '')
          WHERE NOT m.withheld
     ), up(id, anchor, anchor_sid, sid, lineage, parent) AS (
         -- walk up from each candidate's conversation through continuation and branch parents until the withheld
@@ -359,7 +372,9 @@ BEGIN
           FROM up u JOIN archive_sessions p ON p.source_session_id = u.parent
          WHERE u.sid <> u.anchor_sid AND u.lineage IN ('continuation', 'branch') AND u.parent <> ''
     ), in_family AS (
-        SELECT DISTINCT id, anchor FROM up WHERE sid = anchor_sid
+        SELECT DISTINCT u.id, u.anchor, c.anchor_at FROM up u
+          JOIN cand c ON c.id = u.id AND c.anchor = u.anchor AND c.anchor_sid = u.anchor_sid
+         WHERE u.sid = u.anchor_sid
     )
     INSERT INTO _withhold_hits
     SELECT DISTINCT ON (m.id) m.id, f.anchor, 'same text', 'pending', ai.after_run
@@ -376,12 +391,26 @@ BEGIN
                                                         THEN substring(m.source_key FROM 20) END, '')
                IN ('', ai.known_uid)                                  -- no uid of its own, or the same one
             OR (s.lineage IN ('continuation', 'branch') AND m.at IS NOT NULL AND s.started_at IS NOT NULL
-                AND m.at <= s.started_at))       -- copied history of a branch or continuation: a fresh uid says nothing
+                AND m.at <= s.started_at          -- copied history of a branch or continuation, at the withheld row's
+                AND (f.anchor_at IS NULL OR m.at = f.anchor_at)))  -- own time (when known): a fresh uid says nothing
+                                                  -- (the copy of another row with this text keeps that row's time)
        AND NOT EXISTS (SELECT 1 FROM brain_withhold_exemptions e WHERE e.anchor_key = f.anchor
                           AND e.source_session_id = s.source_session_id AND e.source_row_id = m.source_message_id)
     ORDER BY m.id, f.anchor
     ON CONFLICT (id) DO NOTHING;
     GET DIAGNOSTICS n_text = ROW_COUNT;
+    -- e. a fold that absorbed a withheld message (Hermes absorbed_message_uids: a compaction carrier, a
+    -- micro-compaction merge) holds its text verbatim: a member, whatever its role.
+    INSERT INTO _withhold_hits
+    SELECT DISTINCT ON (m.id) m.id, CASE WHEN t.anchor_key = '' THEN t.source_key ELSE t.anchor_key END,
+           'merged into another message', '', t.after_run
+      FROM brain_tombstones t
+      JOIN archive_messages m ON m.absorbed_uids @> ARRAY[t.message_uid]
+     WHERE t.reason = c_wh AND t.review <> 'pending' AND t.message_uid <> '' AND NOT m.withheld
+     ORDER BY m.id, t.anchor_key <> '', t.source_key
+    ON CONFLICT (id) DO NOTHING;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    n_fold := n;
 
     -- The rows found keep no text; their keys get a stone (binding from the row; never rebinding another stone).
     UPDATE archive_messages m
@@ -494,10 +523,10 @@ BEGIN
     v_out := jsonb_build_object(
         'stones_added', n_stones_added, 'stones_bound', n_bound, 'duplicate_keys', n_dup,
         'withheld_by_key', n_key, 'withheld_by_jarvis_row', n_row, 'held_by_message_id', n_uid,
-        'held_by_same_text', n_text, 'restricted_rows_withheld', n_restricted,
+        'held_by_same_text', n_text, 'withheld_by_fold', n_fold, 'restricted_rows_withheld', n_restricted,
         'fingerprints_removed', n_rows_fp + n_records_fp, 'rollback_copies_blanked', n_records_blank,
         'sessions_to_recompute', n_sessions, 'full', v_full);
-    IF n_stones_added + n_bound + n_key + n_row + n_uid + n_text + n_restricted + n_rows_fp + n_records_fp
+    IF n_stones_added + n_bound + n_key + n_row + n_uid + n_text + n_fold + n_restricted + n_rows_fp + n_records_fp
        + n_records_blank > 0 THEN
         INSERT INTO audit_log (actor, action, target_type, target_id, detail)
         VALUES (v_actor, 'brain.withhold_identity_repaired', 'brain', '', v_out);
@@ -516,12 +545,19 @@ CREATE OR REPLACE FUNCTION brain_withhold_pending() RETURNS jsonb LANGUAGE sql S
                                      JOIN archive_messages m ON m.session_id = s.id AND m.source_message_id = t.source_row_id
                                     WHERE t.reason = 'withheld by an admin' AND t.source_row_id <> ''
                                       AND t.role IN ('', m.role) AND NOT m.withheld),
+        'readable_by_fold', (SELECT count(DISTINCT m.id) FROM brain_tombstones t
+                               JOIN archive_messages m ON m.absorbed_uids @> ARRAY[t.message_uid]
+                              WHERE t.reason = 'withheld by an admin' AND t.review <> 'pending' AND t.message_uid <> ''
+                                AND NOT m.withheld),
         'readable_in_restricted_sessions', (SELECT count(*) FROM archive_messages m JOIN archive_sessions s ON s.id = m.session_id
                                              WHERE s.sensitivity = 'restricted' AND NOT m.withheld),
         'unbound_stones', (SELECT count(*) FROM brain_tombstones WHERE reason = 'withheld by an admin' AND NOT bound),
         'withheld_with_text_fingerprint', (SELECT count(*) FROM archive_messages WHERE withheld AND source_fp NOT LIKE 'w1:%'
                                                                                AND source_fp <> ''),
-        'held_for_review', (SELECT count(*) FROM brain_tombstones WHERE reason = 'withheld by an admin' AND review = 'pending'),
+        -- held rows, not stones: a key adoption can leave two holds on one JARVIS row
+        'held_for_review', (SELECT count(*) FROM (
+                               SELECT DISTINCT coalesce(nullif(source_session_id, ''), source_key), source_row_id
+                                 FROM brain_tombstones WHERE reason = 'withheld by an admin' AND review = 'pending') h),
         'repair_done', EXISTS (SELECT 1 FROM brain_maintenance WHERE name = 'withhold_identity'));
 $fn$;
 

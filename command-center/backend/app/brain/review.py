@@ -13,12 +13,13 @@ nothing imported can approve, enable or run anything: approvals stay with app/ta
 from __future__ import annotations
 
 import urllib.parse
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import ColumnElement, and_, delete, func, not_, or_, select, true
+from sqlalchemy import ColumnElement, and_, delete, func, not_, or_, select, true, update
+from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -356,10 +357,13 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
                                          ) if include_identical else []
     after = await identity.current_after_run(session)
     uid = identity.row_uid(message)
+    if hide_title is None:
+        hide_title = await identity.first_user_message(session, message)
     written = 0
-    if message.source_key:  # a row an import stored always has one
-        written = int(await identity.put_stone(session, identity.binding_of(
-            message, sess.source_session_id, via=via, after_run=after, uid_known=bool(uid)), actor=actor))
+    if message.source_key:  # a row an import stored always has one; it keeps the title choice (later imports)
+        written = int(await identity.put_stone(session, replace(identity.binding_of(
+            message, sess.source_session_id, via=via, after_run=after, uid_known=bool(uid)),
+            title_hidden=bool(hide_title)), actor=actor))
     at = now().isoformat()
     out = Withheld(None, bool(written))
     blanked: list[ArchiveMessage] = []
@@ -389,15 +393,44 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
         written += int(await identity.put_stone(session, identity.Stone(**{
             **st.__dict__, "anchor": message.source_key, "after_run": after}), actor=actor))
     _blank(message, {"at": at, "note": "withheld by an admin on the JARVIS Brain page; the text was removed"})
-    if hide_title is None:
-        hide_title = await identity.first_user_message(session, message)
     if hide_title:
+        old_title = sess.title or ""
         sess.title = ""
         sess.flags = {**(sess.flags or {}), "title_withheld": True}
         out.title_hidden = True
+        # Hermes carries the title on: to a continuation (clearing the parent's) and, as '<title> #N', to a branch;
+        # each child that carries its parent's title is hidden too, down the lineage (a visited set ends a cycle).
+        seen, frontier = {sess.source_session_id}, [(sess.source_session_id, old_title)]
+        hidden_ids = [sess.id]
+        while frontier:
+            nxt: list[tuple[str, str]] = []
+            for parent_sid, parent_title in frontier:
+                for child in (await session.scalars(select(ArchiveSession).where(
+                        ArchiveSession.parent_source_session_id == parent_sid,
+                        ArchiveSession.lineage.in_(identity.LINEAGE)).order_by(ArchiveSession.id))).all():
+                    if child.source_session_id in seen:
+                        continue
+                    seen.add(child.source_session_id)
+                    if identity.title_follows(child.title, child.lineage, parent_title):
+                        nxt.append((child.source_session_id, child.title or ""))
+                        hidden_ids.append(child.id)
+                        child.title = ""
+                        child.flags = {**(child.flags or {}), "title_withheld": True}
+            frontier = nxt
+        # The rollback copies of those conversations keep no title either (a rollback never brings it back).
+        await session.execute(update(ImportRecord).where(
+            ImportRecord.target_table == "archive_sessions", ImportRecord.target_id.in_(hidden_ids),
+            ImportRecord.before.has_key("title"), ImportRecord.before["title"].astext != "")
+            .values(before=ImportRecord.before.op("||")(sql_text("'{\"title\": \"\"}'::jsonb"))))
     await session.flush()
-    done = await withhold_copies(session, messages=[message, *blanked], source_keys=[st.key for st in group.rowless],
-                                 actor=actor, cause=cause, ip=ip)
+    # The rollback copies of an earlier row of it that no stored row holds any more (an import deleted a rewound
+    # original kept under its uid key) lose the text too.
+    uid_keys = sorted({identity.UID_KEY + u for u in {uid, *(identity.row_uid(g.row) for g in group.members)} if u})
+    stored = set((await session.scalars(select(ArchiveMessage.source_key).where(
+        ArchiveMessage.source_key.in_(uid_keys)))).all()) if uid_keys else set()
+    rowless = [st.key for st in group.rowless] + [k for k in uid_keys if k not in stored]
+    done = await withhold_copies(session, messages=[message, *blanked], source_keys=rowless, actor=actor, cause=cause,
+                                 ip=ip)
     for sid in sorted({r.session_id for r in blanked} - {message.session_id}):
         await recompute_session(session, sid)
     out.session = await recompute_session(session, message.session_id)
@@ -408,25 +441,31 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
 
 
 async def hold_message(session: AsyncSession, message: ArchiveMessage, *, anchor: str, actor: str, cause: str,
-                       ip: str = "") -> Withheld:
-    """Withholds a readable row for an admin's review: it shares the uid of a message withheld in a decisions file
-    but is another JARVIS row, and nothing here can compare the texts (decisions-apply, spec 9.2). Its key gets a
-    pending stone in that withhold's group (`anchor`), so the holds list shows it and the next import compares the
-    text (a member, or a hold an admin keeps or releases). What copied it goes as for a withhold."""
+                       ip: str = "", rule: str = "same message id", review: str = identity.PENDING) -> Withheld:
+    """Withholds a readable row for an admin's review in the group of the withhold `anchor` (decisions-apply, spec
+    9.2): it shares the uid of a message withheld in a decisions file but is another JARVIS row, and nothing here can
+    compare the texts; or the test copy held it for review (`rule`, the hold's own evidence). Its key gets a pending
+    stone in that group, so the holds list shows it and the next import compares the text (a member, or a hold an
+    admin keeps or releases). With review CERTAIN it joins the group as a member instead (a fold that absorbed the
+    withheld message: it holds the text). What copied it goes as for a withhold."""
     sess = await session.get(ArchiveSession, message.session_id)
     assert sess is not None
-    rule = "same message id"
+    member = review != identity.PENDING
     written = 0
     if message.source_key:
         written = int(await identity.put_stone(session, identity.binding_of(
-            message, sess.source_session_id, anchor=anchor, via=rule, review=identity.PENDING,
-            after_run=await identity.current_after_run(session)), actor=actor))
-    _blank(message, {"at": now().isoformat(), "note": identity.NOTE, "via": rule, "review": identity.PENDING})
+            message, sess.source_session_id, anchor=anchor, via=rule, review=identity.CERTAIN if member
+            else identity.PENDING, after_run=await identity.current_after_run(session)), actor=actor))
+    flag: dict[str, Any] = {"at": now().isoformat(), "note": identity.NOTE, "via": rule}
+    if not member:
+        flag["review"] = identity.PENDING
+    _blank(message, flag)
     await session.flush()
     done = await withhold_copies(session, messages=[message], actor=actor, cause=cause, ip=ip)
     return Withheld(await recompute_session(session, message.session_id), bool(written), done.copies,
                     done.versions_blanked, done.rollback_copies_blanked, done.answers_scrubbed,
-                    held_for_review=[message.id], keys_tombstoned=written)
+                    also_withheld=[message.id] if member else [], held_for_review=[] if member else [message.id],
+                    keys_tombstoned=written)
 
 
 async def withhold_preview(session: AsyncSession, message: ArchiveMessage, sess: ArchiveSession,
@@ -457,7 +496,8 @@ async def withhold_preview(session: AsyncSession, message: ArchiveMessage, sess:
 # --- Holds: rows withheld for an admin's review (spec 8.2) ------------------------------------------------------
 
 COMPARE = {"same text": "identical text", "upgrade: same text": "identical text",
-           "same message id, different text": "different text"}
+           "same message id, different text": "different text",
+           identity.CONTAINS_SHORT: "contains the withheld text"}
 
 
 async def holds(session: AsyncSession, scope: PersonScope) -> list[dict[str, Any]]:
@@ -539,8 +579,14 @@ async def release_hold(session: AsyncSession, message: ArchiveMessage, sess: Arc
     if certain is not None:
         raise BrainError("it is the same message as a withheld one: it cannot be released")
     anchor = stone.anchor_key or stone.source_key
-    await session.execute(delete(BrainTombstone).where(BrainTombstone.source_key == message.source_key,
-                                                       BrainTombstone.review == identity.PENDING))
+    # Every hold of this JARVIS row in this group (a key adoption can leave the old key's hold binding it too).
+    await session.execute(delete(BrainTombstone).where(
+        BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.review == identity.PENDING,
+        func.coalesce(func.nullif(BrainTombstone.anchor_key, ""), BrainTombstone.source_key) == anchor,
+        or_(BrainTombstone.source_key == message.source_key,
+            and_(BrainTombstone.source_session_id == sess.source_session_id,
+                 BrainTombstone.source_row_id == (message.source_message_id or "")[:200],
+                 BrainTombstone.role.in_(("", message.role))))))
     await session.execute(pg_insert(BrainWithholdExemption).values(
         anchor_key=anchor, source_session_id=sess.source_session_id,
         source_row_id=(message.source_message_id or "")[:200], reason="released by an admin",

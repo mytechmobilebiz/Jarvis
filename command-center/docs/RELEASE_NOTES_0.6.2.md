@@ -99,19 +99,33 @@ or a purge brought the text back silently.
   gets the same record, in the admin's group.
 - **Certain matches** are withheld for good and can never be released: the
   same JARVIS row under another key, the importer's own copies (a carried-on
-  copy, a repeat right after the message), copies JARVIS made in a
-  continuation or branch before the new conversation started, a message
-  merged into another, and the same message id with the same text.
+  copy, a repeat right after the message), the copies JARVIS made of the
+  withheld row in a continuation or branch (with its message id, or with a
+  fresh one at the row's very time; also when they were stored before the
+  withhold), a message merged into another (also one stored before the
+  withhold), and the same message id with the same text (also restated after
+  a compaction, or containing it).
 - **Uncertain matches are held for review**, never withheld for good on a
-  guess: the same message id with different text, the exact same text later
-  in the same conversation or one continued from it, and what the upgrade
-  repair found. A held row has no text, and an admin keeps it withheld or
-  releases it (below).
+  guess: the same message id with different text (the evidence says when it
+  contains the withheld text), the exact same text later in the same
+  conversation or one continued from it, the same text sent again after a
+  `/retry` or a rewind, and what the upgrade repair found. A held row has no
+  text, and an admin keeps it withheld or releases it (below). A hold stays a
+  hold until an admin decides; no later compaction turns it into a certain
+  match.
 - **Text alone never withholds anything.** The same words in another
   conversation, similar words, text the admin saw before the withhold, a
-  later repeat that JARVIS gave its own message id, parallel tool results and
+  later repeat that JARVIS gave its own message id, parallel tool results, a
+  continuation's or branch's copy of another message with the same text, and
   the parent of a restricted branch all stay readable. Section 3 has the full
   list.
+- **A release follows the message.** It names a JARVIS row and covers that
+  row's own copies (compaction generations, the protected tail, a branch with
+  the same message id), the row after JARVIS renumbered it or gave it a
+  message id, and nothing overrides it except the withheld message's own row
+  or its own text. Each copy it covers is recorded, so it outlives the
+  original. An upgrade hold the next import disproves (another tool call,
+  another message id) is released by that import, audited.
 - **No fingerprint of a withheld text is kept.** A withheld row keeps only its
   state (`w1:live`, `w1:compacted`, `w1:rewound`); 0.6.x fingerprints are
   removed by the migration. Texts are compared only in memory, during an
@@ -134,7 +148,11 @@ offers:
 - "Also withhold K other messages with exactly this text in this
   conversation", unticked;
 - "Hide the conversation title", ticked when the message is the conversation's
-  first user message (a title can repeat it);
+  first user message (a title can repeat it). It also hides the title in the
+  continuations and branches that carry it (JARVIS moves the title to a
+  continuation and names a branch "title #2"), and it is kept with the
+  withhold: a conversation imported again (after a rollback or a restore) and
+  the live installation (decisions file) hide it too;
 - the imported memory items whose text contains the message, as links, so you
   can purge them. Nothing is purged automatically.
 
@@ -171,11 +189,14 @@ until the start-up check or a rescan empties it; 0.6.1 listed it to admins.
   old fingerprints (audited). The purges themselves stay.
 
 **Decisions from the test copy (file version 4).** Each withhold travels with
-the JARVIS row it names, as do the holds an admin kept and the rows an admin
-released; never text or a fingerprint. Holds still waiting for review are not
-exported: the live import finds them again. Version 3 files (0.6.0, 0.6.1)
-are still read, but a version 3 withhold names only a key: export again with
-0.6.2.
+the JARVIS row it names and the admin's title choice, as do the holds an
+admin kept, the holds still waiting for review (held for review on live too)
+and the rows an admin released; never text or a fingerprint. When live
+stores no row of a withheld message, decisions-apply still withholds what the
+live import stored of it: the copy JARVIS wrote again of a row the import
+deleted as rewound, and a message JARVIS merged it into. Version 3 files
+(0.6.0, 0.6.1) are still read, but a version 3 withhold names only a key:
+export again with 0.6.2.
 
 **Restores.** `restore.ps1` exports every withhold, purge and release before
 it restores (`backups\removals-before-restore-<time>.json`, keys and ids only),
@@ -234,7 +255,11 @@ Each default can be changed later without a migration.
 - in a backup without message ids, a later verbatim repeat in the same
   conversation (held: you can release it);
 - a message sharing the message id with the same role when nothing in the
-  backup can be compared;
+  backup can be compared (in its own conversation, continuations and
+  branches; elsewhere it is held); decisions-apply does the same on live
+  when no row of the withheld message is stored there;
+- a copy in a branch or continuation at the very time of a withheld row
+  that JARVIS no longer has (held: you can release it);
 - a message JARVIS merged another one into;
 - a row that 0.6.1 itself rewrote and withheld under a reused id;
 - what the upgrade repair finds by the old fingerprints or message ids (held:
@@ -326,6 +351,13 @@ Synthetic data only, never real JARVIS data.
   again.
 - **A release brings back text you cannot see first.** The evidence says what
   it is, and certain matches cannot be released.
+- **`/retry` in a gateway conversation after an import:** the gateway deletes
+  the original rows before it sends the text again, so nothing in the backup
+  can be compared and the re-sent message stays readable. In the CLI (rows
+  rewound, not deleted) it is held.
+- **A hidden title hides the continuations and branches that carry the same
+  title,** also when a branch's first message differs (only the title, never
+  a message).
 - **0.6.1's victim of a reused id** (a row it rewrote and withheld) stays
   withheld.
 - **Memory entry keys** keep a 64-bit digest of the entry's text, as since

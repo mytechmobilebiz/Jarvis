@@ -523,6 +523,8 @@ class ArchiveMessage(Base):
     flags: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     import_run_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("import_runs.id", ondelete="SET NULL"))
     source_uid: Mapped[str] = mapped_column(Text, default="")  # 0008: the JARVIS message_uid ('' unknown)
+    # 0008: the uids a Hermes fold merged into this row (absorbed_message_uids): it holds their text
+    absorbed_uids: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     search: Mapped[Any] = _search_col()
 
 
@@ -598,6 +600,8 @@ class BrainTombstone(Base):
     review: Mapped[str] = mapped_column(Text, default="")
     bound: Mapped[bool] = mapped_column(Boolean, default=False)
     after_run: Mapped[int] = mapped_column(BigInteger, default=0)
+    # 0008: the admin hid the conversation's title with this withhold (an admin's own stone only)
+    title_hidden: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class BrainWithholdExemption(Base):

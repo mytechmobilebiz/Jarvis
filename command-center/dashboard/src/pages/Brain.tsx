@@ -139,6 +139,10 @@ export function holdRuleText(rule: string): string {
   switch (rule) {
     case "same message id, different text":
       return "It shares the withheld message's JARVIS id, but its text differs from the withheld message as JARVIS holds it now. Releasing brings back that different text.";
+    case "copied by JARVIS, nothing to compare":
+      return "JARVIS copied it into a branch or continuation at the very time of the withheld message, whose row JARVIS no longer has, so the texts could not be compared. Releasing brings back whatever it holds.";
+    case "same message id, contains the withheld text":
+      return "It shares the withheld message's JARVIS id and its text contains the withheld message's text, with more around it. Releasing brings back the withheld text too.";
     case "same text":
       return "It repeats the withheld message's exact text, outside a copy JARVIS made. Releasing brings back text identical to the withheld message.";
     case "upgrade: same text":

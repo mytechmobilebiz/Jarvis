@@ -20,12 +20,20 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Text, and_, cast, exists, func, not_, or_, select
+from sqlalchemy import BigInteger, Text, and_, cast, exists, func, not_, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit
-from ..models import ArchiveMessage, ArchiveSession, BrainTombstone, ImportRecord, MemoryItem, MemoryItemVersion
+from ..models import (
+    ArchiveMessage,
+    ArchiveSession,
+    BrainTombstone,
+    BrainWithholdExemption,
+    ImportRecord,
+    MemoryItem,
+    MemoryItemVersion,
+)
 from . import store
 from . import text as brain_text
 from .policy import OLD_ROW_ACTIONS, PROMOTED_REF, SOURCE_REMOVED, WITHHELD_BY_ADMIN
@@ -395,10 +403,22 @@ async def withheld_copies(session: AsyncSession) -> list[tuple[MemoryItem, Any]]
 
 def _withheld_keys() -> list[Any]:
     """SQL: the import_records (rollback copies) of a message whose source key is withheld: a withheld row has it, or
-    an admin's withhold tombstone."""
+    an admin's withhold tombstone; or of a row with the uid and role of a certain withhold (an earlier row of the
+    message an import deleted, kept under its uid key), unless an admin released that JARVIS row for the group."""
     message = ImportRecord.record_type == "message"
+    row = func.coalesce(ImportRecord.before["deleted_row"], ImportRecord.before, type_=JSONB)
+    group = func.coalesce(func.nullif(BrainTombstone.anchor_key, ""), BrainTombstone.source_key)
+    released = exists().where(
+        BrainWithholdExemption.anchor_key == group,
+        BrainWithholdExemption.source_row_id == row["source_message_id"].astext,
+        BrainWithholdExemption.source_session_id.in_(select(ArchiveSession.source_session_id).where(
+            ArchiveSession.id == row["session_id"].astext.cast(BigInteger))))
     return [message & ImportRecord.source_key.in_(select(BrainTombstone.source_key).where(
                 BrainTombstone.reason == WITHHELD_BY_ADMIN)),
+            message & exists().where(BrainTombstone.reason == WITHHELD_BY_ADMIN,
+                                     BrainTombstone.review != "pending", BrainTombstone.message_uid != "",
+                                     BrainTombstone.message_uid == row["source_uid"].astext,
+                                     BrainTombstone.role.in_(("", row["role"].astext)), not_(released)),
             message & ImportRecord.source_key.in_(select(ArchiveMessage.source_key).where(
                 ArchiveMessage.withheld.is_(True), ArchiveMessage.source_key != ""))]
 
