@@ -55,6 +55,8 @@ function global:docker {
   }
   if ($line -match "version = '0006_brain'") { "1"; return }
   if ($line -match "FROM pg_locks") { "0"; return }  # no import, rollback or rescan running (review 2, S19)
+  # pg_restore committed, but the mark after it could not be written (0.6.2 plan 7.4: the marker says so)
+  if ($line -match 'pg_restore .*-f /tmp/restore-mark\.sql' -and $global:Scenario -eq "mark97") { $global:LASTEXITCODE = 97; return }
   if ($line -match "FILTER \(WHERE reason") { "3 withheld messages and copies, 1 purged items with a source key"; return }
   if ($line -match '^compose run -d --no-deps --name (\S+) api ') {
     if ($global:Scenario -eq "nohelper") { "no such image"; $global:LASTEXITCODE = 1 }
@@ -78,7 +80,7 @@ function global:docker {
   }
   if ($line -match 'decisions-apply --removals-only') {
     $global:Tries++
-    if ($global:Scenario -eq "fails") { "failed: OperationalError"; $global:LASTEXITCODE = 1; return }
+    if ($global:Scenario -eq "fails" -or $global:Scenario -eq "mark97") { "failed: OperationalError"; $global:LASTEXITCODE = 1; return }
     if ($global:Tries -lt 3) { "refused: an import, rollback or rescan is running: try again when it has finished"; $global:LASTEXITCODE = 2; return }
     "removals applied: already done 2, purged 1, withheld 2"
     if ($global:Scenario -eq "partial") { "  purge not applied (purged before the restore, refused here: x): purged items 2" }
@@ -104,7 +106,8 @@ def _runner(tmp: Path) -> list[str]:
     return []
 
 
-def run_restore(tmp_path: Path, scenario: str, *switches: str, pending: bool = False) -> tuple[str, list[str], int]:
+def run_restore(tmp_path: Path, scenario: str, *switches: str, pending: bool = False, stub_text: str | None = None,
+                marker: dict | None = None) -> tuple[str, list[str], int]:
     work = tmp_path / ("w-" + scenario + "-" + "-".join(switches))
     proj = work / "InfiniteAI-CommandCenter"
     (proj / "scripts").mkdir(parents=True)
@@ -113,14 +116,15 @@ def run_restore(tmp_path: Path, scenario: str, *switches: str, pending: bool = F
         saved = {k: str(proj / "backups" / ("%s-before-restore-1.json" % k)) for k in ("access", "removals")}
         for path in saved.values():
             Path(path).write_text("{}")
-        (proj / "backups" / "restore-pending.json").write_text(json.dumps({**saved, "backup": "old", "at": "now"}))
+        (proj / "backups" / "restore-pending.json").write_text(json.dumps({**saved, "backup": "old", "at": "now",
+                                                                           **(marker or {})}))
     shutil.copy(ROOT / "scripts" / "restore.ps1", proj / "scripts" / "restore.ps1")
     shutil.copy(ROOT / "VERSION", proj / "VERSION")
     (proj / "scripts" / "backup.ps1").write_text("$global:Calls.Add('backup.ps1')\r\nexit 0\r\n")
     (proj / "scripts" / "start.ps1").write_text("param([switch]$NoBuild)\r\n$global:Calls.Add('start.ps1')\r\nexit 0\r\n")
     (proj / "backups" / "old" / "command_center.dump").write_bytes(b"")
     stub = work / "stub.ps1"
-    stub.write_text(STUB)
+    stub.write_text(STUB if stub_text is None else stub_text)
     done = subprocess.run([*_runner(work), "-NoProfile", "-File", str(stub), str(proj), scenario, ",".join(switches)],
                           capture_output=True, text=True, timeout=300)
     out = done.stdout + done.stderr
@@ -252,3 +256,71 @@ def test_a_restore_with_another_versions_application_changes_nothing(tmp_path, s
     proj = tmp_path / ("w-%s-" % scenario) / "InfiniteAI-CommandCenter"
     assert (proj / "backups" / "restore-pending.json").exists() is pending  # an earlier restore's marker stays
 
+
+
+# --- 0.6.2 plan 7.4 (review 3, rv3-dur-5): an earlier restore's marker is acted on only as far as the database's mark
+# still asks ---------------------------------------------------------------------------------------------------------
+
+
+def finish_pending(tmp_path: Path, mark: str, marker: dict | None = None) -> tuple[str, list[str], int, Path]:
+    """restore.ps1 -FinishPending with an earlier restore's marker (naming its two saved files) while the database's
+    mark answers `mark` (its detail, or '' for no mark). The project folder too."""
+    answer = "'%s'" % mark if mark else '""'
+    stub = STUB.replace(
+        "  if ($line -match \"version = '0006_brain'\") { \"1\"; return }",
+        "  if ($line -match 'restore_reapply_pending') { %s; return }\n"
+        "  if ($line -match \"version = '0006_brain'\") { \"1\"; return }" % answer)
+    stub = stub.replace('& (Join-Path $Dir "scripts/restore.ps1") -BackupFolder (Join-Path $Dir "backups/old") -Yes '
+                        '@flags', '& (Join-Path $Dir "scripts/restore.ps1") -FinishPending -Yes')
+    assert stub.count("restore_reapply_pending") == 1 and "-FinishPending -Yes" in stub
+    label = "finish%d" % (len(mark) + len(json.dumps(marker or {})))
+    out, calls, code = run_restore(tmp_path, label, pending=True, stub_text=stub, marker=marker)
+    return out, calls, code, tmp_path / ("w-%s-" % label) / "InfiniteAI-CommandCenter"
+
+
+def test_a_stale_marker_is_not_applied_again_when_the_database_has_no_mark(tmp_path):
+    """rv3-dur-5: the earlier restore's files were applied (each apply cleared its part of the database's mark, and
+    the mark went with the last one), but the marker file stayed (the manual commands without their Remove-Item line,
+    or a stop right after the applies). Applying the old files again would undo what admins decided since (a user
+    reactivated, a permission granted again): they are not applied, the marker is renamed, the services start."""
+    out, calls, code, proj = finish_pending(tmp_path, "")
+    assert [c for c in calls if "before-restore-1.json" in c] == [], calls
+    assert at(calls, r"restore-carry apply") == at(calls, r"decisions-apply") == -1, calls
+    assert at(calls, r"^start\.ps1$") >= 0 and code == 0, (code, out)
+    backups = os.listdir(proj / "backups")
+    assert "restore-pending.json" not in backups and [b for b in backups if b.startswith("restore-pending-done-")]
+    assert "were already applied" in out and "NOT applied again" in out
+
+
+def test_only_the_parts_the_database_mark_still_names_are_applied(tmp_path):
+    """rv3-dur-5: the access file was applied (its part of the mark is cleared), the removals were not: only the
+    removals file is applied again; the access narrowing is not repeated over decisions made since."""
+    out, calls, code, proj = finish_pending(tmp_path, '{"access": false, "removals": true, "removals_file": '
+                                                      '"removals-before-restore-1.json"}')
+    assert at(calls, r"removals-before-restore-1\.json cc-restore-helper-\S+:/tmp/removals\.json$") >= 0, calls
+    assert at(calls, r"decisions-apply --removals-only") >= 0 and at(calls, r"access-before-restore-1") == -1, calls
+    assert at(calls, r"restore-carry apply") == -1 and at(calls, r"python -m app\.cli migrate") >= 0, calls
+    assert at(calls, r"decisions-apply") < at(calls, r"^start\.ps1$") and code == 0, (code, out)
+    assert not (proj / "backups" / "restore-pending.json").exists()
+
+
+def test_a_marker_that_says_the_mark_was_not_written_is_applied_whatever_the_database_says(tmp_path):
+    """rv3-dur-5, fail closed: the restore recorded in its marker that the database's mark could not be written with
+    the restore (db_mark false), so a missing mark proves nothing: both files are applied."""
+    out, calls, code, proj = finish_pending(tmp_path, "", {"db_mark": False})
+    assert at(calls, r"access-before-restore-1\.json cc-restore-helper-") >= 0, calls
+    assert at(calls, r"removals-before-restore-1\.json cc-restore-helper-") >= 0, calls
+    assert 0 <= at(calls, r"restore-carry apply") < at(calls, r"decisions-apply") < at(calls, r"^start\.ps1$"), calls
+    assert code == 0, out
+
+
+def test_the_marker_records_a_mark_that_could_not_be_written(tmp_path):
+    """rv3-dur-5: pg_restore committed but the mark after it could not be written (exit 97), and the applies then
+    failed: the marker that stays says so (db_mark false), so the next run applies the files whatever the database
+    says."""
+    out, calls, code = run_restore(tmp_path, "mark97")
+    assert code == 1 and at(calls, r"^start\.ps1$") == -1, (code, calls)
+    marker = json.loads((tmp_path / "w-mark97-" / "InfiniteAI-CommandCenter" / "backups" / "restore-pending.json")
+                        .read_text(encoding="utf-8-sig"))
+    assert marker["db_mark"] is False and marker["removals"] and marker["access"], marker
+    assert "the database's restore mark could not be written" in out

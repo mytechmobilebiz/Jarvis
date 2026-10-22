@@ -357,6 +357,14 @@ async def _no_import_running(session: AsyncSession) -> None:
         raise HTTPException(409, importer.LOCK_BUSY)
 
 
+async def _no_legacy_data(session: AsyncSession) -> None:
+    """0.6.2 plan 8.1: 409 while JARVIS Brain data of 0.6.0 or 0.6.1 is locked (brain_maintenance 'legacy_brain_data').
+    Its rows are hidden from every reader until the legacy reset imports them again; no withhold, keep, release or
+    stop decision is taken on what an older importer stored. The message names the reset."""
+    if await importer.legacy_locked(session):
+        raise HTTPException(409, importer.LEGACY_REFUSAL)
+
+
 @router.delete("/items/{item_id}/purge")
 async def purge_item(item_id: int, request: Request, caller: Caller = Depends(admin),
                      session: AsyncSession = Depends(get_db)) -> dict:
@@ -503,6 +511,7 @@ async def withhold_preview(message_id: int, caller: Caller = Depends(admin),
                            session: AsyncSession = Depends(get_db)) -> dict:
     """What withholding a message would also withhold, hold for review or leave to the admin's choice (ids, positions
     and counts, never text); read-only."""
+    await _no_legacy_data(session)
     message, sess = await _message(session, caller, message_id)
     if message.withheld:
         raise HTTPException(400, "this message is already withheld")
@@ -521,6 +530,7 @@ async def withhold_preview(message_id: int, caller: Caller = Depends(admin),
 async def withhold_message(message_id: int, request: Request, body: WithholdBody | None = None,
                            caller: Caller = Depends(admin), session: AsyncSession = Depends(get_db)) -> dict:
     await _no_import_running(session)  # it could write the message back with its text
+    await _no_legacy_data(session)
     body = body or WithholdBody()
     message, _ = await _message(session, caller, message_id, lock=True)
     # The admin's own choice in the withhold dialog: identical text left readable is a decision to keep (review 2, S21).
@@ -576,6 +586,7 @@ async def _hold_audit(session: AsyncSession, caller: Caller, action: str, messag
 async def keep_hold(message_id: int, request: Request, caller: Caller = Depends(admin),
                     session: AsyncSession = Depends(get_db)) -> dict:
     await _no_import_running(session)
+    await _no_legacy_data(session)
     message, _ = await _message(session, caller, message_id, lock=True)
     stone = await review.keep_hold(session, message, actor=caller.name)
     await _hold_audit(session, caller, "archive.hold_kept", message, stone, request)
@@ -587,6 +598,7 @@ async def keep_hold(message_id: int, request: Request, caller: Caller = Depends(
 async def release_hold(message_id: int, request: Request, body: ReleaseBody | None = None,
                        caller: Caller = Depends(admin), session: AsyncSession = Depends(get_db)) -> dict:
     await _no_import_running(session)  # an import could hold it again before the release is committed
+    await _no_legacy_data(session)
     message, sess = await _message(session, caller, message_id, lock=True)
     stone = await review.release_hold(session, message, sess, actor=caller.name,
                                       confirm=body.confirm if body is not None else None)
@@ -611,6 +623,7 @@ async def release_unrelated(session_id: int, request: Request, caller: Caller = 
     'none' are released; refused (400, nothing changed) while a hold of this conversation could not be compared with
     a withheld text its backup lacked (section 2 correction 4)."""
     await _no_import_running(session)
+    await _no_legacy_data(session)
     sess = await _session_of(session, caller, session_id)
     released = await review.release_unrelated(session, sess, caller.scope, actor=caller.name)
     await audit.record(session, caller.name, "archive.holds_released_unrelated", "archive_session", sess.id,
@@ -627,6 +640,7 @@ async def stop_importing(session_id: int, request: Request, caller: Caller = Dep
     """'Stop importing this conversation' (0.6.2 plan 9.3, 5.3): later backups leave it out (counted); what is
     stored of it stays as it is."""
     await _no_import_running(session)
+    await _no_legacy_data(session)
     sess = await _session_of(session, caller, session_id)
     added = await review.stop_importing(session, sess, actor=caller.name)
     await audit.record(session, caller.name, "archive.session_frozen", "archive_session", sess.id,

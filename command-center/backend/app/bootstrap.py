@@ -126,10 +126,14 @@ async def refuse_while_a_restore_is_pending() -> None:
 
 
 async def bootstrap(settings: Settings) -> dict[str, bool]:
+    # The restore mark first (0.6.2 plan 7.3, review 3 rv3-dur-0): a refused start writes nothing to a restored
+    # database. A migration would (0008's repair audits under the next audit id), and restore-carry apply would then
+    # find the restored backup "not an earlier state of this database" and put back none of the audit entries made
+    # after it. pending_restore() reads any schema (no brain_maintenance table: no mark).
+    await refuse_while_a_restore_is_pending()
     applied = await run_migrations()
     if applied:
         log.info("applied migrations: %s", ", ".join(applied))
-    await refuse_while_a_restore_is_pending()
     complete = await check_withheld_copies()
     await ensure_admin(settings)
     from .credit_repair import store as credit_repair_store

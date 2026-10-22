@@ -8,8 +8,8 @@
 # (keys, ids, e-mail addresses and the audit log; never message text, never a
 # password hash):
 #   - removals-before-restore-<time>.json: the JARVIS Brain's withholds, purges
-#     (also of items without a source key), releases, title choices and purge
-#     fingerprints;
+#     (also of items without a source key), releases, title choices, purge
+#     fingerprints and version redactions;
 #   - access-before-restore-<time>.json: who may sign in and what they may read,
 #     and the audit log.
 # After the restore, BEFORE any service starts (a helper container of the api
@@ -25,7 +25,9 @@
 # yet. While it is there, start.ps1 starts nothing and the api and the worker
 # refuse to start; the next restore.ps1 applies those files first (it never
 # exports again from the restored data), and -FinishPending only applies them
-# and starts the services.
+# and starts the services. Only the parts the database's mark still names are
+# applied: with no mark left, the files were applied already, and applying them
+# again would undo what admins decided since (the marker is then renamed).
 #
 # It runs only from the folder of the installed application: it stops before
 # changing anything when the api image is another version than this folder's
@@ -132,8 +134,8 @@ function Invoke-Reapply([string]$accessFile, [string]$removalsFile) {
     Show-Lines $out
     if ($code -ne 0) {
       $script:problems += "the JARVIS Brain's withholds, purges and releases (exit $code)"
-    } elseif ($text -match '(?m)^\s*(removal|purge|release) not applied') {
-      $script:problems += "some of the JARVIS Brain's withholds, purges or releases (the 'not applied' lines above)"
+    } elseif ($text -match '(?m)^\s*(removal|purge|release|redaction) not applied') {
+      $script:problems += "some of the JARVIS Brain's withholds, purges, releases or version redactions (the 'not applied' lines above)"
     } else {
       # decisions-apply prints "removals applied: <outcome> <n>, ..." (tests/unit/test_brain_ops.py runs this
       # pattern against the CLI's own output). What was already in the restored backup is "already done".
@@ -210,12 +212,49 @@ if ($imageVersion -ne $folderVersion) {
 # --- 0. An earlier restore that did not finish ----------------------------------------------------------------------
 # Its files are applied first, never exported again: the database holds the restored data without what the restore
 # must not undo, and an export now would save that loss.
+# The database's own mark (restore_carry: a part for each file, cleared by the command that applies it; gone with the
+# last part), read by one query that works on any schema.
+$markQuery = "SELECT CASE WHEN to_regclass('public.brain_maintenance') IS NULL THEN '' ELSE (xpath('/table/row/d/text()', query_to_xml('SELECT detail::text AS d FROM brain_maintenance WHERE name = ''restore_reapply_pending''', false, false, '')))[1]::text END"
+$markText = ""
 if (Test-Path -LiteralPath $pendingFile -PathType Leaf) {
   $pending = $null
   try { $pending = Get-Content -Raw -LiteralPath $pendingFile | ConvertFrom-Json } catch { $pending = $null }
   if ($null -eq $pending) { Fail "$pendingFile cannot be read. It names the files an earlier restore saved (removals-before-restore-*.json and access-before-restore-*.json in backups\): apply them by hand (docs\DEPLOY_WINDOWS.md, Backup and restore), then delete it" }
   $pendingAccess = "$($pending.access)"
   $pendingRemovals = "$($pending.removals)"
+  # 0.6.2 plan 7.4 (review 3, rv3-dur-5): the marker is acted on only as far as the database's mark still asks. Each
+  # apply clears its part of the mark, and the mark goes with the last part: with no mark left, the files were applied
+  # already (the manual commands without their Remove-Item line, or a stop right after the applies), and applying them
+  # again would undo what admins decided since (a user reactivated, a permission granted again). Only when this script
+  # recorded that the mark could not be written with the restore (db_mark false) does a missing mark prove nothing.
+  $mark = Invoke-Psql $markQuery
+  if ($LASTEXITCODE -ne 0) { Fail "could not read the database (docker compose exec postgres psql failed); nothing was changed. Is the stack running? Try again." }
+  $markText = "$mark".Trim()
+  if (-not $markText -and "$($pending.db_mark)" -ne "False") {
+    $doneFile = Join-Path $backups "restore-pending-done-$stamp.json"
+    Move-Item -LiteralPath $pendingFile -Destination $doneFile -Force
+    Write-Host "The files of an earlier restore (of $($pending.backup), started $($pending.at)) were already applied: the database has no restore mark left. They were NOT applied again (that would undo what admins decided since); the stale marker was renamed to $doneFile." -ForegroundColor Green
+    if ($FinishPending -and -not $BackupFolder) {
+      Write-Host "`nStarting the application..."
+      $global:LASTEXITCODE = 1  # stays 1 if the script cannot run at all
+      & (Join-Path $PSScriptRoot "start.ps1") -NoBuild
+      if ($LASTEXITCODE -ne 0) { Fail "nothing was left to apply, but the services did not start; see: docker compose logs --tail=100 api worker n8n" }
+      Write-Host "Restore finished. Run .\scripts\smoke.ps1 to check the system." -ForegroundColor Green
+      exit 0
+    }
+  }
+}
+if (Test-Path -LiteralPath $pendingFile -PathType Leaf) {
+  if ($markText) {
+    # Only the parts still marked (a part an earlier apply finished is not applied again); a mark that cannot be read
+    # keeps both.
+    $parts = $null
+    try { $parts = $markText | ConvertFrom-Json } catch { $parts = $null }
+    if ($null -ne $parts -and ($parts.access -eq $true -or $parts.removals -eq $true)) {
+      if ($parts.access -ne $true) { $pendingAccess = "" }
+      if ($parts.removals -ne $true) { $pendingRemovals = "" }
+    }
+  }
   foreach ($file in @($pendingAccess, $pendingRemovals)) {
     if ($file -and -not (Test-Path -LiteralPath $file -PathType Leaf)) { Fail "an earlier restore did not finish, and a file it saved is missing: $file. Nothing was changed. Put the file back and run this again; only to give up what it holds (the decisions made after that backup stay undone), see docs\DEPLOY_WINDOWS.md, Backup and restore" }
   }
@@ -245,7 +284,7 @@ if (Test-Path -LiteralPath $pendingFile -PathType Leaf) {
   $script:again = -1
 } else {
   # The database's own mark, for a restore whose marker file is not in this folder (it ran from another folder).
-  $mark = Invoke-Psql "SELECT CASE WHEN to_regclass('public.brain_maintenance') IS NULL THEN '' ELSE (xpath('/table/row/d/text()', query_to_xml('SELECT detail::text AS d FROM brain_maintenance WHERE name = ''restore_reapply_pending''', false, false, '')))[1]::text END"
+  $mark = Invoke-Psql $markQuery
   if ($LASTEXITCODE -ne 0) { Fail "could not read the database (docker compose exec postgres psql failed); nothing was changed. Is the stack running? Try again." }
   if ("$mark".Trim()) {
     Fail "this database's last restore did not finish applying what it must not undo (the database says so: $("$mark".Trim())), and $pendingFile is not in this folder. Run restore.ps1 -FinishPending in the folder that ran that restore, or apply the files it names by hand (docs\DEPLOY_WINDOWS.md, Backup and restore). Nothing was changed."
@@ -355,7 +394,8 @@ if ($dumps -contains "command_center") {
 $carry = ($dumps -contains "command_center") -and ($access -or $removals)
 if ($carry) {
   New-Item -ItemType Directory -Force -Path $backups | Out-Null
-  $marker = @{ access = $access; removals = $removals; backup = $folder; at = (Get-Date).ToString("o") } | ConvertTo-Json
+  $markerAt = (Get-Date).ToString("o")
+  $marker = @{ access = $access; removals = $removals; backup = $folder; at = $markerAt } | ConvertTo-Json
   Set-Content -LiteralPath $pendingFile -Value $marker -Encoding UTF8
   if (-not (Test-Path -LiteralPath $pendingFile -PathType Leaf)) {
     Write-Host "`nStarting the application again (nothing was restored)..."
@@ -395,7 +435,12 @@ foreach ($db in $dumps) {
     # pg_restore, then (only once it has committed) the mark, in one command of the database container (see above).
     docker compose exec -T postgres sh -c "pg_restore -U postgres -d command_center --clean --if-exists --single-transaction --exit-on-error /tmp/restore-command_center.dump || exit 1; psql -U postgres -d command_center -X -q -1 -v ON_ERROR_STOP=1 -f /tmp/restore-mark.sql || exit 97"
     $code = $LASTEXITCODE
-    if ($code -eq 97) { Write-Host "  (the database's restore mark could not be written; $pendingFile still guards start.ps1)" -ForegroundColor Yellow }
+    if ($code -eq 97) {
+      Write-Host "  (the database's restore mark could not be written; $pendingFile still guards start.ps1)" -ForegroundColor Yellow
+      # Said in the marker too: a later run applies the files whatever the database says (a missing mark proves nothing).
+      $marker = @{ access = $access; removals = $removals; backup = $folder; at = $markerAt; db_mark = $false } | ConvertTo-Json
+      Set-Content -LiteralPath $pendingFile -Value $marker -Encoding UTF8
+    }
     elseif ($code -ne 0) { $failed += $db }
     docker compose exec -T postgres rm -f /tmp/restore-mark.sql
   } else {

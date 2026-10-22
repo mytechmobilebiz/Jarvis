@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import BigInteger, ColumnElement, Text, and_, cast, exists, false, func, not_, or_, true
 
-from ..models import ArchiveMessage, ArchiveSession, BrainTombstone, ImportRecord, MemoryItem
+from ..models import ArchiveMessage, ArchiveSession, BrainMaintenance, BrainTombstone, ImportRecord, ImportRun, MemoryItem
 from . import AGENTS
 
 SENSITIVE_AGENT = "credit_repair"
@@ -54,6 +54,46 @@ PROMOTED_REF_POSITION = " · message ([0-9]{1,18})$"
 # The import_records actions that name a row a message's source key was stored as (archive._older_rows; never a
 # 'duplicate' record's: it names the row of the message it duplicates).
 OLD_ROW_ACTIONS = ("imported", "withheld", "updated")
+# brain_maintenance: JARVIS Brain data an importer older than 1.1.0 wrote (0.6.0, 0.6.1), found by migration 0008
+# (0.6.2 plan 1.7). While it is there the legacy runs' rows are hidden from every reader (legacy_hidden_*), and the
+# importer and the withhold API refuse; brain-import legacy-reset rolls them back and lifts it (plan 8).
+LEGACY_LOCK = "legacy_brain_data"
+
+
+# --- Legacy 0.6.0 / 0.6.1 Brain data (0.6.2 plan 8.1) -----------------------------------------------------------------
+
+
+def legacy_locked() -> ColumnElement[bool]:
+    """SQL: the legacy lock is set (uncorrelated: evaluated once per query)."""
+    return exists().where(BrainMaintenance.name == LEGACY_LOCK)
+
+
+def _legacy_run(run_id: ColumnElement[int | None], table: object) -> ColumnElement[bool]:
+    """SQL: the import run that wrote this row is a legacy one: by an importer older than 1.1.0 (0008's
+    brain_importer_older: none or unparsable counts as older) and not rolled back. A primary-key probe."""
+    return exists().where(ImportRun.id == run_id, ImportRun.status != "rolled_back",
+                          func.brain_importer_older(ImportRun.importer_version)).correlate(table)
+
+
+def legacy_hidden_message() -> ColumnElement[bool]:
+    """SQL: an archived message a legacy run wrote, while the legacy lock is set: no reader shows it, an admin
+    included (plan 8.1). Without the lock this is false at once (the lock is tested first)."""
+    return and_(legacy_locked(), _legacy_run(ArchiveMessage.import_run_id, ArchiveMessage))
+
+
+def legacy_hidden_session() -> ColumnElement[bool]:
+    """SQL: an archived conversation (its title and summary too) a legacy run wrote, while the legacy lock is set."""
+    return and_(legacy_locked(), _legacy_run(ArchiveSession.import_run_id, ArchiveSession))
+
+
+def legacy_hidden_item() -> ColumnElement[bool]:
+    """SQL: while the legacy lock is set, a memory item a legacy run imported, and an item promoted before the lock was
+    set (every one of those was promoted from a message 0.6.0 or 0.6.1 stored: the JARVIS Brain holds nothing older,
+    and nothing can be promoted from a hidden message)."""
+    promoted_before = exists().where(BrainMaintenance.name == LEGACY_LOCK,
+                                     BrainMaintenance.done_at >= MemoryItem.created_at).correlate(MemoryItem)
+    return and_(legacy_locked(), or_(_legacy_run(MemoryItem.import_run_id, MemoryItem),
+                                     and_(MemoryItem.origin == "promoted", promoted_before)))
 
 
 @dataclass(frozen=True)
@@ -154,7 +194,8 @@ def agent_items(policy: AgentPolicy, *, general_only: bool = False) -> ColumnEle
     if policy.other_agents:
         scope.append(MemoryItem.agent != SENSITIVE_AGENT)
     clauses = [MemoryItem.status == "approved", MemoryItem.deleted_at.is_(None), or_(*scope),
-               not_(MemoryItem.flags.has_key("source_withheld")), not_(withheld_source()), not_(purged_key())]
+               not_(MemoryItem.flags.has_key("source_withheld")), not_(withheld_source()), not_(purged_key()),
+               not_(legacy_hidden_item())]
     if general_only or not policy.customer:
         clauses.append(MemoryItem.sensitivity == "general")
     return and_(*clauses)
@@ -164,7 +205,8 @@ def agent_archive(policy: AgentPolicy, *, general_only: bool = False) -> ColumnE
     """The archived sessions an agent may search (combine with archive_messages through session_id)."""
     if policy.archive == "none":
         return false()
-    clauses = [ArchiveSession.agent != SENSITIVE_AGENT, ArchiveSession.sensitivity != "restricted"]
+    clauses = [ArchiveSession.agent != SENSITIVE_AGENT, ArchiveSession.sensitivity != "restricted",
+               not_(legacy_hidden_session())]
     if general_only or not policy.customer:
         clauses.append(ArchiveSession.sensitivity == "general")
     if policy.archive == "own":
@@ -178,7 +220,8 @@ def agent_messages(policy: AgentPolicy, *, general_only: bool = False) -> Column
     identity repair and the database guard; this holds even if one were not)."""
     clauses = [ArchiveMessage.withheld.is_(False),
                not_(exists().where(BrainTombstone.source_key == ArchiveMessage.source_key,
-                                   BrainTombstone.reason == WITHHELD_BY_ADMIN).correlate(ArchiveMessage))]
+                                   BrainTombstone.reason == WITHHELD_BY_ADMIN).correlate(ArchiveMessage)),
+               not_(legacy_hidden_message())]
     if general_only or not policy.customer:
         clauses.append(ArchiveMessage.sensitivity == "general")
     return and_(*clauses)
@@ -233,6 +276,7 @@ def person_items(scope: PersonScope, *, include_deleted: bool = False) -> Column
     emptied = and_(flagged, MemoryItem.title == WITHHELD_COPY_TITLE, MemoryItem.body == "",
                    cast(MemoryItem.tags, Text) == "[]")
     clauses.append(or_(emptied, and_(not_(flagged), not_(withheld_source()))))
+    clauses.append(not_(legacy_hidden_item()))  # 0.6.0/0.6.1 data while it is locked: for everyone (plan 8.1)
     if not scope.is_admin:
         clauses.append(not_(purged_key()))
     if not scope.sees_customer:
@@ -247,7 +291,7 @@ def person_sessions(scope: PersonScope) -> ColumnElement[bool]:
     sensitive-data permission only; its text was never stored."""
     if not scope.sees_archive:
         return false()
-    clauses: list[ColumnElement[bool]] = []
+    clauses: list[ColumnElement[bool]] = [not_(legacy_hidden_session())]  # for everyone (plan 8.1)
     if not scope.sensitive:
         clauses += [ArchiveSession.agent != SENSITIVE_AGENT, ArchiveSession.sensitivity != "restricted"]
     if not scope.sees_customer:
@@ -256,9 +300,10 @@ def person_sessions(scope: PersonScope) -> ColumnElement[bool]:
 
 
 def person_messages(scope: PersonScope) -> ColumnElement[bool]:
-    """Messages a person may read. Withheld messages show as withheld (no text is stored for them)."""
+    """Messages a person may read. Withheld messages show as withheld (no text is stored for them). A message a legacy
+    run wrote is not shown to anyone while the legacy lock is set (plan 8.1)."""
     if not scope.sees_archive:
         return false()
     if scope.sees_customer:
-        return true()
-    return ArchiveMessage.sensitivity == "general"
+        return not_(legacy_hidden_message())
+    return and_(ArchiveMessage.sensitivity == "general", not_(legacy_hidden_message()))

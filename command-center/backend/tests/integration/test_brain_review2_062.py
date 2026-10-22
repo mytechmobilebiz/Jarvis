@@ -1428,12 +1428,15 @@ async def test_s18_a_removal_not_applied_keeps_the_mark(client, fx, restore_poin
 
 
 # The stand-in docker of tests/unit/test_restore_ps1.py, for several restore.ps1 runs in one PowerShell (the marker
-# file and backups\ stay between them, as on the owner's PC). A run is "<scenario>:<switch>,<switch>".
+# file and backups\ stay between them, as on the owner's PC). A run is "<scenario>:<switch>,<switch>". The database's
+# restore mark is kept as the database keeps it (0.6.2 plan 7.4: restore.ps1 reads it before acting on the marker
+# file): written by the pg_restore command, each part cleared by the command that applies it, gone with the last.
 STUB_SEQ = r'''
 param([string]$Dir, [string]$Plan)
 $global:Calls = New-Object System.Collections.Generic.List[string]
 $global:Scenario = ""
 $global:Interrupted = $false
+$global:Mark = $null
 function global:Start-Sleep { param([int]$Seconds) $global:Calls.Add("sleep $Seconds") }
 function global:docker {
   $line = ($args | ForEach-Object { "$_" }) -join " "
@@ -1454,8 +1457,10 @@ function global:docker {
   if ($line -match "FROM pg_locks") { if ($sc -eq "busy") { "1" } else { "0" }; return }
   if ($line -match "name = ''restore_reapply_pending''") {
     if ($sc -eq "dbmark") { '{"access": true, "removals": true, "removals_file": "removals-before-restore-1.json"}' }
+    elseif ($null -ne $global:Mark) { $global:Mark | ConvertTo-Json -Compress }
     return
   }
+  if ($line -match 'pg_restore .*-f /tmp/restore-mark\.sql') { $global:Mark = @{ access = $true; removals = $true }; return }
   if ($line -match "FILTER \(WHERE reason") { "3 withheld messages and copies, 1 purged items with a source key"; return }
   if ($line -match '^compose run -d --no-deps --name (\S+) api ') { return }
   if ($line -match 'restore-carry export --out') { "access and audit exported: users 4, audit entries 10"; return }
@@ -1465,10 +1470,12 @@ function global:docker {
   if ($line -match '^cp cc-restore-helper-\S+:(\S+) (.+)$') { Set-Content -LiteralPath $Matches[2] -Value '{}'; return }
   if ($line -match 'restore-carry apply --in') {
     if ($sc -eq "interrupt" -and -not $global:Interrupted) { $global:Interrupted = $true; throw "the console window was closed" }
+    if ($null -ne $global:Mark) { $global:Mark.access = $false; if (-not $global:Mark.removals) { $global:Mark = $null } }
     "audit entries made after the backup, put back: 2"; "access changes made after the backup, applied again: 0"; return
   }
   if ($line -match 'decisions-apply --removals-only') {
     if ($sc -eq "fails") { "failed: OperationalError"; $global:LASTEXITCODE = 1; return }
+    if ($null -ne $global:Mark) { $global:Mark.removals = $false; if (-not $global:Mark.access) { $global:Mark = $null } }
     "removals applied: already done 2, purged 1, withheld 2"; return
   }
 }

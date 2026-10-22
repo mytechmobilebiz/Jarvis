@@ -90,8 +90,10 @@ from ..db import sessionmaker
 from ..models import (
     ArchiveMessage,
     ArchiveSession,
+    AuditLog,
     BrainDecisionBackup,
     BrainFrozenSession,
+    BrainMaintenance,
     BrainPurgedContent,
     BrainPurgedItem,
     BrainSessionLink,
@@ -129,7 +131,7 @@ from .archive import (
 )
 from .later import joined_families, session_families
 from .quotes import refresh_quotes, scrub_quotes
-from .policy import RISK_FLAGS, SENSITIVE_AGENT
+from .policy import LEGACY_LOCK, RISK_FLAGS, SENSITIVE_AGENT
 
 LOCK_CLASS = 7_314_002_213
 LOCK_KEY = ((LOCK_CLASS + 2 ** 31) % 2 ** 32) - 2 ** 31  # the same number as a signed 32-bit lock key
@@ -621,6 +623,26 @@ async def require_schema(session: AsyncSession) -> None:
             "AND table_name = 'brain_tombstones' AND column_name = 'anchor_key')")):
         raise Refused("the JARVIS Brain needs migration 0008_brain_withhold_identity: start the Command Center 0.6.2 "
                       "once first")
+
+
+# 0.6.2 plan 8.1: what the importer (and the withhold API: api/brain._no_legacy_data) says while 0.6.0/0.6.1 Brain data
+# is locked (brain_maintenance 'legacy_brain_data', set by migration 0008).
+LEGACY_REFUSAL = ("this database holds JARVIS Brain data that Command Center 0.6.0 or 0.6.1 imported (legacy): it is "
+                  "locked, and hidden from every reader, until it is imported again. Run the legacy reset first: "
+                  "brain-import legacy-reset --export FILE --yes (jarvis-import -Mode LegacyReset); then import the "
+                  "same JARVIS backup again and finish the decisions on it (brain-import settle)")
+
+
+async def legacy_locked(session: AsyncSession) -> bool:
+    """Whether the legacy lock is set (0.6.2 plan 8.1)."""
+    return await session.scalar(select(BrainMaintenance.name).where(BrainMaintenance.name == LEGACY_LOCK)) is not None
+
+
+async def refuse_legacy(session: AsyncSession) -> None:
+    """Refused (before any change) while legacy 0.6.0/0.6.1 Brain data is locked: an import, Settle, a resume and a
+    decisions file (decisions-apply after an import, and its export) wait for the legacy reset (plan 8.1)."""
+    if await legacy_locked(session):
+        raise Refused(LEGACY_REFUSAL)
 
 
 async def purge_key_check(session: AsyncSession) -> None:
@@ -2990,6 +3012,7 @@ async def plan(paths: SourcePaths, selection: Selection, *, report_file: str | N
     async with sessionmaker()() as s:
         await s.execute(sql("SET TRANSACTION READ ONLY"))
         await require_schema(s)
+        await refuse_legacy(s)
         await purge_key_check(s)
         tz_name, tz = await customer_timezone(s)
         sources = Sources(paths, tz, tz_name)
@@ -3030,6 +3053,7 @@ async def run(paths: SourcePaths, selection: Selection, *, label: str = "", acto
     data = read_decisions(decisions) if decisions else None
     async with sessionmaker()() as s:
         await require_schema(s)
+        await refuse_legacy(s)
         await purge_key_check(s)
         tz_name, tz = await customer_timezone(s)
         decider: _Decider | None = None
@@ -3186,6 +3210,7 @@ async def settle(paths: SourcePaths, *, actor: str = DEFAULT_ACTOR, report_file:
     Refusals (Refused) come before any change; with nothing left to finish it changes nothing."""
     async with sessionmaker()() as s:
         await require_schema(s)
+        await refuse_legacy(s)
         await purge_key_check(s)
         tz_name, tz = await customer_timezone(s)
     sources = Sources(paths, tz, tz_name, files=False)
@@ -3227,6 +3252,7 @@ async def resume(run_id: int, paths: SourcePaths, *, report_file: str | None = N
     """Continue an interrupted or failed run after its checkpoint, from the very same sources."""
     async with sessionmaker()() as s:
         await require_schema(s)
+        await refuse_legacy(s)
         await purge_key_check(s)
         found = await s.get(ImportRun, run_id)
         if found is None:
@@ -4189,7 +4215,10 @@ async def status(run_id: int | None = None) -> dict[str, Any]:
                 # 0.6.2 plan 5.3, 5.5: conversations an admin stopped importing, and the newest run's tripwire (counts
                 # and archive ids only)
                 frozen_conversations=int(pending.get("frozen_sessions") or 0),
-                last_tripwire=pending.get("last_tripwire") or None)
+                last_tripwire=pending.get("last_tripwire") or None,
+                # 0.6.2 plan 8.1: legacy 0.6.0/0.6.1 data, locked until brain-import legacy-reset
+                legacy_lock=bool(pending.get("legacy_lock")),
+                legacy_runs=[r.id for r in await legacy_runs(s)] if pending.get("legacy_lock") else [])
         out["marked_interrupted"] = await mark_dead_runs(s)
         query = select(ImportRun).order_by(ImportRun.id.desc())
         query = query.where(ImportRun.id == run_id) if run_id is not None else query.limit(20)
@@ -4533,6 +4562,114 @@ DECISIONS_HANDLING = ("Keys and ids only, never text. A purged memory entry's ke
                       "entry offline. Keep this file like a backup and delete it once it is applied.")
 
 
+async def _decisions_content(s: AsyncSession, *, removals_only: bool) -> tuple[dict[str, Any], dict[str, Any]]:
+    """What a decisions file holds (decisions_export's docstring says what) and its counts, read in the caller's
+    transaction: decisions_export, and the legacy reset (legacy_reset), which writes it before its rollbacks."""
+    decisions, skipped, not_exported = [], 0, 0
+    items = [] if removals_only else (await s.scalars(select(MemoryItem).where(
+        MemoryItem.origin == "import",
+        or_(MemoryItem.version > 1, MemoryItem.reviewed_by != "", MemoryItem.deleted_at.is_not(None)))
+        .order_by(MemoryItem.id))).all()
+    for item in items:
+        if not item.source_key:
+            skipped += 1
+            continue
+        first = await s.scalar(select(MemoryItemVersion).where(MemoryItemVersion.item_id == item.id)
+                               .order_by(MemoryItemVersion.version).limit(1))
+        if first is None:
+            skipped += 1
+            continue
+        edited = (item.title, item.body, list(item.tags or []), item.kind, item.agent) != (
+            first.title, first.body, list(first.tags or []), first.kind, first.agent)
+        decision: dict[str, Any] = {
+            "source_key": item.source_key,
+            "content_hash": brain_text.content_hash(first.kind, first.agent, first.title, first.body),
+            "status": item.status, "reviewed_by": item.reviewed_by, "review_note": item.review_note,
+            "deleted": item.deleted_at is not None, "edited": edited}
+        if edited and item.deleted_at is None:
+            if item.sensitivity != "general" or SENSITIVE_AGENT in (item.agent, first.agent):
+                decision["edit_not_exported"] = ("customer or Credit Repair text: redo this edit and its review "
+                                                 "by hand")
+                not_exported += 1
+            else:
+                decision.update(title=item.title, body=item.body, tags=list(item.tags or []), kind=item.kind,
+                                agent=item.agent)
+        decisions.append(decision)
+    removals: list[dict[str, Any]] = []
+    for t in (await s.scalars(select(BrainTombstone).where(BrainTombstone.reason.in_((
+            WITHHELD_BY_ADMIN, PURGED_BY_ADMIN))).order_by(BrainTombstone.source_key))).all():
+        who = {"by": t.purged_by or "", "at": _iso(t.purged_at)}  # who decided, and when: ids and times only
+        if t.reason == PURGED_BY_ADMIN:
+            removals.append({"source_key": t.source_key, "reason": t.reason, **who})
+            continue
+        # title_hidden: whether the admin's own withhold hid the conversation's title (False on other stones)
+        removals.append({"source_key": t.source_key, "reason": t.reason, "anchor": t.anchor_key or "",
+                         "session": t.source_session_id or "", "row": t.source_row_id or "", "role": t.role or "",
+                         "tool_call_id": t.tool_call_id or "", "uid": t.message_uid or "",
+                         "uid_known": bool(t.uid_known), "via": t.via or "", "review": t.review or "",
+                         "title_hidden": bool(t.title_hidden), "at_row": _iso(t.source_at),
+                         "decided_on": t.decided_on or "", "kept_by": "", "kept_at": "",
+                         "relations": identity.relation_order(t.relations or []), **who})
+        if t.review == identity.KEPT:
+            # who kept the hold, and when: the stone says it (rv3-dur-6); a keep written before that, the row's flag
+            flag: Any = {}
+            if not t.kept_by:
+                flag = await s.scalar(select(ArchiveMessage.flags["withheld_by_admin"]).where(
+                    ArchiveMessage.source_key == t.source_key).limit(1))
+                flag = flag if isinstance(flag, dict) else {}
+            removals[-1].update(kept_by=(t.kept_by or str(flag.get("kept_by") or ""))[:200],
+                                kept_at=(_iso(t.kept_at) or str(flag.get("kept_at") or ""))[:64])
+    purged_items: list[dict[str, Any]] = []
+    fingerprints: list[dict[str, Any]] = []
+    redactions: list[dict[str, Any]] = []
+    if removals_only:
+        purged_items = [{"item": p.item_id, "created_at": _iso(p.item_created_at), "by": p.purged_by or "",
+                         "at": _iso(p.purged_at)} for p in (await s.scalars(select(BrainPurgedItem).order_by(
+                             BrainPurgedItem.item_id, BrainPurgedItem.item_created_at))).all()]
+        fingerprints = [{"fp": p.fp, "source_key": p.source_key or "", "kind": p.kind or "", "by": p.purged_by or "",
+                         "at": _iso(p.purged_at), "via": p.via or ""} for p in (await s.scalars(
+                             select(BrainPurgedContent).where(identity.live_fingerprints())
+                             .order_by(BrainPurgedContent.fp))).all()]
+        redactions = await _redactions(s)
+    # A release travels with the exact JARVIS row it covers (identity.exact; never a digest or a length of any
+    # text), the backup it was decided on, its kind, and who decided it, when and why (a release, or identical
+    # text an admin left readable: review 2, S21, S23).
+    releases = [{"anchor": e.anchor_key, "session": e.source_session_id, "row": e.source_row_id,
+                 "role": e.role or "", "tool_call_id": e.tool_call_id or "", "at_row": _iso(e.source_at),
+                 "uid": e.source_uid or "", "kind": e.kind or "release", "decided_on": e.decided_on or "",
+                 "reason": e.reason or "", "by": e.decided_by or "", "at": _iso(e.decided_at)}
+                for e in (await s.scalars(select(BrainWithholdExemption).order_by(
+                    BrainWithholdExemption.anchor_key, BrainWithholdExemption.source_session_id,
+                    BrainWithholdExemption.source_row_id, BrainWithholdExemption.id))).all()]
+    # The JARVIS backups the decisions were taken on (an import of one of them replays its decisions), the
+    # family links every import recorded, and the conversations an admin stopped importing.
+    backups = [{"sha256": b.sha256, "label": b.label or "", "importer_version": b.importer_version or "",
+                "newest_at": _iso(b.newest_at), "settled": b.settled_run_id is not None}
+               for b in (await s.scalars(select(BrainDecisionBackup).order_by(BrainDecisionBackup.sha256))).all()]
+    links = [{"a": a, "b": b, "how": how} for a, b, how in (await s.execute(select(
+        BrainSessionLink.a, BrainSessionLink.b, BrainSessionLink.how).order_by(
+        BrainSessionLink.a, BrainSessionLink.b, BrainSessionLink.how))).all()]
+    frozen = [{"session": f.source_session_id, "by": f.frozen_by or "", "at": _iso(f.frozen_at)}
+              for f in (await s.scalars(select(BrainFrozenSession).order_by(
+                  BrainFrozenSession.source_session_id))).all()]
+    content: dict[str, Any] = {"format": "jarvis-brain-decisions", "version": DECISIONS_VERSION,
+                               "exported_at": now().isoformat(), "importer_version": IMPORTER_VERSION,
+                               "handling": DECISIONS_HANDLING, "removals": removals, "releases": releases,
+                               "backups": backups, "links": links, "frozen": frozen}
+    if removals_only:
+        content.update(removals_only=True, purged_items=purged_items, purge_fingerprints=fingerprints,
+                       redactions=redactions)
+    else:
+        content["decisions"] = decisions
+    out: dict[str, Any] = {"removals": len(removals), "releases": len(releases)}
+    if removals_only:
+        out.update(removals_only=True, purged_items=len(purged_items), purge_fingerprints=len(fingerprints),
+                   redactions=len(redactions))
+    else:
+        out.update(exported=len(decisions), skipped_without_source_key=skipped, edits_not_exported=not_exported)
+    return content, out
+
+
 async def decisions_export(out_path: str, *, actor: str = DEFAULT_ACTOR, removals_only: bool = False
                            ) -> dict[str, Any]:
     """Every imported item a person reviewed or edited in this database, keyed by source_key and by the content hash
@@ -4554,113 +4691,39 @@ async def decisions_export(out_path: str, *, actor: str = DEFAULT_ACTOR, removal
     versions), and the keyed purge fingerprints (HMACs keyed by this database's password, never text)."""
     if os.path.exists(out_path):
         raise Refused("the output file already exists; nothing is overwritten")
-    decisions, skipped, not_exported = [], 0, 0
     async with sessionmaker()() as s:
         await require_schema(s)
         if not removals_only:
+            await refuse_legacy(s)  # the legacy reset writes their file (plan 8.2)
             await _refuse_unsettled(s)
-        items = [] if removals_only else (await s.scalars(select(MemoryItem).where(
-            MemoryItem.origin == "import",
-            or_(MemoryItem.version > 1, MemoryItem.reviewed_by != "", MemoryItem.deleted_at.is_not(None)))
-            .order_by(MemoryItem.id))).all()
-        for item in items:
-            if not item.source_key:
-                skipped += 1
-                continue
-            first = await s.scalar(select(MemoryItemVersion).where(MemoryItemVersion.item_id == item.id)
-                                   .order_by(MemoryItemVersion.version).limit(1))
-            if first is None:
-                skipped += 1
-                continue
-            edited = (item.title, item.body, list(item.tags or []), item.kind, item.agent) != (
-                first.title, first.body, list(first.tags or []), first.kind, first.agent)
-            decision: dict[str, Any] = {
-                "source_key": item.source_key,
-                "content_hash": brain_text.content_hash(first.kind, first.agent, first.title, first.body),
-                "status": item.status, "reviewed_by": item.reviewed_by, "review_note": item.review_note,
-                "deleted": item.deleted_at is not None, "edited": edited}
-            if edited and item.deleted_at is None:
-                if item.sensitivity != "general" or SENSITIVE_AGENT in (item.agent, first.agent):
-                    decision["edit_not_exported"] = ("customer or Credit Repair text: redo this edit and its review "
-                                                     "by hand")
-                    not_exported += 1
-                else:
-                    decision.update(title=item.title, body=item.body, tags=list(item.tags or []), kind=item.kind,
-                                    agent=item.agent)
-            decisions.append(decision)
-        removals: list[dict[str, Any]] = []
-        for t in (await s.scalars(select(BrainTombstone).where(BrainTombstone.reason.in_((
-                WITHHELD_BY_ADMIN, PURGED_BY_ADMIN))).order_by(BrainTombstone.source_key))).all():
-            who = {"by": t.purged_by or "", "at": _iso(t.purged_at)}  # who decided, and when: ids and times only
-            if t.reason == PURGED_BY_ADMIN:
-                removals.append({"source_key": t.source_key, "reason": t.reason, **who})
-                continue
-            # title_hidden: whether the admin's own withhold hid the conversation's title (False on other stones)
-            removals.append({"source_key": t.source_key, "reason": t.reason, "anchor": t.anchor_key or "",
-                             "session": t.source_session_id or "", "row": t.source_row_id or "", "role": t.role or "",
-                             "tool_call_id": t.tool_call_id or "", "uid": t.message_uid or "",
-                             "uid_known": bool(t.uid_known), "via": t.via or "", "review": t.review or "",
-                             "title_hidden": bool(t.title_hidden), "at_row": _iso(t.source_at),
-                             "decided_on": t.decided_on or "", "kept_by": "", "kept_at": "",
-                             "relations": identity.relation_order(t.relations or []), **who})
-            if t.review == identity.KEPT:
-                # who kept the hold, and when: the stone says it (rv3-dur-6); a keep written before that, the row's flag
-                flag: Any = {}
-                if not t.kept_by:
-                    flag = await s.scalar(select(ArchiveMessage.flags["withheld_by_admin"]).where(
-                        ArchiveMessage.source_key == t.source_key).limit(1))
-                    flag = flag if isinstance(flag, dict) else {}
-                removals[-1].update(kept_by=(t.kept_by or str(flag.get("kept_by") or ""))[:200],
-                                    kept_at=(_iso(t.kept_at) or str(flag.get("kept_at") or ""))[:64])
-        purged_items: list[dict[str, Any]] = []
-        fingerprints: list[dict[str, Any]] = []
-        if removals_only:
-            purged_items = [{"item": p.item_id, "created_at": _iso(p.item_created_at), "by": p.purged_by or "",
-                             "at": _iso(p.purged_at)} for p in (await s.scalars(select(BrainPurgedItem).order_by(
-                                 BrainPurgedItem.item_id, BrainPurgedItem.item_created_at))).all()]
-            fingerprints = [{"fp": p.fp, "source_key": p.source_key or "", "kind": p.kind or "", "by": p.purged_by or "",
-                             "at": _iso(p.purged_at), "via": p.via or ""} for p in (await s.scalars(
-                                 select(BrainPurgedContent).where(identity.live_fingerprints())
-                                 .order_by(BrainPurgedContent.fp))).all()]
-        # A release travels with the exact JARVIS row it covers (identity.exact; never a digest or a length of any
-        # text), the backup it was decided on, its kind, and who decided it, when and why (a release, or identical
-        # text an admin left readable: review 2, S21, S23).
-        releases = [{"anchor": e.anchor_key, "session": e.source_session_id, "row": e.source_row_id,
-                     "role": e.role or "", "tool_call_id": e.tool_call_id or "", "at_row": _iso(e.source_at),
-                     "uid": e.source_uid or "", "kind": e.kind or "release", "decided_on": e.decided_on or "",
-                     "reason": e.reason or "", "by": e.decided_by or "", "at": _iso(e.decided_at)}
-                    for e in (await s.scalars(select(BrainWithholdExemption).order_by(
-                        BrainWithholdExemption.anchor_key, BrainWithholdExemption.source_session_id,
-                        BrainWithholdExemption.source_row_id, BrainWithholdExemption.id))).all()]
-        # The JARVIS backups the decisions were taken on (an import of one of them replays its decisions), the
-        # family links every import recorded, and the conversations an admin stopped importing.
-        backups = [{"sha256": b.sha256, "label": b.label or "", "importer_version": b.importer_version or "",
-                    "newest_at": _iso(b.newest_at), "settled": b.settled_run_id is not None}
-                   for b in (await s.scalars(select(BrainDecisionBackup).order_by(BrainDecisionBackup.sha256))).all()]
-        links = [{"a": a, "b": b, "how": how} for a, b, how in (await s.execute(select(
-            BrainSessionLink.a, BrainSessionLink.b, BrainSessionLink.how).order_by(
-            BrainSessionLink.a, BrainSessionLink.b, BrainSessionLink.how))).all()]
-        frozen = [{"session": f.source_session_id, "by": f.frozen_by or "", "at": _iso(f.frozen_at)}
-                  for f in (await s.scalars(select(BrainFrozenSession).order_by(
-                      BrainFrozenSession.source_session_id))).all()]
-    content: dict[str, Any] = {"format": "jarvis-brain-decisions", "version": DECISIONS_VERSION,
-                               "exported_at": now().isoformat(), "importer_version": IMPORTER_VERSION,
-                               "handling": DECISIONS_HANDLING, "removals": removals, "releases": releases,
-                               "backups": backups, "links": links, "frozen": frozen}
-    if removals_only:
-        content.update(removals_only=True, purged_items=purged_items, purge_fingerprints=fingerprints)
-    else:
-        content["decisions"] = decisions
+        content, out = await _decisions_content(s, removals_only=removals_only)
     with open(out_path, "x", encoding="utf-8") as f:
         json.dump(content, f, indent=2, sort_keys=True)
-    out: dict[str, Any] = {"removals": len(removals), "releases": len(releases)}
-    if removals_only:
-        out.update(removals_only=True, purged_items=len(purged_items), purge_fingerprints=len(fingerprints))
-    else:
-        out.update(exported=len(decisions), skipped_without_source_key=skipped, edits_not_exported=not_exported)
     async with sessionmaker()() as s:
         await audit.record(s, actor, "brain.decisions_exported", "brain", "", dict(out))  # no path: it can name a user
         await s.commit()
+    return out
+
+
+async def _redactions(s: AsyncSession) -> list[dict[str, Any]]:
+    """Every version an admin redacted (review.redact_version: its title REDACTED_TITLE, no text, the note
+    REDACTED_NOTE; never a version a withhold emptied), by item id, the item's creation time and version number, with
+    who redacted it and when (its memory.version_redacted audit entry): restore.ps1's file (0.6.2 plan 7.2, review 3
+    rv3-dur-3). No text, no fingerprint of any."""
+    out: list[dict[str, Any]] = []
+    for item_id, version, created in (await s.execute(
+            select(MemoryItemVersion.item_id, MemoryItemVersion.version, MemoryItem.created_at)
+            .join(MemoryItem, MemoryItem.id == MemoryItemVersion.item_id)
+            .where(MemoryItemVersion.title == store.REDACTED_TITLE, MemoryItemVersion.body == "",
+                   MemoryItemVersion.note == store.REDACTED_NOTE)
+            .order_by(MemoryItemVersion.item_id, MemoryItemVersion.version))).all():
+        who = (await s.execute(select(AuditLog.actor, AuditLog.at).where(
+            AuditLog.action == "memory.version_redacted", AuditLog.target_type == "memory_item",
+            AuditLog.target_id == str(item_id), AuditLog.detail["version"].astext == str(version))
+            .order_by(AuditLog.id.desc()).limit(1))).first()
+        out.append({"item": int(item_id), "created_at": _iso(created), "version": int(version),
+                    "by": (who.actor if who is not None else "")[:200],
+                    "at": _iso(who.at) if who is not None else None})
     return out
 
 
@@ -4687,6 +4750,16 @@ async def _refuse_unsettled(s: AsyncSession) -> None:
     if holds:
         raise Refused("%d row(s) found when finishing decisions wait for review: keep or release each one (JARVIS "
                       "Brain page, Held for review) before exporting" % holds)
+
+
+# 0.6.2 plan 7.1: a decisions file of 0.6.0 or 0.6.1 (version 3 or older) names each withhold by its key only, with no
+# JARVIS row, time or decision backup: it applies only through the legacy reset (legacy_reset(decisions=...)), which
+# binds what it can exactly and leaves the rest to the re-import and Settle.
+LEGACY_DECISIONS_VERSION = 3
+LEGACY_FILE_REFUSAL = ("this is a version %d decisions file (Command Center 0.6.0 or 0.6.1): its withholds name a key "
+                       "only, so it applies only through the legacy reset: brain-import legacy-reset --decisions FILE "
+                       "--actor ADMIN_EMAIL --export NEW_FILE --yes (jarvis-import -Mode LegacyReset -Decisions FILE "
+                       "-Actor ADMIN_EMAIL)")
 
 
 @dataclass(frozen=True)
@@ -4725,6 +4798,8 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
     if not isinstance(version, int) or isinstance(version, bool) or version > DECISIONS_VERSION:
         raise Refused("this decisions file was written by a newer Command Center (version %s): apply it with that "
                       "version" % str(version)[:20])
+    if version <= LEGACY_DECISIONS_VERSION:
+        raise Refused(LEGACY_FILE_REFUSAL % version)
     if not removals_only and run_id is None:
         raise Refused("--run is needed (the production import run the decisions apply to), unless --removals-only")
     listed: dict[str, list[int]] = {}
@@ -4732,6 +4807,8 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
     via = "restore" if removals_only else "decisions-apply"
     async with sessionmaker()() as s:
         await require_schema(s)
+        if not removals_only:  # restore.ps1's own file applies whatever is locked: it only removes (plan 8.1)
+            await refuse_legacy(s)
         if actor or not removals_only:
             user = await s.scalar(select(User).where(func.lower(User.email) == (actor or "").lower(),
                                                      User.role == "admin", User.is_active.is_(True)))
@@ -4789,6 +4866,8 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
                 removals_listed.setdefault(outcome, []).append(n)
         purges_listed: dict[str, list[int]] = {}
         purged_items: Counter[str] = Counter()
+        redacted: Counter[str] = Counter()
+        redactions_listed: dict[str, list[int]] = {}
         if removals_only:
             items = data.get("purged_items") or []
             for n, p in enumerate(items if isinstance(items, list) else [], 1):
@@ -4800,6 +4879,17 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
                 else:
                     purges_listed.setdefault(outcome, []).append(n)
             await _carry_provenance(s, removals, data.get("purged_items"), had_keys, had_purges)
+            # The version redactions made after the backup (0.6.2 plan 7.2, review 3 rv3-dur-3), after the purges: a
+            # purged item has no version left to redact.
+            entries = data.get("redactions") or []
+            for n, r in enumerate(entries if isinstance(entries, list) else [], 1):
+                outcome = await _apply_redaction(s, r, decider, review)
+                if outcome in REDACTION_DONE:
+                    redacted[outcome] += 1
+                    if outcome in REDACTION_APPLIED:  # one more removal applied again (the removals line)
+                        removed[outcome] += 1
+                else:
+                    redactions_listed.setdefault(outcome, []).append(n)
         released: Counter[str] = Counter()
         releases_listed: dict[str, list[int]] = {}
         for n, r in enumerate(releases if isinstance(releases, list) else [], 1):
@@ -4818,10 +4908,12 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
                               releases_not_applied={k: len(v) for k, v in releases_listed.items()})
             if removals_only:
                 detail.update(via="restore", purge_fingerprints=dict(carried_fps), purged_items=dict(purged_items),
-                              purged_items_not_applied={k: len(v) for k, v in purges_listed.items()})
+                              purged_items_not_applied={k: len(v) for k, v in purges_listed.items()},
+                              redactions=dict(redacted),
+                              redactions_not_applied={k: len(v) for k, v in redactions_listed.items()})
             await audit.record(s, decider.email, "brain.decisions_applied", "import_run" if run_id else "brain",
                                run_id if run_id else "", detail)
-            if removals_only and not (removals_listed or purges_listed or releases_listed):
+            if removals_only and not (removals_listed or purges_listed or releases_listed or redactions_listed):
                 # restore.ps1's mark (review 2, S18): the removals are applied again, so their part goes with them.
                 # Anything not applied keeps it: nothing may serve the restored data until it is.
                 from ..restore_carry import finish_part
@@ -4832,7 +4924,8 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
     return {"applied" if apply else "would_apply": applied, "not_applied": listed, "removals": dict(removed),
             "removals_not_applied": removals_listed, "releases": dict(released),
             "releases_not_applied": releases_listed, "purged_items": dict(purged_items),
-            "purged_items_not_applied": purges_listed, "purge_fingerprints": dict(carried_fps)}
+            "purged_items_not_applied": purges_listed, "purge_fingerprints": dict(carried_fps),
+            "redactions": dict(redacted), "redactions_not_applied": redactions_listed}
 
 
 # --- Decisions before an import (0.6.2 plan 3.3: jarvis-import -Mode Import -Decisions) --------------------------------
@@ -5033,6 +5126,59 @@ async def _carry_provenance(s: AsyncSession, removals: list[Any], purged_items: 
 
 REMOVAL_DONE = ("withheld", "held for review", "purged", "already done", "kept for later imports")
 PURGE_DONE = ("purged", "not here")  # a purge by item id: the item purged again, or not in this database (any more)
+# A version redaction by item id, creation time and version (restore.ps1's file): redacted again; the item's current
+# text here (the restored backup predates the edit that made it an older version), emptied and deleted; or nothing to
+# do (already redacted; the item or that version is not in this database, any more).
+REDACTION_APPLIED = ("version redacted", "current text redacted, item deleted")
+REDACTION_DONE = (*REDACTION_APPLIED, "already done", "not here")
+REDACTED_CURRENT_NOTE = ("its text was redacted after the restored backup, and it was the item's current text there: "
+                         "emptied and deleted (write it again and restore it, or purge it)")
+
+
+async def _apply_redaction(s: AsyncSession, r: Any, user: Any, review: Any) -> str:
+    """One version redaction from restore.ps1's file, applied again to the very same item (its id and creation time:
+    a restore resets the id sequence) as the API redacts it (review.redact_version, audited memory.version_redacted
+    with via 'restore' and who decided it and when). The redacted version is the item's current text here when the
+    restored backup predates the edit that made it an older version: that text is then removed from the item and
+    from that version, and the item deleted (soft: an admin restores it with new text, or purges it). Returns what
+    happened, or why it was not applied."""
+    created = _when(r.get("created_at")) if isinstance(r, dict) else None
+    if (not isinstance(r, dict) or created is None or not isinstance(r.get("item"), int)
+            or isinstance(r.get("item"), bool) or not isinstance(r.get("version"), int)
+            or isinstance(r.get("version"), bool)):
+        return "not a redaction"
+    item = await s.scalar(select(MemoryItem).where(MemoryItem.id == r["item"], MemoryItem.created_at == created)
+                          .with_for_update())
+    version = await s.scalar(select(MemoryItemVersion).where(
+        MemoryItemVersion.item_id == r["item"], MemoryItemVersion.version == r["version"])) if item else None
+    if item is None or version is None:
+        return "not here"
+    if review.is_redacted(version):
+        return "already done"
+    detail: dict[str, Any] = {"item": item.id, "version": r["version"], "kind": item.kind, "via": "restore",
+                              "decided_by": str(r.get("by") or "")[:200], "decided_at": _iso(_when(r.get("at")))}
+    try:
+        async with s.begin_nested():
+            if r["version"] != item.version:
+                _, answers = await review.redact_version(s, item, r["version"])
+                await audit.record(s, user.email, "memory.version_redacted", "memory_item", item.id,
+                                   {**detail, "answers_scrubbed": answers})
+                return "version redacted"
+            version.title, version.body, version.tags, version.note = store.REDACTED_TITLE, "", [], store.REDACTED_NOTE
+            item.title, item.body, item.tags = store.REDACTED_TITLE, "", []
+            item.content_hash = brain_text.content_hash(item.kind, item.agent, item.title, item.body)
+            if item.deleted_at is None:
+                await store.delete_item(s, item, actor=user.email, note=REDACTED_CURRENT_NOTE)  # scrubs its quotes
+            else:
+                await s.flush()
+                await scrub_quotes(s, item_ids=[item.id])
+            await audit.record(s, user.email, "memory.version_redacted", "memory_item", item.id,
+                               {**detail, "current_text": True, "deleted": True})
+            return "current text redacted, item deleted"
+    except store.BrainError as exc:
+        return "redaction after the backup, refused here: %s" % exc
+    except (DataError, IntegrityError):
+        return "redaction after the backup, refused here by the database"
 
 
 def _release_exact(r: dict[str, Any]) -> identity.Exact:
@@ -5344,6 +5490,148 @@ async def _apply_release(s: AsyncSession, r: Any, user: Any, review: Any, *, via
     if released:
         return "released"
     return "kept for later imports" if added else "already done"
+
+
+# --- The legacy reset (0.6.2 plan 8.2) ----------------------------------------------------------------------------------
+
+
+async def legacy_runs(s: AsyncSession) -> list[ImportRun]:
+    """The legacy import runs, newest first: by an importer older than 1.1.0 (0.6.0, 0.6.1; 0008's
+    brain_importer_older) and not rolled back."""
+    return list((await s.scalars(select(ImportRun).where(
+        ImportRun.status != "rolled_back", func.brain_importer_older(ImportRun.importer_version))
+        .order_by(ImportRun.id.desc()))).all())
+
+
+async def _bind_legacy(s: AsyncSession) -> Counter[str]:
+    """Every admin's own withhold that names no JARVIS row yet (0.6.0 and 0.6.1 kept a key only, and migration 0008
+    never re-derives one: plan 1.6, 1.7) is bound to the exact JARVIS row its key names in the stored data: that row's
+    JARVIS session, row id, role, tool_call_id, time and uid (identity.exact), and the backup it was decided on (the
+    newest import of its conversation family, identity.decision_backup). A row-form key names its JARVIS row
+    (session:row) and a uid-form key its Hermes message id, so the stored row of the key is the message. A key with no
+    stored row (rolled back, deleted by an import, or never imported) cannot be bound exactly: its stone keeps
+    withholding that key, as it did (fail-closed), and it is counted. Counts only."""
+    out: Counter[str] = Counter()
+    for st in (await s.scalars(select(BrainTombstone).where(
+            BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.anchor_key == "",
+            BrainTombstone.review != identity.PENDING, BrainTombstone.source_row_id == "",
+            BrainTombstone.message_uid == "").order_by(BrainTombstone.source_key).with_for_update())).all():
+        found = (await s.execute(select(ArchiveMessage, ArchiveSession.source_session_id).join(
+            ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id).where(
+            ArchiveMessage.source_key == st.source_key).limit(2))).all()
+        if len(found) != 1 or not found[0][1] or not found[0][0].source_message_id:
+            out["withholds kept by their key only (no stored row to bind)"] += 1
+            continue
+        m, sid = found[0]
+        uid = identity.row_uid(m)
+        st.source_session_id, st.source_row_id = sid[:200], str(m.source_message_id)[:200]
+        st.role, st.tool_call_id = (m.role or "")[:40], (m.tool_call_id or "")[:200]
+        st.message_uid, st.uid_known = uid[:200], bool(uid) and st.source_key.startswith(identity.UID_KEY)
+        st.source_at, st.bound = m.at, True
+        if not st.decided_on:
+            st.decided_on = (await identity.decision_backup(s, [sid]))[:64]
+        out["withholds bound to their exact JARVIS row"] += 1
+    await s.flush()
+    return out
+
+
+def _add_counts(total: dict[str, Any], part: Any) -> None:
+    for key, value in (part or {}).items():
+        total[key] = total.get(key, 0) + int(value or 0)
+
+
+async def legacy_reset(out_path: str, *, actor: str = DEFAULT_ACTOR, confirm: bool = False,
+                       decisions: str | None = None) -> dict[str, Any]:
+    """brain-import legacy-reset --export FILE --yes (jarvis-import -Mode LegacyReset; 0.6.2 plan 8.2).
+
+    JARVIS Brain data that Command Center 0.6.0 or 0.6.1 imported (legacy: brain_maintenance 'legacy_brain_data', set
+    by migration 0008) is locked and hidden from every reader. The reset, in one transaction under the import lock:
+    1. with decisions (a version 3 file of 0.6.0 or 0.6.1: keys only, which decisions-apply refuses; plan 7.1, and an
+       active admin as actor), its withholds and purges are applied first, as decisions-apply applied them;
+    2. each admin's own withhold that names no JARVIS row is bound to the exact JARVIS row its key names (_bind_legacy);
+    3. a version 5 decisions file of every decision is written to FILE (withholds and holds with their exact binding,
+       releases, purges, review decisions on imported items, decision backups, family links, stopped conversations):
+       nothing an admin decided is lost, and the file can go to the live installation;
+    4. the legacy runs are rolled back, newest first (their reviewed items too: their review decisions are in the
+       file);
+    5. the lock is lifted.
+    The owner then imports the same JARVIS backup again (with --decisions FILE to apply the review decisions) and
+    finishes the decisions on it (brain-import settle). The stones and purges stay in the database throughout: a row
+    of a withheld message comes back without its text. Without confirm it changes nothing and says what it would do
+    (Refused). Refusals come before any change; audited with counts only."""
+    from . import review  # imports the task service and the scheduler: not needed by the import itself
+
+    if os.path.exists(out_path):
+        raise Refused("the output file already exists; nothing is overwritten")
+    data = read_decisions(decisions) if decisions else None
+    if data is not None and int(data.get("version") or 0) > LEGACY_DECISIONS_VERSION:
+        raise Refused("--decisions takes a decisions file of Command Center 0.6.0 or 0.6.1 (version 3 or older); "
+                      "this one is version %s: apply a version 4 file with decisions-apply, a version 5 file with the "
+                      "import itself (run --decisions)" % str(data.get("version"))[:20])
+    async with sessionmaker()() as s:
+        await require_schema(s)
+        locked = await legacy_locked(s)
+        if not locked and data is None:
+            raise Refused("there is no legacy JARVIS Brain data (0.6.0 or 0.6.1) to reset, and no version 3 decisions "
+                          "file was given (--decisions)")
+        decider: _Decider | None = None
+        if data is not None:
+            user = await s.scalar(select(User).where(func.lower(User.email) == (actor or "").lower(),
+                                                     User.role == "admin", User.is_active.is_(True)))
+            if user is None:
+                raise Refused("--decisions needs --actor, the e-mail address of an active admin: decisions that need "
+                              "an admin keep needing one")
+            decider = _Decider(user.email, bool(user.can_access_sensitive))
+        await mark_dead_runs(s)  # commits: before the lock below, which the commit would end
+        if not await try_xact_lock(s, GLOBAL_LOCK):
+            raise Refused(LOCK_BUSY)
+        runs = [(r.id, r.status) for r in await legacy_runs(s)]  # ids: a rollback below expires the rows
+        running = [run_id for run_id, status in runs if status == "running"]
+        if running:
+            raise Refused("an import by an importer older than 1.1.0 is still running: let it finish or stop it first",
+                          running)
+        carried: Counter[str] = Counter()
+        if data is not None and decider is not None:
+            after = await identity.current_after_run(s)
+            removals = data.get("removals") if isinstance(data.get("removals"), list) else []
+            for _, r in sorted(enumerate(removals, 1), key=_removal_order):
+                carried[await _apply_removal(s, r, decider, review, via="legacy-reset", after=after)] += 1
+        bound = await _bind_legacy(s)
+        content, counts = await _decisions_content(s, removals_only=False)
+        rolled: dict[str, Any] = {"deleted": {}, "restored": {}, "reverted": {}}
+        discarded = 0
+        for run_id, _ in runs:
+            result = await rollback_run(s, run_id, actor, discard_reviewed=True)
+            for key in rolled:
+                _add_counts(rolled[key], result.get(key))
+            discarded += int(result.get("discarded_reviewed_items") or 0)
+        await s.execute(delete(BrainMaintenance).where(BrainMaintenance.name == LEGACY_LOCK))
+        out: dict[str, Any] = {
+            "runs_rolled_back": [run_id for run_id, _ in runs], "lock_lifted": locked, **dict(bound),
+            "decisions_file": {k: v for k, v in counts.items() if isinstance(v, int)},
+            "version_3_file": dict(carried) if data is not None else None,
+            "rolled_back": rolled, "reviewed_items_deleted": discarded}
+        content["legacy_reset"] = {"runs_rolled_back": out["runs_rolled_back"], **dict(bound),
+                                   "version_3_file": out["version_3_file"]}
+        if not confirm:
+            await s.rollback()
+            raise Refused("nothing was changed: the legacy reset would roll back %d run(s) (%s), bind %d withhold(s) "
+                          "to their exact JARVIS row (%d kept by their key only) and write %d removal(s), %d "
+                          "release(s) and %d review decision(s) to the file. Add --yes to reset" % (
+                              len(runs), ", ".join(str(run_id) for run_id, _ in runs) or "none",
+                              bound["withholds bound to their exact JARVIS row"],
+                              bound["withholds kept by their key only (no stored row to bind)"],
+                              counts.get("removals", 0), counts.get("releases", 0), counts.get("exported", 0)))
+        await audit.record(s, actor, "brain.legacy_reset", "brain", "",
+                           {k: v for k, v in out.items() if k != "rolled_back"})
+        with open(out_path, "x", encoding="utf-8") as f:
+            json.dump(content, f, indent=2, sort_keys=True)
+        try:
+            await s.commit()
+        except BaseException:
+            os.remove(out_path)  # nothing was reset: the file must not say otherwise
+            raise
+    return out
 
 
 async def _apply_decision(s: AsyncSession, d: Any, run_id: int, user: User, apply: bool) -> str:

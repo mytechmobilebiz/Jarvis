@@ -103,11 +103,18 @@ BRAIN_HELP = """python -m app.cli brain-import COMMAND ...
                                           (without --yes: what is pending, nothing is changed)
   fingerprints --forget-other-key [--yes] forget purge fingerprints made with another database password
   decisions-export --out FILE [--removals-only]   review decisions keyed by source_key (on the test copy);
-                                          --removals-only: only withholds, purges and releases (restore.ps1)
+                                          --removals-only: only withholds, purges, releases and version
+                                          redactions (restore.ps1)
   decisions-apply  --in FILE --run ID --actor ADMIN_EMAIL [--yes]   (after an import: version 3 and 4 files;
                                           a version 5 file goes with the import itself: run --decisions)
   decisions-apply  --in FILE --removals-only [--actor ADMIN_EMAIL] [--yes]   withholds, purges and releases only
                                           (restore.ps1, after a restore; the actor is "system (restore)")
+  legacy-reset --export FILE [--yes] [--actor T] [--decisions V3FILE --actor ADMIN_EMAIL]
+            JARVIS Brain data of Command Center 0.6.0 or 0.6.1 is locked (hidden from every reader; imports
+            refused): binds each withhold to its exact JARVIS row where it can, writes every decision to FILE (a
+            version 5 decisions file), rolls the legacy import runs back and lifts the lock; then import the same
+            JARVIS backup again and run settle. --decisions: a version 3 file of 0.6.0 or 0.6.1 (decisions-apply
+            refuses it), applied first. Without --yes: what it would do, nothing is changed
 
 SELECTION: --sample N [--files-sample M] | --all | --since DATE --until DATE; and --no-files.
 Staged plan: --sample 5, review; --sample (about 10 %), review; then --all.
@@ -193,6 +200,11 @@ def _brain_parser() -> argparse.ArgumentParser:
     p.add_argument("--actor")
     p.add_argument("--yes", action="store_true")
     p.add_argument("--removals-only", action="store_true")
+    p = sub.add_parser("legacy-reset", add_help=False)
+    p.add_argument("--export", required=True)
+    p.add_argument("--yes", action="store_true")
+    p.add_argument("--actor")
+    p.add_argument("--decisions")
     return parser
 
 
@@ -381,6 +393,12 @@ async def _brain_command(args: argparse.Namespace) -> int:
                               out.get("rows_blanked_by_the_database_guard", 0),
                               out.get("quotes_of_removed_sources", 0),
                               out.get("purge_fingerprints_made_with_another_key", 0)))
+            if out.get("legacy_lock"):
+                # 0.6.2 plan 8.1 (scripts/jarvis-import.ps1 and brain-precheck.ps1 show this line)
+                print("legacy JARVIS Brain data (Command Center 0.6.0 or 0.6.1): LOCKED, hidden from every reader, "
+                      "imports refused; import runs %s. Run brain-import legacy-reset --export FILE --yes "
+                      "(jarvis-import -Mode LegacyReset)" % (", ".join(str(i) for i in out.get("legacy_runs") or [])
+                                                             or "none (withholds made before 0.6.2 only)"))
             if out.get("frozen_conversations") or out.get("last_tripwire"):
                 # 0.6.2 plan 5.3, 5.5: what a later backup left out, and where the newest run found a withheld text
                 tw = out.get("last_tripwire") or {}
@@ -431,8 +449,9 @@ async def _brain_command(args: argparse.Namespace) -> int:
             if args.removals_only:
                 # scripts/restore.ps1 reads this line (tests/unit/test_brain_ops.py runs its pattern against it).
                 print("removals exported (withheld messages and purged items, keys and JARVIS ids only): %d; "
-                      "releases: %d; purges by item id: %d; purge fingerprints: %d"
-                      % (out["removals"], out["releases"], out.get("purged_items", 0), out.get("purge_fingerprints", 0)))
+                      "releases: %d; purges by item id: %d; purge fingerprints: %d; version redactions: %d"
+                      % (out["removals"], out["releases"], out.get("purged_items", 0), out.get("purge_fingerprints", 0),
+                         out.get("redactions", 0)))
                 return 0
             print("decisions exported: %d (items without a source key skipped: %d; edits of customer or Credit "
                   "Repair items not exported, to redo by hand: %d); removals (withheld messages and purged items, "
@@ -463,11 +482,31 @@ async def _brain_command(args: argparse.Namespace) -> int:
                 print("  purge not applied (%s): purged items %s" % (reason, ", ".join(str(n) for n in numbers)))
             if out.get("purge_fingerprints"):
                 print("purge fingerprints: " + _counts_line(out["purge_fingerprints"]))
+            if out.get("redactions"):  # restore.ps1's file: the version redactions made after the backup (rv3-dur-3)
+                print("version redactions: " + _counts_line(out["redactions"]))
+            for reason, numbers in sorted((out.get("redactions_not_applied") or {}).items()):
+                print("  redaction not applied (%s): redactions %s" % (reason, ", ".join(str(n) for n in numbers)))
             if out["releases"] or out["releases_not_applied"]:
                 print("releases %s: %s" % ("applied" if args.yes else "that would apply",
                                            _counts_line(out["releases"]) if out["releases"] else "none"))
             for reason, numbers in sorted(out["releases_not_applied"].items()):
                 print("  release not applied (%s): releases %s" % (reason, ", ".join(str(n) for n in numbers)))
+            return 0
+        if args.command == "legacy-reset":
+            out = await imp.legacy_reset(args.export, actor=actor, confirm=args.yes, decisions=args.decisions)
+            if out.get("version_3_file") is not None:
+                print("version 3 decisions applied first: " + _counts_line(out["version_3_file"]))
+            print("legacy reset done: import runs rolled back: %s; withholds bound to their exact JARVIS row: %d; "
+                  "withholds kept by their key only (no stored row to bind): %d; reviewed or edited items deleted "
+                  "(their review decisions are in the file): %d" % (
+                      ", ".join(str(i) for i in out["runs_rolled_back"]) or "none",
+                      out.get("withholds bound to their exact JARVIS row", 0),
+                      out.get("withholds kept by their key only (no stored row to bind)", 0),
+                      out.get("reviewed_items_deleted", 0)))
+            print("decisions file (version 5): " + _counts_line(out.get("decisions_file") or {}))
+            print("the legacy lock is lifted. Next: import the same JARVIS backup again (brain-import run ... --all; "
+                  "add --decisions <this file> --actor <admin email> to apply its review decisions), then finish "
+                  "the decisions on it: brain-import settle --backup <that backup>")
             return 0
         raise _UsageError("unknown command")
     except imp.Refused as exc:

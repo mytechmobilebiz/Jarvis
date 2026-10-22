@@ -307,8 +307,9 @@ def strip_summary(summary: str, held: set[str]) -> str:
 async def dead_sources(session: AsyncSession, datas: Iterable[dict[str, Any]]) -> tuple[set[int], set[int]]:
     """(messages, items) that these task results quote or name and that must not be shown: a message withheld or
     gone; an item gone, deleted, emptied (source_withheld), or promoted from a withheld message
-    (policy.withheld_source()). The read-time guard of every task and request reader."""
-    from .policy import withheld_source
+    (policy.withheld_source()); and, while the legacy lock is set, a message or an item of the legacy 0.6.0/0.6.1
+    data (policy.legacy_hidden_*: 0.6.2 plan 8.1). The read-time guard of every task and request reader."""
+    from .policy import legacy_hidden_item, legacy_hidden_message, withheld_source
 
     messages: set[int] = set()
     items: set[int] = set()
@@ -323,10 +324,11 @@ async def dead_sources(session: AsyncSession, datas: Iterable[dict[str, Any]]) -
             if isinstance(note, dict) and isinstance(note.get("id"), int):
                 items.add(note["id"])
     dead_m = messages - set((await session.scalars(select(ArchiveMessage.id).where(
-        ArchiveMessage.id.in_(messages), ArchiveMessage.withheld.is_(False)))).all()) if messages else set()
+        ArchiveMessage.id.in_(messages), ArchiveMessage.withheld.is_(False),
+        not_(legacy_hidden_message())))).all()) if messages else set()
     dead_i = items - set((await session.scalars(select(MemoryItem.id).where(
         MemoryItem.id.in_(items), MemoryItem.deleted_at.is_(None), not_(MemoryItem.flags.has_key("source_withheld")),
-        not_(withheld_source())))).all()) if items else set()
+        not_(withheld_source()), not_(legacy_hidden_item())))).all()) if items else set()
     return dead_m, dead_i
 
 
