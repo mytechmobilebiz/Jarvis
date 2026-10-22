@@ -1136,10 +1136,11 @@ async def test_withheld_messages_and_purged_items_carry_over_from_the_test_copy(
         item_key, item_body = item.source_key, item.body
         await store.delete_item(s, item, actor="admin@test.local")
         await review.purge(s, item, actor="admin@test.local")
+    settled = await bj.settle(built)  # 0.6.2 plan 4.7: decisions-export refuses until the withhold is finished
     out = tmp_path / "decisions.json"
     assert (await imp.decisions_export(str(out)))["removals"] == 2
     exported = json.loads(out.read_text())
-    assert exported["version"] == 4  # 0.6.2: a withhold carries the JARVIS row it names (keys and ids, no text)
+    assert exported["version"] == 5  # 0.6.2: a withhold carries its exact JARVIS row and decision backup (no text)
     assert {(r["source_key"], r["reason"]) for r in exported["removals"]} == {
         (message_key, "withheld by an admin"), (item_key, imp.PURGED_BY_ADMIN)}
     flat = out.read_text()
@@ -1150,6 +1151,7 @@ async def test_withheld_messages_and_purged_items_carry_over_from_the_test_copy(
     out.write_text(json.dumps(exported))
 
     # Production: a database that has neither decision (no tombstones), then the same import.
+    await imp.rollback(settled["run_id"], discard_reviewed=True, confirm=True)  # the newest run first
     await imp.rollback(test_copy["run_id"], discard_reviewed=True, confirm=True)
     async with session_scope() as s:
         await s.execute(BrainTombstone.__table__.delete())

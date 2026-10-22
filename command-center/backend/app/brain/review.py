@@ -13,6 +13,7 @@ nothing imported can approve, enable or run anything: approvals stay with app/ta
 from __future__ import annotations
 
 import urllib.parse
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
@@ -30,9 +31,9 @@ from ..config import Settings
 from ..models import (
     ArchiveMessage,
     ArchiveSession,
+    BrainFrozenSession,
     BrainPurgedItem,
     BrainTombstone,
-    BrainWithholdExemption,
     ImportRecord,
     ImportRun,
     MemoryConflict,
@@ -325,13 +326,14 @@ class Withheld:
     rollback_copies_blanked: int = 0
     answers_scrubbed: int = 0
     also_withheld: list[int] = field(default_factory=list)  # other stored rows of the same message (members)
-    held_for_review: list[int] = field(default_factory=list)  # rows withheld as holds (same uid, other text)
-    identical_withheld: int = 0  # rows with identical text the admin chose to withhold too
+    held_for_review: list[int] = field(default_factory=list)  # rows withheld as holds (same uid other text; matching)
+    identical_withheld: int = 0  # rows matching the withheld text held for review (the dialog's pre-ticked rows)
+    left_readable: int = 0  # matching rows the admin left readable (unticked)
     keys_tombstoned: int = 0  # stones written (the message's own, its rows', its copies' without a row)
     title_hidden: bool = False
 
 
-LEFT_READABLE = "left readable by an admin (identical text seen at the withhold)"  # an exemption's reason (S21)
+LEFT_READABLE = identity.LEFT_READABLE  # an exemption's reason (S21)
 
 
 def _blank(row: ArchiveMessage, flag: dict[str, Any]) -> None:
@@ -348,19 +350,22 @@ def _blank(row: ArchiveMessage, flag: dict[str, Any]) -> None:
 async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, actor: str = "admin",
                            cause: str = "admin", ip: str = "", include_identical: bool = False,
                            hide_title: bool | None = None, via: str = "admin",
-                           keep_identical_readable: bool = False) -> Withheld:
+                           keep_identical_readable: bool = False, leave_readable: Iterable[int] = ()) -> Withheld:
     """Removes a message's text (and tool calls and labels) for good, with every other stored row that is the same
-    JARVIS message (identity.group_rows: the same JARVIS row, the same uid, the importer's duplicates; a row with the
-    same uid but other text is held for an admin's review) and, when the admin asks for it (include_identical), the
-    readable rows with exactly this text in the same conversation and its continuations and branches. Each gets a
-    stone (identity.put_stone) in the admin's group, as do the keys of its copies that have no row, so a later import
-    brings none of them back with text. Then everything that copied them (archive.withhold_copies: rollback copies,
-    the memory items promoted from them, emptied, and the answers and notes quoting either) goes, and their sessions
-    are recomputed. The conversation's title is hidden too (hide_title; by default when this is the conversation's
-    first user message, which a title can paraphrase). With keep_identical_readable (the API: the admin saw the
-    preview and left the identical rows readable) that choice is kept as exemptions of the group; decisions-apply
-    never passes it (nobody saw those rows here: the test copy's choices travel in the file). All or nothing in the
-    caller's transaction."""
+    JARVIS message by provenance (identity.group_rows, 0.6.2 plan 4.5: the same JARVIS row, the same uid with the same
+    text, the importer's recorded duplicates; a row with the same uid but other text is held for review), and holds
+    for review the stored rows of the conversation family that equal, contain, restate or quote the withheld text
+    (identity.matching_rows: the withhold dialog's pre-ticked rows, include_identical), except those the admin unticked
+    (leave_readable: ids) or all of them with keep_identical_readable and no include_identical (the admin left them
+    readable): each such choice is kept as a 'left readable' exemption of the group, so Settle and every import leave
+    that exact row readable. decisions-apply passes neither (nobody saw those rows here: the test copy's choices travel
+    in the file). Each row withheld gets a stone (identity.put_stone) in the admin's group, as do the keys of its
+    copies that have no row, so a later import brings none of them back with text. Then everything that copied them
+    (archive.withhold_copies: rollback copies, the memory items promoted from them, emptied, and the answers and notes
+    quoting either) goes, and their sessions are recomputed. The conversation's title is hidden too (hide_title; by
+    default when this is the conversation's first user message, which a title can paraphrase). It never releases
+    anything; Settle (brain-import settle) decides the decision backup with the withheld text in memory and is
+    authoritative. All or nothing in the caller's transaction."""
     if message.withheld:
         raise BrainError("this message is already withheld")
     sess = await session.get(ArchiveSession, message.session_id)
@@ -372,21 +377,25 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
     # rollback of that run must not put an original back with its text (no uid key to follow without uids, or in a
     # branch whose parent holds the uid key).
     rewound: set[int] = set(await identity.rewound_originals(session, message, text))
-    texts = [(sess.source_session_id, message.source_message_id or "", text)]
     for g in group.rows:
         if not g.row.withheld:
             rewound |= set(await identity.rewound_originals(session, g.row, identity.message_text(g.row)))
-            texts.append((g.source_session_id, g.row.source_message_id or "", identity.message_text(g.row)))
-    same = await identity.identical_rows(session, message, sess, text, exclude=[g.row.id for g in group.rows]
-                                         ) if include_identical else []
+    matching = await identity.matching_rows(session, message, sess, exclude=[g.row.id for g in group.rows]) if (
+        include_identical or keep_identical_readable) else []
+    unticked = {int(i) for i in leave_readable}
     after = await identity.current_after_run(session)
+    # The JARVIS backup this decision is taken on: the newest that wrote the conversation's family here. An import of
+    # that very file replays it word for word once Settle finished it (0.6.2 plan 3.2, 4.4); a new decision on a
+    # backup already finished needs finishing again (plan 4.7).
+    decided_on = await identity.decision_backup(session, [sess.source_session_id])
+    await identity.reopen_decision_backup(session, decided_on)
     uid = identity.row_uid(message)
     if hide_title is None:
         hide_title = await identity.first_user_message(session, message)
     written = 0
     if message.source_key:  # a row an import stored always has one; it keeps the title choice (later imports)
         written = int(await identity.put_stone(session, replace(identity.binding_of(
-            message, sess.source_session_id, via=via, after_run=after, uid_known=bool(uid)),
+            message, sess.source_session_id, via=via, after_run=after, uid_known=bool(uid), decided_on=decided_on),
             title_hidden=bool(hide_title)), actor=actor))
     # The group's root: this message's own key, unless this row is already a stone that joined another admin's
     # withhold (decisions-apply after a restore, or an import, reached it first as a copy): then that withhold's key,
@@ -394,36 +403,26 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
     st0 = await session.get(BrainTombstone, message.source_key) if message.source_key else None
     root = (st0.anchor_key if st0 is not None and st0.reason == WITHHELD_BY_ADMIN and st0.anchor_key
             and st0.anchor_key != message.source_key else message.source_key)
-    if root and keep_identical_readable and not include_identical:
-        # The rows with exactly this text the admin saw in the preview and chose to leave readable: a decision that
-        # outlives the stored rows (review 2, S21). An exemption of the group names each one's JARVIS row, bound to the
-        # content left readable (its uid and length now, its keyed digest by bind_exemptions), so the same-text rules
-        # skip it after a rollback and a re-import, or a restore and the next import; decisions files carry it.
-        left = await identity.identical_rows(session, message, sess, text, exclude=[g.row.id for g in group.rows])
-        left_sids = dict((await session.execute(select(ArchiveSession.id, ArchiveSession.source_session_id).where(
-            ArchiveSession.id.in_(sorted({r.session_id for r in left}))))).all()) if left else {}
-        for r in left:
-            if not (r.source_message_id and left_sids.get(r.session_id)):
-                continue
-            await session.execute(pg_insert(BrainWithholdExemption).values(
-                anchor_key=root, source_session_id=left_sids[r.session_id][:200],
-                source_row_id=r.source_message_id[:200], reason=LEFT_READABLE, decided_by=actor[:200],
-                source_uid=identity.row_uid(r)[:200],
-                content_chars=int(r.content_chars if r.content_chars is not None else -1)).on_conflict_do_nothing())
-        if left_sids:
-            await identity.bind_exemptions(session, source_session_ids=set(left_sids.values()))
-    at = now().isoformat()
+    chosen: list[identity.GroupRow] = []
     out = Withheld(None, bool(written))
+    for r, sid, rel in matching:
+        if include_identical and r.id not in unticked:
+            chosen.append(identity.GroupRow(r, sid, identity.MATCHING_HOLD, identity.PENDING, rel))
+        elif root and r.source_message_id and sid:
+            # The admin left this row readable (unticked, or every matching row): a decision that outlives the
+            # stored rows (review 2, S21), an exemption of the group bound to its exact JARVIS row and the backup.
+            await identity.put_exemption(session, identity.exact_of_row(r, sid), anchor=root, kind="left_readable",
+                                         decided_on=decided_on, reason=LEFT_READABLE, decided_by=actor)
+            out.left_readable += 1
+    at = now().isoformat()
     blanked: list[ArchiveMessage] = []
-    names = dict((await session.execute(select(ArchiveSession.id, ArchiveSession.source_session_id).where(
-        ArchiveSession.id.in_(sorted({r.session_id for r in same}))))).all()) if same else {}
-    chosen = [identity.GroupRow(r, names.get(r.session_id, ""), identity.IDENTICAL, identity.CERTAIN) for r in same]
     for g in group.rows + chosen:
         member = g.review == identity.CERTAIN
         if g.row.source_key:
-            written += int(await identity.put_stone(session, identity.binding_of(
+            written += int(await identity.put_stone(session, replace(identity.binding_of(
                 g.row, g.source_session_id, anchor=root if root != g.row.source_key else "", via=g.rule,
-                review=g.review, after_run=after, uid_known=member and bool(identity.row_uid(g.row))), actor=actor))
+                review=g.review, after_run=after, uid_known=member and bool(identity.row_uid(g.row)),
+                decided_on=decided_on), relations=() if member else g.relations), actor=actor))
         if g.row.withheld:
             continue  # withheld already (no text): its key joins the group, the row stays as it is
         flag: dict[str, Any] = {"at": at, "note": identity.NOTE, "via": g.rule}
@@ -431,15 +430,17 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
             flag["review"] = identity.PENDING
         _blank(g.row, flag)
         blanked.append(g.row)
-        if g.rule == identity.IDENTICAL:
+        if g.rule == identity.MATCHING_HOLD:
             out.identical_withheld += 1
+            out.held_for_review.append(g.row.id)
         elif member:
             out.also_withheld.append(g.row.id)
         else:
             out.held_for_review.append(g.row.id)
     for st in group.rowless:
         written += int(await identity.put_stone(session, identity.Stone(**{
-            **st.__dict__, "anchor": root if root != st.key else "", "after_run": after}), actor=actor))
+            **st.__dict__, "anchor": root if root != st.key else "", "after_run": after, "decided_on": decided_on}),
+            actor=actor))
     _blank(message, {"at": at, "note": "withheld by an admin on the JARVIS Brain page; the text was removed"})
     hidden_ids: list[int] = []
     if hide_title:
@@ -507,8 +508,6 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
             identity.DELETED_COPY, ImportRecord.source_key == key,
             or_(ImportRecord.source_key == identity.UID_KEY + u,
                 identity.deleted_field("source_uid") == u))])
-    # Released content withheld now: its release keeps no digest of it (only its length stays).
-    await identity.unbind_withheld(session, texts)
     for sid in sorted({r.session_id for r in blanked} - {message.session_id}):
         await recompute_session(session, sid)
     out.session = await recompute_session(session, message.session_id)
@@ -519,7 +518,8 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
 
 
 async def hold_message(session: AsyncSession, message: ArchiveMessage, *, anchor: str, actor: str, cause: str,
-                       ip: str = "", rule: str = "same message id", review: str = identity.PENDING) -> Withheld:
+                       ip: str = "", rule: str = "same message id", review: str = identity.PENDING,
+                       decided_on: str = "", relations: Iterable[str] = ()) -> Withheld:
     """Withholds a readable row for an admin's review in the group of the withhold `anchor` (decisions-apply, spec
     9.2): it shares the uid of a message withheld in a decisions file but is another JARVIS row, and nothing here can
     compare the texts; or the test copy held it for review (`rule`, the hold's own evidence). Its key gets a pending
@@ -531,9 +531,10 @@ async def hold_message(session: AsyncSession, message: ArchiveMessage, *, anchor
     member = review != identity.PENDING
     written = 0
     if message.source_key:
-        written = int(await identity.put_stone(session, identity.binding_of(
+        written = int(await identity.put_stone(session, replace(identity.binding_of(
             message, sess.source_session_id, anchor=anchor, via=rule, review=identity.CERTAIN if member
-            else identity.PENDING, after_run=await identity.current_after_run(session)), actor=actor))
+            else identity.PENDING, after_run=await identity.current_after_run(session), decided_on=decided_on),
+            relations=() if member else tuple(relations)), actor=actor))
     flag: dict[str, Any] = {"at": now().isoformat(), "note": identity.NOTE, "via": rule}
     if not member:
         flag["review"] = identity.PENDING
@@ -548,41 +549,92 @@ async def hold_message(session: AsyncSession, message: ArchiveMessage, *, anchor
 
 async def withhold_preview(session: AsyncSession, message: ArchiveMessage, sess: ArchiveSession,
                            scope: PersonScope) -> dict[str, Any]:
-    """What withholding this message would do, read-only (spec 8.3): the other stored rows that are the same JARVIS
-    message (withheld too), those held for review (the same uid, other text), the readable rows with exactly this
-    text in the conversation and its continuations and branches (withheld only when the admin ticks the box), how
-    many copies have no row, the imported memory items in the admin's scope whose text contains it (to purge by hand;
-    nothing is automatic), and whether it is the conversation's first user message (its title is hidden by default).
-    Ids, positions and counts only, never text."""
+    """What withholding this message would do, read-only (spec 8.3, 0.6.2 plan 4.5): the other stored rows that are
+    the same JARVIS message by provenance (withheld too), those held for review (the same uid, other text), the stored
+    rows of its conversation family that equal, contain, restate or quote it (identity.matching_rows: listed
+    pre-ticked with their evidence; unticking one leaves it readable as the admin's decision), how many copies have no
+    row, the imported memory items in the admin's scope whose text contains it (to purge by hand; nothing is
+    automatic), whether it is the conversation's first user message (its title is hidden by default), and the JARVIS
+    backup the decision is taken on (Settle finishes it there). Ids, positions, relation codes and counts only, never
+    text."""
     text = identity.message_text(message)
     group = await identity.group_rows(session, message, sess, text, lock=False)
-    same = await identity.identical_rows(session, message, sess, text, exclude=[g.row.id for g in group.rows])
+    matching = await identity.matching_rows(session, message, sess, exclude=[g.row.id for g in group.rows])
+    decided_on = await _decision_backup_read_only(session, sess)
 
-    def brief(row: ArchiveMessage) -> dict[str, Any]:
-        return {"id": row.id, "session": row.session_id, "position": row.position, "role": row.role,
-                "at": _iso(row.at), "state": row.state, "withheld": row.withheld}
+    def brief(row: ArchiveMessage, relations: Iterable[str] = ()) -> dict[str, Any]:
+        out = {"id": row.id, "session": row.session_id, "position": row.position, "role": row.role,
+               "at": _iso(row.at), "state": row.state, "withheld": row.withheld}
+        if relations:
+            out["relations"] = identity.relation_order(relations)
+            out["evidence"] = identity.evidence_text(relations)
+        return out
 
     return {"message": message.id,
             "same_message_rows": [brief(g.row) for g in group.members],
-            "held_rows": [brief(g.row) for g in group.holds if not g.row.withheld],
-            "identical_text_rows": [brief(r) for r in same],
+            "held_rows": [brief(g.row, g.relations) for g in group.holds if not g.row.withheld],
+            # pre-ticked (plan 4.5): withheld as holds unless the admin unticks them (leave_readable)
+            "identical_text_rows": [{**brief(r, rel), "preselected": True} for r, _, rel in matching],
             "rowless_copies": len(group.rowless),
             "items_with_this_text": await identity.items_with_text(session, message, person_items(scope)),
-            "first_user_message": await identity.first_user_message(session, message)}
+            "first_user_message": await identity.first_user_message(session, message),
+            "decision_backup": decided_on}
+
+
+async def _decision_backup_read_only(session: AsyncSession, sess: ArchiveSession) -> dict[str, Any] | None:
+    """The JARVIS backup a withhold of this conversation is decided on (its label and the start of its SHA-256), read
+    only (identity.decision_backup without writing its record)."""
+    family = await identity.lineage(session, [sess.source_session_id])
+    ids = list((await session.scalars(select(ArchiveSession.id).where(
+        ArchiveSession.source_session_id.in_(sorted(family))))).all())
+    if not ids:
+        return None
+    run = (await session.execute(select(ImportRun.label, ImportRun.source).join(
+        ImportRecord, ImportRecord.run_id == ImportRun.id).where(
+        ImportRecord.record_type == "session", ImportRecord.target_table == "archive_sessions",
+        ImportRecord.target_id.in_(ids), ImportRun.status != "rolled_back").order_by(ImportRun.id.desc()).limit(1))
+           ).first()
+    if run is None:
+        return None
+    sha = identity.run_sha256(run.source)
+    return {"label": run.label or "", "sha256": sha[:12]} if sha else None
 
 
 # --- Holds: rows withheld for an admin's review (spec 8.2) ------------------------------------------------------
 
-COMPARE = {"same text": "identical text", "upgrade: same text": "identical text",
-           "same message id, different text": "different text",
-           identity.CONTAINS_SHORT: "contains the withheld text", identity.RESTATED: "contains the withheld text"}
+# A hold written before its evidence was computed (a development build's via): what that via says, as relation codes.
+LEGACY_RELATIONS = {"same text": (identity.IDENTICAL_REL,), "upgrade: same text": (identity.IDENTICAL_REL,),
+                    "same message id, contains the withheld text": (identity.SAME_UID, identity.CONTAINS),
+                    "restated after a compaction, new message id": (identity.RESTATED_REL,),
+                    "copied by JARVIS, nothing to compare": (identity.SAME_TIME_REL, identity.NOT_IN_BACKUP),
+                    "same conversation, role and time; nothing to compare": (identity.SAME_TIME_REL,
+                                                                            identity.NOT_IN_BACKUP),
+                    "same message id, nothing to compare": (identity.SAME_UID, identity.NOT_IN_BACKUP)}
+CONFIRM_NEEDED = ("Releasing this row needs a typed confirmation: its text is identical to the withheld message, "
+                  "contains it or quotes part of it. To release it, send '%s' in the field 'confirm'."
+                  % identity.CONFIRM_WORD)
+
+
+def hold_relations(stone: BrainTombstone) -> list[str]:
+    """A hold's computed evidence (relation codes, plan 4.6); for a hold of a development build, what its via says."""
+    found = identity.relation_order(stone.relations or [])
+    if found:
+        return found
+    if stone.via in LEGACY_RELATIONS:
+        return list(LEGACY_RELATIONS[stone.via])
+    if (stone.via or "").startswith(("same message id", "upgrade: same message id")):
+        return [identity.SAME_UID]
+    return []
 
 
 async def holds(session: AsyncSession, scope: PersonScope) -> list[dict[str, Any]]:
     """Every withheld row held for an admin's review (its stone is pending) in the admin's scope, with the evidence:
-    where it is, its length and state, the rule that held it (what a release brings back), the withheld message it
-    may be (its position, role, time and length), whether the texts were compared, and the readable messages around
-    it. Never text."""
+    where it is, its length and state, the rule that held it, its computed relations to the withheld message (plan
+    4.6: identical, contains, part of a reply quote, restated, the same message id, tool call or time with other text,
+    a reused row number, a stale stored row, not in this backup, none) and their words, whether a release needs a
+    typed confirmation (its text is, holds or quotes the withheld text), whether it looks independent (pre-selected
+    for release: its own uid, another time, no copy position), the withheld message it may be (its position, role,
+    time and length), and the readable messages around it. Never text."""
     found = (await session.execute(
         select(ArchiveMessage, ArchiveSession, BrainTombstone)
         .join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
@@ -611,6 +663,12 @@ async def holds(session: AsyncSession, scope: PersonScope) -> list[dict[str, Any
                                                          ArchiveMessage.id > row.id)))
             .order_by(ArchiveMessage.position, ArchiveMessage.id).limit(1))
         hidden = bool((sess.flags or {}).get("title_withheld"))
+        relations = hold_relations(stone)
+        own_uid = identity.row_uid(row)
+        copy_position = (sess.lineage in identity.LINEAGE and sess.started_at is not None and row.at is not None
+                         and row.at <= sess.started_at)
+        w_uid = anchor_stone.message_uid if anchor_stone is not None else ""
+        w_at = anchor_stone.source_at if anchor_stone is not None else None
         out.append({
             "message": row.id, "session": sess.id, "title": None if hidden else sess.title,
             "position": row.position, "role": row.role, "at": _iso(row.at), "content_chars": row.content_chars,
@@ -621,8 +679,13 @@ async def holds(session: AsyncSession, scope: PersonScope) -> list[dict[str, Any
                 "role": original.role if original is not None else (anchor_stone.role if anchor_stone else ""),
                 "at": _iso(original.at) if original is not None else None,
                 "content_chars": original.content_chars if original is not None else None},
-            "compare": COMPARE.get(stone.via, "nothing to compare"),
-            "evidence": identity.EVIDENCE.get(stone.via, "the text could not be compared"),
+            "relations": relations,
+            "compare": identity.compare_text(relations),
+            "evidence": identity.evidence_text(relations) if relations else "the text could not be compared",
+            "confirm_required": identity.needs_confirmation(relations),
+            "preselected": bool(own_uid) and own_uid != w_uid and (w_at is None or row.at != w_at)
+                           and not copy_position,
+            "decided_on": (stone.decided_on or "")[:12],
             "neighbours": [i for i in (before, after) if i is not None]})
     return out
 
@@ -639,8 +702,11 @@ async def keep_hold(session: AsyncSession, message: ArchiveMessage, *, actor: st
     """An admin keeps a held row withheld: its stone becomes permanent (review 'kept', a member from then on)."""
     stone = await _hold(session, message)
     stone.review = identity.KEPT
+    at = now()
+    # who kept it, and when, on the stone itself: a row an import stores again later keeps it (review 3, rv3-dur-6)
+    stone.kept_by, stone.kept_at = actor[:200], at
     flag = dict((message.flags or {}).get("withheld_by_admin") or {})
-    flag.update(review=identity.KEPT, kept_at=now().isoformat(), kept_by=actor[:200])
+    flag.update(review=identity.KEPT, kept_at=at.isoformat(), kept_by=actor[:200])
     message.flags = {**(message.flags or {}), "withheld_by_admin": flag}
     await session.flush()
     return stone
@@ -648,52 +714,90 @@ async def keep_hold(session: AsyncSession, message: ArchiveMessage, *, actor: st
 
 async def release_hold(session: AsyncSession, message: ArchiveMessage, sess: ArchiveSession, *,
                        actor: str, decided_by: str | None = None, decided_at: datetime | None = None,
-                       reason: str = "released by an admin") -> BrainTombstone:
+                       reason: str = "released by an admin", kind: str = "release",
+                       confirm: str | None = None, confirmed: bool = False) -> BrainTombstone:
     """An admin releases a held row: its pending stone goes and an exemption names its JARVIS row for that group, so
     the hold rules (the same uid with other text, the same text, the upgrade heuristics) skip it; the next import of
     a backup holding that row brings its text back (importer release branch). Refused for a row a certain rule
     names (a stone that is not a hold binds its JARVIS row): it is the withheld message itself. Promoted copies
     emptied while it was held stay empty."""
     stone = await _hold(session, message)
-    certain = await session.scalar(select(BrainTombstone.source_key).where(
-        BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.review != identity.PENDING,
-        BrainTombstone.source_session_id == sess.source_session_id,
-        BrainTombstone.source_row_id == (message.source_message_id or "")[:200],
-        BrainTombstone.role.in_(("", message.role))).limit(1))
-    if certain is not None:
+    if (identity.needs_confirmation(hold_relations(stone)) and not confirmed
+            and (confirm or "").strip() != identity.CONFIRM_WORD):
+        # plan 4.6: a hold whose text is, holds or quotes the withheld text is released only on a typed confirmation
+        raise BrainError(CONFIRM_NEEDED)
+    here = identity.exact_of_row(message, sess.source_session_id)
+    stones = [identity._stone(r) for r in (await session.scalars(select(BrainTombstone).where(
+        BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.source_session_id == here.session,
+        BrainTombstone.source_row_id == here.row))).all()]
+    exact_stones = [st for st in stones if identity.same_row(identity.exact_of_stone(st), here)]
+    if any(st.certain for st in exact_stones):
         raise BrainError("it is the same message as a withheld one: it cannot be released")
     anchor = stone.anchor_key or stone.source_key
-    # Every hold of this JARVIS row in this group (a key adoption can leave the old key's hold binding it too).
+    # Every hold of this exact JARVIS row in this group (a key adoption can leave the old key's hold binding it too).
+    gone = sorted({message.source_key} | {st.key for st in exact_stones if st.group == anchor})
     await session.execute(delete(BrainTombstone).where(
         BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.review == identity.PENDING,
         func.coalesce(func.nullif(BrainTombstone.anchor_key, ""), BrainTombstone.source_key) == anchor,
-        or_(BrainTombstone.source_key == message.source_key,
-            and_(BrainTombstone.source_session_id == sess.source_session_id,
-                 BrainTombstone.source_row_id == (message.source_message_id or "")[:200],
-                 BrainTombstone.role.in_(("", message.role))))))
-    # Bound to the content released: this row's uid and length now, and its readable text's keyed digest once the
-    # next import brings it back (identity.bind_exemptions). A later version of the row with other text is not covered;
-    # an admin who releases such a version too rebinds the release to it (the latest decision on the row holds).
-    # Who decided it and when: the admin now, or (decisions-apply after a restore) the admin and time the restore file
-    # names (review 2, S23).
+        BrainTombstone.source_key.in_(gone)))
+    # Bound to this exact JARVIS row (identity.exact: session, row id, role, tool_call_id, time, uid) and to a backup:
+    # another message at a reused row id is never covered. An admin's release here is decided on the newest backup
+    # that wrote the conversation's family (the content the next import of it restores; a hold found in an older
+    # backup is reviewed now); decisions-apply keeps the backup the file names. Who decided it and when: the admin
+    # now, or (decisions-apply after a restore) the admin and time the restore file names (review 2, S23).
     by, when = (decided_by or actor)[:200], decided_at or now()
-    stmt = pg_insert(BrainWithholdExemption).values(
-        anchor_key=anchor, source_session_id=sess.source_session_id,
-        source_row_id=(message.source_message_id or "")[:200], reason=reason[:200],
-        decided_by=by, decided_at=when, source_uid=identity.row_uid(message)[:200],
-        content_chars=int(message.content_chars if message.content_chars is not None else -1))
-    await session.execute(stmt.on_conflict_do_update(
-        index_elements=[BrainWithholdExemption.anchor_key, BrainWithholdExemption.source_session_id,
-                        BrainWithholdExemption.source_row_id],
-        set_={"source_uid": stmt.excluded.source_uid, "content_chars": stmt.excluded.content_chars,
-              "content_fp": "", "reason": stmt.excluded.reason, "decided_by": stmt.excluded.decided_by,
-              "decided_at": stmt.excluded.decided_at}))
+    newest = await identity.decision_backup(session, [sess.source_session_id]) if decided_by is None else ""
+    await identity.put_exemption(session, here, anchor=anchor, kind=kind,
+                                 decided_on=newest or stone.decided_on or await identity.decision_backup(
+                                     session, [sess.source_session_id]),
+                                 reason=reason, decided_by=by, decided_at=when)
     flag = dict((message.flags or {}).get("withheld_by_admin") or {})
     flag.update(released_at=when.isoformat(), released_by=by)
     message.flags = {**(message.flags or {}), "withheld_by_admin": flag}
     message.source_fp = ""  # its release marker: the next import restores it from the source
     await session.flush()
     return stone
+
+
+NOT_COMPARABLE = ("this conversation has a hold whose withheld text was not in the JARVIS backup it came from ('the "
+                  "withheld text is not in this backup'): nothing can say which rows have no relation to it, so the "
+                  "one-click release is not offered; review its rows one by one, or stop importing it")
+
+
+async def release_unrelated(session: AsyncSession, sess: ArchiveSession, scope: PersonScope, *,
+                            actor: str) -> list[int]:
+    """'Release this conversation's rows with no relation' (0.6.2 plan 9.3, section 2 correction 4): every hold of the
+    conversation (in the admin's scope) whose computed evidence is exactly 'none' (no relation to the withheld text it
+    is listed under, which the backup held: later.strongest lists a row under a withheld text the backup lacked
+    first) is released as release_hold() releases it. Offered only when the backup held every withheld text of the
+    family: refused (BrainError, nothing changed) while a hold of this conversation says 'not in this backup'. A hold
+    with any relation, or none computed (an older hold), stays for the admin. The released message ids."""
+    found = (await session.execute(
+        select(ArchiveMessage, BrainTombstone)
+        .join(BrainTombstone, BrainTombstone.source_key == ArchiveMessage.source_key)
+        .where(ArchiveMessage.session_id == sess.id, ArchiveMessage.withheld.is_(True),
+               BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.review == identity.PENDING,
+               person_messages(scope))
+        .order_by(ArchiveMessage.position, ArchiveMessage.id).with_for_update(of=ArchiveMessage))).all()
+    if any(identity.NOT_IN_BACKUP in hold_relations(stone) for _, stone in found):
+        raise BrainError(NOT_COMPARABLE)
+    out = []
+    for message, stone in found:
+        if hold_relations(stone) != [identity.NO_RELATION]:
+            continue
+        await release_hold(session, message, sess, actor=actor,
+                           reason="released by an admin (no relation to the withheld text)")
+        out.append(message.id)
+    return out
+
+
+async def stop_importing(session: AsyncSession, sess: ArchiveSession, *, actor: str) -> bool:
+    """'Stop importing this conversation' (0.6.2 plan 9.3, 5.3): a later backup's import leaves this JARVIS
+    conversation out (counted), and its stored rows stay as they are. The decision backup's replay and Settle still
+    read it. Kept by brain_frozen_sessions (a decisions file carries it). Whether it was added now."""
+    return bool((await session.execute(pg_insert(BrainFrozenSession).values(
+        source_session_id=sess.source_session_id[:200], frozen_by=actor[:200], frozen_at=now())
+        .on_conflict_do_nothing())).rowcount)
 
 
 # --- Items ------------------------------------------------------------------------------------------------------

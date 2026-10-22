@@ -92,11 +92,18 @@ class ItemReview(BaseModel):
 
 
 class WithholdBody(BaseModel):
-    # Also withhold the readable messages with exactly this text in the conversation and its continuations and
-    # branches (never by default: identical words elsewhere are not the same message).
-    include_identical: bool = False
+    # The stored rows of the conversation family that equal, contain, restate or quote this text (0.6.2 plan 4.5) are
+    # held for review with it: pre-ticked (null or true). false leaves every one of them readable, as the admin's
+    # decision; leave_readable leaves only those (message ids) readable.
+    include_identical: bool | None = None
+    leave_readable: list[int] = Field(default_factory=list, max_length=1000)
     # Hide the conversation's title too; by default only when this is its first user message (null).
     hide_title: bool | None = None
+
+
+class ReleaseBody(BaseModel):
+    # The typed confirmation a hold whose text is, contains or quotes the withheld text needs (0.6.2 plan 4.6).
+    confirm: str | None = Field(None, max_length=40)
 
 
 class PromoteBody(BaseModel):
@@ -517,9 +524,10 @@ async def withhold_message(message_id: int, request: Request, body: WithholdBody
     body = body or WithholdBody()
     message, _ = await _message(session, caller, message_id, lock=True)
     # The admin's own choice in the withhold dialog: identical text left readable is a decision to keep (review 2, S21).
+    include = body.include_identical is not False  # pre-ticked unless the admin unticked them all
     done = await review.withhold_message(session, message, actor=caller.name, ip=client_ip(request),
-                                         include_identical=body.include_identical, hide_title=body.hide_title,
-                                         keep_identical_readable=not body.include_identical)
+                                         include_identical=include, hide_title=body.hide_title,
+                                         keep_identical_readable=True, leave_readable=body.leave_readable)
     sess = done.session
     assert sess is not None
     copies = [c["item"] for c in done.copies]
@@ -532,14 +540,18 @@ async def withhold_message(message_id: int, request: Request, body: WithholdBody
                         "rollback_copies_blanked": done.rollback_copies_blanked,
                         "answers_scrubbed": done.answers_scrubbed, "via": "api", "also_withheld": also,
                         "held_for_review": held, "identical_withheld": done.identical_withheld,
-                        "keys_tombstoned": done.keys_tombstoned, "title_hidden": done.title_hidden},
+                        "keys_tombstoned": done.keys_tombstoned, "title_hidden": done.title_hidden,
+                        "left_readable": done.left_readable},
                        ip=client_ip(request))
     await session.commit()
     return {"message": review.message_out(message), "session": review.session_out(sess),
             "copies": {"items": copies, "versions_blanked": done.versions_blanked},
             "answers_scrubbed": done.answers_scrubbed, "rollback_copies_blanked": done.rollback_copies_blanked,
             "also_withheld": also, "held_for_review": held, "identical_withheld": done.identical_withheld,
-            "keys_tombstoned": done.keys_tombstoned, "title_hidden": done.title_hidden}
+            "left_readable": done.left_readable, "keys_tombstoned": done.keys_tombstoned,
+            "title_hidden": done.title_hidden,
+            "next": "finish this decision with brain-import settle --backup <the JARVIS backup> (jarvis-import -Mode "
+                    "Settle) before exporting the decisions"}
 
 
 # --- Holds: rows withheld for an admin's review -----------------------------------------------------------------
@@ -572,15 +584,55 @@ async def keep_hold(message_id: int, request: Request, caller: Caller = Depends(
 
 
 @router.post("/holds/{message_id}/release")
-async def release_hold(message_id: int, request: Request, caller: Caller = Depends(admin),
-                       session: AsyncSession = Depends(get_db)) -> dict:
+async def release_hold(message_id: int, request: Request, body: ReleaseBody | None = None,
+                       caller: Caller = Depends(admin), session: AsyncSession = Depends(get_db)) -> dict:
     await _no_import_running(session)  # an import could hold it again before the release is committed
     message, sess = await _message(session, caller, message_id, lock=True)
-    stone = await review.release_hold(session, message, sess, actor=caller.name)
+    stone = await review.release_hold(session, message, sess, actor=caller.name,
+                                      confirm=body.confirm if body is not None else None)
     await _hold_audit(session, caller, "archive.hold_released", message, stone, request)
     await session.commit()
     return {"message": review.message_out(message), "released": True,
             "note": "its text comes back at the next import of a backup holding it; promoted copies stay empty"}
+
+
+async def _session_of(session: AsyncSession, caller: Caller, session_id: int) -> ArchiveSession:
+    sess = await session.scalar(select(ArchiveSession).where(ArchiveSession.id == session_id,
+                                                             person_sessions(caller.scope)).with_for_update())
+    if sess is None:
+        raise HTTPException(404, "no such conversation")
+    return sess
+
+
+@router.post("/sessions/{session_id}/holds/release-unrelated")
+async def release_unrelated(session_id: int, request: Request, caller: Caller = Depends(admin),
+                            session: AsyncSession = Depends(get_db)) -> dict:
+    """'Release this conversation's rows with no relation' (0.6.2 plan 9.3): the holds whose computed evidence is
+    'none' are released; refused (400, nothing changed) while a hold of this conversation could not be compared with
+    a withheld text its backup lacked (section 2 correction 4)."""
+    await _no_import_running(session)
+    sess = await _session_of(session, caller, session_id)
+    released = await review.release_unrelated(session, sess, caller.scope, actor=caller.name)
+    await audit.record(session, caller.name, "archive.holds_released_unrelated", "archive_session", sess.id,
+                       {"session": sess.id, "released": len(released), "messages": released[:200]},
+                       ip=client_ip(request))
+    await session.commit()
+    return {"session": sess.id, "released": released,
+            "note": "their text comes back at the next import of a backup holding them"}
+
+
+@router.post("/sessions/{session_id}/stop-importing")
+async def stop_importing(session_id: int, request: Request, caller: Caller = Depends(admin),
+                         session: AsyncSession = Depends(get_db)) -> dict:
+    """'Stop importing this conversation' (0.6.2 plan 9.3, 5.3): later backups leave it out (counted); what is
+    stored of it stays as it is."""
+    await _no_import_running(session)
+    sess = await _session_of(session, caller, session_id)
+    added = await review.stop_importing(session, sess, actor=caller.name)
+    await audit.record(session, caller.name, "archive.session_frozen", "archive_session", sess.id,
+                       {"session": sess.id, "added": added}, ip=client_ip(request))
+    await session.commit()
+    return {"session": sess.id, "frozen": True}
 
 
 @router.post("/messages/{message_id}/promote", status_code=201)

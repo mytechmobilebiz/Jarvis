@@ -606,26 +606,67 @@ class BrainTombstone(Base):
     # row's timestamp in every copy it makes (a /branch, a rotation, a compaction's tail, a /retry), so a copy whose
     # link to the withheld row is broken is still found at that time, as a hold.
     source_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # 0008 (review 2, S9): when an import learned the stone's uid (message_uid was ''): Hermes's own time of the newest
-    # message in that backup. A row of the conversation family written after it, under another uid, is another message.
-    uid_learned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 0008 (0.6.2 plan 1.1): the JARVIS backup (SHA-256) the decision was taken on ('' unknown: never replayed), and who
+    # kept a hold and when (review 3, rv3-dur-6).
+    decided_on: Mapped[str] = mapped_column(Text, default="")
+    kept_by: Mapped[str] = mapped_column(Text, default="")
+    kept_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 0008 (0.6.2 plan 4.6): a hold's computed evidence, relation codes only (app/brain/identity.RELATIONS)
+    relations: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
 
 
 class BrainWithholdExemption(Base):
-    """An admin's release of a row held for review: the uid and same-text rules no longer hold it for that group."""
+    """An admin's release of a held row, or identical text an admin left readable (kind), for one withhold (anchor_key):
+    bound to the exact JARVIS row it names (session, row id, role, tool_call_id, time, uid; identity.exact) and to the
+    JARVIS backup it was decided on (0008, 0.6.2 plan 1.2)."""
 
     __tablename__ = "brain_withhold_exemptions"
-    anchor_key: Mapped[str] = mapped_column(Text, primary_key=True)
-    source_session_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    source_row_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    anchor_key: Mapped[str] = mapped_column(Text)
+    source_session_id: Mapped[str] = mapped_column(Text)
+    source_row_id: Mapped[str] = mapped_column(Text)
+    role: Mapped[str] = mapped_column(Text, default="")
+    tool_call_id: Mapped[str] = mapped_column(Text, default="")
+    source_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_uid: Mapped[str] = mapped_column(Text, default="")
+    kind: Mapped[str] = mapped_column(Text, default="release")  # release, left_readable, quarantine_release
+    decided_on: Mapped[str] = mapped_column(Text, default="")
     reason: Mapped[str] = mapped_column(Text, default="released by an admin")
     decided_by: Mapped[str] = mapped_column(Text, default="")
     decided_at: Mapped[datetime] = _now_col()
-    # The content the release covers (identity.Binding): the released row's uid, length (-1 unknown) and, once it is
-    # readable, the keyed digest of its stored readable text (identity.release_fp; '' unknown).
-    source_uid: Mapped[str] = mapped_column(Text, default="")
-    content_chars: Mapped[int] = mapped_column(Integer, default=-1)
-    content_fp: Mapped[str] = mapped_column(Text, default="")
+
+
+class BrainDecisionBackup(Base):
+    """A JARVIS backup a decision was taken on (its SHA-256): an import of that very file replays it (0008)."""
+
+    __tablename__ = "brain_decision_backups"
+    sha256: Mapped[str] = mapped_column(Text, primary_key=True)
+    label: Mapped[str] = mapped_column(Text, default="")
+    importer_version: Mapped[str] = mapped_column(Text, default="")
+    newest_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_run_id: Mapped[int | None] = mapped_column(BigInteger)
+    settled_run_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = _now_col()
+
+
+class BrainSessionLink(Base):
+    """A family link between two JARVIS conversations, recorded once and never forgotten (append-only, 0008)."""
+
+    __tablename__ = "brain_session_links"
+    a: Mapped[str] = mapped_column(Text, primary_key=True)
+    b: Mapped[str] = mapped_column(Text, primary_key=True)
+    how: Mapped[str] = mapped_column(Text, primary_key=True)  # parent, branched_from, compressed_from, shared_uid, ...
+    first_run: Mapped[int | None] = mapped_column(BigInteger)
+    first_at: Mapped[datetime] = _now_col()
+
+
+class BrainFrozenSession(Base):
+    """A JARVIS conversation an admin stopped importing (0008)."""
+
+    __tablename__ = "brain_frozen_sessions"
+    source_session_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    frozen_by: Mapped[str] = mapped_column(Text, default="")
+    frozen_at: Mapped[datetime] = _now_col()
 
 
 class BrainPurgedContent(Base):

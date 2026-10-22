@@ -262,6 +262,29 @@ def paths(fx: dict[str, str], **kw: Any) -> Any:
     return SourcePaths(db=fx["db"], profile=fx["profile"], content=fx["content"], **kw)
 
 
+async def settle(db: str | dict[str, str], actor: str = "admin@test.local", *, keep: bool = True) -> dict[str, Any]:
+    """brain-import settle --backup <db> (0.6.2 plan 4.1): the withholds taken on this JARVIS backup finished, as the
+    test copy does before decisions-export (which refuses until then: plan 4.7). With keep, every hold it found is
+    then kept (an admin's review that keeps them all), so an export can follow."""
+    from sqlalchemy import select
+
+    from app.brain import identity, review
+    from app.brain.importer import SourcePaths, settle as settle_backup
+    from app.db import session_scope
+    from app.models import ArchiveMessage, BrainTombstone
+
+    out = await settle_backup(SourcePaths(db=db["db"] if isinstance(db, dict) else db, profile=""), actor=actor)
+    if keep:
+        async with session_scope() as s:
+            for message in (await s.scalars(select(ArchiveMessage).join(
+                    BrainTombstone, BrainTombstone.source_key == ArchiveMessage.source_key).where(
+                    BrainTombstone.review == identity.PENDING, BrainTombstone.via == identity.SETTLE_HOLD,
+                    ArchiveMessage.withheld.is_(True)))).all():
+                await review.keep_hold(s, message, actor=actor)
+            await s.commit()
+    return out
+
+
 async def table_counts(exclude: tuple[str, ...] = ()) -> dict[str, int]:
     """Rows in every table of the Command Center's database."""
     from sqlalchemy import text

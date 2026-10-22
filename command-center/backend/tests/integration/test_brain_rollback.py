@@ -71,7 +71,10 @@ async def test_rollback_puts_every_count_back_to_its_value_before_the_run(built)
     done = await imp.run(bj.paths(built), ALL)
     assert await bj.table_counts(exclude=bj.HISTORY_TABLES) != before
     result = await rollback(done["run_id"])
-    assert await bj.table_counts(exclude=bj.HISTORY_TABLES) == before
+    after = await bj.table_counts(exclude=bj.HISTORY_TABLES)
+    # 0.6.2 plan 1.3: the family links an import recorded are never forgotten, a rollback included (append-only)
+    assert after.pop("brain_session_links") > before.pop("brain_session_links")
+    assert after == before
     assert result["deleted"]["messages"] > 100 and result["deleted"]["sessions"] == 35
     async with session_scope() as s:
         row = await s.get(ImportRun, done["run_id"])

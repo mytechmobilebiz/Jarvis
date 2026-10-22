@@ -56,6 +56,9 @@ PATH = re.compile(r"[^\s\"'`<>|]*[/\\][^\s\"'`<>|]+")
 CUSTOMER_CHANNEL = re.compile(
     r"(?i)^\(other\)$|whatsapp|sms|mms|mail|telegram|messenger|facebook|instagram|signal|imessage|wechat|viber"
     r"|discord|webchat|livechat|twilio|voice|phone")
+# Hermes's lineage markers in a session's model_config (hermes_state_mutation_compress, gateway/slash_commands_session,
+# gateway/session_recovery, the delegate tool).
+LINEAGE_MARKERS = ("_branched_from", "_compressed_from", "_reset_from", "_delegate_from")
 NUMERIC = re.compile(r"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$")
 # Profile categories that are never imported, so never opened (the live state.db, secrets, caches...).
 NOT_OPENED = {"secret", "database", "cache", "program", "temporary", "log", "session_transcript"}
@@ -347,6 +350,11 @@ class SourceSession:
     hermes_counts: dict[str, int]
     attribution: Attribution
     time_assumed_local: bool
+    # Hermes's own lineage markers from model_config, as given (LINEAGE_MARKERS present with a non-empty text value):
+    # _branched_from and _compressed_from copy rows (family links); _reset_from (a gateway reset: a new session, no rows
+    # copied) and _delegate_from (a sub-agent) are recorded, never family links.
+    markers: dict[str, str] = field(default_factory=dict)
+    hermes_parent: str = ""  # parent_session_id as Hermes stored it ('' when NULL: e.g. the parent was deleted)
 
     @property
     def key(self) -> str:
@@ -425,6 +433,7 @@ class Backup:
         self._dup_uid_first: dict[str, Any] | None = None
         self._sessions: list[SourceSession] | None = None
         self._row_ids: dict[str, set[str]] = {}
+        self._newest: tuple[datetime | None] | None = None
 
     def close(self) -> None:
         self.con.close()
@@ -479,10 +488,19 @@ class Backup:
                     config = loaded if isinstance(loaded, dict) else {}
                 except ValueError:
                     config = {}
-            if isinstance(config.get("_delegate_from"), str) and config["_delegate_from"]:
-                lineage, parent = "delegated", parent or config["_delegate_from"]
-            elif isinstance(config.get("_branched_from"), str) and config["_branched_from"]:
-                lineage, parent = "branch", parent or config["_branched_from"]
+            markers = {k: config[k] for k in LINEAGE_MARKERS if isinstance(config.get(k), str) and config[k]}
+            if "_delegate_from" in markers:
+                lineage, parent = "delegated", parent or markers["_delegate_from"]
+            elif "_branched_from" in markers:
+                lineage, parent = "branch", parent or markers["_branched_from"]
+            elif "_compressed_from" in markers:
+                # A rotation (Hermes hermes_state_mutation_compress): a continuation, also when JARVIS deleted the
+                # parent since (delete_session sets parent_session_id to NULL; the marker stays: review 3, rv3-res-4).
+                lineage, parent = "continuation", parent or markers["_compressed_from"]
+            elif "_reset_from" in markers:
+                # A gateway reset (/new): a new session that copies no rows (gateway/session_recovery). Never a family
+                # link, whatever the parent's end_reason says (Hermes: a reset child is never a continuation).
+                lineage, parent = "reset", parent or markers["_reset_from"]
             elif parent and end_reasons.get(parent) == "branched":
                 lineage = "branch"
             elif parent and end_reasons.get(parent) == "compression":
@@ -496,7 +514,8 @@ class Backup:
                 if r.get("end_reason") else "", parent_id=parent, lineage=lineage,
                 hermes_archived=bool(_as_flag(r.get("archived"))), hermes_counts=counts,
                 attribution=attribute(sid, self.job_names, self.template_jobs),
-                time_assumed_local=local_a or local_b))
+                time_assumed_local=local_a or local_b, markers=markers,
+                hermes_parent=_as_text(r.get("parent_session_id"))))
         out.sort(key=SourceSession.sort_key)
         self._sessions = out
         return out
@@ -555,13 +574,27 @@ class Backup:
         if "timestamp" not in self.columns["messages"]:
             return None
         newest: datetime | None = None
-        for (value,) in self.con.execute(  # numbers (epoch seconds) and text (ISO) each have their own maximum
+        # Each unit parse_time() reads (seconds, milliseconds, microseconds as numbers) and text (ISO) has its own
+        # maximum: the largest number is not the newest time when units are mixed.
+        for (value,) in self.con.execute(
                 "SELECT max(timestamp) FROM messages WHERE typeof(timestamp) IN ('real', 'integer') "
+                "AND timestamp >= 0 AND timestamp < 1e11 "
+                "UNION ALL SELECT max(timestamp) FROM messages WHERE typeof(timestamp) IN ('real', 'integer') "
+                "AND timestamp >= 1e11 AND timestamp < 1e14 "
+                "UNION ALL SELECT max(timestamp) FROM messages WHERE typeof(timestamp) IN ('real', 'integer') "
+                "AND timestamp >= 1e14 AND timestamp < 1e17 "
                 "UNION ALL SELECT max(timestamp) FROM messages WHERE typeof(timestamp) = 'text'"):
             at, _ = parse_time(value, self.tz) if value is not None else (None, False)
             if at is not None and (newest is None or at > newest):
                 newest = at
         return newest
+
+    @property
+    def newest_at(self) -> datetime | None:
+        """latest_time(), read once: the backup's newest message time (brain_decision_backups.newest_at)."""
+        if self._newest is None:
+            self._newest = (self.latest_time(),)
+        return self._newest[0]
 
     def has_row(self, session_id: str, row_id: str) -> bool:
         """Whether this JARVIS row (session id, row id as text) is in the backup. The ids of a session are read once."""
@@ -582,6 +615,23 @@ class Backup:
                     "SELECT %s FROM messages WHERE session_id = ? AND id IN (%s) ORDER BY %s"
                     % (self._select("messages"), ",".join("?" * len(chunk)), self._order()), (session_id, *chunk)):
                 out.append(self._message(dict(zip(cols, row, strict=True))))
+        return out
+
+    def sessions_with_uids(self, uids: set[str] | frozenset[str]) -> set[str]:
+        """The sessions with a row that carries one of these message_uids, or absorbed one (absorbed_message_uids):
+        a conversation family reaches them through a withheld message's uid (0.6.2 plan 5.1)."""
+        wanted = {u for u in uids if u}
+        if not wanted or "message_uid" not in self.columns["messages"]:
+            return set()
+        absorbed = "absorbed_message_uids" in self.columns["messages"]
+        out: set[str] = set()
+        for sid, uid, gone in self.con.execute(
+                "SELECT session_id, message_uid, %s FROM messages WHERE (message_uid IS NOT NULL AND message_uid != '')"
+                "%s" % ("absorbed_message_uids" if absorbed else "NULL",
+                        " OR (absorbed_message_uids IS NOT NULL AND absorbed_message_uids NOT IN ('', '[]'))"
+                        if absorbed else "")):
+            if _as_text(uid) in wanted or (absorbed and set(parse_uid_list(gone)) & wanted):
+                out.add(_as_text(sid))
         return out
 
     def sessions_by_id(self) -> dict[str, SourceSession]:

@@ -153,18 +153,6 @@ def test_a_kept_hold_matches_as_a_member_and_a_pending_one_as_the_hold_itself():
     assert pending.add(stone("jarvis:message:S1:9", review="pending")).review == ""
 
 
-def test_independent_requires_known_uid():
-    known = identity.Identities([stone("jarvis:message:uid:U", uid="U", uid_known=True, bound=True, row="1",
-                                       session="S1")])
-    assert known.independent("jarvis:message:uid:U", "OTHER")  # its own uid: another Hermes message
-    assert not known.independent("jarvis:message:uid:U", "U")
-    assert not known.independent("jarvis:message:uid:U", "")  # no uid: nothing says it is another message
-    # The uid was only learned (a row-form key withheld while its uid was NULL): no row is independent of it.
-    learned = identity.Identities([stone("jarvis:message:S1:1", uid="U", uid_known=False, bound=True, row="1",
-                                         session="S1")])
-    assert not learned.independent("jarvis:message:S1:1", "OTHER")
-
-
 def test_copied_by_history_uses_child_started_at():
     child = SimpleNamespace(lineage="branch", started_at=T0)
     assert identity.copied_by_history(msg(1, at=T0 - timedelta(days=3)), child)
@@ -288,3 +276,39 @@ def test_verify_scans_rollback_copies_without_their_identifiers():
     for before in (card, {"deleted_row": card}):
         [leak] = importer._row_leaks("import_records", {"id": 3, "before": importer._without_ids(before)})
         assert leak["column"] == "before" and leak["types"] == ["payment_card"]
+
+
+# --- Exact identity (0.6.2 plan 3.1; review 3 rv3-ov-0) ----------------------------------------------------------------
+
+
+def test_binding_matches_is_the_sql_guards_rule():
+    """identity.binding_matches mirrors migration 0008's brain_exact(): a binding whose role is not known matches any
+    role and call; a known role must match with its tool_call_id; times are compared when both have one; two uids that
+    differ never match."""
+    later = T0 + timedelta(minutes=5)
+    m = identity.binding_matches
+    assert m("user", "", T0, "U1", "user", "", T0, "U1")
+    assert m("", "", None, "", "tool", "call_1", T0, "U1")  # a version 3 file's binding: its key's row only
+    assert m("user", "", None, "", "user", "", T0, "U9")  # nothing known on the binding but its role
+    assert m("user", "", T0, "U1", "user", "", None, "")  # nothing known on the row
+    assert not m("user", "", T0, "U1", "assistant", "", T0, "U1")  # another role
+    assert not m("tool", "call_1", T0, "", "tool", "call_2", T0, "")  # another tool call
+    assert not m("user", "", T0, "", "user", "", later, "")  # another time: a reused row id
+    assert not m("user", "", None, "U1", "user", "", None, "U2")  # another uid: another Hermes message
+
+
+def test_a_stone_never_matches_a_new_message_at_a_reused_row_id():
+    """rv3-ov-0: Hermes's state.db came back from a snapshot; a new message got the withheld row's id with its own uid
+    and a later time. Neither the JARVIS row rule nor a release of the old row covers it."""
+    st = stone("jarvis:message:uid:OLD", session="S1", row="3", role="user", uid="OLD", at=T0, bound=True)
+    ids = identity.Identities([st])
+    new = msg(3, "What is the weather tomorrow?", uid="NEW", at=T0 + timedelta(days=2))
+    assert ids.certain("S1", new, present) is None
+    assert ids.row_stones(identity.exact_of_source("S1", new)) == []
+    assert ids.match_row("jarvis:message:uid:NEW", "S1", "3", "user", "NEW", at=new.at) is None
+    same = msg(3, "the withheld text", uid="OLD", at=T0)
+    assert ids.row_stones(identity.exact_of_source("S1", same)) == [st]
+    released = identity.Identities([], [("G", "S1", "3")], {("G", "S1", "3"): [
+        identity.Binding("user", "", T0, "OLD")]})
+    assert released.released("G", identity.exact_of_source("S1", same))
+    assert not released.released("G", identity.exact_of_source("S1", new))

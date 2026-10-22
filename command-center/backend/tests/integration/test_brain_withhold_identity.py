@@ -97,6 +97,13 @@ async def stones() -> dict[str, BrainTombstone]:
             BrainTombstone.reason == identity.WITHHELD_BY_ADMIN))).all()}
 
 
+async def rows_of_withheld(sid: str) -> list[ArchiveMessage]:
+    async with session_scope() as s:
+        return list((await s.scalars(select(ArchiveMessage).join(
+            ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id).where(
+            ArchiveSession.source_session_id == sid, ArchiveMessage.withheld.is_(True)))).all())
+
+
 async def withheld_ids() -> list[int]:
     async with session_scope() as s:
         return list((await s.scalars(select(ArchiveMessage.id).where(ArchiveMessage.withheld.is_(True))
@@ -218,19 +225,25 @@ def _plain_backup(fx: dict[str, str], mark: str, *, sid: str = "a_tail_01", uid:
 @pytest.mark.parametrize("tail_n", [2, 6], ids=["tail2", "tail6"])
 async def test_a_tail_single_compaction_rewound_original_live_copy_same_uid(client, fx, tail_n):
     """Judge T1 (tail2, tail6), inverted: the withheld answer is in Hermes's protected tail; one compaction rewinds it
-    (the re-import deletes its withheld row) and writes a live copy with the same uid under a new key."""
+    and writes a live copy with the same uid under a new key. 0.6.2 plan 5.2: the withheld stored row of the family is
+    never deleted (it used to go as rewound); the copy is withheld."""
     mark = "zqatail62%d" % tail_n
     _plain_backup(fx, mark, tail_only=tail_n == 2)
     await run(fx)
     original = await withhold_text(client, mark)
     bj.hermes_compact(fx["db"], "a_tail_01", head_n=1, tail_n=tail_n, ts=T + 100)
     second = await run(fx)
-    assert await message_of("a_tail_01", int(original.source_message_id)) == []  # rewound: its row is gone
+    [kept] = await message_of("a_tail_01", int(original.source_message_id))  # plan 5.2: kept as stored
+    assert (kept.id, kept.withheld, kept.content) == (original.id, True, "")
     copies = [m for m in bj.rows(fx["db"], "a_tail_01") if m["content"] == secret(mark) and m["active"] == 1]
     stored = [m for c in copies for m in await message_of("a_tail_01", c["id"])]
     assert copies and stored and all(m.withheld for m in stored)
     reasons = (await records(second["run_id"]))
-    assert any(r.action == "withheld" and r.reason.startswith(identity.WITHHELD_BY_ADMIN) for r in reasons.values())
+    # plan 5.3: the copy is held for review (this simulator stamps the copy with a new time, so it lacks Hermes's copy
+    # identity: deviation 187; with the original's time it is certain, 'copied by JARVIS')
+    assert any(r.action == "withheld" and r.reason in ("held for an admin's review: %s" % identity.LATER_HOLD,
+                                                        "%s: copied by JARVIS" % identity.WITHHELD_BY_ADMIN)
+               for r in reasons.values())
     await leak_free(client, mark, fx, (second["run_id"],))
     # Inverse: the similar sentence (one character differs) stays readable, and so does identical text elsewhere.
     if tail_n == 6:
@@ -258,7 +271,9 @@ async def test_a_tail_second_generation(client, fx):
 
 
 async def test_a_tail_without_uids_by_rewound_twin(client, fx):
-    """A backup with no uids at all: the copy is linked to the rewound original by its text (a rewound twin)."""
+    """A backup with no uids at all: the copy of the rewound original has no provenance a later backup can trust (no
+    uid, so no copy identity; the importer's twin link is not one: plan 5.3), so it is held for review, 'identical',
+    never readable."""
     mark = "zqatwin62"
     _plain_backup(fx, mark, uid=False)
     await run(fx)
@@ -266,7 +281,12 @@ async def test_a_tail_without_uids_by_rewound_twin(client, fx):
     bj.hermes_compact(fx["db"], "a_tail_01", head_n=1, tail_n=6, ts=T + 100)
     second = await run(fx)
     held = {r.reason for r in (await records(second["run_id"])).values() if r.action == "withheld"}
-    assert "%s: copied by JARVIS" % identity.WITHHELD_BY_ADMIN in held
+    assert "held for an admin's review: %s" % identity.LATER_HOLD in held
+    copies = [m for c in bj.rows(fx["db"], "a_tail_01") if c["content"] == secret(mark) and c["active"] == 1
+              for m in await message_of("a_tail_01", c["id"])]
+    st = await stones()
+    assert copies and all(m.withheld and st[m.source_key].review == identity.PENDING
+                          and identity.IDENTICAL_REL in st[m.source_key].relations for m in copies)
     await leak_free(client, mark, fx, (second["run_id"],))
     await inverse_readable()
 
@@ -335,33 +355,6 @@ async def test_b_adjacent_repeat(client, fx, variant):
     await inverse_readable()
 
 
-async def test_b_prime_repeat_after_withhold(client, fx):
-    """A verbatim repeat that first appears right after the withheld message is a member (documented fail-closed);
-    a later, non-adjacent repeat with its own uid stays readable (the withheld message's uid was known: O4)."""
-    mark = "zqbprime62"
-    ids = conversation(fx["db"], "b_prime_01", T, [("user", "Can you check the contract?"),
-                                                   ("assistant", secret(mark))])
-    await run(fx)
-    withheld = (await message_of("b_prime_01", ids[1]))[0]
-    await withhold(client, withheld.id)
-    # JARVIS writes it again right after (a resend), and much later an independent answer with the same words.
-    repeat = bj.add_row(fx["db"], "b_prime_01", "assistant", secret(mark), T + 3)
-    bj.add_row(fx["db"], "b_prime_01", "user", "And the other contract?", T + DAY)
-    later = bj.add_row(fx["db"], "b_prime_01", "assistant", secret(mark), T + DAY + 1)
-    second = await run(fx)
-    repeat_key = "jarvis:message:uid:%s" % bj.rows(fx["db"], "b_prime_01")[2]["message_uid"]
-    assert await message_of("b_prime_01", repeat) == []  # a duplicate: no row of its own
-    stone = (await stones())[repeat_key]  # its key joined the withhold
-    assert (stone.anchor_key, stone.via, stone.review) == (withheld.source_key, "duplicate", "")
-    [independent] = await message_of("b_prime_01", later)
-    assert not independent.withheld and independent.content == secret(mark)
-    allowed = ("archive_messages.content", "archive_messages.search", "archive_sessions.search",
-               "archive_sessions.summary")
-    assert await bj.nowhere(mark, allow=allowed) == []
-    v = await imp.verify(second["run_id"], bj.paths(fx))
-    assert v["passed"], {k: c for k, c in v["verification"]["checks"].items() if not c["ok"]}
-
-
 # --- C: keys that change ---------------------------------------------------------------------------------------------
 
 
@@ -375,8 +368,9 @@ async def _archive_count(sid: str) -> int:
 @pytest.mark.parametrize("absent", [False, True], ids=["uid_null", "column_absent"])
 async def test_c1_uid_null_then_filled_adopts_keys_without_duplicating_the_archive(client, fx, absent):
     """C1 (K1A, K1B): the first backup has no uids (NULL, or no column at all), a later one has them for every row:
-    every key changes. The stored rows are re-keyed in place: the archive is not duplicated and the withheld one stays
-    withheld."""
+    every key changes. 0.6.2 plan 5.2: the stored rows of the withheld conversation are never re-keyed (no key
+    adoption inside a family); each row under its new key is the very JARVIS row of a stored one (identity.exact), not
+    stored twice: the archive is not duplicated, the withheld one stays withheld, and its new key gets a stone too."""
     mark = "zqcone%s62" % ("absent" if absent else "null")
     if absent:
         bj.drop_uid_column(fx["db"])
@@ -390,9 +384,10 @@ async def test_c1_uid_null_then_filled_adopts_keys_without_duplicating_the_archi
     second = await run(fx)
     assert await _archive_count("c1_01") == before
     [back] = await message_of("c1_01", ids[1])
-    assert back.id == row.id and back.withheld and back.source_key.startswith("jarvis:message:uid:")
-    assert second["report"]["keys_adopted"] == len(ids)
-    assert back.source_key in await stones() and row.source_key in await stones()
+    assert back.id == row.id and back.withheld and back.source_key == row.source_key
+    assert not second["report"].get("keys_adopted")
+    new_key = "jarvis:message:uid:" + bj.rows(fx["db"], "c1_01")[1]["message_uid"]
+    assert row.source_key in await stones() and new_key in await stones()
     await leak_free(client, mark, fx, (second["run_id"],))
     [thanks] = await message_of("c1_01", ids[2])
     assert not thanks.withheld and thanks.content == "Thanks."
@@ -412,7 +407,9 @@ async def test_c2_uid_reused_excludes_the_unrelated_row_and_withholds_165(client
     await withhold(client, (await message_of("c2_01", r165))[0].id)
     bj.change(fx["db"], "UPDATE messages SET message_uid = ? WHERE id = ?", uids[1], r164)
     second = await run(fx)
-    [answer] = [m for m in await message_of("c2_01", r165) if m.source_key == "jarvis:message:c2_01:%d" % r165]
+    # 0.6.2 plan 5.2: the answer's stored row is never re-keyed; its row under the new row-form key is the very same
+    # JARVIS row (identity.exact), not stored twice
+    [answer] = await message_of("c2_01", r165)
     assert answer.withheld
     collided = (await records(second["run_id"]))["jarvis:message:uid:%s" % uids[1]]
     assert (collided.action, collided.reason.startswith("key collision")) == ("excluded", True)
@@ -475,6 +472,7 @@ async def test_d_v3_file_still_applies(client, tmp_path):
                        uid=False)
     await run(test_copy)
     await withhold(client, (await message_of("d_01", ids[1]))[0].id)
+    await bj.settle(test_copy)  # 0.6.2 plan 4.7: decisions-export refuses until the withhold is finished
     out = tmp_path / "decisions.json"
     await imp.decisions_export(str(out))
     as_v3(out)
@@ -502,6 +500,7 @@ async def test_d_reverse_v3_closed_at_next_import(client, tmp_path):
     r = bj.add_row(test_copy["db"], "d_02", "assistant", secret(mark), T + 2, uid=shared)
     await run(test_copy)
     await withhold(client, (await message_of("d_02", r))[0].id)
+    await bj.settle(test_copy)  # 0.6.2 plan 4.7: decisions-export refuses until the withhold is finished
     out = tmp_path / "decisions.json"
     await imp.decisions_export(str(out))
     as_v3(out)
@@ -533,10 +532,11 @@ async def test_d_both_directions_v4(client, tmp_path, test_uids):
     await run(test_copy)
     [withheld] = await message_of("d_04", ids[1])
     await withhold(client, withheld.id)
+    await bj.settle(test_copy)  # 0.6.2 plan 4.7: decisions-export refuses until the withhold is finished
     out = tmp_path / "decisions.json"
     await imp.decisions_export(str(out))
     exported = json.loads(out.read_text())
-    assert exported["version"] == 4
+    assert exported["version"] == imp.DECISIONS_VERSION == 5
     [removal] = [r for r in exported["removals"] if r["source_key"] == withheld.source_key]
     assert (removal["session"], removal["row"], removal["role"], removal["anchor"]) == (
         "d_04", str(ids[1]), "assistant", "")
@@ -553,8 +553,11 @@ async def test_d_both_directions_v4(client, tmp_path, test_uids):
     assert (await stones())[stored.source_key].source_row_id == str(ids[1])
     later = await run(live)
     await leak_free(client, mark, live, (later["run_id"],))
+    # live's backup is another file than the decision's (uids or none): the conversation's other rows live stored are
+    # held for review at once (0.6.2 plan 5.3, R5/S2: a fail-safe hold, nothing to compare), never withheld for good
     [question] = await message_of("d_04", ids[0])
-    assert (question.withheld, question.content) == (False, "What is it worth?")
+    st = (await stones())[question.source_key]
+    assert (question.withheld, st.review, st.via) == (True, identity.PENDING, identity.OTHER_BACKUP_HOLD)
 
 
 async def test_decisions_v4_file_holds_no_text_and_no_fingerprint(client, fx, tmp_path):
@@ -592,6 +595,7 @@ async def test_decisions_v4_file_holds_no_text_and_no_fingerprint(client, fx, tm
         item = await s.scalar(select(MemoryItem).where(MemoryItem.source_key.like("%vendors.md")))
         await store.delete_item(s, item, actor=ADMIN[0])
         await review.purge(s, item, actor=ADMIN[0])
+    await bj.settle(fx)  # 0.6.2 plan 4.7: decisions-export refuses until the withholds are finished
     async with session_scope() as s:  # what the database keeps and the file must not
         kept = set((await s.scalars(text("SELECT fp FROM brain_purged_content"))).all())
         kept |= set((await s.scalars(text("SELECT source_fp FROM archive_messages"))).all()) - {""}
@@ -605,10 +609,12 @@ async def test_decisions_v4_file_holds_no_text_and_no_fingerprint(client, fx, tm
         data = json.loads(flat)
         assert ("decisions" in data) is not removals_only and data.get("removals_only", False) is removals_only
         assert result["releases"] == 1 and len(data["releases"]) == 1
-        # rules062-confirm: a release travels bound to the content it released, by its uid and length (no digest);
-        # review 2 (S21, S23): with why, who and when (a label, an e-mail address and a time, never text)
-        assert set(data["releases"][0]) == {"anchor", "session", "row", "uid", "chars", "reason", "by", "at"}
-        assert data["releases"][0]["session"] == "prune_01" and data["releases"][0]["chars"] == len(STUB)
+        # 0.6.2 plan 1.2, 7.1: a release travels bound to the exact JARVIS row it released (session, row id, role,
+        # tool_call_id, time, uid; no digest, no length) and the backup it was decided on; review 2 (S21, S23): with
+        # why, who and when (a label, an e-mail address and a time, never text)
+        assert set(data["releases"][0]) == set(imp.RELEASE_FIELDS)
+        assert (data["releases"][0]["session"], data["releases"][0]["role"], data["releases"][0]["kind"]) == (
+            "prune_01", "tool", "release") and data["releases"][0]["at_row"]
         withholds = [r for r in data["removals"] if r["reason"] == identity.WITHHELD_BY_ADMIN]
         purges = [r for r in data["removals"] if r["reason"] != identity.WITHHELD_BY_ADMIN]
         assert all(set(r) == set(imp.WITHHOLD_FIELDS) for r in withholds)
@@ -625,8 +631,13 @@ async def test_decisions_v4_file_holds_no_text_and_no_fingerprint(client, fx, tm
         for value in (mark, tool_mark, kept_mark, purge_mark, STUB, "REPORT", "w1:", "k1:", *kept):
             assert value not in rest, value
         assert mark not in flat and purge_mark not in flat and "w1:" not in flat
-        ids_only = json.dumps([data["removals"], data["releases"]])
-        assert not re.search(r"[0-9a-f]{40}", ids_only)  # no hash at all (uids are 32 hex digits)
+        # No hash at all (uids are 32 hex digits) but the SHA-256 of the JARVIS backup file a decision was taken on
+        # (decided_on, one of backups[]: the file's identity, never of a message's text).
+        backups = {b["sha256"] for b in data["backups"]}
+        assert {r["decided_on"] for r in data["removals"] + data["releases"] if r.get("decided_on")} <= backups
+        ids_only = json.dumps([[{k: v for k, v in r.items() if k != "decided_on"} for r in data["removals"]],
+                               [{k: v for k, v in r.items() if k != "decided_on"} for r in data["releases"]]])
+        assert not re.search(r"[0-9a-f]{40}", ids_only)
 
 
 async def test_owner_flow_test_copy_withhold_export_live_apply_later_backup(client, tmp_path):
@@ -638,6 +649,7 @@ async def test_owner_flow_test_copy_withhold_export_live_apply_later_backup(clie
     _plain_backup(fx, mark)
     await run(fx)
     await withhold_text(client, mark)
+    await bj.settle(fx)  # 0.6.2 plan 4.7: decisions-export refuses until the withhold is finished
     out = tmp_path / "decisions.json"
     await imp.decisions_export(str(out))
     await _fresh_production()
@@ -652,7 +664,11 @@ async def test_owner_flow_test_copy_withhold_export_live_apply_later_backup(clie
 # --- Branches, rotation, pruning, folds, renumbering ---------------------------------------------------------------
 
 
-async def test_gateway_branch_copy_with_fresh_uid_is_withheld_and_new_turns_stay_readable(client, fx):
+async def test_gateway_branch_copy_with_fresh_uid_is_withheld_and_new_turns_are_held_for_review(client, fx):
+    """0.6.2 plan 5.3: the branch is a new session of the withheld family in a later backup. Its copy of the withheld
+    answer (fresh uid, the parent's time) is held; so are its new rows (fail-safe: held for review, never readable
+    before an admin decides), the repeat 'identical' and the new question with no relation; the copies of readable
+    rows are safe copies (readable). Formerly the new turns stayed readable (the copy rules, deleted at step 6)."""
     mark = "zqgateway62"
     _plain_backup(fx, mark, sid="gw_parent")
     await run(fx)
@@ -665,9 +681,14 @@ async def test_gateway_branch_copy_with_fresh_uid_is_withheld_and_new_turns_stay
     copies = [m for m in bj.rows(fx["db"], "gw_child") if m["content"] == secret(mark) and m["id"] != repeat]
     for c in copies:
         assert all(m.withheld for m in await message_of("gw_child", c["id"]))
-    assert await readable(new_turn)
+    assert not await readable(new_turn)
+    held = {tuple((await stones())[m.source_key].relations) for m in await rows_of_withheld("gw_child")}
+    assert (identity.IDENTICAL_REL, identity.CONTAINS) in held and (identity.NO_RELATION,) in held, held
     [later] = await message_of("gw_child", repeat)  # O10: a new turn of the branch with its own uid
-    assert not later.withheld
+    assert later.withheld and (await stones())[later.source_key].review == identity.PENDING
+    first = next(r["id"] for r in bj.rows(fx["db"], "gw_child") if r["role"] == "user" and r["timestamp"] < T + DAY)
+    [safe] = await message_of("gw_child", first)  # the copy of a readable row: a safe copy
+    assert (safe.withheld, safe.content) == (False, "Please summarise the vendor situation.")
     allowed = ("archive_messages.content", "archive_messages.search", "archive_sessions.search",
                "archive_sessions.summary")
     assert await bj.nowhere(mark, allow=allowed) == []
@@ -696,92 +717,6 @@ def _tool_backup(fx: dict[str, str], mark: str) -> list[int]:
             bj.add_row(fx["db"], "prune_01", "assistant", "The report ran.", T + 3)]
 
 
-async def test_prune_twin_after_withhold_is_member(client, fx):
-    """The lead's decision (deviation 61 of 2026-10-21): the admin withholds a tool output; Hermes then prunes it in
-    place (hermes_state_prune_rewrite.rewrite_pruned_rows: the row keeps its id and uid, its text becomes a stub, and
-    its pre-prune self is INSERTed as an archived twin with every column). The twin is that very JARVIS row: a member
-    by Hermes provenance (identity.PRUNE_TWIN), never listed, so a blind release of every hold brings nothing back,
-    also across re-imports. (rules062-confirm had made it a 'nothing to compare' hold, which a blind release made
-    readable: the resurrection probe H6.)"""
-    mark = "zqprunetwin62"
-    ids = _tool_backup(fx, mark)
-    await run(fx)
-    await withhold(client, (await message_of("prune_01", ids[1]))[0].id)
-    twin = bj.prune_twin(fx["db"], "prune_01", ids[1])
-    second = await run(fx)
-    [archived] = await message_of("prune_01", twin)
-    assert archived.withheld and archived.state == "compacted"
-    st = (await stones())[archived.source_key]
-    assert (st.review, st.via) == (identity.CERTAIN, identity.PRUNE_TWIN), (st.review, st.via)
-    await as_(client, "admin")
-    holds = (await client.get("/api/brain/holds")).json()["holds"]
-    assert archived.id not in [h["message"] for h in holds]
-    for h in holds:  # a blind release of every hold
-        assert (await client.post("/api/brain/holds/%d/release" % h["message"])).status_code == 200
-    third = await run(fx)
-    await run(fx)
-    [archived] = await message_of("prune_01", twin)
-    assert archived.withheld and (await stones())[archived.source_key].review == identity.CERTAIN
-    await leak_free(client, mark, fx, (second["run_id"], third["run_id"]))
-    await inverse_readable()
-
-
-@pytest.mark.parametrize("case", ["bound_not_pruned", "other_conversation", "other_time", "user_row"])
-async def test_prune_twin_inverse_a_same_uid_archived_row_that_is_not_the_twin_stays_a_hold(client, fx, case):
-    """The inverse of the prune-twin rule (deviation 61 of 2026-10-21): an archived row that shares the uid of the
-    admin's own withheld row but is NOT the twin Hermes's prune wrote of it stays a hold (listed with its evidence,
-    releasable, never readable before an admin decides), never a member: the admin's row was not pruned (it still
-    holds the withheld text in the backup), the archived row is in another conversation or at another time than the
-    row it would be the twin of, or the row rewritten in place is a user row (rewrite_pruned_rows never rewrites
-    one). Where the real twin is in the same backup, it alone is the member."""
-    mark = "zqpinv%s62" % case.replace("_", "")[:8]
-    other = "REPORT archived copy, another output (%s)." % case
-    db = fx["db"]
-    if case == "user_row":
-        bj.add_session(db, "prune_01", started=T)
-        ids = [bj.add_row(db, "prune_01", "assistant", "What should I pay today?", T + 1),
-               bj.add_row(db, "prune_01", "user", "Pay the invoice: " + secret(mark), T + 2),
-               bj.add_row(db, "prune_01", "assistant", "Paid.", T + 3)]
-    else:
-        ids = _tool_backup(fx, mark)
-    await run(fx)
-    await withhold(client, (await message_of("prune_01", ids[1]))[0].id)
-    row = next(r for r in bj.rows(db, "prune_01") if r["id"] == ids[1])
-    uid, at, call = row["message_uid"], row["timestamp"], row["tool_call_id"]
-    twin = bj.prune_twin(db, "prune_01", ids[1]) if case in ("other_conversation", "other_time") else None
-    sid = "prune_09" if case == "other_conversation" else "prune_01"
-    if case == "user_row":  # rewritten in place (not a prune), its earlier text archived beside it under its uid
-        decoy = bj.add_row(db, sid, "user", row["content"], at, uid=uid, active=0, compacted=1)
-        bj.change(db, "UPDATE messages SET content = ? WHERE id = ?", "Pay the invoice.", ids[1])
-    else:
-        if case == "other_conversation":
-            bj.add_session(db, sid, started=T + DAY)
-        decoy = bj.add_row(db, sid, "tool", other, at + (50 if case == "other_time" else 0), uid=uid, active=0,
-                           compacted=1, tool_call_id=call, tool_name="terminal")
-    second = await run(fx)
-    [held] = await message_of(sid, decoy)
-    st = (await stones())[held.source_key]
-    assert held.withheld and st.review == identity.PENDING and st.via in identity.HOLD_VIA, (st.review, st.via)
-    if twin is not None:  # the real twin of the pruned row, in the same backup, is the member
-        [real] = await message_of("prune_01", twin)
-        assert real.withheld and (await stones())[real.source_key].via == identity.PRUNE_TWIN
-    await as_(client, "admin")
-    listed = {h["message"]: h for h in (await client.get("/api/brain/holds")).json()["holds"]}
-    assert held.id in listed, listed
-    if case == "user_row":
-        # It holds the withheld text itself, but no provenance says it is that message: a hold, honestly described.
-        assert listed[held.id]["compare"] == "nothing to compare", listed[held.id]
-        assert "probably the same message" in listed[held.id]["evidence"]
-        await leak_free(client, mark, fx, (second["run_id"],))
-    else:
-        assert (await client.post("/api/brain/holds/%d/release" % held.id)).status_code == 200
-        await run(fx)
-        [back] = await message_of(sid, decoy)
-        assert (back.withheld, back.content) == (False, other)
-        await leak_free(client, mark, fx)
-    await inverse_readable()
-
-
 async def test_prune_stub_after_withholding_the_twin_is_a_hold(client, fx):
     """The admin withholds the archived full text; the live stub with the same uid holds other text: it is held for
     review (released only by an admin), never a member."""
@@ -799,7 +734,11 @@ async def test_prune_stub_after_withholding_the_twin_is_a_hold(client, fx):
     assert st["held_for_review"] >= 1
 
 
-async def test_fold_absorbed_and_survivor_are_members_never_releasable(client, fx):
+async def test_fold_in_place_keeps_the_stored_survivor_and_never_stores_the_composite(client, fx):
+    """A later backup where the withheld text was folded into a stored survivor in place (bj.fold: the survivor's own
+    row id): 0.6.2 plan 5.2, the stored survivor is judged by what it holds, its own words, readable; the composite
+    holding the withheld text is never stored, and the withheld row stays withheld (a fold Hermes commits as a new row
+    is certain, 'merged into another message': test_brain_later_062)."""
     mark = "zqfold62"
     ids = conversation(fx["db"], "fold_01", T, [("user", secret(mark)), ("assistant", "Noted."),
                                                 ("user", "Anything else?"), ("assistant", "No.")])
@@ -808,14 +747,18 @@ async def test_fold_absorbed_and_survivor_are_members_never_releasable(client, f
     bj.fold(fx["db"], "fold_01", survivor=ids[2], dropped=[ids[0]])  # the withheld text folded into a survivor
     second = await run(fx)
     [survivor] = await message_of("fold_01", ids[2])
-    assert survivor.withheld
-    stone = (await stones())[survivor.source_key]
-    assert (stone.review, stone.via) == ("", "merged into another message")
+    assert (survivor.withheld, survivor.content) == (False, "Anything else?")
+    assert survivor.source_key not in await stones()
+    assert all(m.withheld for m in await message_of("fold_01", ids[0]))
     await leak_free(client, mark, fx, (second["run_id"],))
     await inverse_readable()
 
 
-async def test_replace_messages_renumbering_keeps_withheld_and_adopts_readable(client, fx):
+async def test_replace_messages_renumbering_keeps_withheld_and_readable_rows_as_stored(client, fx):
+    """Hermes's replace_messages renumbers the withheld conversation (new row ids; uids and times kept). 0.6.2 plan
+    5.2/5.3: no stored row of the family is re-keyed or adopted; a renumbered readable row is a safe copy of its stored
+    row (the same role, time and text) in the same session, an alias, never stored twice; the withheld row's
+    renumbered copy is never readable."""
     mark = "zqrenumber62"
     shared = bj.new_uid()
     bj.add_session(fx["db"], "renum_01", started=T)
@@ -828,10 +771,12 @@ async def test_replace_messages_renumbering_keeps_withheld_and_adopts_readable(c
     await withhold(client, (await message_of("renum_01", secret_row))[0].id)
     mapping = bj.replace_renumber(fx["db"], "renum_01")
     second = await run(fx)
-    assert await _archive_count("renum_01") == before  # nothing stored twice
-    [adopted] = await message_of("renum_01", mapping[copy_row])
-    assert adopted.id == carried.id and not adopted.withheld and adopted.content == "Readable answer carried on."
-    assert second["report"]["keys_adopted"] >= 1
+    assert await message_of("renum_01", mapping[copy_row]) == []  # an alias of its stored row: never stored twice
+    [kept] = await message_of("renum_01", copy_row)
+    assert kept.id == carried.id and not kept.withheld and kept.content == "Readable answer carried on."
+    assert not second["report"].get("keys_adopted")
+    assert all(m.withheld for m in await message_of("renum_01", mapping[secret_row]))
+    assert await _archive_count("renum_01") <= before + 1  # at most the withheld row's copy, without text
     await leak_free(client, mark, fx, (second["run_id"],))
 
 
@@ -888,7 +833,9 @@ async def test_later_backups_three_times(client, fx):
     await inverse_readable()
 
 
-async def test_rollback_of_a_run_that_inherited_stones_and_adopted_keys_is_exact(client, fx):
+async def test_rollback_of_a_run_that_inherited_stones_after_a_uid_backfill_is_exact(client, fx):
+    """A uid backfill in the withheld conversation (a later backup): the run adopts no key (0.6.2 plan 5.2) but writes
+    the stones of the new keys; its rollback puts every table back but the stones (never deleted by a rollback)."""
     mark = "zqrollback62"
     ids = conversation(fx["db"], "c1_01", T, [("user", "What is the contract worth?"), ("assistant", secret(mark)),
                                               ("user", "Thanks.")], uid=False)
@@ -900,7 +847,7 @@ async def test_rollback_of_a_run_that_inherited_stones_and_adopted_keys_is_exact
     counts = await bj.table_counts(exclude=bj.HISTORY_TABLES + ("brain_tombstones",))
     bj.backfill_uids(fx["db"], "c1_01")
     second = await run(fx)
-    assert second["report"]["keys_adopted"] == len(ids)
+    assert not second["report"].get("keys_adopted")
     inherited = set(await stones())
     rolled = await imp.rollback(second["run_id"], confirm=True)
     assert rolled["status"] == "rolled_back"

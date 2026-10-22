@@ -78,7 +78,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import asyncpg
-from sqlalchemy import and_, delete, func, insert, or_, select, update
+from sqlalchemy import delete, func, insert, or_, select, update
 from sqlalchemy import text as sql
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DataError, IntegrityError
@@ -90,8 +90,11 @@ from ..db import sessionmaker
 from ..models import (
     ArchiveMessage,
     ArchiveSession,
+    BrainDecisionBackup,
+    BrainFrozenSession,
     BrainPurgedContent,
     BrainPurgedItem,
+    BrainSessionLink,
     BrainTombstone,
     BrainWithholdExemption,
     ImportRecord,
@@ -104,7 +107,7 @@ from ..models import (
     User,
     WorkflowDraft,
 )
-from . import IMPORTER_VERSION, identity
+from . import IMPORTER_VERSION, identity, later
 from . import jarvis_kit as kit
 from . import mapping
 from . import source as src
@@ -124,6 +127,7 @@ from .archive import (
     withheld_rollback_copies,
     withhold_copies,
 )
+from .later import joined_families, session_families
 from .quotes import refresh_quotes, scrub_quotes
 from .policy import RISK_FLAGS, SENSITIVE_AGENT
 
@@ -258,10 +262,11 @@ class SourcePaths:
 
 
 class Sources:
-    """The JARVIS sources, open read-only for one command."""
+    """The JARVIS sources, open read-only for one command. With files=False (Settle: conversations only) the profile
+    and content folders are not needed and not read."""
 
-    def __init__(self, paths: SourcePaths, tz: ZoneInfo, tz_name: str) -> None:
-        if not paths.profile or not os.path.isdir(paths.profile) or os.path.islink(paths.profile):
+    def __init__(self, paths: SourcePaths, tz: ZoneInfo, tz_name: str, *, files: bool = True) -> None:
+        if files and (not paths.profile or not os.path.isdir(paths.profile) or os.path.islink(paths.profile)):
             raise Refused("the profile folder does not exist")
         if paths.content and (not os.path.isdir(paths.content) or os.path.islink(paths.content)):
             raise Refused("the content folder does not exist")
@@ -274,7 +279,7 @@ class Sources:
         self.templates = kit.load_templates()
         self.files, self.skipped = [], []
         for area, root in (("profile", paths.profile), ("content", paths.content)):
-            if root:
+            if root and files:
                 found, skipped = src.walk_area(area, root, self.templates)
                 self.files += found
                 self.skipped += [dict(s, area=area) for s in skipped]
@@ -299,6 +304,10 @@ class Sources:
         except src.SourceRefused as exc:
             raise Refused(str(exc)) from None
         self.counts = self.backup.counts()
+        # Hermes's time of the backup's newest message (its own clock): a decision backup records it
+        # (brain_decision_backups.newest_at).
+        newest = self.backup.newest_at
+        self.db_info["newest_at"] = newest.isoformat() if newest else None
         self.discovery = self._discovery_check(paths.discovery)
 
     def close(self) -> None:
@@ -652,6 +661,17 @@ def safe_location(key: str, record_type: str, index: int) -> str:
 
 
 @dataclass
+class SettleScope:
+    """What a Settle run finishes (0.6.2 plan 4.1): the decisions (their admin's own stones' keys) whose newest backup
+    is this one, and the JARVIS sessions of their conversation families in this backup (also sessions a -Sample run
+    skipped); and the decisions that wait on another backup (its SHA-256 or label -> how many)."""
+    groups: list[str]
+    family: set[str]
+    waiting: dict[str, int] = field(default_factory=dict)
+    families: dict[str, list[str]] = field(default_factory=dict)  # each decision's own family (Settle holds only there)
+
+
+@dataclass
 class MessageClean:
     content: str
     truncated: bool
@@ -679,7 +699,7 @@ class Processor:
     nothing and only counts; both modes take the same decisions."""
 
     def __init__(self, session: AsyncSession, sources: Sources, *, run_id: int | None, tally: Tally, write: bool,
-                 actor: str = DEFAULT_ACTOR) -> None:
+                 actor: str = DEFAULT_ACTOR, settle_scope: SettleScope | None = None) -> None:
         self.s = session
         self.src = sources
         self.run_id = run_id
@@ -698,36 +718,68 @@ class Processor:
         self.ids = identity.Identities()
         self.held: dict[str, identity.Match] = {}
         self.moved_keys: set[str] = set()
-        # held_rows(): holds to release (key, stone, reason) and rows a release covers by identity ((group, row id)
-        # -> how), written by release_followed().
+        # replay_rows(): holds an admin released on this very backup (key, stone, reason), dropped by apply_releases().
         self.auto_release: list[tuple[str, identity.Stone, str]] = []
-        self.exempt_copies: dict[tuple[str, str], str] = {}
+        self._hidden_titles: set[str] | None = None
+        self._title_hidden: dict[str, bool] = {}
+        self._by_session_id: dict[str, src.SourceSession] | None = None
+        self.current_sess_id: int | None = None  # the archive session held_rows() looks at (None: not known)
+        # (JARVIS row id, role) -> the ids of this session's stored rows of it (whatever their keys): _collides()
+        self._stored_rows: dict[tuple[str, str], list[int]] = {}
+        # key -> the stored row (id) of the very same JARVIS row under an earlier key (identity.exact), in a withheld
+        # family of a later backup: never stored twice, never re-keyed (plan 5.2; write_messages records a duplicate)
+        self.same_stored: dict[str, int] = {}
+        # (JARVIS row id, role) -> (stored row id, its exact identity) of this session's stored rows: _stored_twin()
+        self._stored_exact: dict[tuple[str, str], list[tuple[int, identity.Exact]]] = {}
+        self._stored_withheld: set[int] = set()  # this session's stored rows that are withheld (load_stored)
+        # stored row id -> (its exact identity, the uids it absorbed): later_rows judges a stored row by what it holds
+        self._stored_by_id: dict[int, tuple[identity.Exact, tuple[str, ...]]] = {}
+        self._bound_rows: dict[tuple[str, str], src.SourceMessage | None] = {}
+        self._uid_backfill: list[tuple[int, str, list[str]]] = []
         # Texts and contents of the rows matched as members, per group: in memory for this run only.
         self.group_texts: dict[str, set[tuple[str, str, str]]] = {}
         self.group_contents: dict[str, list[str]] = {}
-        self._anchor_cache: dict[str, tuple[int, dict[tuple[str, str, str], tuple[identity.Stone, set[Any]]]]] = {}
-        self._row_index: dict[str, tuple[dict[str, list[src.SourceMessage]],
-                                         dict[tuple[Any, ...], list[src.SourceMessage]]]] = {}
-        self._families: dict[str, str] | None = None
-        self._released: tuple[int, set[tuple[str, str, tuple[str, str, str]]]] | None = None
-        self._title_hidden: dict[str, bool] = {}
-        self._hidden_titles: set[str] | None = None
-        self.current_sess_id: int | None = None  # the archive session held_rows() looks at (None: not known)
-        # (role, call id, time) -> stone of the rows an admin withheld in this session's ancestors that the backup lost
-        # (or, when the ancestor chain is broken, of any withheld row): a copy JARVIS made keeps that time
-        self._lost_origins: dict[tuple[str, str, Any], identity.Stone] = {}
-        self._lost_uids_elsewhere: set[str] = set()  # uids of this session's rows another stored conversation carries
-        self._lost_readable_origins: set[tuple[tuple[str, str, str, str], Any]] = set()  # (text, time) readable there
-        self._restated_owner: dict[str, str] = {}  # a restatement's key -> the in-flight row it copies (its uid)
-        # (JARVIS row id, role) -> the ids of this session's stored rows of it (whatever their keys): _collides()
-        self._stored_rows: dict[tuple[str, str], list[int]] = {}
-        self._bound_rows: dict[tuple[str, str], src.SourceMessage | None] = {}
-        self._uid_backfill: list[tuple[int, str, list[str]]] = []
-        self._by_session_id: dict[str, src.SourceSession] | None = None
-        self._readable: dict[str, tuple[str, str, str, str]] = {}  # key -> the text a release digest is made of
-        self._withheld_chars: dict[tuple[str, str, str], int] = {}
+        self._readable: dict[str, tuple[str, str, str, str]] = {}  # key -> its readable text (in memory only)
         self._sid = ""  # the JARVIS session held_rows() looks at
-        self.release_key = identity.release_key()
+        # The JARVIS backup in hand (its SHA-256): a decision taken on it is replayed word for word (do_session), and a
+        # decision this import makes is taken on it (decided_on).
+        self.backup_sha = identity.run_sha256({"db": sources.db_info})
+        # JARVIS sessions this import replays (load(): their family holds a decision taken on this very backup), and
+        # the family of every session (union over parent links and markers of the backup, the recorded links and the
+        # archive's lineage).
+        self.replay_sessions: set[str] = set()
+        self._family: dict[str, str] = {}
+        # family root -> the decisions (admin's own stones' keys) bound in it, and per decision the backup it was taken
+        # on: a session of such a family in another backup is a later backup there (later_groups)
+        self._decision_roots: dict[str, list[str]] = {}
+        self._joined: dict[str, list[str]] = {}  # family root -> decisions it joins (joined_families)
+        self._joins: list[later.Join] = []  # the sessions that joined a family that way (links to record: plan 5.1)
+        self._readable_uids: set[str] = set()  # certain stone uids a readable or released stored row carries
+        self._later_session = False  # do_session: a session of a withheld family in a later backup (plan 5.2)
+        # (role, tool call, time) -> a later family's readable stored rows (later.load_family_readable: the safe
+        # copies of plan 5.3), and the withheld texts a later backup holds (_reply_quotes)
+        self._family_readable: dict[tuple[str, str, Any], list[later.Readable]] = {}
+        self._later_texts: dict[str, str] = {}
+        # Plan 5.5: every decision's withheld text this backup holds (in memory for this run only), the tripwire's
+        # counts and locations (kept in the tally, so a resumed run reports the whole run), and this session's rows
+        # it found (key -> inside a family or not; their locations are known once they are stored).
+        self.w_texts: dict[str, str] = {}
+        self.tripwire = later.Tripwire.from_tally(tally.d.get("tripwire"))
+        self._tripwire_keys: dict[str, bool] = {}
+        self.frozen: set[str] = set()  # JARVIS sessions an admin stopped importing (plan 5.3)
+        self._decisions: dict[str, later.Decision | None] = {}  # group -> the decision as this backup shows it
+        self._conversation: dict[str, str] = {}  # group -> its conversation in the plan report (5.6)
+        # the later classifier's outcome for this session (later_rows): rows readable as safe copies or released,
+        # stored rows of the very same JARVIS row to withhold now (blanking is always allowed: plan 5.2), and why a
+        # key was not stored twice
+        self._readable_new: dict[str, str] = {}
+        self._blank_twins: dict[int, identity.Match] = {}
+        self._same_reason: dict[str, str] = {}
+        # Settle (plan 4): the decisions this run finishes and their outcomes (settle.Engine), the evidence of each hold
+        # it writes, in memory until inherit() stores it
+        self.settle_scope = settle_scope
+        self.settle_engine: Any = None
+        self.relations: dict[str, tuple[str, ...]] = {}
         self.purge = identity.PurgeIndex()
         self.purged_shas_here: set[str] = set()
         # Rows this batch withheld (for an admin, or by _reconcile; copies go too), inserted (nothing can quote them
@@ -754,17 +806,7 @@ class Processor:
             raise Refused(str(exc)) from None
         self.purged_shas_here = {p.sha256 for f in work.files for p in mapping.file_parts(f, self.tz)
                                  if p.key in self.tombstones and p.sha256}
-        await self._rebind()
-        # The stored length of every withheld row a certain stone binds: a backup row of that JARVIS row with another
-        # length was rewritten in place since (a Hermes prune): its text is not the withheld text (rewritten()).
-        self._withheld_chars = {(sid, rid, role): int(chars) for sid, rid, role, chars in (await self.s.execute(
-            select(ArchiveSession.source_session_id, ArchiveMessage.source_message_id, ArchiveMessage.role,
-                   ArchiveMessage.content_chars)
-            .join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
-            .join(BrainTombstone, and_(BrainTombstone.source_session_id == ArchiveSession.source_session_id,
-                                       BrainTombstone.source_row_id == ArchiveMessage.source_message_id))
-            .where(BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.review != identity.PENDING,
-                   ArchiveMessage.withheld.is_(True), ArchiveMessage.content_chars >= 0))).all()}
+        await self.prepare_identity()
         for site_id, url in (await self.s.execute(select(Site.id, Site.url))).all():
             normalized = mapping.normalize_url(url or "")
             if normalized:
@@ -782,78 +824,150 @@ class Processor:
                 self.drafts.append(mapping.draft_for_watchdog(self.src.watchdog, cron_mode=self.src.cron_mode,
                                                               tz_name=self.src.tz_name, schedules=self.schedules))
 
-    async def _rebind(self) -> None:
-        """A stone bound to a JARVIS row that is in this backup learns that row's uid when it had none (a message
-        withheld while its uid was NULL, or by 0.6.x under a row-form key): learned, so uid_known stays false. With
-        write, the uid is kept. The uids a withheld fold survivor absorbed are learned in memory."""
-        backup = self.src.backup
-        latest: list[datetime | None] = []  # Hermes's time of the newest row in this backup, read once when needed
-        for st in sorted(self.ids.by_key.values(), key=lambda st: st.key):
-            if not (st.bound and st.row and st.session and st.certain) or not backup.has_row(st.session, st.row):
+    async def prepare_identity(self) -> None:
+        """The decisions' families (session_families), which decision each family holds, the sessions this import
+        replays (_replay_scope), and for a Settle run the outcomes of the decisions it finishes (settle.Engine). The
+        stones are loaded (self.ids)."""
+        self._family = await self._families()
+        self._decision_roots = {}
+        for st in self.ids.by_key.values():
+            if st.session and st.certain and not st.anchor:  # an admin's own decision, and the family it is bound in
+                root = self._family.get(st.session, st.session)
+                if st.key not in self._decision_roots.setdefault(root, []):
+                    self._decision_roots[root].append(st.key)
+        for st in self.ids.by_key.values():  # a decision's other stones bind its family too
+            if st.session and st.group in self.ids.by_key and st.anchor:
+                root = self._family.get(st.session, st.session)
+                if st.group not in self._decision_roots.setdefault(root, []):
+                    self._decision_roots[root].append(st.group)
+        # A continuation or branch whose link to its family is lost (a deleted middle branch, an orphaned rotation
+        # without its marker): its copied history holds a row at the very role, call and time of a decision's stone
+        # (Hermes keeps a copied row's time), or a row of it carries a certain stone's uid, so it is that family's
+        # (plan 5.1; recorded as a 'copied_rows' or 'shared_uid' link by record_links, never forgotten).
+        self._joins = []
+        self._joined = await joined_families(self.s, self.src.backup, self.ids, self._family, self._decision_roots,
+                                             joins=self._joins)
+        self.frozen = await later.frozen_sessions(self.s)
+        self._decisions = {}
+        # The uids of certain stones that a readable stored row or a released one carries: never a copy identity
+        # (plan 5.3: the uid is shared with a readable or released stored row).
+        uids = sorted({st.uid for st in self.ids.by_key.values()
+                       if st.uid and st.certain and st.via not in identity.FOLD_VIAS})
+        self._readable_uids = set()
+        for i in range(0, len(uids), 1000):
+            self._readable_uids |= set((await self.s.scalars(select(ArchiveMessage.source_uid).where(
+                ArchiveMessage.withheld.is_(False), ArchiveMessage.source_uid.in_(uids[i:i + 1000])).distinct()))
+                .all())
+            self._readable_uids |= set((await self.s.scalars(select(BrainWithholdExemption.source_uid).where(
+                BrainWithholdExemption.source_uid.in_(uids[i:i + 1000])).distinct())).all())
+        await self._replay_scope()
+        self._later_texts = {}
+        self.w_texts = {}
+        for group in sorted({g for gs in self._decision_roots.values() for g in gs}):
+            st = self.ids.by_key.get(group)
+            if st is None:
                 continue
-            found = [r for r in backup.rows(st.session, [st.row]) if st.role in ("", r.role)]
-            if not found:
-                continue
-            learned_at = None
-            if not st.uid and found[0].uid:
-                if not latest:
-                    latest.append(backup.latest_time())
-                learned_at = latest[0]
-                if self.write:
-                    await self.s.execute(update(BrainTombstone).where(
-                        BrainTombstone.source_key == st.key, BrainTombstone.message_uid == "").values(
-                        message_uid=found[0].uid[:200], uid_learned_at=learned_at))
-            self.ids.learn_uid(st, found[0].uid[:200], found[0].absorbed, learned_at)
-        await self._check_text_only_carried()
+            text = self._w_text(group)
+            if text:
+                self.w_texts[group] = text  # the tripwire's (plan 5.5): in memory only
+                if st.decided_on != self.backup_sha:
+                    self._later_texts[group] = text
+        self.tripwire.texts = max(self.tripwire.texts, len(self.w_texts))
+        if self.settle_scope is not None:
+            from . import settle as settle_engine
 
-    async def _check_text_only_carried(self) -> None:
-        """A stone the upgrade (or a 0.6.2 withhold) made from a carried-on link an importer older than 1.1.0 paired by
-        its text alone (identity.TEXT_ONLY_CARRIED: 0.6.0 and 0.6.1 had no uid check) is compared with the backup in
-        hand (review 2, S6): when its JARVIS row carries a uid, and the group's other certain stones carry uids, none
-        of them its own, it is another Hermes message (a copy keeps its original's uid). Its stone goes, an exemption
-        of the group names its JARVIS row (so the repair never stones it again), its stored row comes back from the
-        source at this import, audited (archive.hold_released, via import). Otherwise it stays a member (no uid to
-        tell them apart: fail closed)."""
-        backup = self.src.backup
-        for st in sorted(self.ids.by_key.values(), key=lambda st: st.key):
-            if st.via != identity.TEXT_ONLY_CARRIED or not (st.session and st.row):
-                continue
-            if not backup.has_row(st.session, st.row):
-                continue
-            found = [r for r in backup.rows(st.session, [st.row]) if st.role in ("", r.role)]
-            if not found or not found[0].uid:
-                continue
-            uid = found[0].uid[:200]
-            others = {o.uid for o in self.ids.groups.get(st.group, ()) if o.uid and o.key != st.key and o.certain
-                      and o.via not in identity.FOLD_VIAS and o.via != identity.TEXT_ONLY_CARRIED}
-            if not others or uid in others:
-                continue
-            self.ids._unindex(st)
-            self.ids.exempt.add((st.group, st.session[:200], st.row[:200]))
-            self.t.bump("text_only_links_released")
-            if not self.write:
-                continue
-            await self.s.execute(delete(BrainTombstone).where(BrainTombstone.source_key == st.key,
-                                                              BrainTombstone.reason == WITHHELD_BY_ADMIN))
-            await self.s.execute(pg_insert(BrainWithholdExemption).values(
-                anchor_key=st.group, source_session_id=st.session[:200], source_row_id=st.row[:200],
-                reason="released: the import compared it (a carried-on link made by text alone)",
-                decided_by=self.actor[:200], source_uid=uid, content_chars=len(found[0].content))
-                .on_conflict_do_nothing())
-            stored = (await self.s.execute(select(ArchiveMessage.id, ArchiveMessage.flags).join(
-                ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id).where(
-                ArchiveSession.source_session_id == st.session[:200],
-                ArchiveMessage.source_message_id == st.row[:200], ArchiveMessage.withheld.is_(True))
-                .order_by(ArchiveMessage.id))).all()
-            for row_id, flags in stored:
-                flag = dict((flags or {}).get("withheld_by_admin") or {})
-                flag.update(released_at=now().isoformat(), released_by="the import compared it")
-                await self.s.execute(update(ArchiveMessage).where(ArchiveMessage.id == row_id).values(
-                    flags={**(flags or {}), "withheld_by_admin": flag}, source_fp=""))
-            await audit.record(self.s, self.actor, "archive.hold_released", "archive_message",
-                               stored[0][0] if stored else "", {
-                                   "message": stored[0][0] if stored else None, "anchor": st.group,
-                                   "rule": st.via, "via": "import"})
+            sessions = self._source_sessions()
+            self.settle_engine = settle_engine.Engine(
+                self.src.backup, sessions, self.ids, self.settle_scope.groups, self.settle_scope.family,
+                stored=lambda m: not self.exclusion(m), families=self.settle_scope.families)
+            self.settle_engine.decide()
+
+    # Decide once, replay exactly (0.6.2 plan 3.2) ------------------------------------------------------------------
+
+    async def _families(self) -> dict[str, str]:
+        return await session_families(self.s, self.src.backup)
+
+    async def _replay_scope(self) -> None:
+        """The JARVIS sessions this import replays: a decision (a stone, a release) was taken on this very backup
+        (decided_on is its SHA-256) for the session; once the decisions on this backup are finished (Settle:
+        brain_decision_backups.settled_run_id), for every session of such a session's family. Replayed, a session's
+        rows are matched with the stored decisions by exact identity only, and the rules never run (replay_rows)."""
+        self.replay_sessions = set()
+        if not self.backup_sha:
+            return
+        decided = set((await self.s.scalars(select(BrainTombstone.source_session_id).where(
+            BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.decided_on == self.backup_sha,
+            BrainTombstone.source_session_id != "").distinct())).all())
+        decided |= set((await self.s.scalars(select(BrainWithholdExemption.source_session_id).where(
+            BrainWithholdExemption.decided_on == self.backup_sha).distinct())).all())
+        # A family whose admin's decision was taken on another backup is a later backup here (its holds of this backup
+        # included): the later-backup path decides it again, the same way each time (plan 5.2, 5.3; B7).
+        decided = {sid for sid in decided if not self.later_groups(sid)}
+        if not decided:
+            return
+        self.replay_sessions = set(decided)
+        settled = await self.s.scalar(select(BrainDecisionBackup.settled_run_id).where(
+            BrainDecisionBackup.sha256 == self.backup_sha))
+        if settled is not None:
+            roots = {self._family.get(sid, sid) for sid in decided}
+            self.replay_sessions |= {ss.id[:200] for ss in self.src.backup.sessions()
+                                     if self._family.get(ss.id[:200], ss.id[:200]) in roots
+                                     and not self.later_groups(ss.id)}
+
+    def replay_rows(self, ss: src.SourceSession, msgs: list[src.SourceMessage]) -> dict[str, identity.Match]:
+        """held_rows() of a replayed session: the stored decisions by exact identity only (a stone's key, or the exact
+        JARVIS row it is bound to; a release of that exact row frees a hold). Nothing else is evaluated: the decision
+        was taken on this very backup, so its result is applied word for word (0.6.2 plan 3.2, C1)."""
+        held: dict[str, identity.Match] = {}
+        self.moved_keys = set()
+        self.auto_release = []
+        self._sid = ss.id
+        for m in msgs:
+            here = identity.exact_of_source(ss.id, m)
+            mt: identity.Match | None = None
+            st = self.ids.by_key.get(m.key)
+            if st is not None:
+                review = identity.PENDING if st.review == identity.PENDING else identity.CERTAIN
+                if not st.row or not st.session or (st.session, st.row) == (here.session, here.row):
+                    mt = identity.Match(st, "key", review)
+                elif not self.src.backup.has_row(st.session, st.row) and st.role in ("", here.role):
+                    mt = identity.Match(st, "key", review)  # the bound row is gone: the uid key passed to this row
+                else:
+                    self.moved_keys.add(m.key)  # the key's stone is bound to another row of this backup
+                    continue
+            if mt is None or mt.review == identity.PENDING:
+                found = self.ids.row_stones(here)
+                if found and (mt is None or found[0].certain):
+                    mt = identity.Match(found[0], "same JARVIS row",
+                                        identity.PENDING if found[0].review == identity.PENDING else identity.CERTAIN)
+            if mt is not None and mt.review == identity.PENDING and self.ids.released(mt.group, here,
+                                                                                      backup=self.backup_sha):
+                # an admin released this exact row, decided on this very backup: a hold left on it (another backup's
+                # import held it again) goes, and its text comes back (apply_releases)
+                self.auto_release.append((m.key, mt.stone, "released by an admin (the same message)"))
+                mt = None
+            if mt is not None:
+                held[m.key] = mt
+        return held
+
+    async def record_links(self, ss: src.SourceSession) -> None:
+        """The family links this session's own lineage gives, recorded the first time an import sees them and never
+        forgotten (brain_session_links, append-only): its parent (a continuation or a branch), and the parents its
+        _branched_from and _compressed_from markers name. A reset and a delegated sub-agent are not recorded."""
+        if not self.write:
+            return
+        links: set[tuple[str, str]] = set()
+        if ss.lineage in identity.LINEAGE and ss.hermes_parent:
+            links.add((ss.hermes_parent[:200], "parent"))
+        for marker, how in (("_branched_from", "branched_from"), ("_compressed_from", "compressed_from")):
+            if ss.markers.get(marker):
+                links.add((ss.markers[marker][:200], how))
+        for a, how in sorted(links):
+            if a and a != ss.id[:200]:
+                await self.s.execute(pg_insert(BrainSessionLink).values(
+                    a=a, b=ss.id[:200], how=how, first_run=self.run_id).on_conflict_do_nothing())
+        # a session that joined a decision's family through a shared uid or copied history (plan 5.1)
+        await later.record_joins(self.s, self._joins, self.ids, self.run_id, ss.id)
 
     # Records ------------------------------------------------------------------------------------------------
 
@@ -1372,28 +1486,37 @@ class Processor:
             flag["via"] = mt.via
         if mt.review == identity.PENDING:
             flag["review"] = identity.PENDING
+        elif mt.stone.review == identity.KEPT:
+            # a hold an admin kept: the row says so, and who kept it (review 3, rv3-dur-6)
+            flag["review"] = identity.KEPT
+            if mt.stone.kept_by:
+                flag["kept_by"] = mt.stone.kept_by
+            if mt.stone.kept_at is not None:
+                flag["kept_at"] = mt.stone.kept_at.isoformat()
         return flag
 
     # The identity of withheld messages (spec 2.9) ----------------------------------------------------------------
 
     def held_rows(self, ss: src.SourceSession, msgs: list[src.SourceMessage], plans: list[MessagePlan],
                   rows: dict[str, dict[str, Any]]) -> dict[str, identity.Match]:
-        """The source rows of this session that are the same message as a withheld one (key -> Match): members are
-        stored without text and inherit a stone; holds as well, listed for an admin. Also sets self.moved_keys: keys
-        whose stone names another JARVIS row that is still in the backup (the row is excluded as a key collision);
-        self.auto_release: holds to release (an admin released the same message, or the backup disproves an upgrade
-        hold); self.exempt_copies: rows an admin's release covers through the message's identity, to remember.
+        """The source rows of this session that are the same message as a withheld one (key -> Match: stored without
+        text, members inherit a stone, holds are listed for an admin), for a session that is neither replayed (a
+        decision taken on this very backup and finished: replay_rows), being finished (Settle: settle_rows) nor of a
+        withheld family in a later backup (later_rows, plan 5.3): a session outside every family (plan 5.4: nothing
+        here can name its rows but the database guard's own rules), or of a family whose decisions were taken on this
+        very backup and are not finished yet (the test copy between a withhold and Settle: best effort, Settle
+        decides). Also sets self.moved_keys (keys whose stone names another JARVIS row that is still in the backup:
+        the row is excluded as a key collision) and self.auto_release (holds an admin released on this exact row).
 
-        Provenance first. Certain rules (R-key, R-row, R-fold; excluded rows too: a rewound original is an anchor),
-        the key adoption, Hermes's prune twin of the admin's own row (R-prune, _prune_twins), then the importer's own
-        links (R-link; a re-sent twin with another uid is a hold), the shared uid (R-uid: a member when its text is
-        the withheld text or Hermes's restatement of it under that uid; otherwise an admin's release of that content
-        wins, a hold stays a hold, and anything else is a hold with honest evidence: 'nothing to compare', 'contains
-        the withheld text' or 'different text', never a member), a restatement under a new uid (R-restated: a hold)
-        and the same text (R-text): in a copy position the row JARVIS copied
-        decides (found by its uid, or by its text at its very time: a copy of a withheld row is a member, of a held
-        row a hold, of any other row nothing); elsewhere a hold, never for a row the admin saw, a released row, or a
-        row with its own uid when the withheld message's uid was known. Text equality alone is never a member."""
+        Provenance only (0.6.2 plan step 6 deleted every rule that inferred identity from text, time, copy position,
+        release digests or the admin's view):
+        - R-key, R-row, R-fold (identity.Identities.certain; excluded rows too: a rewound original keeps its stone);
+        - the importer's own links (R-link: a carried-on copy, an adjacent repeat, a rewound twin of a held row);
+        - the shared uid (R-uid): a member when its text is the withheld text as this backup holds it (the rows the
+          stones are bound to, the members found this run), a hold otherwise ('same message id, other text');
+        - a hold stays a hold unless an admin released that exact row (decided on this backup, or the stored row
+          already shows that very content): its stale hold goes (apply_releases).
+        Owner question 8 (a): a later backup's reply quoting a withheld text is held (_reply_quotes)."""
         backup = self.src.backup
         self._sid = ss.id
         by_key = {m.key: m for m in msgs}
@@ -1401,8 +1524,6 @@ class Processor:
         pend: dict[str, identity.Match] = {}
         self.moved_keys = set()
         self.auto_release = []
-        self.exempt_copies = {}
-        exempt = self._release_index(ss, by_key, plans, rows)
         for m in msgs:
             mt = self.ids.certain(ss.id, m, backup.has_row)
             if mt is identity.MOVED:
@@ -1411,480 +1532,577 @@ class Processor:
                 pend[m.key] = mt  # the hold itself, unless a certain rule matches it below
             elif isinstance(mt, identity.Match):
                 held[m.key] = mt
-            elif mt is None:
-                adopted = self._adopted_match(ss, m, rows.get(m.key))
-                if adopted is not None and adopted.review == identity.PENDING:
-                    pend[m.key] = adopted
-                elif adopted is not None:
-                    held[m.key] = adopted
-        self._prune_twins(ss, msgs, held)
-        self._links(plans, held, by_key, exempt)
+        self._links(plans, held, by_key)
         for m in msgs:  # R-uid: provenance (the uid) and the text; without the text to agree, an admin decides
             if m.key in held or not m.uid or m.key in self.moved_keys:
                 continue
-            cands = self.ids.uid_stones(m.uid, m.role)
             folds = [st for st in self.ids.uid_stones(m.uid, m.role, folds=True) if st.via in identity.FOLD_VIAS]
             fold = next((st for st in folds if identity.text_key(m) in self.anchor_texts(st.group, held, by_key)[0]),
                         None)
             if fold is not None:  # a copy of a withheld fold (its own uid and its very text)
                 held[m.key] = identity.Match(fold, identity.FOLD, identity.CERTAIN)
                 continue
+            cands = self.ids.uid_stones(m.uid, m.role)
             if not cands:
                 continue  # at most a fold's uid: the survivor's own message, which says nothing of the withheld one
             st = cands[0]
             texts, contents = self.anchor_texts(st.group, held, by_key)
-            content = identity.norm(m.content)
-            again = identity.restated(m.content)
-            if identity.text_key(m) in texts or (again and again in contents):
-                # its stored text is the withheld text (or Hermes's restatement of it under its own uid)
+            if identity.text_key(m) in texts:
                 held[m.key] = identity.Match(st, "same message id", identity.CERTAIN)
-            elif exempt(st.group, m):
-                continue  # I4: an admin released this content; no rule but the withheld text itself overrides that
-            elif m.key in pend:
-                continue  # a hold stays the hold it is until an admin decides
-            elif not texts:
-                # Nothing in this backup to compare with (the withheld original is not here): probably the same
-                # message, but only an admin decides (never a member from "nothing to compare").
-                held[m.key] = identity.Match(st, identity.UID_UNCOMPARED, identity.PENDING)
+            elif self._released_here(st.group, ss, m, rows.get(m.key)) or m.key in pend:
+                # an admin released this exact row; a hold stays the hold it is until an admin decides
+                continue
             else:  # an archived generation with other text, a pruned stub, a fold that kept this uid: a hold
-                short = any(a and a in content for a in contents)
-                via = identity.CONTAINS_SHORT if short else "same message id, different text"
-                held[m.key] = identity.Match(st, via, identity.PENDING)
-        self._same_time(ss, msgs, held, pend, exempt)
-        self._restated(ss, msgs, held, pend, by_key, exempt)
-        self._links(plans, held, by_key, exempt)
-        anchors: dict[tuple[str, str, str], identity.Stone] = {}
-        times: dict[tuple[str, str, str], set[Any]] = {}
-        for k, mt in held.items():
-            if mt.review == identity.CERTAIN and not self.rewritten(ss.id, by_key[k]):
-                t = identity.text_key(by_key[k])
-                anchors.setdefault(t, mt.stone)
-                times.setdefault(t, set()).add(by_key[k].at)
-        for t, (st, ats) in self.ancestor_anchors(ss).items():
-            anchors.setdefault(t, st)
-            times.setdefault(t, set()).update(ats)
-        # a copy of a held row, or of a withheld row the backup lost (review 2, S1: a branch whose link is broken)
-        copies_of_holds = self._stoned_ancestor(ss) or bool(self._lost_origins)
-        if anchors or copies_of_holds:
-            for p in plans:  # R-text
-                m = p.m
-                if m.key in held or p.action != "import" or m.key in self.moved_keys:
-                    continue
-                t = identity.text_key(m)
-                found = anchors.get(t)
-                if found is None:
-                    if copies_of_holds and identity.copied_by_history(m, ss):
-                        mt = self._copy_of_hold(ss, m, rows.get(m.key), exempt)
-                        if mt is not None:
-                            held[m.key] = mt
-                    continue
-                row = rows.get(m.key)
-                if row is not None and row["withheld"]:
-                    continue
-                if identity.copied_by_history(m, ss):
-                    mt = self._copy_match(ss, m, found, times.get(t, set()), row, exempt)
-                    if mt is not None:
-                        held[m.key] = mt
-                    continue
-                if row is not None and (row["import_run_id"] or 0) <= found.after_run:
-                    continue  # stored before the withhold: the admin saw it
-                if exempt(found.group, m):
-                    continue
-                if not self.ids.independent(found.group, m.uid, m.at):
-                    held[m.key] = identity.Match(found, "same text", identity.PENDING)
-            self._links(plans, held, by_key, exempt)
+                rel = {identity.SAME_UID}
+                for c in contents:
+                    rel |= identity.text_relations(m.content, c)
+                if not texts:
+                    rel.add(identity.NOT_IN_BACKUP)
+                held[m.key] = identity.Match(st, identity.UID_HOLD, identity.PENDING)
+                self.relations[m.key] = tuple(identity.relation_order(rel))
+        self._links(plans, held, by_key)
         for k, mt in pend.items():
             if k in held:
                 continue
-            m = by_key[k]
-            if exempt(mt.group, m):  # an admin released this message: the hold left on its row goes
+            if self._released_here(mt.group, ss, by_key[k], rows.get(k)):
+                # an admin released this exact row: the hold left on it goes, and its text comes back
                 self.auto_release.append((k, mt.stone, "released by an admin (the same message)"))
                 continue
-            if mt.stone.via == "upgrade: same text" and mt.stone.key == k:
-                # The upgrade held it from stored data alone (0.6.1's plain fingerprint); the backup in hand says it is
-                # another message. A row sharing the withheld uid is never auto-released: R-uid decides it (a member
-                # when its text is the withheld text, a hold otherwise).
-                texts, _ = self.anchor_texts(mt.group, held, by_key)
-                if (texts and identity.text_key(m) not in texts) or self.ids.independent(mt.group, m.uid, m.at):
-                    self.auto_release.append((k, mt.stone, "released: the import compared it"))
-                    continue
             held[k] = mt
-        for k, owner in self._restated_owner.items():
-            if k not in held and owner in held:
-                # Hermes restated the in-flight row under its own uid: the restatement is withheld as that row is (a
-                # copy JARVIS made of a member; a hold's restatement with the hold's own evidence)
-                mt = held[owner]
-                held[k] = identity.Match(mt.stone, "copied by JARVIS" if mt.review == identity.CERTAIN else mt.via,
-                                         mt.review)
+        if self.current_sess_id is not None:
+            self._reply_quotes(ss, plans, rows, held)
+        self._links(plans, held, by_key)  # the importer's duplicates of a row held here are held with it
         return held
 
-    def _prune_twins(self, ss: src.SourceSession, msgs: list[src.SourceMessage],
-                     held: dict[str, identity.Match]) -> None:
-        """R-prune (the lead's decision, deviation 61 of 2026-10-21; review 2 S4): the archived twin Hermes's
-        proactive prune wrote of a withheld JARVIS row is that very row, a member by Hermes provenance
-        (identity.PRUNE_TWIN), never a hold a blind release would make readable. The withheld row is one a certain stone
-        is bound to: the admin's own, or a member's own JARVIS row (a continuation's copy of it, carried with its uid
-        and text, that Hermes then pruned in the continuation). Only under these conditions, all from the backup in
-        hand:
-        - the row is archived (compacted 1) in the same conversation as that certain stone's bound row, with that
-          row's uid;
-        - the bound row is in this backup a prune stub: Hermes rewrote it in place since the withhold (rewritten(): its
-          length differs from the stored withheld row's), it is a tool or assistant row (the only roles
-          rewrite_pruned_rows rewrites), and it keeps the columns a prune never moves, which the twin copied: the same
-          role, call id and timestamp;
-        - the twin came after it (a higher row id: INSERTed by the prune) and holds other text than the stub.
-        Anything else that only shares the uid (an archived generation, another conversation's copy, another time)
-        stays R-uid's: a member only when its text is the withheld text, a hold otherwise. Runs before R-uid, so the
-        twin's text (the withheld text) is the anchor the group's other rows are compared with."""
-        for m in msgs:
-            if m.key in held or not m.uid or m.compacted != 1 or m.key in self.moved_keys:
-                continue
-            for st in self.ids.uid_stones(m.uid, m.role):  # certain stones only, never a fold's
-                if not st.row or st.session != ss.id[:200]:
-                    continue  # a certain stone (the admin's own or a member's) bound to a row of this conversation
-                bound = self._bound_row(st.session, st.row)
-                if bound is not None and self._is_prune_twin(ss.id, bound, m):
-                    held[m.key] = identity.Match(st, identity.PRUNE_TWIN, identity.CERTAIN)
-                    break
+    def _released_here(self, group: str, ss: src.SourceSession, m: src.SourceMessage, row: dict[str, Any] | None
+                       ) -> bool:
+        """Whether an admin's release (or 'left readable') for this group covers this exact JARVIS row and the content
+        this backup holds: decided on this very backup, or the stored row already shows that content readable (the
+        same source row, or the same text). A release never follows another row or another version (0.6.2 plan 1.2,
+        step 6)."""
+        shown = row is not None and not row["withheld"] and (
+            row.get("source_fp") == m.fp or self.stored_text(row) == self.readable_text(m, None))
+        return self.ids.released(group, identity.exact_of_source(ss.id, m), backup=self.backup_sha,
+                                 same_content=shown)
 
-    def _is_prune_twin(self, session_id: str, bound: src.SourceMessage, m: src.SourceMessage) -> bool:
-        """Whether m is the archived twin Hermes's prune INSERTed of `bound`, now a stub (_prune_twins)."""
-        try:
-            older = int(bound.id) < int(m.id)
-        except (TypeError, ValueError):
-            return False
-        return (older and bound.uid == m.uid and bound.role == m.role and bound.role in identity.PRUNABLE_ROLES
-                and (bound.tool_call_id or "") == (m.tool_call_id or "") and bound.at == m.at
-                and m.compacted == 1 and self.rewritten(session_id, bound)
-                and identity.text_key(m) != identity.text_key(bound))
+    # A later backup in a withheld family (0.6.2 plan step 5: app/brain/later.py) ----------------------------------
 
-    def _adopted_match(self, ss: src.SourceSession, m: src.SourceMessage, row: dict[str, Any] | None
-                       ) -> identity.Match | None:
-        """The importer's key adoption (adopt_rows) is provenance: the stored row this source row re-keys is the very
-        JARVIS row (Hermes renumbered it, or gave it a uid). A withheld stored row a stone names (by its old key or its
-        old JARVIS row) stays what it was: a member, or the hold it is (its evidence kept, moved to the new key)."""
-        old = (row or {}).get("adopted_from") or ""
-        if not old or not row or not row["withheld"]:
+    def family_groups(self, session_id: str) -> list[str]:
+        """Every decision whose conversation family holds this JARVIS session (plan 5.1: the sessions bound by its
+        stones, the links and markers, and the sessions that joined it through a shared uid or copied history)."""
+        root = self._family.get(session_id[:200], session_id[:200])
+        return sorted(set(self._decision_roots.get(root, ())) | set(self._joined.get(root, ())))
+
+    def later_groups(self, session_id: str) -> list[str]:
+        """The decisions whose conversation family holds this JARVIS session and that were taken on another backup
+        than this one (or on none known: a version 4 file, a legacy withhold): for them this import is a later backup
+        (plan 3.3: fail-safe)."""
+        return [g for g in self.family_groups(session_id)
+                if (st := self.ids.by_key.get(g)) is not None and st.decided_on != self.backup_sha]
+
+    def _family_of_groups(self, groups: list[str] | set[str]) -> set[str]:
+        """The JARVIS sessions of the conversation families of these decisions (their roots, the sessions their
+        stones are bound to, and the families that joined them)."""
+        want = set(groups)
+        roots = {r for r, gs in self._decision_roots.items() if want & set(gs)}
+        roots |= {r for r, gs in self._joined.items() if want & set(gs)}
+        sids = {sid for sid, r in self._family.items() if r in roots} | roots
+        for st in self.ids.by_key.values():
+            if st.group in want and st.session:
+                sids.add(st.session)
+                sids |= {sid for sid, r in self._family.items() if r == self._family.get(st.session, st.session)}
+        return sids
+
+    def _w_text(self, group: str) -> str | None:
+        """The withheld text of a decision as this backup holds it (in memory only; plan 5.5): the exact JARVIS row
+        (identity.exact) of the admin's own stone, or of a member that is the same text (the same JARVIS row, the same
+        uid with that text, a duplicate, a copy at a copy position or its origin, a kept hold whose text was
+        identical); else a row of the family with the copy identity of one of them (the same uid, time, role and
+        call); None when this backup holds none of them (its text is never stored: owner question 6)."""
+        own = self.ids.by_key.get(group)
+        if own is None:
             return None
-        st = self.ids.by_key.get(old)
-        if st is None:
-            st = next((x for x in sorted(self.ids.by_row.get((ss.id[:200], row["source_message_id"]), ()),
-                                         key=lambda x: (not x.certain, x.anchor != "", x.key))
-                       if x.role in ("", m.role)), None)
-        if st is None:
+        same_text = ("key", "same JARVIS row", "same message id", "duplicate", "copied by JARVIS",
+                     "the original JARVIS copied", "same tool call")
+        cands = [own] + sorted((x for x in self.ids.groups.get(group, ()) if x is not own and x.certain
+                                and (x.via in same_text or identity.IDENTICAL_REL in x.relations)),
+                               key=lambda x: (x.via not in same_text, x.key))
+        for st in cands:
+            if not st.session or not st.row:
+                continue
+            row = self._bound_row(st.session, st.row)
+            if row is not None and identity.same_row(identity.exact_of_stone(st),
+                                                     identity.exact_of_source(st.session, row)):
+                return row.content
+        copies = {(st.uid, st.role, st.tool_call_id, st.at) for st in cands
+                  if st.uid and st.at is not None and st.via not in identity.FOLD_VIAS}
+        if not copies:
             return None
-        if st.certain:
-            return identity.Match(st, "same JARVIS row", identity.CERTAIN)
-        return identity.Match(st, st.via if st.via in identity.HOLD_VIA else identity.UID_UNCOMPARED, identity.PENDING)
-
-    def _same_time(self, ss: src.SourceSession, msgs: list[src.SourceMessage], held: dict[str, identity.Match],
-                   pend: dict[str, identity.Match], exempt: Callable[[str, src.SourceMessage], bool]) -> None:
-        """R-time (review 2, S2): a withheld JARVIS row of this conversation that this backup no longer holds (a test
-        copy's withhold carried to live, whose backup predates the uid backfill; a /retry or replace_messages that
-        renumbered it; a compaction that rewound it before it was ever stored here). Hermes keeps a row's timestamp
-        when it writes it again, so a row of this conversation with the stone's role, call id and very time that no
-        rule matched is held ('same conversation, role and time; nothing to compare'), never a member; not one whose
-        own uid says it is another message, nor one an admin released."""
-        lost = [st for st in self.ids.by_key.values()
-                if st.at is not None and st.certain and st.via not in identity.FOLD_VIAS and st.row and st.role
-                and st.session == ss.id[:200] and not self.src.backup.has_row(st.session, st.row)]
-        if not lost:
-            return
-        for m in msgs:
-            if m.key in held or m.key in pend or m.key in self.moved_keys or m.at is None or self.exclusion(m):
-                continue
-            role, call = brain_text.sanitize(m.role)[:40], brain_text.sanitize(m.tool_call_id)[:200]
-            for st in sorted(lost, key=lambda x: (x.anchor != "", x.key)):
-                if (st.role, st.tool_call_id, st.at) != (role, call, m.at):
-                    continue
-                if st.uid and m.uid and st.uid != m.uid[:200]:
-                    continue  # its own uid: another Hermes message
-                if not exempt(st.group, m):
-                    held[m.key] = identity.Match(st, identity.SAME_TIME, identity.PENDING)
-                break
-
-    def _restated(self, ss: src.SourceSession, msgs: list[src.SourceMessage], held: dict[str, identity.Match],
-                  pend: dict[str, identity.Match], by_key: dict[str, src.SourceMessage],
-                  exempt: Callable[[str, src.SourceMessage], bool]) -> None:
-        """R-restated: Hermes restates an unfinished request after a compaction boundary as a user row starting with
-        its fixed REPLAY_HEADER. Restating an earlier carrier's request it writes a NEW row (a new uid, nothing
-        absorbed): no provenance links it to the withheld request, but its text after the header is that request,
-        in the request's conversation family. A hold ('restated after a compaction, new message id'), never a member;
-        a row under the withheld uid is R-uid's. Restating an in-flight row that is still in the backup, Hermes keeps
-        THAT row's uid (context_compressor._fresh_compaction_message_copy): the restatement is that row's copy, so that
-        row decides it (held_rows, at the end), never its words (review 2, S7)."""
-        self._restated_owner = {}
-        for m in msgs:
-            if m.key in held or m.key in pend or m.key in self.moved_keys or m.role != "user":
-                continue
-            again = identity.restated(m.content)
-            if not again or (m.uid and self.ids.uid_stones(m.uid, m.role)):
-                continue
-            owner = next((o.key for o in msgs if m.uid and o.uid == m.uid and o.key != m.key), None)
-            if owner is not None:
-                self._restated_owner[m.key] = owner
-                continue
-            for group, members in sorted(self.ids.groups.items()):
-                admin = next((st for st in members if st.certain and not st.anchor), None) or next(
-                    (st for st in members if st.certain), None)
-                if admin is None or not self._in_family(group, ss.id):
-                    continue
-                _, contents = self.anchor_texts(group, held, by_key)
-                requests = set(contents) | {identity.restated(c) for c in contents if identity.REPLAY_HEADER in c}
-                if again in requests:
-                    if not exempt(group, m):
-                        held[m.key] = identity.Match(admin, identity.RESTATED, identity.PENDING)
-                    break
-
-    def _copy_match(self, ss: src.SourceSession, m: src.SourceMessage, found: identity.Stone, anchor_times: set[Any],
-                    row: dict[str, Any] | None, exempt: Callable[[str, src.SourceMessage], bool]
-                    ) -> identity.Match | None:
-        """R-text for a row in a copy position (history a rotation or a branch copied with its timestamps): the row
-        JARVIS copied decides (copied_from). A copy of a withheld row is a member, whenever it was stored (a copy is
-        never a row the admin saw); of a held row a hold; of any other row nothing. When no row it can be a copy of
-        is in the backup, a row at an anchor row's very time is a member, any other a hold (unless the admin saw it)."""
-        origin = self.copied_from(ss, m)
-        if origin is None:
-            if m.at in anchor_times:
-                return None if exempt(found.group, m) else identity.Match(found, "copied by JARVIS", identity.CERTAIN)
-            if (row is not None and (row["import_run_id"] or 0) <= found.after_run) or exempt(found.group, m):
-                return None
-            return identity.Match(found, "same text", identity.PENDING)
-        status, stone = origin
-        if stone is None or exempt(stone.group, m):
-            return None  # JARVIS copied a row that is not withheld (or that an admin released): it stays as that is
-        if status == identity.CERTAIN:
-            return identity.Match(stone, "copied by JARVIS", identity.CERTAIN)
-        return identity.Match(stone, "same text", identity.PENDING)
-
-    def _stoned_ancestor(self, ss: src.SourceSession) -> bool:
-        """Whether a continuation or branch ancestor of this session holds a stone binding (its copies can be copies
-        of a withheld or held row)."""
         sessions = self._source_sessions()
-        seen, cur = {ss.id}, ss
-        while cur is not None and cur.lineage in identity.LINEAGE and cur.parent_id and cur.parent_id not in seen:
-            if cur.parent_id in self.ids.sessions:
-                return True
-            seen.add(cur.parent_id)
-            cur = sessions.get(cur.parent_id)
-        return False
+        first = [own.session] if own.session else []
+        for sid in first + sorted(self._family_of_groups([group]) - set(first)):
+            if sid not in sessions:
+                continue
+            for row in self.src.backup.messages(sid):
+                here = identity.exact_of_source(sid, row)
+                if (here.uid, here.role, here.tool_call_id, here.at) in copies:
+                    return row.content
+        return None
 
-    def _copy_of_hold(self, ss: src.SourceSession, m: src.SourceMessage, row: dict[str, Any] | None,
-                      exempt: Callable[[str, src.SourceMessage], bool]) -> identity.Match | None:
-        """A copy-position row whose text is no withheld message's: when the ancestor row JARVIS copied is held for
-        review, the copy is held as well, with the same evidence; when it is withheld (its text since changed), the
-        copy is a hold ('same message id, different text'); when the backup lost that row but an admin withheld a row
-        of the ancestor at this very time and role, a hold ('copied by JARVIS, nothing to compare'); otherwise
-        nothing. Never a member: the text differs or cannot be compared."""
-        if row is not None and row["withheld"]:
-            return None
-        origin = self.copied_from(ss, m)
-        if origin is None:
-            # The ancestor row it copies is gone from the backup; an admin withheld a row of that ancestor at this very
-            # time, role and call (a stone and the archive keep its time): a copy of it, whose text nothing can
-            # compare. Held. Not when its own uid is another stored row's (a rotation or CLI branch keeps the uid of
-            # the row it copies: that row's copy, whatever time a donor gave it).
-            lost = self._lost_origins.get((brain_text.sanitize(m.role)[:40], brain_text.sanitize(m.tool_call_id)[:200],
-                                           m.at)) if m.at is not None else None
-            if lost is None or exempt(lost.group, m):
-                return None
-            if m.uid and m.uid[:200] != lost.uid and m.uid[:200] in self._lost_uids_elsewhere:
-                return None
-            if (self.readable_text(m, row), m.at) in self._lost_readable_origins:
-                return None  # the parent's readable row with this very text and time is what JARVIS copied
-            return identity.Match(lost, identity.COPY_UNCOMPARED, identity.PENDING)
-        if origin[1] is None:
-            return None
-        status, stone = origin
-        if exempt(stone.group, m):
-            return None
-        via = ("same message id, different text" if status == identity.CERTAIN
-               else stone.via if stone.via in identity.HOLD_VIA else "same text")
-        return identity.Match(stone, via, identity.PENDING)
+    def _decision(self, group: str) -> later.Decision | None:
+        if group not in self._decisions:
+            self._decisions[group] = later.decision_of(self.ids, group, self.w_texts.get(group), self.backup_sha)
+        return self._decisions[group]
 
-    def copied_from(self, ss: src.SourceSession, m: src.SourceMessage, _stack: frozenset[str] = frozenset()
-                    ) -> tuple[str, identity.Stone | None] | None:
-        """The withhold state of the ancestor row a copy-position row was copied from: (CERTAIN, its stone) when a
-        withhold names it (any group), (PENDING, the stone) when a hold does, ('', None) when none does; None when no
-        such row is in the backup. The copy keeps that row's uid (rotation, the CLI branch); with a fresh uid (the
-        gateway branch, a rotation of uid-less rows) it keeps its text and timestamp: then the NEAREST ancestor holding
-        that text at that time holds the row copied, and a row there without a stone decides by its own provenance
-        (its uid, else its text and time, one level up), never a farther row that only shares the text and time (a
-        donor timestamp gives the copy of another row that time). Two rows of the nearest level with that text and
-        time that disagree make it a hold."""
-        sessions = self._source_sessions()
-        tk = identity.text_key(m)
-        by_uid: list[tuple[str, identity.Stone | None]] = []
-        nearest: tuple[src.SourceSession, list[src.SourceMessage]] | None = None
-        seen = {ss.id}
-        cur: src.SourceSession | None = ss
-        while cur is not None and cur.lineage in identity.LINEAGE and cur.parent_id and cur.parent_id not in seen:
-            parent = sessions.get(cur.parent_id)
-            if parent is None:
-                break
-            seen.add(parent.id)
-            idx_uid, idx_at = self._session_index(parent.id)
-            if m.uid:
-                by_uid += [self._row_status(parent.id, a) for a in idx_uid.get(m.uid, ())]
-            if m.at is not None and nearest is None and idx_at.get((tk, m.at)):
-                nearest = (parent, list(idx_at[(tk, m.at)]))
-            cur = parent
-        if by_uid:
-            return self._combine(by_uid)
-        if nearest is None:
-            return None
-        parent, rows_ = nearest
-        level = [self._row_status(parent.id, a) for a in rows_]
-        status, stone = self._combine(level)
-        if stone is None and parent.id not in _stack:
-            stack = _stack | {ss.id, parent.id}
-            deeper = [d for a in rows_ if identity.copied_by_history(a, parent)
-                      for d in [self.copied_from(parent, a, stack)] if d is not None]
-            status, stone = self._combine(deeper) if deeper else ("", None)
-        if status == identity.CERTAIN and len({st for st, _ in level}) > 1:
-            status = identity.PENDING  # the nearest copy source is ambiguous: an admin decides
-        return status, stone
-
-    @staticmethod
-    def _combine(found: list[tuple[str, identity.Stone | None]]) -> tuple[str, identity.Stone | None]:
-        for want in (identity.CERTAIN, identity.PENDING):
-            for status, stone in found:
-                if status == want and stone is not None:
-                    return status, stone
-        return "", None
-
-    def _row_status(self, session_id: str, a: src.SourceMessage) -> tuple[str, identity.Stone | None]:
-        """(CERTAIN, stone), (PENDING, stone) or ('', None) for a backup row against every group's stones: its key
-        (unbound, or bound to it) or its JARVIS row binding with an equal or unknown role."""
-        row_id = str(a.id)[:200]
-        out: tuple[str, identity.Stone | None] = ("", None)
-        st = self.ids.by_key.get(a.key)
-        if st is not None and (not st.row or not st.session or (st.session, st.row) == (session_id, row_id)):
-            if st.certain:
-                return identity.CERTAIN, st
-            out = (identity.PENDING, st)
-        for st in sorted(self.ids.by_row.get((session_id, row_id), ()),
-                         key=lambda s: (not s.certain, s.anchor != "", s.key)):
-            if st.role in ("", a.role):
-                if st.certain:
-                    return identity.CERTAIN, st
-                if out[1] is None:
-                    out = (identity.PENDING, st)
-        return out
-
-    def _session_index(self, session_id: str) -> tuple[dict[str, list[src.SourceMessage]],
-                                                       dict[tuple[Any, ...], list[src.SourceMessage]]]:
-        """A backup session's rows by uid and by (text, time), once per run (the backup does not change)."""
-        cached = self._row_index.get(session_id)
-        if cached is None:
-            by_uid: dict[str, list[src.SourceMessage]] = {}
-            by_at: dict[tuple[Any, ...], list[src.SourceMessage]] = {}
-            for a in self.src.backup.messages(session_id):
-                if a.uid:
-                    by_uid.setdefault(a.uid, []).append(a)
-                if a.at is not None:
-                    by_at.setdefault((identity.text_key(a), a.at), []).append(a)
-            cached = self._row_index[session_id] = (by_uid, by_at)
-        return cached
-
-    def _in_family(self, group: str, session_id: str) -> bool:
-        """Whether this JARVIS session is in the conversation family (continuation and branch lineage, either way)
-        of a session the group's stones name: where Hermes copies a message. A group with no bound session: yes."""
-        sessions = {st.session for st in self.ids.groups.get(group, ()) if st.session}
-        if not sessions or session_id in sessions:
-            return True
-        if self._families is None:
-            parent: dict[str, str] = {}
-
-            def find(x: str) -> str:
-                while parent.get(x, x) != x:
-                    parent[x] = parent.get(parent[x], parent[x])
-                    x = parent[x]
-                return x
-            for s_ in self._source_sessions().values():
-                if s_.lineage in identity.LINEAGE and s_.parent_id:
-                    a, b = find(s_.id), find(s_.parent_id)
-                    if a != b:
-                        parent[a] = b
-            self._families = {x: find(x) for x in set(parent) | set(parent.values())}
-        fam = self._families
-        mine = fam.get(session_id, session_id)
-        return any(fam.get(x, x) == mine for x in sessions)
-
-    def _release_index(self, ss: src.SourceSession, by_key: dict[str, src.SourceMessage], plans: list[MessagePlan],
-                       rows: dict[str, dict[str, Any]]) -> Callable[[str, src.SourceMessage], bool]:
-        """exempt(group, m): an admin released this message for that group. A release names a JARVIS row; it follows
-        the message: the row itself, the stored row a key adoption maps to it (renumbering, uid backfill), JARVIS's
-        copies of a released row (the same uid and text: compaction generations, the protected tail, a branch), and
-        the twin of a released rewound row. A copy found that way is remembered (self.exempt_copies) so the release
-        outlives the original's leaving the backup."""
-        if not self.ids.exempt:
-            return lambda group, m: False
-        own: dict[str, set[str]] = {}
-        for g, sid, rid in self.ids.exempt:
-            if sid == ss.id:
-                own.setdefault(rid, set()).add(g)
-        released = self._released_identities()
-        twins = {p.m.key: p.twin_of for p in plans if p.twin_of}
-
-        def direct(group: str, m: src.SourceMessage) -> str:
-            # A release covers the content it released: the row must still hold it (Hermes rewrites a row in place,
-            # and an older backup holds the row's earlier text, which the release never covered).
+    def later_rows(self, ss: src.SourceSession, msgs: list[src.SourceMessage], plans: list[MessagePlan],
+                   rows: dict[str, dict[str, Any]]) -> dict[str, identity.Match]:
+        """held_rows() of a session of a withheld conversation family in a later backup: the later-backup classifier
+        (app/brain/later.py; plan 5.2, 5.3, 5.5). Every row gets one outcome:
+        - a stored row (its key) is kept as stored (_reconcile): only blanked, by a certain match or a hold; a row an
+          admin released whose release this backup does not cover is listed again (a hold with its evidence here);
+        - the very JARVIS row of a stored row under an earlier key (Hermes's uid backfill) is not stored twice;
+        - CERTAIN (later.certain): the exact identity of a stone, the copy identity of a certain stone, an absorbed
+          uid; MOVED: its key's stone is another message (left out as a key collision);
+        - a pending stone stays the hold it is, unless an admin released that exact row on this backup;
+        - an admin's release of this exact row decided on this backup: readable;
+        - SAFE COPY (later.safe_copy): readable; in this very session an alias of the stored row. The tripwire (5.5)
+          holds one that is, or contains, a withheld text, unless its stored row is an admin's decision;
+        - HELD FOR REVIEW: everything else ('new in a later backup', its computed relations to the family's withheld
+          texts: later.strongest);
+        - the importer's duplicate of a held row follows it: certain only when both carry the same uid (plan 4.2 (5)).
+        Nothing here makes a row certain by its text, its time alone, or a link the importer drew."""
+        backup = self.src.backup
+        self._sid = ss.id
+        self.moved_keys = set()
+        self.auto_release = []
+        self._readable_new = {}
+        self._blank_twins = {}
+        held: dict[str, identity.Match] = {}
+        pend: dict[str, identity.Match] = {}
+        by_key = {m.key: m for m in msgs}
+        decisions = [d for g in self.family_groups(ss.id) if (d := self._decision(g)) is not None]
+        for m in msgs:
+            # A row that is a stored row of this conversation (its key, or its exact JARVIS row under an earlier key)
+            # is judged by the stored row's identity and the uids it absorbed when it was stored (plan 5.2: the stored
+            # row keeps what it holds; a fold or a renumbering JARVIS made since is not followed: owner question 7).
+            # Its uid, when it had none stored, is the backup's (the very same JARVIS row: Hermes only fills a NULL).
             row = rows.get(m.key)
-            rid = str(m.id)[:200]
-            if group in own.get(rid, ()) and self.ids.released(
-                    group, ss.id, rid, len(m.content), lambda: self.readable_text(m, row), self.release_key):
-                return "own"
-            if (row is not None and (self.current_sess_id is None or row["session_id"] == self.current_sess_id)
-                    and group in own.get(row["source_message_id"], ()) and self.ids.released(
-                        group, ss.id, row["source_message_id"], len(m.content), lambda: self.readable_text(m, row),
-                        self.release_key)):
-                return "stored"  # the stored row of a released JARVIS row JARVIS renumbered (or gave a uid)
-            if m.uid and (group, m.uid, identity.text_key(m)) in released:
-                return "copy"
-            return ""
+            # its key's stored row of this conversation is another JARVIS row (renumbered by replace_messages, or a uid
+            # JARVIS gave to another row): this row is never stored under that key, and nothing it is gives that key
+            # a stone (it would withhold the stored row for words that are not its own)
+            other_row = (row is not None and row["session_id"] == self.current_sess_id
+                         and row["source_message_id"] != str(m.id)[:200])
+            stored = None if other_row else self._stored_identity(ss, m, row)
+            if stored is not None:
+                mt = later.certain(self.ids, ss.id, m, backup.has_row, self._readable_uids, here=stored[0],
+                                   absorbed=stored[1])
+            else:
+                mt = later.certain(self.ids, ss.id, m, backup.has_row, self._readable_uids)
+            if other_row and isinstance(mt, identity.Match) and m.key not in self.ids.by_key:
+                continue  # kept as stored (_reconcile): the stored row under its key stays as it is
+            if mt is later.MOVED:
+                self.moved_keys.add(m.key)
+            elif isinstance(mt, identity.Match) and mt.review == identity.PENDING:
+                pend[m.key] = mt
+            elif isinstance(mt, identity.Match):
+                held[m.key] = mt
+        for k, mt in pend.items():
+            if self._released_here(mt.group, ss, by_key[k], rows.get(k)):
+                # an admin released this exact row, decided on this backup: the hold left on it goes (apply_releases)
+                self.auto_release.append((k, mt.stone, "released by an admin (the same message)"))
+                continue
+            held[k] = mt
+        agent, staff = ss.attribution.agent, ss.attribution.staff
+        for p in plans:
+            m = p.m
+            k = m.key
+            if k in self.moved_keys:
+                continue
+            row = rows.get(k)
+            if row is not None and row["session_id"] != self.current_sess_id:
+                row = None  # its key's stored row is of another conversation: this row may be stored here already
+            if row is not None:
+                if (k not in held and row["withheld"] and k not in self.ids.by_key
+                        and ((row["flags"] or {}).get("withheld_by_admin") or {}).get("released_at")
+                        and not self._release_covers(m)):
+                    # Released by an admin, but this later backup is not the one the release was decided on (the
+                    # release covers the exact row and its content, plan 1.2): listed again with its evidence on this
+                    # backup, never left withheld with nothing to review
+                    self._hold_later(held, ss, m, decisions)
+                continue  # a stored row of the family: kept as stored, or blanked (plan 5.2)
+            if p.action != "import":
+                continue  # excluded (not stored), or the importer's duplicate (below)
+            twin = self._stored_twin(ss, m)
+            if twin is not None:
+                # the very JARVIS row of a stored row under its earlier key: never stored twice, never re-keyed (5.2);
+                # its key gets the stone of a match, and a readable stored row of a certain message is withheld
+                mt = held.get(k)
+                if mt is not None and mt.review == identity.CERTAIN and twin not in self._stored_withheld:
+                    self._blank_twins[twin] = mt
+                self.same_stored[k] = twin
+                self._same_reason[k] = later.SAME_ROW
+                continue
+            if k in held:
+                continue
+            if self._release_covers(m):
+                self._readable_new[k] = "released"  # an admin released this exact row, decided on this backup
+                if later.tripwire_relations(m.content, self.w_texts.values()):
+                    self.tripwire.admin_decided += 1
+                continue
+            here = identity.exact_of_source(ss.id, m)
+            sensitivity = p.cleaned.sensitivity if p.cleaned is not None else "restricted"
+            safe = later.safe_copy(here, self.readable_text(m, None), agent, staff, sensitivity,
+                                   self._family_readable)
+            if safe is not None:
+                if later.tripwire_relations(m.content, self.w_texts.values()):
+                    if safe.admin_decided:
+                        self.tripwire.admin_decided += 1
+                    else:
+                        # the tripwire (5.5): a safe copy that is, or holds, a withheld text this backup holds and no
+                        # admin left readable: held, and the run's verify fails
+                        self._hold_later(held, ss, m, decisions)
+                        self._tripwire_keys[k] = True
+                        continue
+                self._readable_new[k] = "safe copy"
+                if safe.session_id == self.current_sess_id:
+                    self.same_stored[k] = safe.row_id  # an alias of the stored row of this conversation
+                    self._same_reason[k] = later.SAFE_ALIAS
+                continue
+            self._hold_later(held, ss, m, decisions)
+        for p in plans:  # the importer's duplicates follow the row they repeat; certain only with its uid (4.2 (5))
+            m = p.m
+            if (m.key in held or m.key in self.moved_keys or p.action != "duplicate"
+                    or p.reason not in identity.PROVENANCE_REASONS or p.duplicate_of not in held):
+                continue
+            mt, target = held[p.duplicate_of], by_key.get(p.duplicate_of)
+            ok = mt.review == identity.CERTAIN and target is not None and bool(m.uid) and m.uid == target.uid
+            held[m.key] = identity.Match(mt.stone, "duplicate", identity.CERTAIN if ok else identity.PENDING)
+            if not ok and p.duplicate_of in self.relations:
+                self.relations[m.key] = self.relations[p.duplicate_of]
+        return held
 
-        def exempt(group: str, m: src.SourceMessage) -> bool:
-            how = direct(group, m)
-            twin = by_key.get(twins.get(m.key, ""))
-            if not how and twin is not None and direct(group, twin):
-                how = "twin"
-            if how and how != "own":
-                self.exempt_copies[(group, str(m.id)[:200])] = how
-            return bool(how)
-        return exempt
+    def _stored_identity(self, ss: src.SourceSession, m: src.SourceMessage, row: dict[str, Any] | None
+                         ) -> tuple[identity.Exact, tuple[str, ...]] | None:
+        """(exact identity, absorbed uids) of the stored row of this session that a backup row is: the one under its
+        key, else its very JARVIS row under an earlier key (_stored_twin); None when it is new here. A stored row
+        without a uid takes the backup row's when they are the same JARVIS row."""
+        found: tuple[identity.Exact, tuple[str, ...]] | None = None
+        if row is not None and row["session_id"] == self.current_sess_id:
+            found = self._stored_by_id.get(int(row["id"]))
+        elif row is None or row["session_id"] != self.current_sess_id:
+            twin = self._stored_twin(ss, m)
+            found = self._stored_by_id.get(twin) if twin is not None else None
+        if found is None:
+            return None
+        ex, absorbed = found
+        here = identity.exact_of_source(ss.id, m)
+        if not ex.uid and here.uid and identity.same_row(ex, here):
+            ex = ex._replace(uid=here.uid)
+        return ex, absorbed
 
-    def _released_identities(self) -> set[tuple[str, str, tuple[str, str, str]]]:
-        """(group, uid, text) of every released JARVIS row in this backup that has a uid and still holds the content
-        released (an older or rewritten version of the row gives no released identity). A released JARVIS row that
-        left the backup (a gateway /retry or replace_messages renumbered it: new ids, the same uids and texts) gives
-        the identity of every row of its conversation with the release's uid that holds the very content released
-        (its length, and its readable text against the release's digest): the release follows the content it
-        released, never another version (review 2, S5)."""
-        if self._released is None or self._released[0] != len(self.ids.exempt):
-            wanted: dict[str, dict[str, set[str]]] = {}
-            for g, sid, rid in self.ids.exempt:
-                wanted.setdefault(sid, {}).setdefault(rid, set()).add(g)
-            out: set[tuple[str, str, tuple[str, str, str]]] = set()
-            for sid, by_row in wanted.items():
-                for r in self.src.backup.rows(sid, list(by_row)):
-                    if r.uid:
-                        for g in by_row.get(str(r.id)[:200], ()):
-                            if self.ids.released(g, sid, str(r.id)[:200], len(r.content),
-                                                 lambda r=r: self.readable_text(r, None), self.release_key):
-                                out.add((g, r.uid, identity.text_key(r)))
-                gone = [(rid, g) for rid, groups in sorted(by_row.items()) for g in sorted(groups)
-                        if not self.src.backup.has_row(sid, rid)]
-                for rid, g in gone:
-                    b = self.ids.bindings.get((g, sid, rid))
-                    if b is None or not b.uid or b.chars < 0:
-                        continue  # nothing binds it to a content: the row id alone, which is gone
-                    for r in self._session_index(sid)[0].get(b.uid, ()):
-                        if self.ids.released(g, sid, rid, len(r.content), lambda r=r: self.readable_text(r, None),
-                                             self.release_key):
-                            out.add((g, r.uid, identity.text_key(r)))
-            self._released = (len(self.ids.exempt), out)
-        return self._released[1]
+    def _hold_later(self, held: dict[str, identity.Match], ss: src.SourceSession, m: src.SourceMessage,
+                    decisions: list[later.Decision]) -> None:
+        """A row held for review, 'new in a later backup' (plan 5.3), under the family's decision it relates to most,
+        with its computed relations (later.strongest)."""
+        if not decisions:  # every family here holds a decision (later_groups): never reached, held all the same
+            group = self.later_groups(ss.id)[0]
+            held[m.key] = identity.Match(self.ids.by_key[group], identity.LATER_HOLD, identity.PENDING)
+            self.relations[m.key] = (identity.NOT_IN_BACKUP,)
+            return
+        d, rel = later.strongest(m, identity.exact_of_source(ss.id, m), decisions)
+        held[m.key] = identity.Match(d.stone, identity.LATER_HOLD, identity.PENDING)
+        self.relations[m.key] = rel
+
+    async def load_family_readable(self, ss: src.SourceSession) -> None:
+        """For a session of a withheld family in a later backup: the family's readable stored rows by (role, tool call,
+        time), with their readable text and readers (later.safe_copy). In memory only."""
+        self._family_readable = {}
+        groups = self.family_groups(ss.id)
+        if not self.later_groups(ss.id):
+            return
+        sids = self._family_of_groups(groups) | {ss.id[:200]}
+        self._family_readable = await later.load_family_readable(self.s, sids)
+
+    def _tripwire_outside(self, plans: list[MessagePlan], rows: dict[str, dict[str, Any]]) -> None:
+        """Plan 5.5 outside every family: a row this run writes readable that is, or contains, a withheld text this
+        backup holds is listed to admins by location once it is stored (_tripwire_locations), never hidden (owner
+        question 8 (b)). Compared in memory only."""
+        if not self.w_texts:
+            return
+        for p in plans:
+            m = p.m
+            if p.action != "import" or m.key in self.held or m.key in self.moved_keys:
+                continue
+            row = rows.get(m.key)
+            if row is not None and (row["withheld"] or identity.same_source(row, m)):
+                continue  # not written again, or it stays without text
+            if later.tripwire_relations(m.content, self.w_texts.values()):
+                self._tripwire_keys[m.key] = False
+
+    async def _tripwire_locations(self, sess_id: int) -> None:
+        """This session's tripwire rows (plan 5.5) by location, once stored: inside a family each was held instead of
+        written readable (the run's verify fails); outside, each was written readable and is listed to admins. Archive
+        ids and counts only, never text or a fingerprint; kept in the tally (a resumed run reports the whole run)."""
+        found, self._tripwire_keys = self._tripwire_keys, {}
+        if not found:
+            return
+        ids: dict[str, int] = {}
+        if self.write and sess_id > 0:
+            ids = dict((await self.s.execute(select(ArchiveMessage.source_key, ArchiveMessage.id).where(
+                ArchiveMessage.session_id == sess_id, ArchiveMessage.source_key.in_(sorted(found))))).all())
+        for key in sorted(found):
+            where = {"session": sess_id if sess_id > 0 else None, "message": ids.get(key)}
+            if found[key]:
+                self.tripwire.inside += 1
+                if len(self.tripwire.inside_at) < later.TRIPWIRE_LIST_CAP:
+                    self.tripwire.inside_at.append(where)
+            else:
+                self.tripwire.outside += 1
+                if len(self.tripwire.outside_at) < later.TRIPWIRE_LIST_CAP:
+                    self.tripwire.outside_at.append(where)
+        self.t.d["tripwire"] = self.tripwire.to_tally()
+
+    async def _blank_stored_twins(self) -> int:
+        """Plan 5.2 (blanking is always allowed): a readable stored row of a withheld family that is the very JARVIS
+        row, under its earlier key, of a row this later backup shows is the withheld message (later_rows) is withheld
+        in place. Its key is not this backup's, so no import record names it (the identity repair would withhold it
+        at the next import); what was copied from it goes as for a withhold (withhold_batch)."""
+        twins, self._blank_twins = self._blank_twins, {}
+        if not twins or not self.write:
+            return 0
+        n = 0
+        for row_id, mt in sorted(twins.items()):
+            flag = {"note": WITHHELD_BY_ADMIN, "via": mt.via, "at": now().isoformat()}
+            done = await self.s.execute(sql(
+                "UPDATE archive_messages SET content = '', truncated = false, tool_calls = '[]'::jsonb, labels = '{}', "
+                "withheld = true, source_fp = 'w1:' || state, "
+                "flags = flags || jsonb_build_object('withheld_by_admin', CAST(:f AS jsonb)) "
+                "WHERE id = :i AND NOT withheld"), {"i": row_id, "f": json.dumps(flag)})
+            if done.rowcount:
+                n += 1
+                self.withheld_now.append(row_id)
+        if n:
+            self.t.bump("stored_rows_withheld_as_their_jarvis_row", n)
+        return n
+
+    async def _conversation_label(self, group: str) -> str:
+        """Plan 5.6: the name of a withheld conversation in the report: the archive session id of the decision's own
+        row's conversation (an id, never a title), or 'decision <n>' while it is not stored here."""
+        if group not in self._conversation:
+            st = self.ids.by_key.get(group)
+            found = await self.s.scalar(select(ArchiveSession.id).where(
+                ArchiveSession.source_session_id == st.session)) if st is not None and st.session else None
+            self._conversation[group] = (str(found) if found is not None
+                                         else "decision %d" % (len(self._conversation) + 1))
+        return self._conversation[group]
+
+    async def _plan_count(self, session_id: str, name: str, n: int = 1) -> None:
+        groups = self.later_groups(session_id) or self.family_groups(session_id)
+        if groups and n:
+            later.plan_entry(self.t.d, await self._conversation_label(groups[0]), name, n)
+
+    async def _plan_counts(self, ss: src.SourceSession, plans: list[MessagePlan], rows: dict[str, dict[str, Any]],
+                           created: bool) -> None:
+        """Plan 5.6 (jarvis-import -Mode Plan, and every run's report): what this later backup does in a withheld
+        conversation, counted per conversation (later_backup: conversation -> counts; no text, no titles)."""
+        new = [p for p in plans if p.action == "import" and p.m.key not in rows and p.m.key not in self.same_stored
+               and p.m.key not in self.moved_keys]
+        held = sum(1 for p in new if (mt := self.held.get(p.m.key)) is not None and mt.review == identity.PENDING)
+        certain = sum(1 for p in new if (mt := self.held.get(p.m.key)) is not None and mt.review == identity.CERTAIN)
+        relisted = sum(1 for k, r in rows.items() if r["withheld"] and (mt := self.held.get(k)) is not None
+                       and mt.via == identity.LATER_HOLD and k in self.relations)
+        counts = {"rows_held_for_review": held + relisted, "rows_withheld_for_good": certain,
+                  "safe_copies": sum(1 for v in self._readable_new.values() if v == "safe copy"),
+                  "rows_an_admin_released": sum(1 for v in self._readable_new.values() if v == "released"),
+                  "new_conversations": int(created)}
+        for name, n in counts.items():
+            await self._plan_count(ss.id, name, n)
+
+    async def _release_held_title(self, ss: src.SourceSession, sess: ArchiveSession | None, sess_id: int,
+                                  title_c: brain_text.Cleaned, msgs: list[src.SourceMessage]) -> bool:
+        """Plan 5.3: a conversation a later backup brought new into a withheld family keeps its title hidden while a
+        row of it is withheld by an admin (held for review, or withheld for good); once none is, its title comes back
+        from the source (no other rule hides it: the caller checked). Whether it came back now."""
+        if not self.write or sess is None or self.held:
+            return False
+        await self.s.flush()
+        still = await self.s.scalar(select(ArchiveMessage.id).where(
+            ArchiveMessage.session_id == sess_id, ArchiveMessage.withheld.is_(True),
+            ArchiveMessage.flags.has_key("withheld_by_admin")).limit(1))
+        if still is not None:
+            return False
+        sess.title = brain_text.one_line(title_c.text, 300)
+        sess.flags = {k: v for k, v in (sess.flags or {}).items() if k not in ("title_withheld", "title_held")}
+        await self.s.flush()
+        self.t.bump("titles_released")
+        return True
+
+    def _reply_quotes(self, ss: src.SourceSession, plans: list[MessagePlan], rows: dict[str, dict[str, Any]],
+                      held: dict[str, identity.Match]) -> None:
+        """Owner question 8 (a), its default: outside every withheld family, a later backup's reply that quotes a
+        withheld text through JARVIS's reply pointer (at least identity.MIN_RELATED characters of it) is held for
+        review ('part_of'). The withheld text is in memory only when this backup holds the admin's own row of it."""
+        if not self._later_texts:
+            return
+        for p in plans:
+            m = p.m
+            if p.action != "import" or m.key in held or m.key in self.moved_keys or m.key in rows:
+                continue
+            if not (m.content.startswith("[Replying to") or m.content.startswith("[Triggering message id")):
+                continue
+            for group, text in self._later_texts.items():
+                rel = identity.text_relations(m.content, text)
+                if identity.PART_OF in rel:
+                    held[m.key] = identity.Match(self.ids.by_key[group], identity.LATER_HOLD, identity.PENDING)
+                    self.relations[m.key] = tuple(identity.relation_order(rel))
+                    break
+
+    def _stored_twin(self, ss: src.SourceSession, m: src.SourceMessage) -> int | None:
+        """The stored row of this session that is the very same JARVIS row as m under another key (identity.exact),
+        or None."""
+        here = identity.exact_of_source(ss.id, m)
+        for row_id, stored in self._stored_exact.get((here.row, here.role), ()):
+            if identity.same_row(stored, here):
+                return row_id
+        return None
+
+    # Settle: the decision backup decided once (plan 4) -----------------------------------------------------------
+
+    async def finish_settle(self) -> dict[str, int]:
+        """The end of a Settle run (plan 4.3, 4.4): the stale stored rows of each family at its withheld row's role and
+        time that this backup no longer holds (a renumbered or deleted copy: rv3-res-7) are held with their evidence;
+        every stone of the finished decisions is decided on this backup (decided_on: a decision taken on an older
+        backup is finished on this newer one, so an import of this very file replays it); the family links found
+        through a uid are recorded; and the backup is settled (settled_run_id = this run). Counts only."""
+        from . import review  # imports the task service and the scheduler: not needed by the import itself
+
+        from . import settle as settle_engine
+
+        scope, eng = self.settle_scope, self.settle_engine
+        assert scope is not None and eng is not None
+        out: Counter[str] = Counter()
+        sessions = dict((await self.s.execute(select(ArchiveSession.id, ArchiveSession.source_session_id).where(
+            ArchiveSession.source_session_id.in_(sorted(scope.family))))).all())
+        for group in scope.groups:
+            found = eng.stale_time(group)
+            if found is None or found[2] is None or not sessions:
+                continue
+            role, call, at, _ = found
+            for row in (await self.s.scalars(select(ArchiveMessage).where(
+                    ArchiveMessage.session_id.in_(sorted(sessions)), ArchiveMessage.role == role,
+                    ArchiveMessage.tool_call_id == call, ArchiveMessage.at == at,
+                    ArchiveMessage.withheld.is_(False)).order_by(ArchiveMessage.id).with_for_update())).all():
+                sid = sessions.get(row.session_id, "")
+                if row.source_key in eng.by_key or self.src.backup.has_row(sid, row.source_message_id):
+                    continue  # this backup holds it: Settle decided it with the session
+                if await identity.exempt_covers(self.s, group, sid, row):
+                    continue  # an admin released it, or left it readable
+                rel = settle_engine.stored_relations(row.content, eng.w_text(group), stale=True)
+                await review.hold_message(self.s, row, anchor=group, actor=self.actor, cause="settle",
+                                          rule=identity.SETTLE_HOLD, decided_on=self.backup_sha, relations=rel)
+                out["stale_rows_held"] += 1
+        groups = sorted(scope.groups)
+        rebased = await self.s.execute(update(BrainTombstone).where(
+            BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.decided_on != self.backup_sha,
+            or_(BrainTombstone.source_key.in_(groups), BrainTombstone.anchor_key.in_(groups)))
+            .values(decided_on=self.backup_sha))
+        out["stones_decided_on_this_backup"] += rebased.rowcount or 0
+        await identity.note_decision_backup(self.s, self.backup_sha)
+        await self.s.execute(update(BrainDecisionBackup).where(BrainDecisionBackup.sha256 == self.backup_sha)
+                             .values(settled_run_id=self.run_id))
+        out["decisions_finished"] = len(groups)
+        out["certain_rows"] = sum(1 for o in eng.outcomes.values() if o.review == identity.CERTAIN)
+        out["rows_held_for_review"] = sum(1 for o in eng.outcomes.values() if o.review == identity.PENDING)
+        out["rows_pre_selected_for_release"] = sum(1 for o in eng.outcomes.values() if o.preselect)
+        await self.s.flush()
+        return dict(out)
+
+
+    def settle_rows(self, ss: src.SourceSession, msgs: list[src.SourceMessage], plans: list[MessagePlan],
+                    rows: dict[str, dict[str, Any]]) -> dict[str, identity.Match]:
+        """held_rows() of a session Settle finishes (app/brain/settle.py, plan 4.2-4.4): every stone by exact identity
+        first (replay_rows: other decisions' too), then the Settle outcomes of the decisions it finishes: a certain row
+        is a member, a related row a hold with its computed evidence; a hold of those decisions already here gets its
+        evidence computed again with this backup. A row an admin released or left readable for that decision stays
+        as the admin decided. Rule (5): a carried-on copy or an adjacent repeat of a certain row with that row's own
+        uid is certain too."""
+        held = self.replay_rows(ss, msgs)
+        eng = self.settle_engine
+        groups = set(self.settle_scope.groups) if self.settle_scope is not None else set()
+        by_key = {m.key: m for m in msgs}
+        dups = {p.m.key: p for p in plans if p.action == "duplicate" and p.reason in identity.PROVENANCE_REASONS}
+        for m in msgs:
+            if m.key in self.moved_keys or m.key in dups:
+                continue  # the importer's own duplicates follow the row they repeat (below)
+            mt = held.get(m.key)
+            o = eng.outcomes.get(m.key)
+            if o is not None and (mt is None or mt.review == identity.PENDING):
+                if self._released_here(o.group, ss, m, rows.get(m.key)):
+                    continue  # the admin's release (or 'left readable') of this exact row stands
+                held[m.key] = identity.Match(self.ids.by_key[o.group], o.via, o.review)
+                if o.review == identity.PENDING:
+                    self.relations[m.key] = (o.relations if mt is None or mt.group != o.group
+                                             else eng.evidence(m.key, o.group, mt.stone.relations)[0])
+                continue
+            if mt is not None and mt.review == identity.PENDING and mt.group in groups:
+                rel, _ = eng.evidence(m.key, mt.group, mt.stone.relations)
+                held[m.key] = identity.Match(mt.stone, identity.SETTLE_HOLD, identity.PENDING)
+                self.relations[m.key] = rel
+        for key, p in dups.items():  # rule (5); a duplicate with no row of its own keeps the withheld text out
+            if key in held or p.duplicate_of not in held:
+                continue
+            mt, target = held[p.duplicate_of], by_key.get(p.duplicate_of)
+            certain = (mt.review == identity.CERTAIN and target is not None and bool(p.m.uid)
+                       and p.m.uid == target.uid)
+            held[key] = identity.Match(mt.stone, "duplicate", identity.CERTAIN if certain else identity.PENDING)
+        return held
+
+    def settle_later_rows(self, ss: src.SourceSession, msgs: list[src.SourceMessage], plans: list[MessagePlan],
+                          rows: dict[str, dict[str, Any]]) -> dict[str, identity.Match]:
+        """held_rows() of a session Settle finishes whose conversation family also holds a decision taken on another
+        backup: for that decision this backup is a later one (plan 5), so the later-backup classifier applies first
+        (later_rows: a stored row of the family keeps what it holds and is only ever blanked, 5.2; every other row is
+        certain, a safe copy or held for that decision, 5.3), then the Settle outcomes of the decisions this run
+        finishes (settle_rows, plan 4.2-4.4) on top. A row either withholds for good is a member; a row either holds
+        is a hold (Settle's outcome and evidence first); a row is readable only when both leave it readable. Without
+        this, Settle on the newest backup wrote that backup's text into stored rows of a family whose earlier decision
+        it does not finish (round-3 replay seed 322: a fold JARVIS made in place, holding the earlier withheld text)."""
+        found = self.later_rows(ss, msgs, plans, rows)
+        later_rel, moved, released = dict(self.relations), set(self.moved_keys), list(self.auto_release)
+        self.relations = {}
+        settled = self.settle_rows(ss, msgs, plans, rows)
+        settle_rel = self.relations
+        self.moved_keys |= moved
+        held: dict[str, identity.Match] = {}
+        relations: dict[str, tuple[str, ...]] = {}
+        for k in sorted(set(found) | set(settled)):
+            if k in self.moved_keys:
+                continue
+            a, b = settled.get(k), found.get(k)
+            if a is not None and (b is None or a.review == identity.CERTAIN or b.review != identity.CERTAIN):
+                held[k], rel = a, settle_rel.get(k)
+            else:
+                held[k], rel = b, later_rel.get(k)
+            if held[k].review == identity.PENDING and rel is not None:
+                relations[k] = rel
+        self.relations = relations
+        # A row held here is neither readable nor an alias of a readable stored row. The very JARVIS row of a stored row
+        # under an earlier key withholds that stored row too (blanking: plan 5.2); a hold is stored under its own key,
+        # so that an admin can review it (a hold needs a row to be listed).
+        for k, mt in held.items():
+            self._readable_new.pop(k, None)
+            reason = self._same_reason.get(k)
+            if reason == later.SAFE_ALIAS or (reason == later.SAME_ROW and mt.review == identity.PENDING):
+                twin = self.same_stored.pop(k, None)
+                self._same_reason.pop(k, None)
+                if reason == later.SAME_ROW and twin not in self._stored_withheld and twin not in self._blank_twins:
+                    self._blank_twins[twin] = mt
+            elif reason == later.SAME_ROW and self.same_stored.get(k) not in self._stored_withheld:
+                self._blank_twins[self.same_stored[k]] = mt
+        seen: set[str] = set()
+        self.auto_release = [r for r in released + self.auto_release
+                             if r[0] not in held and not (r[0] in seen or seen.add(r[0]))]
+        return held
 
     @staticmethod
     def _links(plans: list[MessagePlan], held: dict[str, identity.Match], by_key: dict[str, src.SourceMessage],
@@ -1913,76 +2131,29 @@ class Processor:
             self._bound_rows[(session_id, row_id)] = found[0] if found else None
         return self._bound_rows[(session_id, row_id)]
 
-    def rewritten(self, session_id: str, m: src.SourceMessage) -> bool:
-        """A withheld JARVIS row Hermes rewrote in place since it was stored (a prune keeps the row id and uid and
-        writes a stub; the pre-prune text goes to an archived twin): its text in this backup is not the withheld text,
-        so it is no anchor to compare others with."""
-        chars = self._withheld_chars.get((session_id[:200], str(m.id)[:200], brain_text.sanitize(m.role)[:40]))
-        return chars is not None and chars != len(m.content)
-
     def anchor_texts(self, group: str, held: dict[str, identity.Match], by_key: dict[str, src.SourceMessage]
                      ) -> tuple[set[tuple[str, str, str]], list[str]]:
         """The texts (and normalised contents) a group's withheld message has in this backup: rows matched as members
-        in this run, and the rows the group's certain stones are bound to, unless Hermes rewrote that row in place
-        since the withhold (rewritten()). In memory only."""
+        in this run, and the rows the group's certain stones are bound to (their exact JARVIS rows). In memory only."""
         texts = set(self.group_texts.get(group, ()))
         contents = list(self.group_contents.get(group, ()))
         for k, mt in held.items():
-            if mt.review == identity.CERTAIN and mt.group == group and not self.rewritten(self._sid, by_key[k]):
+            if mt.review == identity.CERTAIN and mt.group == group:
                 texts.add(identity.text_key(by_key[k]))
                 contents.append(identity.norm(by_key[k].content))
         for st in self.ids.groups.get(group, ()):
-            if st.certain and st.row and st.session:
+            if st.certain and st.row and st.session and st.via not in identity.FOLD_VIAS:
                 row = self._bound_row(st.session, st.row)
-                if row is not None and st.role in ("", row.role) and not self.rewritten(st.session, row):
+                if row is not None and identity.same_row(identity.exact_of_stone(st),
+                                                         identity.exact_of_source(st.session, row)):
                     texts.add(identity.text_key(row))
                     contents.append(identity.norm(row.content))
         return texts, contents
-
-    def ancestor_anchors(self, ss: src.SourceSession) -> dict[tuple[str, str, str], tuple[identity.Stone, set[Any]]]:
-        """The texts of withheld rows in the continuation and branch ancestors of this session (a rotation or a branch
-        copied their history), with their stone and their times: walked up with a visited set and no step limit."""
-        out: dict[tuple[str, str, str], tuple[identity.Stone, set[Any]]] = {}
-        if ss.lineage not in identity.LINEAGE or not ss.parent_id:
-            return out
-        sessions = self._source_sessions()
-        seen = {ss.id}
-        cur: src.SourceSession | None = ss
-        while cur is not None and cur.lineage in identity.LINEAGE and cur.parent_id and cur.parent_id not in seen:
-            parent = sessions.get(cur.parent_id)
-            if parent is None:
-                break
-            seen.add(parent.id)
-            if parent.id in self.ids.sessions:
-                for t, (st, ats) in self._anchors_of(parent).items():
-                    out.setdefault(t, (st, set()))[1].update(ats)
-            cur = parent
-        return out
 
     def _source_sessions(self) -> dict[str, src.SourceSession]:
         if self._by_session_id is None:
             self._by_session_id = self.src.backup.sessions_by_id()
         return self._by_session_id
-
-    def _anchors_of(self, a: src.SourceSession) -> dict[tuple[str, str, str], tuple[identity.Stone, set[Any]]]:
-        version = self.ids.version[a.id]
-        cached = self._anchor_cache.get(a.id)
-        if cached is not None and cached[0] == version:
-            return cached[1]
-        found: dict[tuple[str, str, str], tuple[identity.Stone, set[Any]]] = {}
-        for m in self.src.backup.messages(a.id):
-            row_id = str(m.id)[:200]
-            st = self.ids.by_key.get(m.key)
-            if st is not None and st.certain and (not st.row or not st.session
-                                                  or (st.session, st.row) == (a.id, row_id)):
-                found.setdefault(identity.text_key(m), (st, set()))[1].add(m.at)
-                continue
-            for st in self.ids.by_row.get((a.id, row_id), ()):
-                if st.certain and st.role in ("", m.role):
-                    found.setdefault(identity.text_key(m), (st, set()))[1].add(m.at)
-                    break
-        self._anchor_cache[a.id] = (version, found)
-        return found
 
     def _collides(self, ss: src.SourceSession, m: src.SourceMessage, row: dict[str, Any] | None, sess_id: int
                   ) -> bool:
@@ -2000,89 +2171,79 @@ class Processor:
         own = self._stored_rows.get((str(m.id)[:200], brain_text.sanitize(m.role)[:40]), ())
         return any(i != row["id"] for i in own)
 
-    async def inherit(self, ss: src.SourceSession, msgs: list[src.SourceMessage], rows: dict[str, dict[str, Any]],
-                      sess_id: int) -> None:
-        """Every held row's key gets a stone (its group, the rule, the review, the JARVIS row it is now), so later
-        imports, rollbacks and every key reader keep it withheld; never a key that names another JARVIS row."""
+    async def inherit(self, ss: src.SourceSession, msgs: list[src.SourceMessage], plans: list[MessagePlan],
+                      rows: dict[str, dict[str, Any]], sess_id: int) -> None:
+        """Every held row's key gets a stone (its group, the rule, the review, the JARVIS row it is now; a hold its
+        computed evidence), so later imports, rollbacks and every key reader keep it withheld; never a key that names
+        another JARVIS row, and never a hold on a key with no row of its own (an excluded row: nothing an admin could
+        review), except the importer's own duplicate of a held row. A hold Settle computed again keeps its stone with
+        the new evidence (identity.update_hold)."""
         by_key = {m.key: m for m in msgs}
+        stored_plan = {p.m.key for p in plans if p.action == "import"}
+        # the importer's own duplicates (a carried-on copy, an adjacent repeat) of a held row keep a stone as that row
+        # does (verify: duplicates_of_withheld_rows_without_a_stone), though they have no row of their own
+        linked = {p.m.key for p in plans if p.action == "duplicate" and p.reason in identity.PROVENANCE_REASONS}
         for key, mt in self.held.items():
             m = by_key[key]
             if key in self.moved_keys or self._collides(ss, m, rows.get(key), sess_id):
                 continue
+            if (mt.review == identity.PENDING and key not in stored_plan and key not in rows
+                    and not (key in linked and mt.via == "duplicate")):
+                continue  # no row to review: a rowless hold would never be listed (nor let an export through)
             group = mt.group
-            old_key = (rows.get(key) or {}).get("adopted_from") or ""
-            old = self.ids.by_key.get(old_key) if old_key else None
-            if (old is not None and old.review == identity.PENDING and old.group == group
-                    and (not old.session or (old.session, old.row) == (ss.id[:200], str(m.id)[:200]))):
-                # A key adoption (uid backfill, renumbering): the row's hold moves to its new key, so one release
-                # frees it (the old key names no row any more).
-                if self.write:
-                    await self.s.execute(delete(BrainTombstone).where(
-                        BrainTombstone.source_key == old_key, BrainTombstone.review == identity.PENDING))
-                self.ids._unindex(old)
             existing = self.ids.by_key.get(key)
+            relations = self.relations.get(key, ())
             if existing is None or (existing.review == identity.PENDING and mt.review == identity.CERTAIN) or (
                     not existing.bound):
+                here = identity.exact_of_source(ss.id, m)
                 binding = identity.Stone(
-                    key=key, anchor="" if key == group else group, session=ss.id[:200], row=str(m.id)[:200],
-                    role=m.role[:40], tool_call_id=m.tool_call_id[:200], uid=m.uid[:200], uid_known=False,
-                    via=mt.via, review=mt.review, bound=True, after_run=mt.stone.after_run, at=m.at)
+                    key=key, anchor="" if key == group else group, session=here.session, row=here.row,
+                    role=here.role, tool_call_id=here.tool_call_id, uid=here.uid, uid_known=False,
+                    via=mt.via, review=mt.review, bound=True, after_run=mt.stone.after_run, at=m.at,
+                    decided_on=self.backup_sha, relations=relations if mt.review == identity.PENDING else ())
                 if self.write:
                     await identity.put_stone(self.s, binding, actor=self.actor)
                 self.ids.add(binding)
                 if existing is None:
                     self.t.bump("stones_added")
-            if mt.review == identity.CERTAIN and not self.rewritten(ss.id, m):
+            elif (existing.review == identity.PENDING and mt.review == identity.PENDING and key in self.relations
+                  and (existing.via, existing.relations) != (mt.via, tuple(identity.relation_order(relations)))):
+                if self.write:
+                    await identity.update_hold(self.s, key, via=mt.via, relations=relations,
+                                               decided_on=self.backup_sha)
+                updated = identity.Stone(**{**existing.__dict__, "via": mt.via,
+                                            "relations": tuple(identity.relation_order(relations))})
+                self.ids._unindex(existing)
+                self.ids._index(updated)
+            if mt.review == identity.CERTAIN:
                 self.group_texts.setdefault(group, set()).add(identity.text_key(m))
                 self.group_contents.setdefault(group, []).append(identity.norm(m.content))
             if mt.via != "key" or mt.stone.anchor:
                 self.t.held(mt.via, mt.review)
 
-    async def release_followed(self, ss: src.SourceSession, msgs: list[src.SourceMessage], plans: list[MessagePlan],
-                               rows: dict[str, dict[str, Any]], sess_id: int, customer: bool) -> None:
-        """An admin's release follows the message (held_rows): a row it covers through the message's identity gets an
-        exemption of its own (the release outlives the original row's leaving the backup), and a hold left on a
-        released message, or an upgrade hold the backup disproves, is released as review.release_hold() does: its
-        holds in that group go, an exemption names its JARVIS row, it is marked released and its text comes back from
-        the source at this import (unless its conversation is withheld). Audited (archive.hold_released, via
-        import)."""
-        by_key = {str(m.id)[:200]: m for m in msgs}
-        for (group, row_id), how in sorted(self.exempt_copies.items()):
-            if (group, ss.id[:200], row_id) in self.ids.exempt:
-                continue
-            copy = by_key.get(row_id)
-            if self.write:
-                await self.s.execute(pg_insert(BrainWithholdExemption).values(
-                    anchor_key=group, source_session_id=ss.id[:200], source_row_id=row_id,
-                    reason="released by an admin (the same message: %s)" % how, decided_by=self.actor[:200],
-                    source_uid=(copy.uid if copy else "")[:200], content_chars=len(copy.content) if copy else -1)
-                    .on_conflict_do_nothing())
-            self._remember_exempt(group, ss.id, row_id, by_key.get(row_id))
-            self.t.bump("releases_followed")
+    async def apply_releases(self, ss: src.SourceSession, msgs: list[src.SourceMessage], plans: list[MessagePlan],
+                             rows: dict[str, dict[str, Any]], sess_id: int, customer: bool) -> None:
+        """A hold left on a JARVIS row an admin released (that exact row, decided on this backup or showing that very
+        content: held_rows, replay_rows) goes as review.release_hold() releases it: its holds in that group go, it is
+        marked released and its text comes back from the source at this import (unless its conversation is
+        withheld). Audited (archive.hold_released, via import). A release never follows another row (plan step 6)."""
         if not self.auto_release:
             return
         by_key = {m.key: m for m in msgs}
         for key, st, reason in self.auto_release:
             m = by_key[key]
-            row_id, group = str(m.id)[:200], st.group
-            gone = {x.key: x for x in [self.ids.by_key.get(key), *self.ids.by_row.get((ss.id[:200], row_id), ())]
-                    if x is not None and x.review == identity.PENDING and x.group == group
-                    and (x.key == key or x.role in ("", m.role))}
+            group = st.group
+            here = identity.exact_of_source(ss.id, m)
+            gone = {x.key: x for x in [self.ids.by_key.get(key), *self.ids.row_stones(here)]
+                    if x is not None and x.review == identity.PENDING and x.group == group}
             for x in gone.values():
                 self.ids._unindex(x)
-            self._remember_exempt(group, ss.id, row_id, m)
             row = rows.get(key)
             if self.write:
                 await self.s.execute(delete(BrainTombstone).where(
                     BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.review == identity.PENDING,
                     func.coalesce(func.nullif(BrainTombstone.anchor_key, ""), BrainTombstone.source_key) == group,
-                    or_(BrainTombstone.source_key == key,
-                        and_(BrainTombstone.source_session_id == ss.id[:200], BrainTombstone.source_row_id == row_id,
-                             BrainTombstone.role.in_(("", m.role))))))
-                await self.s.execute(pg_insert(BrainWithholdExemption).values(
-                    anchor_key=group, source_session_id=ss.id[:200], source_row_id=row_id, reason=reason,
-                    decided_by=self.actor[:200], source_uid=m.uid[:200], content_chars=len(m.content))
-                    .on_conflict_do_nothing())
+                    BrainTombstone.source_key.in_(sorted({key, *gone}))))
                 await audit.record(self.s, self.actor, "archive.hold_released", "archive_message",
                                    row["id"] if row is not None else "", {
                                        "message": row["id"] if row is not None else None,
@@ -2103,10 +2264,16 @@ class Processor:
                     plans[i] = MessagePlan(p.m, "import", cleaned=self.clean_message(p.m, customer),
                                            twin_of=p.twin_of)
 
+    @staticmethod
+    def stored_text(row: dict[str, Any]) -> tuple[str, str, str, str]:
+        """identity.message_text() of a stored row read as a dict."""
+        return (row["role"] or "", row["tool_call_id"] or "", identity.norm(row["content"]),
+                json.dumps(row["tool_calls"] or [], sort_keys=True))
+
     def readable_text(self, m: src.SourceMessage, row: dict[str, Any] | None) -> tuple[str, str, str, str]:
         """What identity.message_text() reads from the stored row this source row is (or would be) stored as while
-        readable: its role, call id, normalised cleaned content and cleaned tool calls. A release digest is made of
-        it (release_fp), compared in memory only."""
+        readable: its role, call id, normalised cleaned content and cleaned tool calls, compared in memory only (a safe
+        copy, plan 5.2)."""
         if row is not None and not row["withheld"] and row.get("source_fp") == m.fp:
             return (row["role"] or "", row["tool_call_id"] or "", identity.norm(row["content"]),
                     json.dumps(row["tool_calls"] or [], sort_keys=True))
@@ -2119,101 +2286,12 @@ class Processor:
                                      identity.norm(c.content), json.dumps(c.calls or [], sort_keys=True))
         return self._readable[m.key]
 
-    def _remember_exempt(self, group: str, session_id: str, row_id: str, m: src.SourceMessage | None) -> None:
-        """An exemption added in memory this run, and the released identity it gives (no re-read of the rest)."""
-        ident = (group, session_id[:200], row_id)
-        self.ids.exempt.add(ident)
-        if m is not None and ident not in self.ids.bindings:
-            self.ids.bindings[ident] = identity.Binding(m.uid[:200], len(m.content), "")
-        if self._released is not None:
-            found = self._released[1]
-            if m is not None and m.uid:
-                found.add((group, m.uid, identity.text_key(m)))
-            self._released = (len(self.ids.exempt), found)
-
-    async def lost_copy_origins(self, ss: src.SourceSession, msgs: list[src.SourceMessage]) -> None:
-        """For a continuation or branch: the rows an admin withheld in its ancestors that this backup no longer holds
-        (the ancestor deleted, the row retried away, the run that stored it rolled back, a restore of an older dump), by
-        role, call id and time (a stone keeps the time of its row, the archive a withheld row's; never its text): a
-        copy JARVIS made of one keeps that time (held_rows, _copy_of_hold: a hold). When the ancestor chain is broken
-        (a parent in neither the backup nor the archive: a branch of a branch deleted before it was imported), the
-        rows JARVIS copied cannot be found at all, so every certain withhold's time counts (review 2, S1). Also the
-        uids of this session's rows that another stored conversation carries: a uid-keeping copy of that row (a
-        rotation, a CLI branch), never of a withheld one."""
-        self._lost_origins = {}
-        self._lost_uids_elsewhere = set()
-        self._lost_readable_origins = set()
-        if ss.lineage not in identity.LINEAGE or not ss.parent_id:
-            return
-        sessions = self._source_sessions()
-        ids: list[str] = []
-        broken = False
-        seen, parent_id, lineage = {ss.id}, ss.parent_id, ss.lineage
-        while parent_id and lineage in identity.LINEAGE and parent_id not in seen:
-            seen.add(parent_id)
-            ids.append(parent_id[:200])
-            known = sessions.get(parent_id)
-            if known is not None:
-                parent_id, lineage = known.parent_id, known.lineage
-            else:  # gone from the backup: the archive still knows its parent
-                row = (await self.s.execute(select(ArchiveSession.parent_source_session_id, ArchiveSession.lineage)
-                                            .where(ArchiveSession.source_session_id == parent_id[:200]))).first()
-                if row is None:
-                    broken = True  # in neither: the chain to the conversation JARVIS copied is lost
-                parent_id, lineage = (row[0] or "", row[1] or "") if row is not None else ("", "")
-        if not broken and not any(i in self.ids.sessions for i in ids):
-            return
-
-        def lost(role: str, call: str, at: Any, st: identity.Stone) -> None:
-            self._lost_origins.setdefault((brain_text.sanitize(role)[:40], brain_text.sanitize(call)[:200], at), st)
-        if ids:
-            for at, role, call, key, sid, rid in (await self.s.execute(
-                    select(ArchiveMessage.at, ArchiveMessage.role, ArchiveMessage.tool_call_id,
-                           ArchiveMessage.source_key, ArchiveSession.source_session_id,
-                           ArchiveMessage.source_message_id)
-                    .join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
-                    .where(ArchiveSession.source_session_id.in_(ids), ArchiveMessage.withheld.is_(True),
-                           ArchiveMessage.at.is_not(None)).order_by(ArchiveMessage.id))).all():
-                if self.src.backup.has_row(sid, rid):
-                    continue  # still in the backup: copied_from finds it
-                st = self.ids.by_key.get(key)
-                if st is None or not st.certain:
-                    st = next((x for x in self.ids.by_row.get((sid, rid), ()) if x.certain and x.role in ("", role)),
-                              None)
-                if st is not None:
-                    lost(role, call or "", at, st)
-        # The stones' own times: the archive may have lost the row too (a rollback of the run that stored it, a
-        # restore of an older dump, a test copy's withhold carried to live). With the chain broken, every certain
-        # withhold's time, its row in the backup or not: copied_from cannot reach it through a lost ancestor.
-        walked = set(ids)
-        for st in sorted(self.ids.by_key.values(), key=lambda x: (x.anchor != "", x.key)):
-            if st.at is None or not st.certain or st.via in identity.FOLD_VIAS or not st.role or not st.row:
-                continue
-            if not broken and (st.session not in walked or self.src.backup.has_row(st.session, st.row)):
-                continue
-            lost(st.role, st.tool_call_id, st.at, st)
-        if self._lost_origins and ss.parent_id:
-            # The parent's readable rows at those times: a copy of one is that row's copy (JARVIS copied a readable
-            # row with this very text), never a lost withheld row's (rows Hermes wrote with one timestamp).
-            times = sorted({at for _, _, at in self._lost_origins}, key=lambda x: x.timestamp())
-            self._lost_readable_origins = {(identity.message_text(o), o.at) for o in (await self.s.scalars(
-                select(ArchiveMessage).join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id).where(
-                    ArchiveSession.source_session_id == ss.parent_id[:200], ArchiveMessage.withheld.is_(False),
-                    ArchiveMessage.at.in_(times)))).all()}
-        uids = sorted({m.uid[:200] for m in msgs if m.uid})
-        if self._lost_origins and uids:
-            for i in range(0, len(uids), 1000):
-                self._lost_uids_elsewhere.update((await self.s.scalars(
-                    select(ArchiveMessage.source_uid)
-                    .join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
-                    .where(ArchiveMessage.source_uid.in_(uids[i:i + 1000]),
-                           ArchiveSession.source_session_id != ss.id[:200]).distinct())).all())
-
     async def _title_hidden_for(self, ss: src.SourceSession) -> bool:
         """Whether an admin hid this conversation's title: a withhold that hid it is bound to this conversation (it
         comes back after a rollback or a restore), or a continuation or branch ancestor's title was hidden and this
         conversation carries that title (identity.title_follows: Hermes moves the title to a continuation and names a
-        branch '<title> #N')."""
+        branch '<title> #N'). A conversation a later backup brings new into a withheld family keeps its title hidden
+        until it is released (do_session; plan 5.3)."""
         if ss.id in self._title_hidden:
             return self._title_hidden[ss.id]
         if self._hidden_titles is None:  # an import never adds such a stone: read once
@@ -2227,29 +2305,52 @@ class Processor:
                and cur.parent_id not in seen):
             seen.add(cur.parent_id)
             parent = sessions.get(cur.parent_id)
+            if parent is None:
+                break  # JARVIS deleted it: a new conversation of a withheld family keeps its title hidden (do_session)
             flagged = cur.parent_id in hidden or await self.s.scalar(select(ArchiveSession.id).where(
                 ArchiveSession.source_session_id == cur.parent_id[:200],
                 ArchiveSession.flags["title_withheld"].astext == "true").limit(1)) is not None
-            # A flagged ancestor that is not in this backup (JARVIS deleted it) cannot be compared: hidden (review 2,
-            # S3; the title only, at most the first words of the withheld message).
-            if flagged and (parent is None or identity.title_follows(ss.title, ss.lineage, parent.title)):
+            if flagged and identity.title_follows(ss.title, ss.lineage, parent.title):
                 out = True
             cur = parent
         self._title_hidden[ss.id] = out
         return out
 
     def _first_user_withheld_titled(self, msgs: list[src.SourceMessage]) -> bool:
-        """Whether this conversation's first user row is withheld by provenance in a withhold whose admin hid its
-        conversation's title (title_hidden on the admin's own stone): a member, or a hold that JARVIS's provenance makes
-        (the withheld message's uid, or a copy at its very time, whose text could not be compared), never one that
-        only shares the text. The title Hermes derived from that message, or carried on with it (a rotation moves the
-        title to the continuation), is hidden too (review 2, S3): the title only, never another message."""
+        """Whether this conversation's first user row is withheld in a withhold whose admin hid its conversation's
+        title (title_hidden on the admin's own stone): a member, or a hold whose evidence is its text (identical,
+        restated, containing or quoting the withheld text) or that has nothing to compare it with. The title Hermes
+        derived from that message, or carried on with it (a rotation moves the title to the continuation), is hidden
+        too (review 2, S3): the title only, never another message."""
         first = next((m for m in msgs if m.role == "user" and not self.exclusion(m)), None)
         mt = self.held.get(first.key) if first is not None else None
-        if mt is None or (mt.review == identity.PENDING and mt.via in ("same text", "upgrade: same text",
-                                                                        identity.RESTATED)):
+        if mt is None:
             return False
+        if mt.review == identity.PENDING:
+            rel = set(self.relations.get(first.key, ()) or mt.stone.relations)
+            if not rel & {*identity.TEXT_RELATIONS, identity.NOT_IN_BACKUP}:
+                return False
         return any(st.title_hidden and not st.anchor and st.certain for st in self.ids.groups.get(mt.group, ()))
+
+    async def load_stored(self, ss: src.SourceSession, sess_id: int | None) -> None:
+        """This session's stored rows by (JARVIS row id, role): their ids (_collides) and exact identities
+        (_stored_twin)."""
+        self._stored_rows = {}
+        self._stored_exact = {}
+        self._stored_withheld = set()
+        self._stored_by_id = {}
+        if sess_id is None:
+            return
+        for rid, role, mid, call, at, suid, skey, withheld, absorbed in (await self.s.execute(select(
+                ArchiveMessage.source_message_id, ArchiveMessage.role, ArchiveMessage.id, ArchiveMessage.tool_call_id,
+                ArchiveMessage.at, ArchiveMessage.source_uid, ArchiveMessage.source_key, ArchiveMessage.withheld,
+                ArchiveMessage.absorbed_uids).where(ArchiveMessage.session_id == sess_id))).all():
+            self._stored_rows.setdefault((rid or "", role or ""), []).append(int(mid))
+            if withheld:
+                self._stored_withheld.add(int(mid))
+            ex = identity.exact(ss.id, rid, role, call, at, suid or identity.parse_key(skey).uid)
+            self._stored_exact.setdefault((rid or "", role or ""), []).append((int(mid), ex))
+            self._stored_by_id[int(mid)] = (ex, tuple(absorbed or ()))
 
     async def adopt_rows(self, ss: src.SourceSession, msgs: list[src.SourceMessage], rows: dict[str, dict[str, Any]],
                          sess: ArchiveSession | None) -> None:
@@ -2292,6 +2393,18 @@ class Processor:
             for m in msgs:
                 self.record(m.key, "message", "excluded", "purged by an admin")
             return len(msgs), size
+        # A later backup's import never reaches a conversation an admin stopped importing (plan 5.3; the decision
+        # backup's replay and Settle still read it): counted, its rows left out, its stored rows kept as they are.
+        later_now = (self.settle_scope is None and ss.id[:200] not in self.replay_sessions
+                     and bool(self.later_groups(ss.id)))
+        if ss.id[:200] in self.frozen and later_now:
+            await self.record_links(ss)
+            self.record(ss.key, "session", "excluded", later.FROZEN)
+            for m in msgs:
+                self.record(m.key, "message", "excluded", later.FROZEN)
+            self.t.bump("frozen_sessions_skipped")
+            await self._plan_count(ss.id, "frozen_conversations_skipped")
+            return len(msgs), size
         self.t.time(ss.started_at)
         staff = ss.attribution.staff
         sess = await self.s.scalar(select(ArchiveSession).where(ArchiveSession.source_key == ss.key))
@@ -2301,13 +2414,19 @@ class Processor:
             for r in (await self.s.execute(select(*MESSAGE_COLUMNS).where(
                     ArchiveMessage.source_key.in_(keys[i:i + 1000])))).mappings().all():
                 rows[r["source_key"]] = dict(r)
-        await self.adopt_rows(ss, msgs, rows, sess)
-        self._stored_rows = {}
-        if sess is not None:
-            for rid, role, mid in (await self.s.execute(select(
-                    ArchiveMessage.source_message_id, ArchiveMessage.role, ArchiveMessage.id).where(
-                    ArchiveMessage.session_id == sess.id))).all():
-                self._stored_rows.setdefault((rid or "", role or ""), []).append(int(mid))
+        # Key adoption (a stored row re-keyed in place) only outside every withheld family: a stored row of a family
+        # is never re-keyed, deleted or adopted (0.6.2 plan 5.2, step 6); a row of it under a new key is not stored
+        # twice (later_rows: identity.exact).
+        root = self._family.get(ss.id[:200], ss.id[:200])
+        in_family = root in self._decision_roots or root in self._joined
+        if not in_family:
+            await self.adopt_rows(ss, msgs, rows, sess)
+        self.same_stored = {}
+        self._same_reason = {}
+        self.relations = {}
+        self._later_session = False
+        self._tripwire_keys = {}
+        await self.load_stored(ss, sess.id if sess is not None else None)
         try:
             title_c = mapping.clean(ss.title, "chat")
         except Exception:  # a title that cannot be cleaned is left out
@@ -2326,8 +2445,12 @@ class Processor:
         # An admin who withheld the first user message hid the title too (title_withheld): it can paraphrase it. The
         # choice is bound to the withhold, so it follows the conversation's continuations and branches and comes back
         # with a conversation an import creates again.
-        title_hidden = (sess is not None and bool((sess.flags or {}).get("title_withheld"))) or (
-            await self._title_hidden_for(ss))
+        # A conversation a later backup brings new into a withheld family keeps its title hidden while a row of it is
+        # withheld by an admin (plan 5.3: until it is released; flags.title_held says why it is hidden).
+        title_held = (sess is None and later_now) or (sess is not None and bool((sess.flags or {}).get("title_held")))
+        title_hidden_other = (sess is not None and bool((sess.flags or {}).get("title_withheld"))
+                              and not (sess.flags or {}).get("title_held")) or await self._title_hidden_for(ss)
+        title_hidden = title_hidden_other or title_held
         title = "" if withheld or title_hidden else brain_text.one_line(title_c.text, 300)
         flags: dict[str, Any] = {"attribution": ss.attribution.how, "inferred": ["staff", "labels"]}
         if ss.time_assumed_local:
@@ -2336,6 +2459,8 @@ class Processor:
             flags["withheld_by_import"] = True
         if title_hidden:
             flags["title_withheld"] = True
+        if title_held:
+            flags["title_held"] = later.TITLE_HELD
         if title_c.masked and not withheld:
             flags["title_masked"] = True
         if customer_channel:
@@ -2344,9 +2469,13 @@ class Processor:
             flags["title_redactions"] = dict(title_c.secret_types)
         if ss.hermes_counts:
             flags["hermes_counts"] = ss.hermes_counts
+        # A conversation's lineage and parent are never forgotten (0.6.2 plan 1.4; migration 0008 keeps them too):
+        # a later backup whose Hermes deleted the parent leaves them '' there, never here.
+        lineage = ss.lineage or (sess.lineage if sess is not None else "") or ""
+        parent_id = ss.parent_id[:200] or (sess.parent_source_session_id if sess is not None else "") or ""
         fields = {"title": title, "started_at": ss.started_at, "ended_at": ss.ended_at, "end_reason": ss.end_reason,
                   "source_message_count": len(msgs), "hermes_archived": ss.hermes_archived, "channel": ss.channel,
-                  "lineage": ss.lineage, "parent_source_session_id": ss.parent_id[:200], "staff": staff,
+                  "lineage": lineage, "parent_source_session_id": parent_id, "staff": staff,
                   "agent": ss.attribution.agent, "origin": ss.attribution.origin, "job_id": ss.attribution.job_id,
                   "job_name": brain_text.one_line(mapping.clean(ss.attribution.job_name, "chat").text, 200),
                   "flags": flags}
@@ -2386,12 +2515,40 @@ class Processor:
                     setattr(sess, k, v)
                 await self.s.flush()
         self.current_sess_id = sess_id
-        await self.lost_copy_origins(ss, msgs)
-        self.held = self.held_rows(ss, msgs, plans, rows)
+        await self.record_links(ss)
+        if self.settle_scope is not None and ss.id[:200] in self.settle_scope.family:
+            # Settle: the decisions on this backup decided once (plan 4.2-4.4); in a family that also holds a decision
+            # taken on another backup, this backup is a later one for that decision (plan 5.2, 5.3): both apply
+            if self.later_groups(ss.id):
+                self._later_session = True
+                await self.load_family_readable(ss)
+                self.held = self.settle_later_rows(ss, msgs, plans, rows)
+            else:
+                self.held = self.settle_rows(ss, msgs, plans, rows)
+            self.t.bump("sessions_settled")
+        elif ss.id[:200] in self.replay_sessions:
+            # A decision was taken on this very backup: replayed word for word, the rules never run (plan 3.2). A
+            # family whose admin's decision was taken on another backup (holds of a later backup decided on this one)
+            # keeps its stored rows as they are (plan 5.2).
+            self._later_session = bool(self.later_groups(ss.id))
+            self.held = self.replay_rows(ss, msgs)
+            self.t.bump("sessions_replayed")
+        elif later_now:
+            # A withheld conversation family in a later backup: the later-backup classifier (plan 5.2, 5.3, 5.5)
+            self._later_session = True
+            await self.load_family_readable(ss)
+            self.held = self.later_rows(ss, msgs, plans, rows)
+            self.t.bump("sessions_of_withheld_families_in_a_later_backup")
+        else:
+            # Outside every family (plan 5.4), or a family whose decisions on this very backup are not finished yet
+            self.held = self.held_rows(ss, msgs, plans, rows)
+            if not self.family_groups(ss.id) and not withheld:
+                self._tripwire_outside(plans, rows)
+        member_titled = False
         if not title_hidden and not withheld and self._first_user_withheld_titled(msgs):
             # This conversation's first user message is a member of a withhold that hid its conversation's title (a
             # continuation or branch the parent's deletion orphaned: no lineage left to follow): its title hides too.
-            title_hidden = True
+            title_hidden = member_titled = True
             flags["title_withheld"] = True
             if sess is not None and (sess.title or not (sess.flags or {}).get("title_withheld")):
                 source_changed = source_changed or not created
@@ -2399,18 +2556,17 @@ class Processor:
                     sess.title = ""
                     sess.flags = {**(sess.flags or {}), "title_withheld": True}
                     await self.s.flush()
-        await self.release_followed(ss, msgs, plans, rows, sess_id, staff == "sarah" or customer_channel)
-        await self.inherit(ss, msgs, rows, sess_id)
+        await self.apply_releases(ss, msgs, plans, rows, sess_id, staff == "sarah" or customer_channel)
+        await self.inherit(ss, msgs, plans, rows, sess_id)
         changed = await self.write_messages(plans, rows, sess_id, withheld, why, ss)
-        if self.write and any(sid == ss.id[:200] for _, sid, _ in self.ids.exempt):
-            # Each release of this conversation is bound to the content it released, once that is readable here; a
-            # released content a certain rule withholds now (its text is the withheld text) keeps no digest.
-            await self.flush()
-            by_key = {m.key: m for m in msgs}
-            await identity.unbind_withheld(self.s, [
-                (ss.id, str(by_key[k].id), self.readable_text(by_key[k], None)) for k, mt in self.held.items()
-                if mt.review == identity.CERTAIN and k in by_key], self.release_key)
-            await identity.bind_exemptions(self.s, archive_session_id=sess_id)
+        changed += await self._blank_stored_twins()
+        await self._tripwire_locations(sess_id)
+        if self._later_session and ss.id[:200] not in self.replay_sessions:
+            await self._plan_counts(ss, plans, rows, created)
+        if title_held and not title_hidden_other and not withheld and not member_titled:
+            if await self._release_held_title(ss, sess, sess_id, title_c, msgs):
+                title_hidden = False
+                source_changed = source_changed or not created
         if withheld and not created and not was_restricted and self.write:
             # Newly restricted: every row keeps no text, also one the source no longer holds (finding 3), and no copy
             # of its earlier text is kept for a rollback either (the source keeps it). The items promoted from its
@@ -2462,6 +2618,13 @@ class Processor:
         for p in plans:
             m = p.m
             row = rows.get(m.key)
+            if (m.key in self.same_stored and p.action == "import" and row is not None
+                    and row["session_id"] != sess_id):
+                # its key names a stored row of another conversation, and this very JARVIS row is stored here under
+                # an earlier key (a withheld family of a later backup: later_rows): never stored twice
+                self.record(m.key, "message", "duplicate", self._same_reason.get(m.key, later.SAME_ROW),
+                            "archive_messages", self.same_stored[m.key])
+                continue
             if row is not None and row["session_id"] != sess_id:
                 self.record(m.key, "message", "excluded", "key collision")
                 continue
@@ -2469,15 +2632,22 @@ class Processor:
                 # A stored row is never overwritten with another JARVIS row's text (a uid that stopped being shared).
                 self.record(m.key, "message", "excluded", "key collision: JARVIS gave this key to another row")
                 continue
-            if m.key in self.moved_keys and (row is None or row.get("adopted_from")):
+            if m.key in self.moved_keys and (row is None or row.get("adopted_from") or self._later_session):
                 # The key of a withheld message now names another row: that row is neither stored under it nor
-                # withheld by it.
+                # withheld by it (in a later backup's withheld family the stored row under that key stays as it is).
                 self.t.bump("key_reassigned")
                 self.record(m.key, "message", "excluded",
                             "key collision: JARVIS gave the key of a withheld message to another row")
                 continue
             if row is not None:
                 changed += await self._reconcile(p, row, withheld, why)
+                continue
+            if m.key in self.same_stored and p.action == "import":
+                # the very JARVIS row of a stored row under its earlier key, or a safe copy of a readable stored row of
+                # this conversation (a withheld family of a later backup): never stored twice, never re-keyed (plan
+                # 5.2, 5.3)
+                self.record(m.key, "message", "duplicate", self._same_reason.get(m.key, later.SAME_ROW),
+                            "archive_messages", self.same_stored[m.key])
                 continue
             if p.action == "excluded":
                 self.record(m.key, "message", "excluded", p.reason)
@@ -2569,6 +2739,29 @@ class Processor:
         held_now = {"content": "", "truncated": False, "tool_calls": [], "withheld": True, "labels": [],
                     "source_fp": identity.withheld_fp(m),
                     "flags": {**(row["flags"] or {}), "withheld_by_admin": self._held_flag(held)} if held else {}}
+        if released and self._later_session and not self._release_covers(p.m):
+            released = False  # a release covers the content it was decided on, never a later backup's (plan 1.2)
+        if (self._later_session and not session_withheld and not released and held is not None
+                and not row["withheld"] and (p.action in ("excluded", "duplicate") or not same or old_key)):
+            # A readable stored row of a withheld family that a later backup shows is the withheld message (or holds
+            # for review): blanked in place, the only change a later backup makes to a stored row (plan 5.2). It is
+            # never deleted, re-keyed or given the backup's other fields.
+            # (its own state: the stored row keeps no fingerprint of its text, and is not given the backup's state)
+            await self._update_row(row, {**held_now, "source_fp": "w1:%s" % (row["state"] or "live")})
+            self.record(m.key, "message", "updated", "withheld: an admin withheld it" if held.via == "key"
+                        else "withheld: the same message as one an admin withheld (%s)" % held.via
+                        if held.review != identity.PENDING else "withheld: held for an admin's review (%s)" % held.via,
+                        "archive_messages", row["id"], blank_before(jsonable({k: row[k] for k in MESSAGE_FIELDS})))
+            self.withheld_now.append(row["id"])
+            return 1
+        if (self._later_session and not session_withheld and (not released or p.action in ("excluded", "duplicate"))
+                and (held is None or row["withheld"]) and (p.action in ("excluded", "duplicate") or not same or old_key)):
+            # A stored row of a withheld conversation family is never rewritten, re-keyed or deleted by a later
+            # backup: it keeps the text it had or stays without it (0.6.2 plan 5.2; JARVIS's edits there are not
+            # followed: owner question 7). Blanking it (a withhold, a restriction) is always allowed.
+            self.record(m.key, "message", "duplicate", "kept as stored: a withheld conversation's rows never change",
+                        "archive_messages", row["id"])
+            return 0
         if same and not old_key and not released:
             # Withheld now: the rollback copy keeps no text either (it is never stored to be scrubbed later).
             if withheld and not row["withheld"]:
@@ -2635,6 +2828,9 @@ class Processor:
         if "state" in values:
             self._count_message(p, withheld and not released)
         before = jsonable({k: row[k] for k in MESSAGE_FIELDS})
+        # the uids a fold absorbed go back with the text: a rollback that kept a later fold's absorbed uids on the row
+        # it restored would make that row the withheld message by provenance (round-3 replay seed 322)
+        before["absorbed_uids"] = list(row.get("absorbed_uids") or [])
         if old_key:  # a rollback puts the old key back
             before.update(source_key=old_key, source_uid=row.get("source_uid") or "")
             self.t.bump("keys_adopted")
@@ -2643,6 +2839,13 @@ class Processor:
             self.withheld_now.append(row["id"])
         self.record(m.key, "message", "updated", reason, "archive_messages", row["id"], before)
         return 1
+
+    def _release_covers(self, m: src.SourceMessage) -> bool:
+        """Whether an admin's release of this JARVIS row (any group) covers the content this backup holds: decided on
+        this very backup (identity.Identities.released)."""
+        here = identity.exact_of_source(self._sid, m)
+        return any(self.ids.released(g, here, backup=self.backup_sha)
+                   for g, sid, rid in self.ids.exempt if (sid, rid) == (here.session, here.row))
 
     async def _backfill_uids(self) -> None:
         """The JARVIS uid, and the uids a fold absorbed, of rows this import left as they were (identity metadata,
@@ -2814,14 +3017,30 @@ async def plan(paths: SourcePaths, selection: Selection, *, report_file: str | N
 
 async def run(paths: SourcePaths, selection: Selection, *, label: str = "", actor: str = DEFAULT_ACTOR,
               report_file: str | None = None, pre_backup_sha256: str = "",
-              heartbeat_seconds: float = HEARTBEAT_SECONDS) -> dict[str, Any]:
+              heartbeat_seconds: float = HEARTBEAT_SECONDS, decisions: str | None = None) -> dict[str, Any]:
     """Import the selection. Refusals (Refused) come before any change; a failure or an interruption raises
-    ImportFailed after the run's row says what happened."""
+    ImportFailed after the run's row says what happened.
+
+    With decisions (a version 5 decisions file from the test copy; actor: an active admin), its withholds, releases
+    and purges are applied first, under the import's lock, then the import runs (it replays the decisions taken on
+    this very backup), then the file's review decisions on imported memory items apply to this run (0.6.2 plan
+    3.3). A file of another backup or importer version is applied all the same, with a warning: those conversations
+    are a later backup here (fail-safe)."""
     selection.validate()
+    data = read_decisions(decisions) if decisions else None
     async with sessionmaker()() as s:
         await require_schema(s)
         await purge_key_check(s)
         tz_name, tz = await customer_timezone(s)
+        decider: _Decider | None = None
+        if data is not None:
+            user = await s.scalar(select(User).where(func.lower(User.email) == (actor or "").lower(),
+                                                     User.role == "admin", User.is_active.is_(True)))
+            if user is None:
+                raise Refused("--actor must be the e-mail address of an active admin: decisions that need an admin "
+                              "keep needing one")
+            decider = _Decider(user.email, bool(user.can_access_sensitive))
+            _check_v5(data)
     sources = Sources(paths, tz, tz_name)
     try:
         source = sources.source_info(pre_backup_sha256)
@@ -2831,12 +3050,172 @@ async def run(paths: SourcePaths, selection: Selection, *, label: str = "", acto
                 raise Refused(LOCK_BUSY)
             async with sessionmaker()() as s:
                 await mark_dead_runs(s)
+            applied: dict[str, Any] = {}
+            warnings: list[str] = []
+            if data is not None and decider is not None:
+                warnings = decisions_warnings(data, sources.db_info["sha256"])
+                async with sessionmaker()() as s:
+                    applied = await decisions_before_import(s, data, decider)
+                    await audit.record(s, decider.email, "brain.decisions_applied", "brain", "", {
+                        "via": "import", "before_import": applied, "warnings": len(warnings),
+                        "same_backup": not any("SHA-256" in w for w in warnings)})
+                    await s.commit()
             scope = {"selection": selection.to_json(), "timezone": tz_name}
             run_id = await locks.start_run(label=brain_text.one_line(label, 200), actor=actor, scope=scope,
                                            source=source)
             locks.start_heartbeat(run_id, heartbeat_seconds)
-            return await _execute(run_id, sources, selection, {}, actor, report_file, sources.discovery,
-                                  resumed=False)
+            result = await _execute(run_id, sources, selection, {}, actor, report_file, sources.discovery,
+                                    resumed=False)
+            if data is not None and decider is not None:
+                result["decisions"] = {"before_import": applied, "warnings": warnings,
+                                       **await _item_decisions(data, run_id, decider)}
+            return result
+        finally:
+            await locks.close()
+    finally:
+        sources.close()
+
+
+async def _item_decisions(data: dict[str, Any], run_id: int, decider: _Decider) -> dict[str, Any]:
+    """After an import with -Decisions: the file's review decisions on imported memory items, applied to this run
+    where the item is the very same (decisions-apply's rule). The caller holds the import lock."""
+    listed: dict[str, list[int]] = {}
+    applied = 0
+    async with sessionmaker()() as s:
+        user = await s.scalar(select(User).where(User.email == decider.email))
+        for n, d in enumerate(data.get("decisions") or [] if isinstance(data.get("decisions"), list) else [], 1):
+            reason = await _apply_decision(s, d, run_id, user, True)
+            if reason:
+                listed.setdefault(reason, []).append(n)
+            else:
+                applied += 1
+        await audit.record(s, decider.email, "brain.decisions_applied", "import_run", run_id,
+                           {"run": run_id, "applied": applied, "via": "import",
+                            "not_applied": {k: len(v) for k, v in listed.items()}})
+        await s.commit()
+    return {"items_applied": applied, "items_not_applied": listed}
+
+
+# --- Settle: finishing decisions on the decision backup (0.6.2 plan 4) ---------------------------------------------
+
+
+async def settle_scope(s: AsyncSession, sources: Sources) -> SettleScope:
+    """The decisions a Settle of this backup finishes (plan 4.1): every admin's own withhold whose decision backup is
+    not finished yet and whose conversation family's newest import (not rolled back) is of this very backup (its
+    SHA-256): Settle runs on the newest backup that wrote rows of the family. Their families in this backup: the
+    sessions linked to theirs (session_families), and the sessions with a row that carries or absorbs one of their
+    certain uids (plan 5.1). Decisions whose family a newer backup wrote wait for that one."""
+    sha = identity.run_sha256({"db": sources.db_info})
+    settled = set((await s.scalars(select(BrainDecisionBackup.sha256).where(
+        BrainDecisionBackup.settled_run_id.is_not(None)))).all())
+    labels = dict((await s.execute(select(BrainDecisionBackup.sha256, BrainDecisionBackup.label))).all())
+    groups: list[str] = []
+    waiting: Counter[str] = Counter()
+    bound: dict[str, list[str]] = {}
+    for st in (await s.scalars(select(BrainTombstone).where(
+            BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.anchor_key == "",
+            BrainTombstone.review != identity.PENDING).order_by(BrainTombstone.source_key))).all():
+        if st.decided_on and st.decided_on in settled:
+            continue
+        sids = sorted(set((await s.scalars(select(BrainTombstone.source_session_id).where(
+            BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.source_session_id != "",
+            or_(BrainTombstone.source_key == st.source_key, BrainTombstone.anchor_key == st.source_key)))).all()))
+        newest = await identity.decision_backup(s, sids) if sids else ""
+        if newest and newest == sha:
+            groups.append(st.source_key)
+            bound[st.source_key] = sids
+        else:
+            on = newest or st.decided_on
+            waiting[(labels.get(on) or on[:12]) if on else "no backup known"] += 1
+    if not groups:
+        return SettleScope([], set(), dict(waiting))
+    fam = await session_families(s, sources.backup)
+    roots_of: dict[str, set[str]] = {g: {fam.get(sid, sid) for sid in bound[g]} for g in groups}
+    for g in groups:  # the sessions with a row that carries or absorbs one of the decision's certain uids
+        uids = set((await s.scalars(select(BrainTombstone.message_uid).where(
+            BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.review != identity.PENDING,
+            BrainTombstone.message_uid != "", BrainTombstone.via.not_in(identity.FOLD_VIAS),
+            or_(BrainTombstone.source_key == g, BrainTombstone.anchor_key == g)))).all())
+        roots_of[g] |= {fam.get(sid[:200], sid[:200]) for sid in sources.backup.sessions_with_uids(uids)}
+    # a continuation or branch whose link is lost, whose copied history holds a row at a stone's role, call and time
+    ids = await identity.Identities.load(s)
+    ids = identity.Identities([st for st in ids.by_key.values() if st.group in set(groups)])
+    decision_roots: dict[str, list[str]] = {}
+    for g in groups:
+        for root in roots_of[g]:
+            decision_roots.setdefault(root, []).append(g)
+    for root, joined in (await joined_families(s, sources.backup, ids, fam, decision_roots)).items():
+        for g in joined:
+            if g in roots_of:
+                roots_of[g].add(root)
+    families = {g: sorted(ss.id[:200] for ss in sources.backup.sessions()
+                          if fam.get(ss.id[:200], ss.id[:200]) in roots_of[g]) for g in groups}
+    family = {sid for sids in families.values() for sid in sids}
+    return SettleScope(groups, family, dict(waiting), families)
+
+
+def settle_work(sources: Sources, scope: SettleScope) -> Work:
+    """A Settle run's work: every session of the families, in the backup's order; no file, job or orphan."""
+    sessions = [ss for ss in sources.backup.sessions() if ss.id[:200] in scope.family]
+    counts = sources.backup.message_counts()
+    work = Work(sessions=sessions, files=[], jobs=False, orphans=False)
+    work.totals = {"sessions": len(sessions), "messages": sum(counts.get(ss.id, 0) for ss in sessions), "orphans": 0,
+                   "files": 0, "jobs": 0, "urls": 0}
+    return work
+
+
+def _scope_of_run(run_scope: dict[str, Any]) -> SettleScope | None:
+    """A Settle run's recorded scope (import_runs.scope -> settle), for resume and verify."""
+    found = (run_scope or {}).get("settle")
+    if not isinstance(found, dict):
+        return None
+    families = found.get("families") if isinstance(found.get("families"), dict) else {}
+    return SettleScope([str(g) for g in found.get("groups") or []], {str(x) for x in found.get("sessions") or []},
+                       families={str(g): [str(x) for x in v or []] for g, v in families.items()})
+
+
+async def settle(paths: SourcePaths, *, actor: str = DEFAULT_ACTOR, report_file: str | None = None,
+                 heartbeat_seconds: float = HEARTBEAT_SECONDS) -> dict[str, Any]:
+    """Finish the decisions taken on this JARVIS backup (brain-import settle --backup FILE, jarvis-import -Mode Settle;
+    0.6.2 plan 4): an import run of every session of their conversation families (also sessions a -Sample run
+    skipped), with each withheld text in memory, that withholds for good only what provenance says is the withheld
+    message (settle.Engine, plan 4.2) and holds every other related row for review with its computed evidence (4.3,
+    4.6). Its stones and holds are decided on this backup (decided_on), and the backup is settled
+    (brain_decision_backups.settled_run_id): an import of this very file replays the result word for word, here and
+    on live with the exported decisions file (C1). Only the conversations are read (no profile folder needed).
+    Refusals (Refused) come before any change; with nothing left to finish it changes nothing."""
+    async with sessionmaker()() as s:
+        await require_schema(s)
+        await purge_key_check(s)
+        tz_name, tz = await customer_timezone(s)
+    sources = Sources(paths, tz, tz_name, files=False)
+    try:
+        source = sources.source_info()
+        locks = await LockConnection.open()
+        try:
+            if not await locks.try_lock(GLOBAL_LOCK):
+                raise Refused(LOCK_BUSY)
+            async with sessionmaker()() as s:
+                await mark_dead_runs(s)
+                scope = await settle_scope(s, sources)
+                await s.commit()
+            if not scope.groups:
+                if scope.waiting:
+                    raise Refused("no decision waits on this JARVIS backup; %d decision(s) wait on another one (%s): "
+                                  "finish them with the newest backup that wrote their conversations" % (
+                                      sum(scope.waiting.values()),
+                                      ", ".join("%s: %d" % kv for kv in sorted(scope.waiting.items()))))
+                return {"run_id": None, "status": "nothing to finish", "decisions": 0, "waiting": {}}
+            run_scope = {"selection": Selection(all=True).to_json(), "timezone": tz_name,
+                         "settle": {"groups": scope.groups, "sessions": sorted(scope.family),
+                                    "families": scope.families}}
+            run_id = await locks.start_run(label="settle (finishing decisions)", actor=actor, scope=run_scope,
+                                           source=source)
+            locks.start_heartbeat(run_id, heartbeat_seconds)
+            result = await _execute(run_id, sources, Selection(all=True), {}, actor, report_file, sources.discovery,
+                                    resumed=False, settle=scope)
+            result.update(decisions=len(scope.groups), waiting=scope.waiting)
+            return result
         finally:
             await locks.close()
     finally:
@@ -2853,11 +3232,12 @@ async def resume(run_id: int, paths: SourcePaths, *, report_file: str | None = N
         if found is None:
             raise Refused("there is no import run %d" % run_id)
         tz_name = (found.scope or {}).get("timezone") or "UTC"
+        settle_run = _scope_of_run(found.scope or {})
     try:
         tz = ZoneInfo(tz_name)
     except Exception:
         tz_name, tz = "UTC", ZoneInfo("UTC")
-    sources = Sources(paths, tz, tz_name)
+    sources = Sources(paths, tz, tz_name, files=settle_run is None)
     try:
         locks = await LockConnection.open()
         try:
@@ -2886,7 +3266,8 @@ async def resume(run_id: int, paths: SourcePaths, *, report_file: str | None = N
                 except (RunLost, IntegrityError):
                     raise Refused("run %d could not be resumed: another import is running" % run_id) from None
             locks.start_heartbeat(run_id, heartbeat_seconds)
-            return await _execute(run_id, sources, selection, checkpoint, actor, report_file, discovery, resumed=True)
+            return await _execute(run_id, sources, selection, checkpoint, actor, report_file, discovery, resumed=True,
+                                  settle=settle_run)
         finally:
             await locks.close()
     finally:
@@ -2894,11 +3275,12 @@ async def resume(run_id: int, paths: SourcePaths, *, report_file: str | None = N
 
 
 async def _execute(run_id: int, sources: Sources, selection: Selection, checkpoint: dict[str, Any], actor: str,
-                   report_file: str | None, discovery: dict[str, Any], *, resumed: bool) -> dict[str, Any]:
+                   report_file: str | None, discovery: dict[str, Any], *, resumed: bool,
+                   settle: SettleScope | None = None) -> dict[str, Any]:
     tally = Tally(checkpoint.get("tally"))
-    work = select_work(sources, selection)
+    work = settle_work(sources, settle) if settle is not None else select_work(sources, selection)
     async with sessionmaker()() as s:
-        proc = Processor(s, sources, run_id=run_id, tally=tally, write=True, actor=actor)
+        proc = Processor(s, sources, run_id=run_id, tally=tally, write=True, actor=actor, settle_scope=settle)
         try:
             await audit.record(s, actor, "brain.import_started", "import_run", run_id,
                                {"run": run_id, "resumed": resumed, "selection": selection.mode,
@@ -2916,6 +3298,15 @@ async def _execute(run_id: int, sources: Sources, selection: Selection, checkpoi
                 await s.commit()
                 s.expunge_all()
             await proc.run_phases(work, checkpoint.get("phase"), int(checkpoint.get("index") or 0), save)
+            tally.d["tripwire"] = proc.tripwire.to_tally()
+            if proc.tripwire.texts or proc.tripwire.inside or proc.tripwire.outside:
+                # plan 5.5: the newest run's tripwire, for admins (counts and archive ids only)
+                await later.note_tripwire(s, run_id, tally.d["tripwire"])
+            if settle is not None:
+                tally.d["settle"] = await proc.finish_settle()
+                await audit.record(s, actor, "brain.decisions_settled", "import_run", run_id, {
+                    "run": run_id, "decisions": len(settle.groups), "sessions": len(settle.family),
+                    **tally.d["settle"]})
             report = tally.report(selection, work.totals, discovery, await missing_from_source(s, sources))
             counts = {"records": sum(report["by_action"].values()), "by_action": report["by_action"],
                       "by_type": report["by_type"]}
@@ -3051,18 +3442,19 @@ async def verify(run_id: int, paths: SourcePaths, *, report_file: str | None = N
                                                                                   run_row.status.replace("_", " ")))
         tz_name = (run_row.scope or {}).get("timezone") or "UTC"
         selection = Selection.from_json((run_row.scope or {}).get("selection") or {})
+        settle_run = _scope_of_run(run_row.scope or {})
         recorded_source = dict(run_row.source or {})
         report = dict(run_row.report or {})
     try:
         tz = ZoneInfo(tz_name)
     except Exception:
         tz = ZoneInfo("UTC")
-    sources = Sources(paths, tz, tz_name)
+    sources = Sources(paths, tz, tz_name, files=settle_run is None)
     try:
         if not sources.same_source(recorded_source):
             raise Refused("the backup or the restored profile differs from the one run %d used: verify needs the "
                           "very same sources" % run_id)
-        work = select_work(sources, selection)
+        work = settle_work(sources, settle_run) if settle_run is not None else select_work(sources, selection)
         expected, per_session = expected_keys(sources, work)
         checks: dict[str, dict[str, Any]] = {}
         async with sessionmaker()() as s:
@@ -3126,7 +3518,7 @@ async def verify(run_id: int, paths: SourcePaths, *, report_file: str | None = N
                            if kit.REASONING_COLUMN.search(c) or src.FORBIDDEN_COLUMN.match(c)]
             checks["no_reasoning_columns_read"] = {"ok": not bad_columns, "columns": bad_columns}
             checks["search_finds_imported_text"] = await _search_check(s, run_id)
-            checks.update(await _identity_checks(s, run_id, sources, work))
+            checks.update(await _identity_checks(s, run_id, sources, work, settle_run))
             passed = all(c["ok"] for c in checks.values())
             verification = {"passed": passed, "checked_at": now().isoformat(), "checks": checks}
             report["verification"] = verification
@@ -3196,7 +3588,8 @@ async def _scan_leaks(s: AsyncSession, run_id: int, report: dict[str, Any]) -> l
     return leaks
 
 
-async def _identity_checks(s: AsyncSession, run_id: int, sources: Sources, work: Work) -> dict[str, dict[str, Any]]:
+async def _identity_checks(s: AsyncSession, run_id: int, sources: Sources, work: Work,
+                           settle: SettleScope | None = None) -> dict[str, dict[str, Any]]:
     """Checks 9-12 (spec 2.9): nothing that is the same message as a withheld one is readable, no withheld row or
     rollback copy keeps a fingerprint of its text, purged items stay purged, and the database guard never had to
     remove text the import wrote."""
@@ -3206,9 +3599,9 @@ async def _identity_checks(s: AsyncSession, run_id: int, sources: Sources, work:
                 ("readable_by_key", "readable_by_jarvis_row", "readable_by_fold", "readable_in_restricted_sessions")}
     # The rules again, from the backup, with the stones as they are now (read-only): every row that is the same
     # message as a withheld one (or held for review) is stored without text.
-    proc = Processor(s, sources, run_id=None, tally=Tally(), write=False)
+    proc = Processor(s, sources, run_id=None, tally=Tally(), write=False, settle_scope=settle)
     proc.ids = await identity.Identities.load(s)
-    await proc._rebind()
+    await proc.prepare_identity()
     rule_rows: list[int] = []
     for ss in work.sessions:
         sess_id = await s.scalar(select(ArchiveSession.id).where(ArchiveSession.source_key == ss.key))
@@ -3223,7 +3616,21 @@ async def _identity_checks(s: AsyncSession, run_id: int, sources: Sources, work:
                 rows[r["source_key"]] = dict(r)
         plans, _ = proc.plan_messages(msgs, False, frozenset(keys))  # actions only: nothing is cleaned
         proc.current_sess_id = sess_id
-        held = proc.held_rows(ss, msgs, plans, rows)
+        await proc.load_stored(ss, sess_id)
+        if settle is not None and ss.id[:200] in settle.family and proc.later_groups(ss.id):
+            await proc.load_family_readable(ss)
+            proc._later_session = True
+            held = proc.settle_later_rows(ss, msgs, plans, rows)
+        elif settle is not None and ss.id[:200] in settle.family:
+            held = proc.settle_rows(ss, msgs, plans, rows)
+        elif ss.id[:200] in proc.replay_sessions:
+            held = proc.replay_rows(ss, msgs)
+        elif settle is None and proc.later_groups(ss.id):
+            await proc.load_family_readable(ss)
+            proc._later_session = True
+            held = proc.later_rows(ss, msgs, plans, rows)
+        else:
+            held = proc.held_rows(ss, msgs, plans, rows)
         if not held:
             continue
         by_jarvis_row: dict[tuple[str, str], list[Any]] = {}
@@ -3251,6 +3658,14 @@ async def _identity_checks(s: AsyncSession, run_id: int, sources: Sources, work:
         "ok": not any(readable.values()) and not rule_rows and not unstoned, **readable,
         "readable_rows_the_rules_match": len(rule_rows), "row_ids": sorted(set(rule_rows))[:50],
         "duplicates_of_withheld_rows_without_a_stone": unstoned}
+    # Plan 5.5: inside a withheld family no readable row this run wrote is, or contains, a withheld text the backup
+    # holds; the tripwire held each one it found instead, and a run that found one fails here (the classifier missed
+    # it: an admin looks). Outside every family such rows are only listed.
+    tw = later.Tripwire.from_tally(((await s.scalar(select(ImportRun.report).where(ImportRun.id == run_id))) or {})
+                                   .get("tripwire"))
+    checks["tripwire_quiet_in_withheld_families"] = {
+        "ok": tw.inside == 0, "rows_held_by_the_tripwire": tw.inside, "where": tw.inside_at[:50],
+        "rows_listed_outside_withheld_families": tw.outside}
     rows_fp = int(await s.scalar(sql(
         "SELECT count(*) FROM archive_messages WHERE withheld AND source_fp <> '' AND source_fp NOT LIKE 'w1:%'"))
         or 0)
@@ -3343,6 +3758,9 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
     if run_row.status == "rolled_back":
         raise Refused("run %d is already rolled back" % run_id)
     expected_status = run_row.status
+    # A Settle run rolled back: the decisions it finished are not finished any more (its stones stay: decisions).
+    await session.execute(update(BrainDecisionBackup).where(BrainDecisionBackup.settled_run_id == run_id)
+                          .values(settled_run_id=None))
 
     params = {"r": run_id}
     later = sql("SELECT id FROM import_runs WHERE id > :r AND status <> 'rolled_back'")
@@ -3416,7 +3834,8 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
                 ArchiveSession.id == sid)) or ""
         mt = ids.match_row(values.get("source_key") or "", jarvis_sessions[sid],
                            str(values.get("source_message_id") or ""), values.get("role") or "",
-                           values.get("source_uid") or "")
+                           values.get("source_uid") or identity.parse_key(values.get("source_key")).uid,
+                           tool_call_id=values.get("tool_call_id") or "", at=identity.when(values.get("at")))
         if mt is not None and mt.via == "same message id" and values.get("source_key") not in ids.by_key:
             hold = identity.Stone(
                 key=values["source_key"], anchor=mt.group, session=jarvis_sessions[sid],
@@ -3766,7 +4185,11 @@ async def status(run_id: int | None = None) -> dict[str, Any]:
                 + int(pending["withheld_copies_with_text_fingerprint"]),
                 rows_blanked_by_the_database_guard=int(pending["rows_blanked_by_the_database_guard"]),
                 quotes_of_removed_sources=int(pending["quotes_of_removed_sources"]),
-                purge_fingerprints_made_with_another_key=int(pending["purge_fingerprints_other_key"]))
+                purge_fingerprints_made_with_another_key=int(pending["purge_fingerprints_other_key"]),
+                # 0.6.2 plan 5.3, 5.5: conversations an admin stopped importing, and the newest run's tripwire (counts
+                # and archive ids only)
+                frozen_conversations=int(pending.get("frozen_sessions") or 0),
+                last_tripwire=pending.get("last_tripwire") or None)
         out["marked_interrupted"] = await mark_dead_runs(s)
         query = select(ImportRun).order_by(ImportRun.id.desc())
         query = query.where(ImportRun.id == run_id) if run_id is not None else query.limit(20)
@@ -4022,7 +4445,7 @@ async def _rescan_copies(s: AsyncSession, counts: dict[str, int], withhold: set[
                 ~select(ArchiveMessage.id).where(ArchiveMessage.id == promoted_from).exists()))).all()
             if i is not None]
     done = await withhold_copies(s, messages=gone, message_ids=ids, actor=actor, cause="rescan")
-    settled = await identity.settle(s, actor=actor, cause="rescan")  # the rows the identity repair withheld
+    settled = await identity.finish_repair(s, actor=actor, cause="rescan")  # the rows the identity repair withheld
     swept = await sweep_withheld_copies(s, actor=actor, cause="rescan")
     counts["copies_withheld"] += len(done.copies) + len(swept) + settled["copies_emptied"]
     counts["copy_versions_blanked"] += (done.versions_blanked + sum(c["versions_blanked"] for c in swept)
@@ -4085,15 +4508,24 @@ async def _rescan_json(s: AsyncSession, counts: dict[str, int], apply: bool) -> 
 
 DECISION_STATUS = {"approved": "approve", "rejected": "reject", "archived": "archive"}
 PURGED_BY_ADMIN = "purged by an admin"  # review.purge()'s tombstone reason
-DECISIONS_VERSION = 4  # 4 (0.6.2): withholds carry their JARVIS row, and releases travel; 3 (0.6.0, 0.6.1) still read
+# 5 (0.6.2): every stone and release word for word, with its exact JARVIS row and the backup it was decided on, plus
+# the decision backups, the family links and the frozen conversations; an import of that backup with the file
+# (run --decisions, jarvis-import -Mode Import -Decisions) replays it. 4 (0.6.2 development builds) and 3 (0.6.0,
+# 0.6.1) are still read, after an import (decisions-apply --run).
+DECISIONS_VERSION = 5
 RESTORE_ACTOR = "system (restore)"  # decisions-apply --removals-only: restore.ps1 applies the removals again
 RESTORE_NOTE = "decision applied again after a restore"
-# What a withhold carries in a version 4 file: its key and binding (spec 2.1), never text or a fingerprint, and who
-# decided and when (by, at: a restore puts them back). at_row: the time of the JARVIS row it names (a time, never
-# text: a copy Hermes made keeps it; review 2, S1/S2); uid_learned_at: when an import learned its uid (S9); kept_by,
-# kept_at: who kept a hold and when ('' unless review is 'kept'; S23).
+# What a withhold carries in a version 5 file: its key and exact binding (spec 2.1; at_row: the time of the JARVIS row
+# it names, a time, never text), never text or a fingerprint; who decided and when (by, at: a restore puts them back);
+# the JARVIS backup it was decided on (decided_on, its SHA-256); kept_by, kept_at: who kept a hold and when ('' unless
+# review is 'kept'; S23, rv3-dur-6).
 WITHHOLD_FIELDS = ("source_key", "reason", "anchor", "session", "row", "role", "tool_call_id", "uid", "uid_known",
-                   "via", "review", "title_hidden", "by", "at", "at_row", "uid_learned_at", "kept_by", "kept_at")
+                   "via", "review", "title_hidden", "by", "at", "at_row", "decided_on", "kept_by", "kept_at",
+                   "relations")
+# What a release (or identical text left readable) carries: its group and exact JARVIS row, the backup it was decided
+# on, its kind, and who decided it, when and why.
+RELEASE_FIELDS = ("anchor", "session", "row", "role", "tool_call_id", "at_row", "uid", "kind", "decided_on", "reason",
+                  "by", "at")
 PURGE_FIELDS = ("source_key", "reason", "by", "at")
 # Said in every decisions file (review 2, S17): what in it is derived from text, and how to keep it.
 DECISIONS_HANDLING = ("Keys and ids only, never text. A purged memory entry's key (#entry-...) carries a 64-bit digest "
@@ -4125,6 +4557,8 @@ async def decisions_export(out_path: str, *, actor: str = DEFAULT_ACTOR, removal
     decisions, skipped, not_exported = [], 0, 0
     async with sessionmaker()() as s:
         await require_schema(s)
+        if not removals_only:
+            await _refuse_unsettled(s)
         items = [] if removals_only else (await s.scalars(select(MemoryItem).where(
             MemoryItem.origin == "import",
             or_(MemoryItem.version > 1, MemoryItem.reviewed_by != "", MemoryItem.deleted_at.is_not(None)))
@@ -4167,14 +4601,17 @@ async def decisions_export(out_path: str, *, actor: str = DEFAULT_ACTOR, removal
                              "tool_call_id": t.tool_call_id or "", "uid": t.message_uid or "",
                              "uid_known": bool(t.uid_known), "via": t.via or "", "review": t.review or "",
                              "title_hidden": bool(t.title_hidden), "at_row": _iso(t.source_at),
-                             "uid_learned_at": _iso(t.uid_learned_at), "kept_by": "", "kept_at": "", **who})
+                             "decided_on": t.decided_on or "", "kept_by": "", "kept_at": "",
+                             "relations": identity.relation_order(t.relations or []), **who})
             if t.review == identity.KEPT:
-                # who kept the hold, and when (the row's flag says it: keep_hold; review 2, S23)
-                flag = await s.scalar(select(ArchiveMessage.flags["withheld_by_admin"]).where(
-                    ArchiveMessage.source_key == t.source_key).limit(1))
-                flag = flag if isinstance(flag, dict) else {}
-                removals[-1].update(kept_by=str(flag.get("kept_by") or "")[:200],
-                                    kept_at=str(flag.get("kept_at") or "")[:64])
+                # who kept the hold, and when: the stone says it (rv3-dur-6); a keep written before that, the row's flag
+                flag: Any = {}
+                if not t.kept_by:
+                    flag = await s.scalar(select(ArchiveMessage.flags["withheld_by_admin"]).where(
+                        ArchiveMessage.source_key == t.source_key).limit(1))
+                    flag = flag if isinstance(flag, dict) else {}
+                removals[-1].update(kept_by=(t.kept_by or str(flag.get("kept_by") or ""))[:200],
+                                    kept_at=(_iso(t.kept_at) or str(flag.get("kept_at") or ""))[:64])
         purged_items: list[dict[str, Any]] = []
         fingerprints: list[dict[str, Any]] = []
         if removals_only:
@@ -4185,21 +4622,31 @@ async def decisions_export(out_path: str, *, actor: str = DEFAULT_ACTOR, removal
                              "at": _iso(p.purged_at), "via": p.via or ""} for p in (await s.scalars(
                                  select(BrainPurgedContent).where(identity.live_fingerprints())
                                  .order_by(BrainPurgedContent.fp))).all()]
-        # A release travels with the content it covers: the released row's uid and length (never its digest: the
-        # file holds no fingerprint of any text, and the digest's key is this database's); and with who decided it,
-        # when and why (a release, or identical text an admin left readable: review 2, S21, S23).
-        releases = [{"anchor": a, "session": sid, "row": row, "uid": uid or "", "chars": int(chars),
-                     "reason": reason or "", "by": by or "", "at": _iso(at)}
-                    for a, sid, row, uid, chars, reason, by, at in (await s.execute(select(
+        # A release travels with the exact JARVIS row it covers (identity.exact; never a digest or a length of any
+        # text), the backup it was decided on, its kind, and who decided it, when and why (a release, or identical
+        # text an admin left readable: review 2, S21, S23).
+        releases = [{"anchor": e.anchor_key, "session": e.source_session_id, "row": e.source_row_id,
+                     "role": e.role or "", "tool_call_id": e.tool_call_id or "", "at_row": _iso(e.source_at),
+                     "uid": e.source_uid or "", "kind": e.kind or "release", "decided_on": e.decided_on or "",
+                     "reason": e.reason or "", "by": e.decided_by or "", "at": _iso(e.decided_at)}
+                    for e in (await s.scalars(select(BrainWithholdExemption).order_by(
                         BrainWithholdExemption.anchor_key, BrainWithholdExemption.source_session_id,
-                        BrainWithholdExemption.source_row_id, BrainWithholdExemption.source_uid,
-                        BrainWithholdExemption.content_chars, BrainWithholdExemption.reason,
-                        BrainWithholdExemption.decided_by, BrainWithholdExemption.decided_at).order_by(
-                        BrainWithholdExemption.anchor_key, BrainWithholdExemption.source_session_id,
-                        BrainWithholdExemption.source_row_id))).all()]
+                        BrainWithholdExemption.source_row_id, BrainWithholdExemption.id))).all()]
+        # The JARVIS backups the decisions were taken on (an import of one of them replays its decisions), the
+        # family links every import recorded, and the conversations an admin stopped importing.
+        backups = [{"sha256": b.sha256, "label": b.label or "", "importer_version": b.importer_version or "",
+                    "newest_at": _iso(b.newest_at), "settled": b.settled_run_id is not None}
+                   for b in (await s.scalars(select(BrainDecisionBackup).order_by(BrainDecisionBackup.sha256))).all()]
+        links = [{"a": a, "b": b, "how": how} for a, b, how in (await s.execute(select(
+            BrainSessionLink.a, BrainSessionLink.b, BrainSessionLink.how).order_by(
+            BrainSessionLink.a, BrainSessionLink.b, BrainSessionLink.how))).all()]
+        frozen = [{"session": f.source_session_id, "by": f.frozen_by or "", "at": _iso(f.frozen_at)}
+                  for f in (await s.scalars(select(BrainFrozenSession).order_by(
+                      BrainFrozenSession.source_session_id))).all()]
     content: dict[str, Any] = {"format": "jarvis-brain-decisions", "version": DECISIONS_VERSION,
                                "exported_at": now().isoformat(), "importer_version": IMPORTER_VERSION,
-                               "handling": DECISIONS_HANDLING, "removals": removals, "releases": releases}
+                               "handling": DECISIONS_HANDLING, "removals": removals, "releases": releases,
+                               "backups": backups, "links": links, "frozen": frozen}
     if removals_only:
         content.update(removals_only=True, purged_items=purged_items, purge_fingerprints=fingerprints)
     else:
@@ -4215,6 +4662,31 @@ async def decisions_export(out_path: str, *, actor: str = DEFAULT_ACTOR, removal
         await audit.record(s, actor, "brain.decisions_exported", "brain", "", dict(out))  # no path: it can name a user
         await s.commit()
     return out
+
+
+async def _refuse_unsettled(s: AsyncSession) -> None:
+    """ExportDecisions refuses while a decision is not finished (0.6.2 plan 4.7): an admin's withhold whose decision
+    backup is not settled (Settle: brain-import settle --backup FILE, jarvis-import -Mode Settle), or, with the owner's
+    question 5 at its default, a hold that finishing decisions found and an admin has not kept or released yet. Live
+    then applies only the admin's own decisions. restore.ps1's --removals-only file never refuses."""
+    pending = dict((await s.execute(sql("SELECT brain_withhold_pending()"))).scalar() or {})
+    holds = int(pending.get("unreviewed_settle_holds") or 0)
+    # A decision on no known backup (a withhold of a version 4 file, of rows no import run recorded) cannot be
+    # finished: it travels as it is, and live imports its conversations as a later backup (fail-safe, plan 3.3).
+    waiting = (await s.execute(sql(
+        "SELECT coalesce(nullif(b.label, ''), left(t.decided_on, 12)), count(*) "
+        "FROM brain_tombstones t LEFT JOIN brain_decision_backups b ON b.sha256 = t.decided_on "
+        "WHERE t.reason = :wh AND t.anchor_key = '' AND t.review <> 'pending' AND t.decided_on <> '' "
+        "AND NOT EXISTS (SELECT 1 FROM brain_decision_backups x WHERE x.sha256 = t.decided_on "
+        "AND x.settled_run_id IS NOT NULL) GROUP BY 1 ORDER BY 1"), {"wh": WITHHELD_BY_ADMIN})).all()
+    unsettled = sum(int(n) for _, n in waiting)
+    if unsettled:
+        raise Refused("%d withheld message(s) are not finished yet: run brain-import settle --backup <the JARVIS "
+                      "backup> (jarvis-import -Mode Settle) first, then review what it holds (%s)" % (
+                          unsettled, ", ".join("%s: %d" % (label, n) for label, n in waiting)))
+    if holds:
+        raise Refused("%d row(s) found when finishing decisions wait for review: keep or release each one (JARVIS "
+                      "Brain page, Held for review) before exporting" % holds)
 
 
 @dataclass(frozen=True)
@@ -4300,18 +4772,11 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
         for r in releases if isinstance(releases, list) else []:
             if isinstance(r, dict) and all(isinstance(r.get(k), str) and r[k] for k in ("anchor", "session", "row")):
                 row = (r["anchor"], r["session"][:200], r["row"][:200])
-                uid, chars = _release_binding(r)
-                who = _release_who(r, decider.email, removals_only)
                 async with s.begin_nested():
-                    if (await s.execute(pg_insert(BrainWithholdExemption).values(
-                            anchor_key=row[0], source_session_id=row[1], source_row_id=row[2], source_uid=uid,
-                            content_chars=chars, **who).on_conflict_do_nothing())).rowcount:
+                    if await _put_release(s, r, decider.email, removals_only):
                         fresh.add(row)
-                    # The release follows the message here: when this database never stored that JARVIS row (Hermes
-                    # renumbered the conversation: new row ids, the same uids), the stored row of that conversation
-                    # with the released row's uid and the content released is the same release.
-                    fresh |= await _follow_release(s, row, uid, chars, who)
-        await identity.bind_exemptions(s, source_session_ids={r[1] for r in fresh})
+        if data.get("version") == DECISIONS_VERSION:
+            await _carry_tables(s, data)
         removed: Counter[str] = Counter()
         removals_listed: dict[str, list[int]] = {}
         # The admins' own withholds first, then the stones that join them, then purges (the file lists them by key, and
@@ -4368,6 +4833,93 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
             "removals_not_applied": removals_listed, "releases": dict(released),
             "releases_not_applied": releases_listed, "purged_items": dict(purged_items),
             "purged_items_not_applied": purges_listed, "purge_fingerprints": dict(carried_fps)}
+
+
+# --- Decisions before an import (0.6.2 plan 3.3: jarvis-import -Mode Import -Decisions) --------------------------------
+
+
+def read_decisions(in_path: str) -> dict[str, Any]:
+    """A decisions file, checked: its format, and a version this importer reads."""
+    try:
+        with open(in_path, "rb") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        raise Refused("the decisions file could not be read as JSON") from None
+    if not isinstance(data, dict) or data.get("format") != "jarvis-brain-decisions":
+        raise Refused("this is not a decisions file exported by brain-import decisions-export")
+    version = data.get("version")
+    if not isinstance(version, int) or isinstance(version, bool) or version > DECISIONS_VERSION:
+        raise Refused("this decisions file was written by a newer Command Center (version %s): apply it with that "
+                      "version" % str(version)[:20])
+    return data
+
+
+def decisions_warnings(data: dict[str, Any], backup_sha: str) -> list[str]:
+    """Why a decisions file's withholds are not replayed by an import of this backup: it is not a backup they were
+    decided on (its SHA-256), or the importer version differs. Those conversations are then a later backup here:
+    fail-safe (0.6.2 plan 3.3)."""
+    out = []
+    shas = {b.get("sha256") for b in data.get("backups") or [] if isinstance(b, dict)}
+    if backup_sha not in shas:
+        out.append("this JARVIS backup (SHA-256 %s) is not the one the decisions were taken on: conversations with "
+                   "a withheld message are imported as a later backup (new rows held for review)" % backup_sha[:12])
+    if data.get("importer_version") != IMPORTER_VERSION:
+        out.append("the decisions file was written by importer %s, this is importer %s: conversations with a withheld "
+                   "message are imported as a later backup" % (str(data.get("importer_version"))[:20],
+                                                                 IMPORTER_VERSION))
+    return out
+
+
+def _check_v5(data: dict[str, Any]) -> None:
+    if data.get("version") != DECISIONS_VERSION:
+        raise Refused("-Decisions with an import needs a version %d decisions file (this one is version %s): export "
+                      "it again with this version, or apply an older file after the import (decisions-apply --run)"
+                      % (DECISIONS_VERSION, str(data.get("version"))[:20]))
+
+
+async def decisions_before_import(s: AsyncSession, data: dict[str, Any], decider: _Decider) -> dict[str, Any]:
+    """A version 5 decisions file, word for word, before an import (the caller holds the import lock): every release
+    as an exemption of its exact JARVIS row, every withhold's stone with its exact binding, review, via, anchor,
+    title choice, decision backup, keeper and who decided it and when, every purge's tombstone (an item this database
+    holds is purged as decisions-apply purges it), and the decision backups, family links and frozen conversations.
+    The import that follows replays them: the database guard stores a row a stone names without text as it is
+    inserted, so no withheld text is readable at any moment (0.6.2 plan 3.3, C1). Counts only."""
+    from . import review  # imports the task service and the scheduler: not needed by the import itself
+
+    _check_v5(data)
+    out: Counter[str] = Counter()
+    for r in data.get("releases") or [] if isinstance(data.get("releases"), list) else []:
+        if isinstance(r, dict) and all(isinstance(r.get(k), str) and r[k] for k in ("anchor", "session", "row")):
+            out["releases" if await _put_release(s, r, decider.email, True) else "releases already here"] += 1
+    after = await identity.current_after_run(s)
+    removals = data.get("removals") if isinstance(data.get("removals"), list) else []
+    for _, r in sorted(enumerate(removals, 1), key=_removal_order):
+        if not isinstance(r, dict) or not isinstance(r.get("source_key"), str) or not r["source_key"]:
+            out["not a removal"] += 1
+            continue
+        if r.get("reason") == WITHHELD_BY_ADMIN:
+            st = _carried_stone(r, via=str(r.get("via") or "decisions")[:200], after=after)
+            st = identity.Stone(**{**st.__dict__, "via": str(r.get("via") or st.via)[:200]})
+            values = {"source_key": st.key, "purged_at": _when(r.get("at")) or now(),
+                      "purged_by": str(r.get("by") or decider.email)[:200], "reason": WITHHELD_BY_ADMIN,
+                      "source_session_id": st.session, "source_row_id": st.row, "role": st.role,
+                      "tool_call_id": st.tool_call_id, "message_uid": st.uid, "uid_known": st.uid_known,
+                      "anchor_key": st.anchor, "via": st.via, "review": st.review, "bound": bool(st.row or st.uid),
+                      "after_run": after, "title_hidden": st.title_hidden, "source_at": st.at,
+                      "decided_on": st.decided_on, "kept_by": st.kept_by, "kept_at": st.kept_at,
+                      "relations": list(st.relations)}
+            if (await s.execute(pg_insert(BrainTombstone).values(**values).on_conflict_do_nothing())).rowcount:
+                out["withholds"] += 1
+            else:  # a stone of that key is here: a hold the file decided on becomes what the file says
+                await identity.put_stone(s, st, actor=str(r.get("by") or decider.email))
+                out["withholds already here"] += 1
+        elif r.get("reason") == PURGED_BY_ADMIN:
+            outcome = await _apply_removal(s, r, decider, review, via="decisions", after=after)
+            out["purges" if outcome in REMOVAL_DONE else "purges not applied"] += 1
+        else:
+            out["not a removal"] += 1
+    out.update(await _carry_tables(s, data))
+    return dict(out)
 
 
 def _removal_order(nr: tuple[int, Any]) -> tuple[bool, bool, str]:
@@ -4483,12 +5035,63 @@ REMOVAL_DONE = ("withheld", "held for review", "purged", "already done", "kept f
 PURGE_DONE = ("purged", "not here")  # a purge by item id: the item purged again, or not in this database (any more)
 
 
-def _release_binding(r: dict[str, Any]) -> tuple[str, int]:
-    """The content a release in a decisions file covers: its uid and length (version 4 files before rules062-confirm
-    carry neither: -1, the row id alone)."""
-    uid = r.get("uid") if isinstance(r.get("uid"), str) else ""
-    chars = r.get("chars")
-    return uid[:200], chars if isinstance(chars, int) and not isinstance(chars, bool) and chars >= 0 else -1
+def _release_exact(r: dict[str, Any]) -> identity.Exact:
+    """The exact JARVIS row a release in a decisions file covers (identity.exact). A version 4 file's release carries
+    only its row id and uid: the role, call and time are not known, and do not narrow it."""
+    def text(name: str) -> str:
+        return r[name] if isinstance(r.get(name), str) else ""
+    return identity.exact(text("session"), text("row"), text("role"), text("tool_call_id"), _when(r.get("at_row")),
+                          text("uid"))
+
+
+def _release_kind(r: dict[str, Any]) -> str:
+    kind = r.get("kind")
+    if kind in ("release", "left_readable", "quarantine_release"):
+        return str(kind)
+    return "left_readable" if r.get("reason") == identity.LEFT_READABLE else "release"
+
+
+async def _put_release(s: AsyncSession, r: dict[str, Any], decider: str, removals_only: bool) -> bool:
+    """A release from a decisions file, as an exemption of its exact JARVIS row; whether it was added."""
+    who = _release_who(r, decider, removals_only)
+    decided_on = r.get("decided_on") if isinstance(r.get("decided_on"), str) else ""
+    return await identity.put_exemption(s, _release_exact(r), anchor=r["anchor"], kind=_release_kind(r),
+                                        decided_on=decided_on, reason=who["reason"], decided_by=who["decided_by"],
+                                        decided_at=who.get("decided_at"))
+
+
+async def _carry_tables(s: AsyncSession, data: dict[str, Any]) -> Counter[str]:
+    """A version 5 file's decision backups, family links and frozen conversations, added here (never one changed, a
+    backup settled on the test copy is settled here too: settled_run_id 0, a run of another installation)."""
+    out: Counter[str] = Counter()
+    for b in data.get("backups") or [] if isinstance(data.get("backups"), list) else []:
+        sha = b.get("sha256") if isinstance(b, dict) else None
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+            continue
+        out["backups"] += (await s.execute(pg_insert(BrainDecisionBackup).values(
+            sha256=sha, label=str(b.get("label") or "")[:200], importer_version=str(b.get("importer_version") or "")[:40],
+            newest_at=_when(b.get("newest_at")), first_run_id=None,
+            settled_run_id=0 if b.get("settled") is True else None).on_conflict_do_nothing())).rowcount or 0
+        if b.get("settled") is True:
+            await s.execute(update(BrainDecisionBackup).where(BrainDecisionBackup.sha256 == sha,
+                                                              BrainDecisionBackup.settled_run_id.is_(None))
+                            .values(settled_run_id=0))
+    for link in data.get("links") or [] if isinstance(data.get("links"), list) else []:
+        if not isinstance(link, dict) or not all(isinstance(link.get(k), str) and link[k] for k in ("a", "b", "how")):
+            continue
+        if link["how"] not in ("parent", "branched_from", "compressed_from", "shared_uid", "copied_rows"):
+            continue
+        out["links"] += (await s.execute(pg_insert(BrainSessionLink).values(
+            a=link["a"][:200], b=link["b"][:200], how=link["how"]).on_conflict_do_nothing())).rowcount or 0
+    for f in data.get("frozen") or [] if isinstance(data.get("frozen"), list) else []:
+        if not isinstance(f, dict) or not isinstance(f.get("session"), str) or not f["session"]:
+            continue
+        values: dict[str, Any] = {"source_session_id": f["session"][:200], "frozen_by": str(f.get("by") or "")[:200]}
+        if _when(f.get("at")) is not None:
+            values["frozen_at"] = _when(f.get("at"))
+        out["frozen"] += (await s.execute(pg_insert(BrainFrozenSession).values(**values)
+                                          .on_conflict_do_nothing())).rowcount or 0
+    return out
 
 
 def _release_who(r: dict[str, Any], decider: str, removals_only: bool) -> dict[str, Any]:
@@ -4505,30 +5108,6 @@ def _release_who(r: dict[str, Any], decider: str, removals_only: bool) -> dict[s
     return out
 
 
-async def _follow_release(s: AsyncSession, row: tuple[str, str, str], uid: str, chars: int,
-                          who: dict[str, Any]) -> set[tuple[str, str, str]]:
-    """The exemptions a carried release adds here for the same message renumbered: only when no stored row names
-    the released JARVIS row, and only the readable or held rows of that conversation with its uid and its length."""
-    anchor, session_id, row_id = row
-    if not uid or chars < 0:
-        return set()
-    here = select(ArchiveMessage.id).join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id).where(
-        ArchiveSession.source_session_id == session_id)
-    if await s.scalar(here.where(ArchiveMessage.source_message_id == row_id).limit(1)) is not None:
-        return set()
-    out: set[tuple[str, str, str]] = set()
-    for rid in (await s.scalars(select(ArchiveMessage.source_message_id)
-                                .join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
-                                .where(ArchiveSession.source_session_id == session_id,
-                                       ArchiveMessage.source_uid == uid, ArchiveMessage.content_chars == chars)
-                                .order_by(ArchiveMessage.id))).all():
-        ident = (anchor, session_id, (rid or "")[:200])
-        if rid and (await s.execute(pg_insert(BrainWithholdExemption).values(
-                anchor_key=anchor, source_session_id=session_id, source_row_id=ident[2],
-                source_uid=uid, content_chars=chars, **{**who, "reason": (
-                    "%s (the same message: renumbered)" % who["reason"])[:200]}).on_conflict_do_nothing())).rowcount:
-            out.add(ident)
-    return out
 RELEASE_DONE = ("released", "already done", "kept for later imports")
 
 
@@ -4553,7 +5132,12 @@ def _carried_stone(r: dict[str, Any], *, via: str, after: int) -> identity.Stone
                           role=text("role", 40), tool_call_id=text("tool_call_id"), uid=uid, uid_known=uid_known,
                           via=via, review=review, bound=bool(row or uid), after_run=after,
                           title_hidden=r.get("title_hidden") is True, at=_when(r.get("at_row")) if row else None,
-                          uid_learned_at=_when(r.get("uid_learned_at")) if uid and not uid_known else None)
+                          decided_on=text("decided_on", 64),
+                          kept_by=text("kept_by") if review == identity.KEPT else "",
+                          kept_at=_when(r.get("kept_at")) if review == identity.KEPT else None,
+                          relations=tuple(identity.relation_order(
+                              x for x in (r.get("relations") if isinstance(r.get("relations"), list) else [])
+                              if isinstance(x, str))))
 
 
 async def _apply_removal(s: AsyncSession, r: Any, user: Any, review: Any, *, via: str, after: int) -> str:
@@ -4562,11 +5146,11 @@ async def _apply_removal(s: AsyncSession, r: Any, user: Any, review: Any, *, via
     applied.
 
     A withhold's stone is written in a savepoint of its own: when the withhold itself is refused here, the stone
-    stays, so the next import brings the message back withheld. The rows it names are found by key and by the JARVIS
-    row it names (identity.rows_for); a row that only shares its uid is held for review with that evidence
-    (identity.UID_UNCOMPARED: nothing here can compare its text, so never a member, as an import holds it); a fold
-    that absorbed it is withheld. A hold carried from the test copy is held on its own row. A purge and its tombstone go
-    together: a refusal (the sensitive-data permission) leaves neither."""
+    stays, so the next import brings the message back withheld. The rows it names are found by key and by the exact
+    JARVIS row it names (identity.exact_rows); nothing else is re-derived from stored data (0.6.2 plan step 6: a
+    version 4 file's families are a later backup for the next import, Settle decides the decision backup). A hold
+    carried from the test copy is held on its own row. A purge and its tombstone go together: a refusal (the
+    sensitive-data permission) leaves neither."""
     if not isinstance(r, dict) or not isinstance(r.get("source_key"), str) or not r["source_key"] or r.get(
             "reason") not in (WITHHELD_BY_ADMIN, PURGED_BY_ADMIN):
         return "not a removal"
@@ -4578,10 +5162,10 @@ async def _apply_removal(s: AsyncSession, r: Any, user: Any, review: Any, *, via
                 existed = await s.get(BrainTombstone, key) is not None
                 await identity.put_stone(s, binding, actor=user.email)
             async with s.begin_nested():
-                certain, uid_only = await identity.rows_for(s, binding)
+                certain = await identity.exact_rows(s, binding)
                 if binding.review == identity.PENDING:
-                    # A hold on the test copy is a hold here: its own row (key or JARVIS row), never one that only
-                    # shares its uid (a hold's uid is the held row's own), never a row an admin released here.
+                    # A hold on the test copy is a hold here: its own row (key or JARVIS row), never a row an admin
+                    # released here.
                     outcome = "already done" if existed else "kept for later imports"
                     for message in certain:
                         await s.refresh(message)
@@ -4590,7 +5174,7 @@ async def _apply_removal(s: AsyncSession, r: Any, user: Any, review: Any, *, via
                         if message.withheld or await identity.exempt_covers(s, binding.group, sid or "", message):
                             continue
                         done = await review.hold_message(s, message, anchor=binding.group, actor=user.email,
-                                                         cause=via, rule=binding.via)
+                                                         cause=via, rule=binding.via, relations=binding.relations)
                         await audit.record(s, user.email, "archive.message_held", "archive_message", message.id, {
                             "message": message.id, "session": message.session_id, "anchor": binding.group,
                             "rule": binding.via, "copies": [c["item"] for c in done.copies],
@@ -4599,27 +5183,13 @@ async def _apply_removal(s: AsyncSession, r: Any, user: Any, review: Any, *, via
                             "answers_scrubbed": done.answers_scrubbed, "via": via})
                         outcome = "held for review"
                     return outcome
-                # Members no withhold below reaches: a fold that absorbed it (it holds the text), and the copy Hermes
-                # wrote again of a row an import deleted as rewound (the importer's twin link, from stored data: read
-                # before withhold_copies blanks that rollback copy). A twin with another uid is a hold.
-                joins = [(row, "merged into another message", identity.CERTAIN)
-                         for row in await identity.folds_of(s, binding)]
-                if not certain and not uid_only:
-                    joins += [(row, "copied by JARVIS" if review_ == identity.CERTAIN else "same text", review_)
-                              for row, review_ in await identity.rewound_twins(s, binding)]
-                    if not joins:
-                        # Nothing names it here (live never stored that JARVIS row id: the test copy's backup predates
-                        # the uid backfill, or Hermes renumbered or rewound it first): the rows at its very role, call
-                        # and time, in its conversation or in a copied history whose link to it is broken, are held
-                        # (review 2, S1/S2), never left readable until a later import.
-                        joins += [(row, rule, identity.PENDING)
-                                  for row, rule in await identity.same_time_rows(s, binding)]
+                held_here = await _hold_other_backup(s, binding, certain, user, review, via=via)
+                if not certain:
                     # No row of it here (not imported yet, or removed by a rollback or an import): its rollback
                     # copies, and the items promoted from an earlier row of it, which kept the text, lose it.
                     await withhold_copies(s, source_keys=[key], actor=user.email, cause=via)
-                    if not joins:
-                        return "already done" if existed else "kept for later imports"
-                outcome = "already done"
+                    return "held for review" if held_here else "already done" if existed else "kept for later imports"
+                outcome = "held for review" if held_here else "already done"
                 # The admin's own title choice (0.6.x withholds, carried as 'upgrade', made none: the default applies)
                 hide = (r["title_hidden"] if isinstance(r.get("title_hidden"), bool) and not binding.anchor
                         and r.get("review") != identity.PENDING and r.get("via") != "upgrade" else None)
@@ -4633,41 +5203,6 @@ async def _apply_removal(s: AsyncSession, r: Any, user: Any, review: Any, *, via
                                                          hide_title=hide)
                     await _withheld_audit(s, user, message, done, tombstone=not existed, via=via)
                     outcome = "withheld"
-                for message, rule, review_ in joins:
-                    await s.refresh(message)
-                    if message.withheld:
-                        continue
-                    done = await review.hold_message(s, message, anchor=binding.group, actor=user.email, cause=via,
-                                                     rule=rule, review=review_)
-                    if review_ == identity.CERTAIN:
-                        await _withheld_audit(s, user, message, done, tombstone=not existed, via=via)
-                        outcome = "withheld"
-                        continue
-                    await audit.record(s, user.email, "archive.message_held", "archive_message", message.id, {
-                        "message": message.id, "session": message.session_id, "anchor": binding.group,
-                        "rule": rule, "copies": [c["item"] for c in done.copies],
-                        "versions_blanked": done.versions_blanked,
-                        "rollback_copies_blanked": done.rollback_copies_blanked,
-                        "answers_scrubbed": done.answers_scrubbed, "via": via})
-                    if outcome != "withheld":
-                        outcome = "held for review"
-                for message in uid_only:
-                    await s.refresh(message)
-                    if message.withheld:
-                        continue
-                    # The same Hermes uid, and nothing here to compare its text with (no row of the withheld message
-                    # is stored here): probably the same message, but never a member from "nothing to compare" (as an
-                    # import holds it, R-uid): held, listed with that evidence, for an admin to keep or release.
-                    done = await review.hold_message(s, message, anchor=binding.group, actor=user.email, cause=via,
-                                                     rule=identity.UID_UNCOMPARED)
-                    await audit.record(s, user.email, "archive.message_held", "archive_message", message.id, {
-                        "message": message.id, "session": message.session_id, "anchor": binding.group,
-                        "rule": identity.UID_UNCOMPARED, "copies": [c["item"] for c in done.copies],
-                        "versions_blanked": done.versions_blanked,
-                        "rollback_copies_blanked": done.rollback_copies_blanked,
-                        "answers_scrubbed": done.answers_scrubbed, "via": via})
-                    if outcome != "withheld":
-                        outcome = "held for review"
                 return outcome
         async with s.begin_nested():
             existed = await _tombstone(s, key, reason, user)
@@ -4692,6 +5227,34 @@ async def _apply_removal(s: AsyncSession, r: Any, user: Any, review: Any, *, via
         return "%s on the test copy, refused here: %s" % (reason, exc)
     except (DataError, IntegrityError):
         return "%s on the test copy, refused here by the database" % reason
+
+
+async def _hold_other_backup(s: AsyncSession, binding: identity.Stone, certain: list[ArchiveMessage], user: Any,
+                             review: Any, *, via: str) -> int:
+    """0.6.2 plan 5.3 (R5/S2/rv3-res-3, S1 (c)): a decision carried to a database whose newest import of the
+    conversation family is of another JARVIS backup than the one it was decided on is not replayed there (3.3), and
+    that database stored the family's rows before the decision arrived. The readable rows of the family that an import
+    of another backup stored are held for review at once (fail-safe; identity.other_backup_rows: nothing can compare
+    their text), unless an admin's release or 'left readable' choice covers that exact row. A restore (the same
+    installation, whose imports already decided these rows) holds nothing. Returns how many rows it held."""
+    if via == "restore" or not binding.session:
+        return 0
+    here_on = await identity.decision_backup(s, [binding.session])
+    if not here_on or here_on == binding.decided_on:
+        return 0
+    held = 0
+    for message, sid, rel in await identity.other_backup_rows(s, binding, exclude=[m.id for m in certain]):
+        if await identity.exempt_covers(s, binding.group, sid, message):
+            continue
+        done = await review.hold_message(s, message, anchor=binding.group, actor=user.email, cause=via,
+                                         rule=identity.OTHER_BACKUP_HOLD, relations=rel)
+        await audit.record(s, user.email, "archive.message_held", "archive_message", message.id, {
+            "message": message.id, "session": message.session_id, "anchor": binding.group,
+            "rule": identity.OTHER_BACKUP_HOLD, "copies": [c["item"] for c in done.copies],
+            "versions_blanked": done.versions_blanked, "rollback_copies_blanked": done.rollback_copies_blanked,
+            "answers_scrubbed": done.answers_scrubbed, "via": via})
+        held += 1
+    return held
 
 
 def _carry_keep(message: ArchiveMessage, r: dict[str, Any], user: Any, *, removals_only: bool) -> None:
@@ -4740,19 +5303,15 @@ async def _apply_release(s: AsyncSession, r: Any, user: Any, review: Any, *, via
     if not isinstance(r, dict) or not all(isinstance(r.get(k), str) and r[k] for k in names):
         return "not a release"
     anchor, session_id, row_id = (r[k][:200] if k != "anchor" else r[k] for k in names)
-    uid, chars = _release_binding(r)
     who = _release_who(r, user.email, removals_only)
     async with s.begin_nested():
-        added = (await s.execute(pg_insert(BrainWithholdExemption).values(
-            anchor_key=anchor, source_session_id=session_id, source_row_id=row_id, source_uid=uid, content_chars=chars,
-            **who).on_conflict_do_nothing())).rowcount or (anchor, session_id, row_id) in fresh
-        followed = sorted(x[2] for x in fresh if x[:2] == (anchor, session_id) and x[2] != row_id)
+        added = await _put_release(s, r, user.email, removals_only) or (anchor, session_id, row_id) in fresh
         held = (await s.execute(
             select(ArchiveMessage, ArchiveSession, BrainTombstone)
             .join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
             .join(BrainTombstone, BrainTombstone.source_key == ArchiveMessage.source_key)
             .where(ArchiveSession.source_session_id == session_id,
-                   ArchiveMessage.source_message_id.in_([row_id, *followed]),
+                   ArchiveMessage.source_message_id == row_id,
                    ArchiveMessage.withheld.is_(True), BrainTombstone.reason == WITHHELD_BY_ADMIN,
                    BrainTombstone.review == identity.PENDING,
                    func.coalesce(func.nullif(BrainTombstone.anchor_key, ""), BrainTombstone.source_key) == anchor)
@@ -4763,7 +5322,7 @@ async def _apply_release(s: AsyncSession, r: Any, user: Any, review: Any, *, via
                 continue  # another version of the row (other content): the release does not cover it
             try:
                 async with s.begin_nested():
-                    stone = await review.release_hold(s, message, sess, actor=user.email,
+                    stone = await review.release_hold(s, message, sess, actor=user.email, confirmed=True,
                                                       decided_by=who["decided_by"], decided_at=who.get("decided_at"),
                                                       reason=who["reason"])
             except store.BrainError:
@@ -4772,12 +5331,11 @@ async def _apply_release(s: AsyncSession, r: Any, user: Any, review: Any, *, via
                 "message": message.id, "session": message.session_id,
                 "anchor": stone.anchor_key or stone.source_key, "rule": stone.via, "via": via})
             released += 1
-        if not released and ((anchor, session_id, row_id) in fresh or followed):
+        if not released and (anchor, session_id, row_id) in fresh:
             # Recorded before the removals, the release kept the row readable here: no withhold above held it.
             for message in (await s.scalars(select(ArchiveMessage).join(
                     ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id).where(
-                    ArchiveSession.source_session_id == session_id,
-                    ArchiveMessage.source_message_id.in_([row_id, *followed]),
+                    ArchiveSession.source_session_id == session_id, ArchiveMessage.source_message_id == row_id,
                     ArchiveMessage.withheld.is_(False)).order_by(ArchiveMessage.id))).all():
                 await audit.record(s, user.email, "archive.hold_released", "archive_message", message.id, {
                     "message": message.id, "session": message.session_id, "anchor": anchor, "rule": "",

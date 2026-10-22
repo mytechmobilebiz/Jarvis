@@ -23,13 +23,11 @@ from pathlib import Path
 
 import asyncpg
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app import db
-from app.brain import identity
 
 from .. import brain_jarvis as bj
-from .test_brain_identity_migration import FX_061, FX_EXTRA, READABLE, WITHHELD_BY_REPAIR, _base, _state
+from .test_brain_identity_migration import FX_061, FX_EXTRA, WITHHELD_BY_REPAIR, _base, _state
 from .test_brain_schema import _migrate
 
 BACKEND = Path(__file__).resolve().parents[2]
@@ -95,9 +93,10 @@ async def test_upgrade_from_0_5_0_0_6_0_0_6_1_with_and_without_data_withholds_an
         assert await conn.fetchval("SELECT count(*) FROM pg_trigger WHERE tgname = 'archive_messages_keep_withheld'")
         pending = json.loads(await conn.fetchval("SELECT brain_withhold_pending()"))
         assert pending["repair_done"] and pending["readable_by_key"] == pending["readable_by_jarvis_row"] == 0
-        if data:  # every leak state withheld, the inverse rows readable, every tombstone kept (reasons unchanged)
+        if data:  # 0.6.x Brain data: marked legacy (0.6.2 plan 1.7), never re-derived; every tombstone kept
             state = await _state(conn)
-            assert state["withheld_by_repair"] == WITHHELD_BY_REPAIR and state["readable"] == READABLE
+            assert state["withheld_by_repair"] == WITHHELD_BY_REPAIR
+            assert pending["legacy_lock"] is True
             reasons = dict(await conn.fetch("SELECT source_key, reason FROM brain_tombstones"))
             assert reasons["jarvis:file:profile/memories/MEMORY.md#entry-0123456789abcdef"] == "purged by an admin"
             assert {k for k, r in reasons.items() if r == "withheld by an admin"} >= {
@@ -107,6 +106,7 @@ async def test_upgrade_from_0_5_0_0_6_0_0_6_1_with_and_without_data_withholds_an
                                        "'brain.withhold_identity_repaired'") == 1
         else:
             assert await conn.fetchval("SELECT count(*) FROM audit_log") == 0
+            assert pending["legacy_lock"] is False
     finally:
         await conn.close()
 
@@ -287,89 +287,21 @@ async def legacy_061(scratch, tmp_path):
     return {"url": scratch, "fx": fx, "backend": backend, "item": item, "task": task, "summaries": summaries}
 
 
-async def _readable_marks(conn: asyncpg.Connection) -> dict[str, int]:
-    return {mark: await conn.fetchval("SELECT count(*) FROM archive_messages WHERE NOT withheld AND content LIKE "
-                                      "'%' || $1 || '%'", mark) for mark in MARKS.values()}
-
-
-async def _nowhere(conn: asyncpg.Connection, marker: str) -> list[str]:
-    found = []
-    for table, column in await conn.fetch(
-            "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' AND "
-            "data_type IN ('text', 'character varying', 'jsonb', 'json', 'ARRAY', 'tsvector')"):
-        if await conn.fetchval('SELECT EXISTS (SELECT 1 FROM "%s" WHERE "%s"::text ILIKE $1)' % (table, column),
-                               "%" + marker + "%"):
-            found.append("%s.%s" % (table, column))
-    return sorted(found)
-
-
-async def test_real_0_6_1_importer_leak_states_are_closed_before_the_first_request(legacy_061):
+async def test_real_0_6_1_importer_data_is_marked_legacy_by_the_migration(legacy_061):
+    """0.6.2 plan 1.7: what the real 0.6.1 importer left (two runs by importer 1.0.1, three withholds) is legacy Brain
+    data: the migration marks it (the legacy lock hides it and refuses imports until the legacy reset re-imports it
+    from the JARVIS backup, plan 8) instead of re-deriving 0.6.1's leaks by text; it keeps no plain fingerprint of a
+    withheld row, and the rules that need no re-derivation (key, exact JARVIS row) leave nothing readable."""
     assert await _migrate(legacy_061["url"]) == ["0008_brain_withhold_identity"]
     conn = await asyncpg.connect(legacy_061["url"])
     try:  # the migration alone: before any process serves a request
-        assert await _readable_marks(conn) == {mark: 0 for mark in MARKS.values()}
+        legacy = json.loads(await conn.fetchval(
+            "SELECT detail FROM brain_maintenance WHERE name = 'legacy_brain_data'"))
+        assert legacy["runs_by_an_older_importer"] == 2 and legacy["withholds_before_0008"] == len(MARKS)
         assert await conn.fetchval("SELECT count(*) FROM archive_messages WHERE withheld AND source_fp NOT LIKE "
                                    "'w1:%' AND source_fp <> ''") == 0
         pending = json.loads(await conn.fetchval("SELECT brain_withhold_pending()"))
         assert pending["readable_by_key"] == pending["readable_by_jarvis_row"] == 0 and pending["repair_done"]
-        # A-tail: the copy is held for review (0.6.1's own fingerprint, in the withheld conversation, stored after the
-        # withhold); B and C1 are members (the importer's duplicate record; the JARVIS row).
-        held = await conn.fetchval("SELECT count(*) FROM archive_messages m JOIN brain_tombstones t ON "
-                                   "t.source_key = m.source_key WHERE t.review = 'pending'")
-        assert held >= 1
+        assert pending["legacy_lock"] is True
     finally:
         await conn.close()
-
-
-async def test_start_up_step_empties_copies_scrubs_quotes_recomputes_summaries(legacy_061):
-    assert legacy_061["summaries"] >= 1  # 0.6.1 summarised a session with the leaked text
-    assert await _migrate(legacy_061["url"]) == ["0008_brain_withhold_identity"]
-    engine = create_async_engine(legacy_061["url"].replace("postgresql://", "postgresql+asyncpg://", 1))
-    try:
-        async with async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)() as s:
-            counts = await identity.repair(s, actor="system (start-up check)", cause="startup-check")
-            await s.commit()
-        assert counts["copies_emptied"] >= 1 and counts["sessions_recomputed"] >= 1
-    finally:
-        await engine.dispose()
-    conn = await asyncpg.connect(legacy_061["url"])
-    try:
-        item = await conn.fetchrow("SELECT title, body, status FROM memory_items WHERE id = $1", legacy_061["item"])
-        assert (item["body"], item["status"]) == ("", "quarantined")
-        answer = json.loads(await conn.fetchval("SELECT result FROM tasks WHERE id = $1", legacy_061["task"]))
-        assert answer["data"]["answer"][1].startswith("- [removed")
-        for mark in MARKS.values():
-            assert await _nowhere(conn, mark) == [], mark
-        assert await conn.fetchval("SELECT count(*) FROM archive_sessions WHERE flags ? 'withhold_repair_pending'") == 0
-    finally:
-        await conn.close()
-
-
-async def test_next_import_promotes_upgrade_holds_to_members_when_text_matches(legacy_061):
-    assert await _migrate(legacy_061["url"]) == ["0008_brain_withhold_identity"]
-    conn = await asyncpg.connect(legacy_061["url"])
-    try:
-        held = [r["source_key"] for r in await conn.fetch(
-            "SELECT t.source_key FROM brain_tombstones t WHERE t.review = 'pending' AND t.via LIKE 'upgrade:%'")]
-    finally:
-        await conn.close()
-    assert held
-    fx = legacy_061["fx"]
-    env = {**os.environ, "DATABASE_URL": legacy_061["url"].replace("postgresql://", "postgresql+asyncpg://", 1)}
-    done = subprocess.run([sys.executable, "-m", "app.cli", "brain-import", "run", "--db", fx["db"], "--profile",
-                           fx["profile"], "--content", fx["content"], "--all"], cwd=str(BACKEND), env=env,
-                          capture_output=True, text=True, timeout=300)
-    assert done.returncode == 0, done.stdout + done.stderr
-    conn = await asyncpg.connect(legacy_061["url"])
-    try:
-        reviews = dict(await conn.fetch("SELECT source_key, review FROM brain_tombstones WHERE source_key = "
-                                        "ANY($1::text[])", held))
-        assert set(reviews.values()) == {""}, reviews  # the same text as the withheld message: members now
-        assert await _readable_marks(conn) == {mark: 0 for mark in MARKS.values()}
-        run_id = await conn.fetchval("SELECT max(id) FROM import_runs")
-    finally:
-        await conn.close()
-    verify = subprocess.run([sys.executable, "-m", "app.cli", "brain-import", "verify", "--run", str(run_id), "--db",
-                             fx["db"], "--profile", fx["profile"], "--content", fx["content"]], cwd=str(BACKEND),
-                            env=env, capture_output=True, text=True, timeout=300)
-    assert verify.returncode == 0 and "withheld_identity_holds" in verify.stdout, verify.stdout + verify.stderr

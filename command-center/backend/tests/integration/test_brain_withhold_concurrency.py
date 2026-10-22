@@ -41,14 +41,14 @@ def secret(mark: str) -> str:
     return "The new vendor contract with %s is worth forty thousand dollars a year." % mark
 
 
-def backup(tmp_path, mark: str) -> dict[str, str]:
+def backup(tmp_path, mark: str, *, uids: bool = True) -> dict[str, str]:
     fx = bj.mini(tmp_path / "fx")
     bj.add_session(fx["db"], "cc_01", started=T)
     for n, (role, content) in enumerate([("user", "Please summarise the vendor situation."),
                                          ("assistant", "Sure, here it is."), ("user", "The headline number?"),
                                          ("assistant", secret(mark)), ("user", "And the other vendor?"),
                                          ("assistant", "No change there.")]):
-        bj.add_row(fx["db"], "cc_01", role, content, T + n + 1)
+        bj.add_row(fx["db"], "cc_01", role, content, T + n + 1, uid=None if uids else False)
     return fx
 
 
@@ -188,8 +188,12 @@ async def test_start_up_check_with_import_lock_refreshes_quotes_and_worker_retri
         s.add(task)
         await s.flush()
         task_id = task.id
-        s.add(BrainTombstone(source_key="jarvis:message:cc_01:999", purged_by=ADMIN[0],
-                             reason=identity.WITHHELD_BY_ADMIN))  # a stone the repair still has to bind
+        # a readable row whose key an admin's stone names: the repair still has to withhold it (R4a; 0.6.2 plan 1.6
+        # deleted the binding of unbound stones this test used before)
+        other = await s.scalar(select(ArchiveMessage).where(ArchiveMessage.withheld.is_(False),
+                                                            ArchiveMessage.id != row.id).limit(1))
+        other_id = other.id
+        s.add(BrainTombstone(source_key=other.source_key, purged_by=ADMIN[0], reason=identity.WITHHELD_BY_ADMIN))
     locks = await held_import_lock()
     try:
         assert await check_withheld_copies() is False
@@ -197,7 +201,7 @@ async def test_start_up_check_with_import_lock_refreshes_quotes_and_worker_retri
         async with session_scope() as s:
             answer = (await s.get(Task, task_id)).result["data"]["answer"]
             assert answer[1] == REMOVED  # quotes are refreshed even while the import holds the lock
-            assert not (await s.get(BrainTombstone, "jarvis:message:cc_01:999")).bound  # the repair waits
+            assert not (await s.get(ArchiveMessage, other_id)).withheld  # the repair waits
         worker = make_worker(withheld_check_done=False)
         await worker.tick()
         assert worker._withheld_check_done is False
@@ -209,7 +213,7 @@ async def test_start_up_check_with_import_lock_refreshes_quotes_and_worker_retri
     await worker.tick()
     assert worker._withheld_check_done is True
     async with session_scope() as s:
-        assert (await s.get(BrainTombstone, "jarvis:message:cc_01:999")).bound
+        assert (await s.get(ArchiveMessage, other_id)).withheld
 
 
 async def test_two_bootstraps_one_repair_one_audit(tmp_path, monkeypatch):
@@ -281,7 +285,9 @@ async def test_two_admins_withholding_twins(client, tmp_path):
     the second waits for nothing (409 while the first holds the import lock), then finds its row already withheld as
     a member of the first admin's group (400). One admin stone, the twin a member: no text, no second group."""
     mark = "zqconctwins"
-    fx = backup(tmp_path, mark)
+    # 0.6.1 stored the row before Hermes's uid backfill (no uid) and again after it (under its new uid): one JARVIS
+    # row (exact identity: the first copy has no uid to conflict with; plan 3.1)
+    fx = backup(tmp_path, mark, uids=False)
     await imp.run(bj.paths(fx), ALL)
     first = await row_with(mark)
     async with session_scope() as s:  # what 0.6.1 left after a uid backfill: the same JARVIS row stored twice

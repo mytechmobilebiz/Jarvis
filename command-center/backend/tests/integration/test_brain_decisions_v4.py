@@ -105,6 +105,7 @@ async def test_a_kept_hold_and_a_release_carry_over_to_the_live_installation(cli
     await run(fx)
     await _hold_decision(client, "prune_01", stub1, twin1, "release")
     await _hold_decision(client, "prune_02", stub2, twin2, "keep")
+    await bj.settle(fx)  # 0.6.2 plan 4.7: decisions-export refuses until the withholds are finished
     out = tmp_path / "decisions.json"
     assert (await imp.decisions_export(str(out)))["releases"] == 1
     await _fresh_production()
@@ -176,7 +177,8 @@ async def test_removals_only_needs_no_run_and_no_admin_and_audits_restore(client
 
 async def test_a_newer_file_and_a_missing_run_are_refused(tmp_path):
     out = tmp_path / "decisions.json"
-    out.write_text(json.dumps({"format": "jarvis-brain-decisions", "version": 5, "removals": []}))
+    out.write_text(json.dumps({"format": "jarvis-brain-decisions", "version": imp.DECISIONS_VERSION + 1,
+                               "removals": []}))
     with pytest.raises(imp.Refused, match="newer Command Center"):
         await imp.decisions_apply(str(out), 1, actor=ADMIN[0], apply=True)
     out.write_text(json.dumps({"format": "jarvis-brain-decisions", "version": 4, "removals": []}))

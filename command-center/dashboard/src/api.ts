@@ -655,7 +655,7 @@ export interface ArchiveSession {
   agent: string;
   origin: "chat" | "scheduled";
   channel: string;
-  lineage: "" | "continuation" | "branch" | "delegated";
+  lineage: "" | "continuation" | "branch" | "delegated" | "reset";
   parent_source_session_id: string;
   job_id: string;
   job_name: string;

@@ -134,7 +134,9 @@ async def test_a_newer_copy_never_brings_back_a_message_an_admin_withheld(fx):
     await imp.run(bj.paths(fx), ALL)
     async with session_scope() as s:
         message = await s.get(ArchiveMessage, first_user.id)
-        assert (message.withheld, message.content, message.tool_calls, message.state) == (True, "", [], "compacted")
+        # 0.6.2 plan 5.2: the newer backup is a later backup of a withheld family: its stored rows are never rewritten
+        # (it used to take the 'compacted' state)
+        assert (message.withheld, message.content, message.tool_calls, message.state) == (True, "", [], "live")
         assert "withheld_by_admin" in message.flags
         # One withheld message does not make its conversation restricted: the next import withholds nothing more.
         assert message.sensitivity == first_user.sensitivity

@@ -7,7 +7,12 @@
 #     -BackupDb C:\InfiniteAI\JarvisMigration\backups\jarvis-state-<time>.db -Restored C:\InfiniteAI\JarvisMigration\restored
 #   ... -Mode Import -Sample 5        then review, then -Sample <about 10 % of the sessions>, then review, then -All
 #   ... -Mode Verify -Run <id>        -Mode Status [-Run <id>]        -Mode Rollback -Run <id> [-DiscardReviewed]
-#   ... -Mode ExportDecisions (test copy)     -Mode ApplyDecisions -Decisions <file> -Run <id> -Actor <admin email> (live)
+#   ... -Mode Settle (test copy, 0.6.2: after withholding, finish the decisions on the newest backup imported; review
+#       what it holds), then -Mode ExportDecisions (refused until every withhold is finished and reviewed), then on
+#       live, with the very same backup file:
+#       -Mode Import -All -Decisions <file> -Actor <admin email>   (0.6.2: the withholds, releases and purges apply
+#       first, then the import replays the decisions taken on that backup; a version 5 file)
+#   ... -Mode ApplyDecisions -Decisions <file> -Run <id> -Actor <admin email>   (after an import: version 3 and 4 files)
 #   ... -Mode Resume -Run <id>        -Mode Rescan        -Mode Repair (0.6.2: withhold what is the same message as a
 #       withheld one now, without waiting for the next start or import)
 #
@@ -50,13 +55,13 @@ if ($PSVersionTable.PSEdition -eq "Core" -and -not $IsWindows) { $onWindows = $f
 
 # --- Parameters ---------------------------------------------------------------------------------------------------
 $targets = @("Test", "Production")
-$modes = @("Plan", "Import", "Resume", "Verify", "Rollback", "Status", "ExportDecisions", "ApplyDecisions", "Rescan",
-  "Repair")
+$modes = @("Plan", "Import", "Settle", "Resume", "Verify", "Rollback", "Status", "ExportDecisions", "ApplyDecisions",
+  "Rescan", "Repair")
 if ($targets -notcontains $Target) { Stop-Brain "give -Target Test or -Target Production" }
 if ($modes -notcontains $Mode) { Stop-Brain ("give -Mode " + ($modes -join ", ")) }
 $Target = $targets | Where-Object { $_ -eq $Target }
 $Mode = $modes | Where-Object { $_ -eq $Mode }
-$readsSource = @("Plan", "Import", "Resume", "Verify") -contains $Mode
+$readsSource = @("Plan", "Import", "Settle", "Resume", "Verify") -contains $Mode
 if (@("Resume", "Verify", "Rollback", "ApplyDecisions") -contains $Mode -and $Run -le 0) { Stop-Brain "-Mode $Mode needs -Run <import run number> (see -Mode Status)" }
 if ($Run -lt 0) { Stop-Brain "-Run must be a positive number" }
 foreach ($date in @($Since, $Until)) {
@@ -84,7 +89,8 @@ if ($Mode -eq "Plan" -or $Mode -eq "Import") {
   Stop-Brain "-Sample, -FilesSample, -All, -Since, -Until and -NoFiles go with -Mode Plan or Import"
 }
 if ($Mode -eq "ApplyDecisions" -and -not $Decisions) { Stop-Brain "-Mode ApplyDecisions needs -Decisions <decisions file exported from the test copy>" }
-if ($Mode -eq "ApplyDecisions" -and -not $Actor) { Stop-Brain "-Mode ApplyDecisions needs -Actor <your admin email> (recorded as the reviewer of each decision)" }
+if (@("ApplyDecisions", "Import") -contains $Mode -and $Decisions -and -not $Actor) { Stop-Brain "-Mode $Mode -Decisions needs -Actor <your admin email> (recorded as the reviewer of each decision)" }
+if ($Decisions -and @("ApplyDecisions", "Import") -notcontains $Mode) { Stop-Brain "-Decisions goes with -Mode Import (version 5 files) or -Mode ApplyDecisions (older files)" }
 
 # --- Checks before anything runs ----------------------------------------------------------------------------------
 Assert-Docker
@@ -170,9 +176,34 @@ if ($readsSource) {
     }
   }
 }
-if ($Mode -eq "ApplyDecisions") {
+$decisionsVersion = 0
+$decisionsData = $null
+if ($Decisions) {
   $Decisions = Get-FullPath $Decisions
   if (-not (Test-Path -LiteralPath $Decisions -PathType Leaf)) { Stop-Brain "decisions file not found: $Decisions" }
+  try { $decisionsData = Get-Content -LiteralPath $Decisions -Raw | ConvertFrom-Json } catch { Stop-Brain "the decisions file could not be read as JSON: $Decisions" }
+  if ([string]$decisionsData.format -ne "jarvis-brain-decisions") { Stop-Brain "$Decisions is not a decisions file exported by -Mode ExportDecisions" }
+  $decisionsVersion = [int]$decisionsData.version
+  # 0.6.2 plan 3.3: a version 5 file goes with the import itself (its withholds apply before any row is written, so no
+  # withheld text is readable at any moment); applying it after an import is for older (version 3 and 4) files only.
+  if ($Mode -eq "ApplyDecisions" -and $decisionsVersion -ge 5) {
+    Stop-Brain "this decisions file is version ${decisionsVersion}: give it to the import itself (-Mode Import -All -Decisions <file> -Actor <admin email>, with the very backup file the test copy imported), not after it"
+  }
+  if ($Mode -eq "Import" -and $decisionsVersion -lt 5) {
+    Stop-Brain "-Mode Import -Decisions needs a version 5 decisions file (this one is version $decisionsVersion); apply an older file after the import with -Mode ApplyDecisions"
+  }
+  if ($Mode -eq "Import") {
+    # The decisions are replayed only on the very backup file they were taken on (its SHA-256) by the same importer
+    # version; any other file is imported as a later backup for the conversations that hold a withheld message
+    # (new rows held for review): allowed, and said here first.
+    $backupSha = (Get-FileHash -LiteralPath $BackupDb -Algorithm SHA256).Hash.ToLowerInvariant()
+    $decided = @($decisionsData.backups | ForEach-Object { [string]$_.sha256 })
+    if ($decided -notcontains $backupSha) {
+      Write-Host "WARNING: $BackupDb (SHA-256 $backupSha) is not the backup the decisions in $Decisions were taken on: conversations with a withheld message are imported as a later backup (their new rows are held for review). Import the very file the test copy imported to replay its decisions exactly." -ForegroundColor Yellow
+    } else {
+      Write-Host "The decisions were taken on this very backup file (SHA-256 $backupSha): the import replays them." -ForegroundColor Green
+    }
+  }
 }
 
 # The installation the import goes into, and the image its api runs.
@@ -228,6 +259,12 @@ if (-not $runningVersion) { Stop-Brain "the running api of $project has no JARVI
 if ($runningVersion -ne $namedVersion) {
   Stop-Brain ("the image $imageRef holds other code ($namedVersion) than the running api of $project ($runningVersion);" +
     " restart that installation first, so the importer runs the same code as the api")
+}
+if ($decisionsData -and $Mode -eq "Import") {
+  $importerHere = ($runningVersion -split ' ')[-1]
+  if ([string]$decisionsData.importer_version -ne $importerHere) {
+    Write-Host "WARNING: the decisions file was written by importer $($decisionsData.importer_version), this installation runs importer ${importerHere}: conversations with a withheld message are imported as a later backup (their new rows are held for review)." -ForegroundColor Yellow
+  }
 }
 $env:BRAIN_IMPORT_IMAGE = $imageRef
 $reportsExisted = Test-Path -LiteralPath $Reports
@@ -336,7 +373,7 @@ if ($Target -eq "Production") {
   # Verify, Rollback and ApplyDecisions add no text.
   $withheldCopies = "unknown (no 0.6.1 importer)"
   if ($printed -match '(?m)^migration 0007_brain_withhold present; withheld copies with text: (\d+)\b') { $withheldCopies = $Matches[1] }
-  if (@("Import", "Resume") -contains $Mode -and $withheldCopies -ne "0") {
+  if (@("Import", "Settle", "Resume") -contains $Mode -and $withheldCopies -ne "0") {
     Clear-ImportVars
     Stop-Brain "the live installation still has promoted memory items whose source message is withheld, or no 0.6.1 importer: install 0.6.2 on the live installation first and let it start once (the start-up check is skipped while an import, rollback or rescan runs: if brain-import status still shows withheld copies with text above 0, restart the live installation, or run .\scripts\jarvis-import.ps1 -Target Production -Mode Rescan)"
   }
@@ -348,7 +385,7 @@ if ($Target -eq "Production") {
   if ($printed -match '(?m)^migration 0008_brain_withhold_identity present; identity repair (done|not done); readable rows matching a withhold: (\d+); held for review: (\d+); withheld rows with a text fingerprint: (\d+); rows blanked by the database guard: (\d+); quotes of removed sources: (\d+); purge fingerprints made with another key: (\d+)\b') {
     $identity = @{ Repair = $Matches[1]; Readable = $Matches[2]; Held = $Matches[3]; Fingerprints = $Matches[4]; Guard = $Matches[5]; Quotes = $Matches[6]; OtherKey = $Matches[7] }
   }
-  if (@("Import", "Resume") -contains $Mode) {
+  if (@("Import", "Settle", "Resume") -contains $Mode) {
     if (-not $identity) {
       Clear-ImportVars
       Stop-Brain "brain-import status shows no withhold identity line: install 0.6.2 on the live installation first and let it start once"
@@ -374,7 +411,12 @@ try {
   # Typed confirmations for the live installation, before anything is written.
   if ($Target -eq "Production") {
     switch ($Mode) {
-      "Import" { Confirm-Typed "IMPORT INTO PRODUCTION" "This imports JARVIS's data into the LIVE Command Center. A dump of its command_center database is taken first; undo is -Mode Rollback." }
+      "Import" {
+        $withDecisions = ""
+        if ($Decisions) { $withDecisions = " The decisions in $Decisions (withholds, releases and purges) are applied first, then replayed by the import." }
+        Confirm-Typed "IMPORT INTO PRODUCTION" ("This imports JARVIS's data into the LIVE Command Center. A dump of its command_center database is taken first; undo is -Mode Rollback." + $withDecisions)
+      }
+      "Settle" { Confirm-Typed "FINISH DECISIONS IN PRODUCTION" "This finishes, in the LIVE Command Center, the withholds taken on this JARVIS backup: their conversations are imported again from it, and every related row is held for review." }
       "Resume" { Confirm-Typed "IMPORT INTO PRODUCTION" "This continues import run $Run in the LIVE Command Center." }
       "Rollback" { Confirm-Typed "ROLL BACK PRODUCTION" "This removes everything import run $Run added to the LIVE Command Center." }
       "Rescan" { Confirm-Typed "RESCAN PRODUCTION" "This re-cleans every stored JARVIS text in the LIVE Command Center with the current detectors." }
@@ -394,6 +436,11 @@ try {
   switch ($Mode) {
     "Plan" { $cli = @("plan") + $source + $selection + @("--report", $report) }
     "Import" { $cli = @("run") + $source + $selection + $extra + @("--report", $report) }
+    "Settle" {
+      # 0.6.2 plan 4.1: the conversations of the backup only (the profile is mounted, never read)
+      $cli = @("settle", "--backup", "/jarvis/state.db", "--report", $report)
+      if ($Actor) { $cli += @("--actor", $Actor) }
+    }
     "Resume" { $cli = @("resume", "--run", "$Run") + $source + @("--report", $report) }
     "Verify" { $cli = @("verify", "--run", "$Run") + $source + @("--report", $report) }
     "Rollback" {
@@ -414,6 +461,7 @@ try {
     }
   }
   if ($Discovery -and ($Mode -eq "Plan" -or $Mode -eq "Import")) { $cli += @("--discovery", (Get-InReports $Discovery "discovery-summary")) }
+  if ($Decisions -and $Mode -eq "Import") { $cli += @("--decisions", (Get-InReports $Decisions "decisions")) }
 
   if ($Target -eq "Production" -and $Mode -eq "Import") {
     # A dump of command_center only, from the live postgres container, checked with pg_restore -l, then copied out.

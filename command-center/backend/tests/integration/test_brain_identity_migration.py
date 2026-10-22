@@ -9,7 +9,6 @@ REQUIRE_DOCKER_TESTS=1 makes a missing docker or container a failure instead."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 
@@ -26,9 +25,10 @@ from .test_brain_schema import _container, _migrate, _pg, _version_row, needs_do
 SCRATCH = os.environ["TEST_DATABASE_URL"].rsplit("/", 1)[1] + "_identity"
 DUMP = "/tmp/%s_061.dump" % SCRATCH
 DUMP_062 = "/tmp/%s_062.dump" % SCRATCH
-WITHHELD_BY_REPAIR = [163, 177, 179, 181, 191, 200, 211, 240, 242, 245, 247, 248]
-READABLE = [176, 178, 182, 209, 231, 241, 243]
-HELD = [177, 179, 240, 242]
+# What 0008 still does to the 0.6.1 fixture (0.6.2 plan 1.6): 245 (R5: a restricted conversation's readable row) is
+# withheld; every legacy re-derivation (R1-R3, R4c, R4d) is gone, so the rows it found stay as 0.6.1 left them until
+# the legacy reset (plan 1.7, 8).
+WITHHELD_BY_REPAIR = [245]
 
 # The 0.6.1 database after the confirmed re-import leaks (the judge's fixture). Run 1 before the withholds, run 2
 # after them. A: 158 withheld, its carried-on copy back as 163. A-tail: 170 withheld then deleted as rewound, its copy
@@ -290,137 +290,75 @@ async def test_0008_fresh_database_applies_with_0006_0007_and_writes_no_audit(sc
         assert done["cause"] == "migration"
         pending = json.loads(await conn.fetchval("SELECT brain_withhold_pending()"))
         assert pending == {"readable_by_key": 0, "readable_by_jarvis_row": 0, "readable_by_fold": 0,
-                           "readable_in_restricted_sessions": 0, "readable_copies_at_a_withheld_time": 0,
-                           "unbound_stones": 0,
-                           "withheld_with_text_fingerprint": 0, "held_for_review": 0, "repair_done": True}
+                           "readable_in_restricted_sessions": 0, "unbound_stones": 0,  # step 6: no time counter
+                           "withheld_with_text_fingerprint": 0, "held_for_review": 0, "repair_done": True,
+                           # 0.6.2 plan 1.8
+                           "unsettled_decisions": 0, "unreviewed_settle_holds": 0, "quarantined_rows": 0,
+                           "frozen_sessions": 0, "legacy_lock": False, "last_tripwire": None}
+        assert await conn.fetchval("SELECT count(*) FROM brain_maintenance WHERE name = 'legacy_brain_data'") == 0
         await _version_row(conn, "quarantined")  # 0007's CHECK still in force
     finally:
         await conn.close()
 
 
-async def test_0008_repairs_every_0_6_1_leak_state(scratch):
+async def test_0008_marks_0_6_1_data_legacy_and_never_re_derives_it(scratch):
+    """0.6.2 plan 1.6, 1.7: a database 0.6.0 or 0.6.1 imported into (runs by an importer older than 1.1.0 that were not
+    rolled back, withholds made before 0008) is marked legacy_brain_data, for the legacy lock and reset; the repair no
+    longer binds unbound stones (R1, R2), follows text-only carried links (R3) or holds rows by 0.6.1's fingerprints or
+    a shared uid (R4c, R4d). What it still does: the key rule, the exact JARVIS row, folds, restricted conversations
+    and fingerprints (R4a, R4b, R4e, R5, R6, R7)."""
     conn = await _fx(scratch)
     try:
-        state = await _state(conn)
-        assert state["withheld_by_repair"] == WITHHELD_BY_REPAIR
-        for row in WITHHELD_BY_REPAIR:
-            content, withheld, fp = await conn.fetchrow(
-                "SELECT content, withheld, source_fp FROM archive_messages WHERE id = $1", row)
-            assert (content, withheld) == ("", True) and fp.startswith("w1:"), row
-        leaks = await conn.fetchval("SELECT count(*) FROM archive_messages WHERE content LIKE 'LEAK%'")
-        assert leaks == 0
-        # Their sessions show no summary until the start-up step recomputes them.
-        pending = await conn.fetch("SELECT id, summary FROM archive_sessions WHERE flags ? 'withhold_repair_pending'")
-        assert {r["id"] for r in pending} >= {1, 2, 3, 5, 6, 7, 10, 11, 160} and all(not r["summary"] for r in pending)
-        # Every key of a row it withheld has a stone now, with the binding of that row.
-        unstoned = await conn.fetchval(
-            "SELECT count(*) FROM archive_messages m WHERE m.id = ANY($1::bigint[]) AND m.id <> 245 AND NOT EXISTS "
-            "(SELECT 1 FROM brain_tombstones t WHERE t.source_key = m.source_key)", WITHHELD_BY_REPAIR)
-        assert unstoned == 0
+        legacy = json.loads(await conn.fetchval(
+            "SELECT detail FROM brain_maintenance WHERE name = 'legacy_brain_data'"))
+        assert legacy["runs_by_an_older_importer"] == 3  # the fixture's three runs by importer 1.0.1
+        assert legacy["withholds_before_0008"] == await conn.fetchval(
+            "SELECT count(*) FROM brain_tombstones WHERE reason = 'withheld by an admin' AND via = ''")
+        assert (await _state(conn))["withheld_by_repair"] == WITHHELD_BY_REPAIR
+        assert await conn.fetchval("SELECT count(*) FROM brain_tombstones WHERE via LIKE 'upgrade: %' OR "
+                                   "review = 'pending'") == 0
+        assert await conn.fetchval("SELECT count(*) FROM brain_tombstones WHERE reason = 'withheld by an admin' AND "
+                                   "bound") == 0  # never bound by the upgrade (R2 is gone)
+        pending = json.loads(await conn.fetchval("SELECT brain_withhold_pending()"))
+        assert pending["legacy_lock"] is True and pending["unbound_stones"] > 0
     finally:
         await conn.close()
 
 
-async def test_0008_keeps_inverse_rows_readable(scratch):
-    """O1 another conversation (178), O2 similar text (182), O3 stored before the withhold (176), O4/O10 an independent
-    repeat with its own uid (231, 241), O6 the unrelated row a key moved to (209), and a cycle session's row (243)."""
-    conn = await _fx(scratch)
+async def test_0008_waits_for_an_older_importer_that_is_still_running(scratch):
+    """Plan 1.7 (review 3, rv3-dur-2): an import by an importer older than 1.1.0 that holds its run's lock while 0.6.2
+    starts: 0008 is refused (nothing changed), so that import never finishes on this schema. Once it has ended (its
+    lock is free), 0008 applies and marks its data legacy."""
+    from app.brain import importer as imp
+
+    await _install_061(scratch, "INSERT INTO import_runs (id, status, started_at, importer_version) VALUES "
+                                "(7, 'running', now(), '1.0.1');")
+    holder = await asyncpg.connect(scratch)
     try:
-        assert (await _state(conn))["readable"] == READABLE
-        texts = {r["id"]: r["content"] for r in await conn.fetch(
-            "SELECT id, content FROM archive_messages WHERE id = ANY($1::bigint[])", READABLE)}
-        assert texts[209] == "C2 UNRELATED user164 text" and texts[231].startswith("yes INDEPENDENT")
-        stones = await conn.fetchval("SELECT count(*) FROM brain_tombstones t JOIN archive_messages m ON "
-                                     "m.source_key = t.source_key WHERE m.id = ANY($1::bigint[])", READABLE)
-        assert stones == 0
+        assert await holder.fetchval("SELECT pg_try_advisory_lock($1::int, 7)", imp.LOCK_KEY)
+        with pytest.raises(Exception, match="still running"):
+            await _migrate(scratch)
+        assert await holder.fetchval("SELECT count(*) FROM schema_migrations WHERE version = "
+                                     "'0008_brain_withhold_identity'") == 0
     finally:
-        await conn.close()
-
-
-async def test_0008_holds_heuristic_hits_for_review_and_members_the_rest(scratch):
-    conn = await _fx(scratch)
+        await holder.close()
+    assert await _migrate(scratch) == ["0008_brain_withhold_identity"]
+    conn = await asyncpg.connect(scratch)
     try:
-        assert (await _state(conn))["held"] == HELD
-        reviews = {r["id"]: (r["review"], r["via"]) for r in await conn.fetch(
-            "SELECT m.id, t.review, t.via FROM archive_messages m JOIN brain_tombstones t "
-            "ON t.source_key = m.source_key WHERE m.id = ANY($1::bigint[])", WITHHELD_BY_REPAIR)}
-        assert {i: r for i, (r, _) in reviews.items() if r} == {i: "pending" for i in HELD}
-        assert all(via == "upgrade: same text" for i, (_, via) in reviews.items() if i in HELD)
-        # The certain ones: by key (163, 181: the importer's own duplicate records), by JARVIS row (191, 200, 211, 247,
-        # 248), a restricted conversation (245, no stone of its own). 163's record is 0.6.1's carried-on link (importer
-        # 1.0.1 paired it by its text alone): still certain, labelled so; the next import compares its uid (review 2,
-        # S6). 181 is an adjacent repeat.
-        assert reviews[163] == ("", "upgrade: carried copy, text only") and reviews[181] == ("", "duplicate")
-        for row in (191, 200, 211, 247, 248):
-            assert reviews[row] == ("", "upgrade: same JARVIS row"), row
-        assert 245 not in reviews
-        held = await conn.fetchval("SELECT brain_withhold_pending() ->> 'held_for_review'")
-        assert int(held) == len(HELD)
+        legacy = json.loads(await conn.fetchval("SELECT detail FROM brain_maintenance WHERE name = "
+                                                "'legacy_brain_data'"))
+        assert legacy["runs_by_an_older_importer"] == 1
     finally:
         await conn.close()
 
 
 async def test_0008_keeps_the_rollback_copy_of_an_unrelated_row(scratch):
     """O16: 0.6.1's C3 overwrite kept row 164's own text as the rollback copy of row 200: it is readable in its own
-    row, so it stays; the copy of the resurrected row 177's text goes."""
+    row, so it stays. (Legacy rows are not re-derived any more, 0.6.2 plan 1.6: the legacy lock and reset, plan 8.)"""
     conn = await _fx(scratch)
     try:
         assert await conn.fetchval(
             "SELECT count(*) FROM import_records WHERE before ->> 'content' = 'Plain user text'") == 1
-        assert await conn.fetchval(
-            "SELECT count(*) FROM import_records WHERE before::text LIKE '%LEAK-TAIL copy text%'") == 0
-    finally:
-        await conn.close()
-
-
-async def test_0008_binds_c2_to_the_row_withheld_not_the_row_the_key_moved_to(scratch):
-    conn = await _fx(scratch)
-    try:
-        stone = await conn.fetchrow("SELECT * FROM brain_tombstones WHERE source_key = 'jarvis:message:uid:uY'")
-        assert (stone["source_session_id"], stone["source_row_id"], stone["role"]) == ("S3", "165", "assistant")
-        assert stone["uid_known"] and stone["bound"] and stone["anchor_key"] == ""
-        assert await conn.fetchval("SELECT withheld FROM archive_messages WHERE id = 211")
-        assert not await conn.fetchval("SELECT withheld FROM archive_messages WHERE id = 209")
-        # 0.6.1's own victim (the key moved onto row 164, 0.6.1 kept it withheld) stays withheld: fail-closed (e).
-        assert await conn.fetchval("SELECT withheld FROM archive_messages WHERE id = 210")
-        # The stones of the other withholds name the rows the admin saw: A-tail from the deleted row's copy, D and the
-        # 0.6.0 withhold from their keys.
-        rows = {r["source_key"]: (r["source_session_id"], r["source_row_id"]) for r in await conn.fetch(
-            "SELECT source_key, source_session_id, source_row_id FROM brain_tombstones WHERE anchor_key = ''")}
-        assert rows["jarvis:message:uid:uD"] == ("S1", "110") and rows["jarvis:message:S7:500"] == ("S7", "500")
-        assert rows["jarvis:message:S11:7"] == ("S11", "7")
-    finally:
-        await conn.close()
-
-
-async def test_0008_walks_lineage_without_depth_limit_and_survives_a_parent_cycle(scratch):
-    """The fixture's 60-deep chain, a 600-deep one, and two sessions that name each other as parent (a row with the
-    withheld message's fingerprint there stays readable: it is not in the withheld conversation's lineage)."""
-    deep = """
-    INSERT INTO archive_sessions (id, source_key, source_session_id, lineage, parent_source_session_id, started_at,
-                                  import_run_id)
-    SELECT 1000 + g, 'jarvis:session:D' || g, 'D' || g, 'continuation',
-           CASE WHEN g = 1 THEN 'S1' ELSE 'D' || (g - 1) END,
-           '2026-10-04 00:00+00'::timestamptz + g * interval '1 second', 2 FROM generate_series(1, 600) g;
-    INSERT INTO archive_messages (id, session_id, source_key, source_message_id, source_fp, position, role, content,
-                                  withheld, import_run_id, at)
-    VALUES (500, 1600, 'jarvis:message:D600:1', '1', 'fpTAIL', 0, 'user', 'LEAK-TAIL 600 deep', false, 2,
-            '2026-09-01 10:00+00'),
-           (501, 1600, 'jarvis:message:D600:2', '2', 'fpOTHER2', 1, 'user', 'other words 600 deep', false, 2, NULL),
-           (502, 8, 'jarvis:message:S8:2', '2', 'fpTAIL', 1, 'user', 'same words in the cycle', false, 2, NULL);
-    INSERT INTO import_records (run_id, source_key, record_type, action, reason, target_table, target_id) VALUES
-      (2, 'jarvis:message:D600:1', 'message', 'imported', '', 'archive_messages', 500),
-      (2, 'jarvis:message:D600:2', 'message', 'imported', '', 'archive_messages', 501),
-      (2, 'jarvis:message:S8:2', 'message', 'imported', '', 'archive_messages', 502);
-    """
-    await _install_061(scratch, FX_061, FX_EXTRA, deep)
-    assert await _migrate(scratch) == ["0008_brain_withhold_identity"]
-    conn = await asyncpg.connect(scratch)
-    try:
-        # The cycle (S8 and S9 name each other) ends the walk without reaching the withheld conversation.
-        withheld = await _ids(conn, "withheld AND id IN (242, 500, 501, 243, 502)")
-        assert withheld == [242, 500]
-        assert (await _state(conn))["held"] == sorted(HELD + [500])
     finally:
         await conn.close()
 
@@ -431,7 +369,7 @@ async def test_0008_twice_changes_nothing_and_audits_once(scratch):
         before = await conn.fetchval("SELECT count(*) FROM audit_log")
         audit = json.loads(await conn.fetchval(
             "SELECT detail FROM audit_log WHERE action = 'brain.withhold_identity_repaired'"))
-        assert before == 1 and audit["full"] is True and audit["held_by_same_text"] == len(HELD)
+        assert before == 1 and audit["full"] is True and "held_by_same_text" not in audit
         assert await conn.fetchval("SELECT actor FROM audit_log") == "system (migration)"
         snapshot = await conn.fetch("SELECT to_jsonb(m) - 'search' AS r FROM archive_messages m ORDER BY id")
         stones = await conn.fetch("SELECT to_jsonb(t) - 'purged_at' AS r FROM brain_tombstones t ORDER BY source_key")
@@ -489,7 +427,8 @@ async def test_0008_converts_every_plain_fingerprint_of_withheld_rows_and_copies
 async def test_trigger_blanks_stoned_key_and_binding_and_leaves_other_roles_and_rows(scratch):
     await _install_061(scratch)
     assert await _migrate(scratch) == ["0008_brain_withhold_identity"]
-    conn = await asyncpg.connect(scratch)
+    # 0.6.2 code says so on its connections (app/db.py); without it 0008 refuses any archived message (rv3-dur-2)
+    conn = await asyncpg.connect(scratch, server_settings={"cc.brain_purge_ledger": "on"})
     try:
         await conn.execute("INSERT INTO archive_sessions (id, source_key, source_session_id) VALUES "
                            "(1, 'jarvis:session:T1', 'T1')")
@@ -546,7 +485,8 @@ async def test_brain_withhold_pending_is_read_only(scratch):
         async with conn.transaction(readonly=True):
             pending = json.loads(await conn.fetchval("SELECT brain_withhold_pending()"))
         assert pending["readable_by_key"] == 1 and pending["repair_done"] is True
-        assert pending["held_for_review"] == len(HELD) and pending["unbound_stones"] == 0
+        # 0.6.1 data is legacy (plan 1.7): marked, never re-derived into holds
+        assert pending["held_for_review"] == 0 and pending["legacy_lock"] is True
         assert await conn.fetch("SELECT to_jsonb(m) - 'search' AS r FROM archive_messages m ORDER BY id") == snapshot
         assert await conn.fetchval("SELECT count(*) FROM audit_log") == audits
         repaired = json.loads(await conn.fetchval("SELECT brain_withhold_repair('cli')"))
@@ -586,10 +526,13 @@ async def test_restore_of_a_0_6_1_dump_over_0_6_2_reruns_0008_and_restores_the_t
     try:
         assert await _guards(conn) == 1
         assert await conn.fetchval("SELECT count(*) FROM brain_purged_content") == 0  # the undone purge's fingerprint
-        assert (await _state(conn))["readable"] == READABLE
-        assert await conn.fetchval("SELECT count(*) FROM archive_messages WHERE content LIKE 'LEAK%'") == 0
         assert json.loads(await conn.fetchval(
             "SELECT detail FROM brain_maintenance WHERE name = 'withhold_identity'"))["cause"] == "migration"
+        # The restored 0.6.1 data is legacy again (0.6.2 plan 1.7): marked for the legacy lock and reset, its rows
+        # never re-derived (three runs by importer 1.0.1, and withholds made before 0008).
+        legacy = json.loads(await conn.fetchval(
+            "SELECT detail FROM brain_maintenance WHERE name = 'legacy_brain_data'"))
+        assert legacy["runs_by_an_older_importer"] == 3 and legacy["withholds_before_0008"] >= 1
     finally:
         await conn.close()
 
@@ -599,12 +542,13 @@ async def test_restore_of_a_0_6_2_dump_keeps_functions_and_trigger(scratch, dump
     container = _container()
     dumps.append((container, DUMP_062))
     conn = await _fx(scratch)
+    stones = await conn.fetch("SELECT to_jsonb(t) AS r FROM brain_tombstones t ORDER BY source_key")
     await conn.close()
     dump = _pg(container, "pg_dump", "-U", "cc", "-Fc", "-f", DUMP_062, SCRATCH)
     assert dump.returncode == 0, dump.stderr
     conn = await asyncpg.connect(scratch)
     try:  # a change after the dump that the restore undoes
-        await conn.execute("DELETE FROM brain_tombstones WHERE review = 'pending'")
+        await conn.execute("DELETE FROM brain_tombstones WHERE reason = 'withheld by an admin'")
     finally:
         await conn.close()
     restore = _pg(container, "pg_restore", "-U", "cc", "-d", SCRATCH, "--clean", "--if-exists",
@@ -614,9 +558,16 @@ async def test_restore_of_a_0_6_2_dump_keeps_functions_and_trigger(scratch, dump
     conn = await asyncpg.connect(scratch)
     try:
         assert await _guards(conn) == 1
-        for fn in ("brain_withhold_repair(text)", "brain_withhold_pending()", "archive_messages_keep_withheld()"):
+        for fn in ("brain_withhold_repair(text)", "brain_withhold_pending()", "archive_messages_keep_withheld()",
+                   "brain_exact(text,text,timestamp with time zone,text,text,text,timestamp with time zone,text)",
+                   "brain_refuse_old_rows()", "archive_sessions_keep_lineage()"):
             assert await conn.fetchval("SELECT to_regprocedure($1) IS NOT NULL", fn), fn
-        assert (await _state(conn))["held"] == HELD
+        assert await conn.fetch("SELECT to_jsonb(t) AS r FROM brain_tombstones t ORDER BY source_key") == stones
+        # code older than 0.6.2 cannot write an archived message (rv3-dur-2); 0.6.2's own write meets the guard
+        with pytest.raises(asyncpg.RaiseError, match="code older than 0.6.2"):
+            await conn.execute("UPDATE archive_messages SET withheld = false, content = 'LEAK restored' "
+                               "WHERE id = 158")
+        await conn.execute("SET cc.brain_purge_ledger = 'on'")
         await conn.execute("UPDATE archive_messages SET withheld = false, content = 'LEAK restored' WHERE id = 158")
         assert await conn.fetchval("SELECT content FROM archive_messages WHERE id = 158") == ""
     finally:
@@ -652,63 +603,6 @@ async def _r_stone(s, key: str, sid: str, row: str, role: str, uid: str, *, afte
         "now() - interval '2 hours', 'admin', 'withheld by an admin', :sid, :row, :role, '', :uid, :uk, '', 'admin',"
         " '', true, :after)"),
         {"k": key, "sid": sid, "row": row, "role": role, "uid": uid, "uk": uid_known, "after": after})
-
-
-@pytest.mark.usefixtures("clean_db")
-async def test_r34_the_repair_holds_a_row_that_only_shares_a_withheld_uid_for_review():
-    """Review 1 R34 (tests-integrity #5): a readable row under another key and another JARVIS row that shares a
-    certain stone's uid is caught by the SQL repair's uid rule (R4c) alone, and as a hold for an admin's review, never
-    as a member: the row is blanked, its key gets a pending stone ('upgrade: same message id'), counted once."""
-    mark = "zqr34uidrow"
-    async with session_scope() as s:
-        sr = await _r_session(s, "R34")
-        await _r_message(s, sr, "jarvis:message:R34:101", "101", "assistant", "", uid="u-r34-probe", withheld=True,
-                         fp="w1:live", pos=1)
-        other = await _r_message(s, sr, "jarvis:message:uid:u-r34-probe", "205", "assistant",
-                                 "The pin is %s." % mark, uid="u-r34-probe", pos=2)
-        await _r_stone(s, "jarvis:message:R34:101", "R34", "101", "assistant", "u-r34-probe", uid_known=True)
-    async with session_scope() as s:
-        counts = await identity.repair_rows(s, cause="test")
-    async with session_scope() as s:
-        row = (await s.execute(text("SELECT withheld, content FROM archive_messages WHERE id = :i"),
-                               {"i": other})).one()
-        stone = (await s.execute(text("SELECT review, via FROM brain_tombstones WHERE source_key = :k"),
-                                 {"k": "jarvis:message:uid:u-r34-probe"})).one_or_none()
-    assert (row.withheld, row.content) == (True, ""), tuple(row)
-    assert stone is not None and (stone.review, stone.via) == ("pending", "upgrade: same message id"), stone
-    assert counts.get("held_by_message_id") == 1, counts
-
-
-@pytest.mark.usefixtures("clean_db")
-async def test_r35_the_repair_follows_a_continuation_never_a_delegated_child():
-    """Review 1 R35 (tests-integrity #6): 0.6.1's plain same-text fingerprint (R4d) holds a continuation's copy of a
-    withheld row for review, but never a delegated child's row: a sub-agent's conversation is not a copy of its
-    parent's history (owner requirement 2). Fails both without the lineage guard and without R4d."""
-    words = "The fence gate closes at nine and opens at seven every single day of the week."
-    fp = hashlib.sha256(words.encode()).hexdigest()  # a 0.6.1-shaped plain fingerprint
-    async with session_scope() as s:
-        run1 = (await s.execute(text("INSERT INTO import_runs (status, started_at, finished_at) VALUES "
-                                     "('completed', now() - interval '3 hours', now() - interval '3 hours') "
-                                     "RETURNING id"))).scalar()
-        run2 = (await s.execute(text("INSERT INTO import_runs (status, started_at, finished_at) VALUES "
-                                     "('completed', now() - interval '1 hour', now() - interval '1 hour') "
-                                     "RETURNING id"))).scalar()
-        parent = await _r_session(s, "R35P")
-        await _r_message(s, parent, "jarvis:message:R35P:7", "7", "assistant", "", fp=fp, withheld=True, run=run1)
-        await _r_stone(s, "jarvis:message:R35P:7", "R35P", "7", "assistant", "", after=run1)
-        rows = {}
-        for lineage in ("delegated", "continuation"):
-            child = await _r_session(s, "R35" + lineage[:3].upper(), lineage=lineage, parent="R35P")
-            rows[lineage] = await _r_message(s, child, "jarvis:message:R35%s:3" % lineage[:3].upper(), "3",
-                                             "assistant", words, fp=fp, run=run2)
-    async with session_scope() as s:
-        counts = await identity.repair_rows(s, cause="test")
-    async with session_scope() as s:
-        got = {k: tuple((await s.execute(text("SELECT withheld, content = '' FROM archive_messages WHERE id = :i"),
-                                         {"i": i})).one()) for k, i in rows.items()}
-    assert got["delegated"] == (False, False), got  # a sub-agent's own row: never held for the parent's text
-    assert got["continuation"] == (True, True), got  # the control: a continuation's copy is held
-    assert counts.get("held_by_same_text") == 1, counts
 
 
 # --- Review 2 S25 and S26 (tests-integrity #1, #2): the SQL repair's remaining rules and guards ----------------------
@@ -796,40 +690,6 @@ async def test_r5_blanks_the_rollback_copies_of_rows_it_withholds_for_restricted
 
 
 @pytest.mark.usefixtures("clean_db")
-@pytest.mark.parametrize("length", ["same", "other"])
-async def test_r4c_a_release_covers_only_the_content_released(length):
-    """S25 (3): R4c's release binding. An admin released a row that shares a certain stone's uid; the release is bound
-    to the content it released (its length here). The same content stays readable with no stone; another version of
-    that JARVIS row (other words, another length) is held for review again ('upgrade: same message id')."""
-    words = "Another version of the row, zqr4crel%s, with its own words." % length
-    async with session_scope() as s:
-        sr = await _r_session(s, "R4C")
-        await _r_message(s, sr, "jarvis:message:R4C:101", "101", "assistant", "", uid="u-r4c", withheld=True,
-                         fp="w1:live", pos=1)
-        row = await _r_message(s, sr, "jarvis:message:uid:u-r4c", "205", "assistant", words, uid="u-r4c", pos=2)
-        await s.execute(text("UPDATE archive_messages SET content_chars = :n WHERE id = :i"),
-                        {"n": len(words), "i": row})
-        released = len(words) if length == "same" else len(words) + 9
-        await s.execute(text(
-            "INSERT INTO brain_withhold_exemptions (anchor_key, source_session_id, source_row_id, source_uid, "
-            "content_chars, content_fp) VALUES ('jarvis:message:R4C:101', 'R4C', '205', 'u-r4c', :n, '')"),
-            {"n": released})
-        await _r_stone(s, "jarvis:message:R4C:101", "R4C", "101", "assistant", "u-r4c", uid_known=True)
-    async with session_scope() as s:
-        counts = await identity.repair_rows(s, cause="test")
-    async with session_scope() as s:
-        got = await _row_state(s, row)
-        stone = await _stone_of(s, "jarvis:message:uid:u-r4c")
-    if length == "same":
-        assert got == (False, words) and stone is None, (got, stone)
-        assert not counts.get("held_by_message_id"), counts
-    else:
-        assert got == (True, "") and stone is not None and stone[:2] == ("pending", "upgrade: same message id"), \
-            (got, stone)
-        assert counts.get("held_by_message_id") == 1, counts
-
-
-@pytest.mark.usefixtures("clean_db")
 async def test_r4b_withholds_the_same_role_and_never_another_role_at_the_row_id():
     """S26 (1): R4b's role check. Under the withheld row's JARVIS row id (session + row 5), a row of the same role is
     the message (a member, withheld at once); a row of another role is another message (a state.db from an older
@@ -851,37 +711,3 @@ async def test_r4b_withholds_the_same_role_and_never_another_role_at_the_row_id(
     assert o == (False, "A new question zqr4brolefive after a restore.") and stone_o is None, (o, stone_o)
 
 
-@pytest.mark.usefixtures("clean_db")
-@pytest.mark.parametrize("chars", ["unknown", "bound"])
-async def test_r4d_never_holds_again_a_row_an_admin_released(chars):
-    """S26 (3): R4d's release exemption. 0.6.1's plain fingerprint of the withheld row is back on two readable copies
-    in a continuation (an older dump restored: brain_withhold_exemptions is not in it and survives pg_restore --clean).
-    The copy an admin released (length unknown, or bound to its length) stays readable; the control, not released, is
-    held for review (owner requirement 5: the admin's decision is not undone)."""
-    words = "The fence gate zqr4dgate closes at nine and opens at seven every single day."
-    fp = hashlib.sha256(words.encode()).hexdigest()  # a 0.6.1-shaped plain fingerprint
-    async with session_scope() as s:
-        run1 = (await s.execute(text("INSERT INTO import_runs (status, started_at, finished_at) VALUES ('completed', "
-                                     "now() - interval '3 hours', now() - interval '3 hours') RETURNING id"))).scalar()
-        run2 = (await s.execute(text("INSERT INTO import_runs (status, started_at, finished_at) VALUES ('completed', "
-                                     "now() - interval '1 hour', now() - interval '1 hour') RETURNING id"))).scalar()
-        parent = await _r_session(s, "R4DP")
-        await _r_message(s, parent, "jarvis:message:R4DP:7", "7", "assistant", "", fp=fp, withheld=True, run=run1)
-        child = await _r_session(s, "R4DC", lineage="continuation", parent="R4DP")
-        released = await _r_message(s, child, "jarvis:message:R4DC:3", "3", "assistant", words, fp=fp, run=run2,
-                                    pos=1)
-        control = await _r_message(s, child, "jarvis:message:R4DC:9", "9", "assistant", words, fp=fp, run=run2,
-                                   pos=2)
-        await s.execute(text("UPDATE archive_messages SET content_chars = :n WHERE session_id = :c"),
-                        {"n": len(words), "c": child})
-        await s.execute(text(
-            "INSERT INTO brain_withhold_exemptions (anchor_key, source_session_id, source_row_id, content_chars) "
-            "VALUES ('jarvis:message:R4DP:7', 'R4DC', '3', :n)"), {"n": -1 if chars == "unknown" else len(words)})
-        await _r_stone(s, "jarvis:message:R4DP:7", "R4DP", "7", "assistant", "", after=run1)
-    async with session_scope() as s:
-        counts = await identity.repair_rows(s, cause="test")
-    async with session_scope() as s:
-        r, c = await _row_state(s, released), await _row_state(s, control)
-    assert c == (True, ""), c  # the control: R4d holds the continuation's copy
-    assert r == (False, words), r
-    assert counts.get("held_by_same_text") == 1, counts

@@ -965,6 +965,7 @@ async def test_decisions_export_lists_a_withhold_made_after_promotion(built, tmp
     message = await general_message(role="assistant")
     copy = await promote(message.id)
     await withhold_service(message.id)
+    await bj.settle(built)  # 0.6.2 plan 4.7: decisions-export refuses until the withhold is finished
     out = tmp_path / "decisions.json"
     result = await imp.decisions_export(str(out))
     exported = json.loads(out.read_text())
@@ -997,8 +998,10 @@ async def _production(built, tmp_path, *, purge: bool = False) -> dict:
             item_key = item.source_key
             await store.delete_item(s, item, actor=ADMIN[0])
             await review.purge(s, item, actor=ADMIN[0])
+    settled = await bj.settle(built)  # 0.6.2 plan 4.7: decisions-export refuses until the withhold is finished
     out = tmp_path / "decisions.json"
     await imp.decisions_export(str(out))
+    await imp.rollback(settled["run_id"], discard_reviewed=True, confirm=True)  # the newest run first
     await imp.rollback(test_copy["run_id"], discard_reviewed=True, confirm=True)
     async with session_scope() as s:
         await s.execute(BrainTombstone.__table__.delete())
@@ -1254,7 +1257,9 @@ async def test_reimport_of_the_same_and_of_a_changed_source_keeps_the_message_an
     changed = await imp.run(bj.paths(fx), ALL)
     assert (await imp.verify(changed["run_id"], bj.paths(fx)))["passed"]
     back = await message_by_key(key)
-    assert (back.id, back.withheld, back.content, back.state) == (message.id, True, "", "compacted")
+    # 0.6.2 plan 5.2: the changed source is a later backup of a withheld family, whose stored rows are never
+    # rewritten (it was "compacted" before the redesign); the row stays withheld and empty.
+    assert (back.id, back.withheld, back.content, back.state) == (message.id, True, "", message.state)
     item = await assert_emptied(copy)
     assert item.version == emptied.version  # nothing to empty again
     assert await nowhere(TITLE) == []
@@ -2388,7 +2393,7 @@ async def test_audit_details_have_exactly_the_specified_keys(client, tmp_path):
         "archive.message_withheld": {"message", "session", "imported_messages", "withheld_messages", "tombstone",
                                      "copies", "versions_blanked", "rollback_copies_blanked", "answers_scrubbed",
                                      "via", "also_withheld", "held_for_review", "identical_withheld",
-                                     "keys_tombstoned", "title_hidden"},
+                                     "keys_tombstoned", "title_hidden", "left_readable"},  # 0.6.2 plan 4.5
         "memory.source_withheld": {"item", "kind", "agent", "status_before", "status", "version", "deleted",
                                    "versions_blanked", "message", "session", "cause"},
         "memory.purged": {"item", "kind", "agent", "versions_removed", "conflicts_removed", "tombstone", "origin",

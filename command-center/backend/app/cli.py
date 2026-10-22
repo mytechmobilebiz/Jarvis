@@ -3,7 +3,7 @@
     python -m app.cli check-config   # validate settings and secrets; exit 1 on problems
     python -m app.cli migrate        # apply pending database migrations
     python -m app.cli db-status      # list applied migrations
-    python -m app.cli brain-import   # the JARVIS import (plan, run, resume, verify, rollback, status, rescan,
+    python -m app.cli brain-import   # the JARVIS import (plan, run, settle, resume, verify, rollback, status, rescan,
                                      # repair, fingerprints, decisions-export, decisions-apply); brain-import --help
                                      # lists them
     python -m app.cli restore-carry  # restore.ps1: users' access and the audit log across a restore (export, apply)
@@ -87,7 +87,13 @@ BRAIN_HELP = """python -m app.cli brain-import COMMAND ...
 
   plan      --db F --profile D [--content D] SELECTION [--report FILE] [--discovery FILE]
   run       --db F --profile D [--content D] SELECTION [--label T] [--actor T] [--report FILE] [--discovery FILE]
-            [--pre-backup-sha256 H]
+            [--pre-backup-sha256 H] [--decisions FILE --actor ADMIN_EMAIL]
+            --decisions: a version 5 decisions file from the test copy; its withholds, releases and purges apply
+            first, then the import replays the decisions taken on this very backup (the same SHA-256)
+  settle    --backup F [--actor T] [--report FILE]   finish the withholds taken on this JARVIS backup (0.6.2): its
+            conversations with a withheld message are decided once, by provenance; every related row is held for
+            review with its evidence; an import of this very file then replays the result (decisions-export
+            refuses until every withhold is finished and every hold it found is kept or released)
   resume    --run ID --db F --profile D [--content D] [--report FILE]
   verify    --run ID --db F --profile D [--content D] [--report FILE]
   rollback  --run ID --yes [--discard-reviewed] [--actor T]
@@ -98,7 +104,8 @@ BRAIN_HELP = """python -m app.cli brain-import COMMAND ...
   fingerprints --forget-other-key [--yes] forget purge fingerprints made with another database password
   decisions-export --out FILE [--removals-only]   review decisions keyed by source_key (on the test copy);
                                           --removals-only: only withholds, purges and releases (restore.ps1)
-  decisions-apply  --in FILE --run ID --actor ADMIN_EMAIL [--yes]   (after the production import)
+  decisions-apply  --in FILE --run ID --actor ADMIN_EMAIL [--yes]   (after an import: version 3 and 4 files;
+                                          a version 5 file goes with the import itself: run --decisions)
   decisions-apply  --in FILE --removals-only [--actor ADMIN_EMAIL] [--yes]   withholds, purges and releases only
                                           (restore.ps1, after a restore; the actor is "system (restore)")
 
@@ -147,6 +154,14 @@ def _brain_parser() -> argparse.ArgumentParser:
     p.add_argument("--label", default="")
     p.add_argument("--actor")
     p.add_argument("--pre-backup-sha256", default="")
+    p.add_argument("--decisions")
+    p = sub.add_parser("settle", add_help=False)
+    p.add_argument("--backup", required=True)
+    p.add_argument("--profile")  # accepted and not needed: Settle reads the conversations only
+    p.add_argument("--content")
+    p.add_argument("--report")
+    p.add_argument("--actor")
+    p.add_argument("--yes", action="store_true")  # accepted: Settle changes only what the decisions make it change
     for name in ("resume", "verify"):
         p = sub.add_parser(name, add_help=False)
         p.add_argument("--run", type=int, required=True)
@@ -216,6 +231,20 @@ def _print_report(report: dict[str, Any]) -> None:
         print("stored without text as the same message as a withheld one: %s; held for an admin's review: %s"
               % (_counts_line(report.get("withheld_same_message") or {}),
                  _counts_line(report.get("held_for_review") or {})))
+    later_backup = report.get("later_backup") or {}
+    if later_backup:
+        # 0.6.2 plan 5.6 (jarvis-import -Mode Plan prints this before anything is imported): per withheld conversation
+        # (its archive session id), what this backup does there. Counts only.
+        print("withheld conversations in this backup (a later backup: what is new waits for an admin):")
+        for conversation, counts in sorted(later_backup.items()):
+            print("  conversation %s: %s" % (conversation, _counts_line(counts)))
+    if report.get("frozen_sessions_skipped"):
+        print("conversations an admin stopped importing (left out): %d" % report["frozen_sessions_skipped"])
+    tripwire = report.get("tripwire") or {}
+    if tripwire.get("inside_family") or tripwire.get("outside_family"):
+        print("tripwire (plan 5.5): rows with a withheld text held in withheld conversations: %d (verify fails: an "
+              "admin looks); readable rows with a withheld text outside them, listed for admins: %d"
+              % (tripwire.get("inside_family", 0), tripwire.get("outside_family", 0)))
     if report.get("key_reassigned") or report.get("keys_adopted") or report.get("purged_same_text"):
         print("keys JARVIS gave to another row (left out): %d; stored rows re-keyed: %d; purged items back under "
               "another key (left out): %d" % (report.get("key_reassigned", 0), report.get("keys_adopted", 0),
@@ -270,11 +299,37 @@ async def _brain_command(args: argparse.Namespace) -> int:
             _print_report(report)
             return 0
         if args.command == "run":
+            if args.decisions and not args.actor:
+                raise imp.Refused("run --decisions needs --actor ADMIN_EMAIL (recorded as the reviewer of each "
+                                  "decision)")
             result = await imp.run(paths, selection, label=args.label, actor=actor, report_file=args.report,
-                                   pre_backup_sha256=args.pre_backup_sha256)
+                                   pre_backup_sha256=args.pre_backup_sha256, decisions=args.decisions)
+            if result.get("decisions") is not None:
+                out = result["decisions"]
+                for warning in out["warnings"]:
+                    print("WARNING: " + warning)
+                print("decisions applied before the import: " + _counts_line(out["before_import"]))
+                print("review decisions on imported items applied: %d%s" % (
+                    out["items_applied"], "" if out["items_not_applied"] else "; none left over"))
+                for reason, numbers in sorted(out["items_not_applied"].items()):
+                    print("  not applied (%s): decisions %s" % (reason, ", ".join(str(n) for n in numbers)))
             print("run %d completed:" % result["run_id"])
             _print_report(result["report"])
             print("next: brain-import verify --run %d (with the same --db and --profile)" % result["run_id"])
+            return 0
+        if args.command == "settle":
+            result = await imp.settle(imp.SourcePaths(db=args.backup, profile=args.profile or "",
+                                                      content=args.content), actor=actor, report_file=args.report)
+            for label, n in sorted((result.get("waiting") or {}).items()):
+                print("decisions waiting on another JARVIS backup (%s): %d" % (label, n))
+            if result.get("run_id") is None:
+                print("nothing to finish: every withhold on this JARVIS backup is finished")
+                return 0
+            done = (result.get("report") or {}).get("settle") or {}
+            print("run %d finished %d decision(s): %s" % (result["run_id"], result.get("decisions", 0),
+                                                         _counts_line(done)))
+            _print_report(result["report"])
+            print("next: review what it holds (JARVIS Brain page, Held for review), then export the decisions")
             return 0
         if args.command == "resume":
             result = await imp.resume(args.run, paths, report_file=args.report, actor=actor)
@@ -326,6 +381,14 @@ async def _brain_command(args: argparse.Namespace) -> int:
                               out.get("rows_blanked_by_the_database_guard", 0),
                               out.get("quotes_of_removed_sources", 0),
                               out.get("purge_fingerprints_made_with_another_key", 0)))
+            if out.get("frozen_conversations") or out.get("last_tripwire"):
+                # 0.6.2 plan 5.3, 5.5: what a later backup left out, and where the newest run found a withheld text
+                tw = out.get("last_tripwire") or {}
+                print("later backups: conversations an admin stopped importing: %d; tripwire of run %s: rows held in "
+                      "withheld conversations %d, readable rows outside them %d%s" % (
+                          out.get("frozen_conversations", 0), tw.get("run", "-"), tw.get("inside_family", 0),
+                          tw.get("outside_family", 0), "" if not tw.get("outside") else " (archive session/message: %s)"
+                          % ", ".join("%s/%s" % (w.get("session"), w.get("message")) for w in tw["outside"][:20])))
             if out.get("marked_interrupted"):
                 print("marked interrupted (their process is gone): runs %s"
                       % ", ".join(str(i) for i in out["marked_interrupted"]))

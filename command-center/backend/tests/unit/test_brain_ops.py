@@ -279,6 +279,47 @@ def test_repair_mode_runs_brain_import_repair_without_the_jarvis_sources():
     assert "default_transaction_read_only=on" in precheck
 
 
+def test_settle_mode_runs_brain_import_settle_on_the_backup_only():
+    """0.6.2 plan 4.1: jarvis-import.ps1 -Mode Settle reads the JARVIS backup (its conversations only) and runs
+    brain-import settle --backup; on production it needs its own typed confirmation, and it waits for the withheld
+    copies like an import (it imports conversations)."""
+    text = script("jarvis-import.ps1")
+    assert '"Settle"' in re.search(r"\$modes = @\(([^)]*)\)", text).group(1)
+    assert '"Settle"' in re.search(r"\$readsSource = @\(([^)]*)\) -contains \$Mode", text).group(1)
+    assert '$cli = @("settle", "--backup", "/jarvis/state.db", "--report", $report)' in text
+    assert 'Confirm-Typed "FINISH DECISIONS IN PRODUCTION"' in text
+    [gate] = re.findall(r'if \(@\(([^)]*)\) -contains \$Mode -and \$withheldCopies -ne "0"\) \{', text)
+    assert '"Settle"' in gate
+
+
+@pytest.mark.parametrize("result", [
+    {"run_id": None, "status": "nothing to finish", "decisions": 0, "waiting": {"older-backup": 1}},
+    {"run_id": 7, "decisions": 2, "waiting": {}, "report": {"settle": {"certain": 3, "held": 1}}}])
+def test_settle_cli_takes_the_backup_and_says_what_it_finished(monkeypatch, capsys, result):
+    """brain-import settle --backup FILE (plan 4.1): the backup's conversations only, no profile needed; it says what
+    waits on another backup, what it finished and what comes next (review, then export)."""
+    from app import cli
+    from app.brain import importer
+
+    calls = []
+
+    async def settle(paths, *, actor, report_file=None):
+        calls.append((paths.db, paths.profile, actor, report_file))
+        return result
+
+    monkeypatch.setattr(importer, "settle", settle)
+    monkeypatch.setattr(cli, "_print_report", lambda report: None)
+    assert cli.main(["cli", "brain-import", "settle"]) == 2  # --backup is required
+    capsys.readouterr()
+    assert cli.main(["cli", "brain-import", "settle", "--backup", "/jarvis/state.db", "--actor", "ops@test"]) == 0
+    assert calls == [("/jarvis/state.db", "", "ops@test", None)]
+    printed = capsys.readouterr().out
+    if result["run_id"] is None:
+        assert "nothing to finish" in printed and "waiting on another JARVIS backup (older-backup): 1" in printed
+    else:
+        assert "run 7 finished 2 decision(s)" in printed and "Held for review" in printed
+
+
 def test_decisions_apply_needs_a_run_and_an_admin_unless_removals_only(monkeypatch, capsys, tmp_path):
     from app import cli
     from app.brain import importer
@@ -406,7 +447,7 @@ def test_the_precheck_reads_keys_brain_withhold_pending_returns():
     precheck = script("brain-precheck.ps1")
     read = set(re.findall(r"\$pending\.(\w+)", precheck))
     assert read == {"readable_by_key", "readable_by_jarvis_row", "readable_by_fold", "readable_in_restricted_sessions",
-                    "readable_copies_at_a_withheld_time", "held_for_review", "repair_done"}
+                    "held_for_review", "repair_done"}  # 0.6.2 step 6: no time-rule counter
     sql = (ROOT / "backend" / "app" / "migrations" / "0008_brain_withhold_identity.sql").read_text()
     pending = sql[sql.index("FUNCTION brain_withhold_pending()"):]
     built = set(re.findall(r"'(\w+)',", pending))

@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, Text, and_, cast, exists, func, not_, or_, select
+from sqlalchemy import BigInteger, DateTime, Text, and_, case, cast, exists, func, not_, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -416,9 +416,14 @@ def _withheld_keys() -> list[Any]:
         BrainWithholdExemption.source_row_id == row["source_message_id"].astext,
         BrainWithholdExemption.source_session_id.in_(select(ArchiveSession.source_session_id).where(
             ArchiveSession.id == row["session_id"].astext.cast(BigInteger))),
-        # a release covers the content it released (its length), not another version of the row
-        or_(BrainWithholdExemption.content_chars < 0,
-            BrainWithholdExemption.content_chars == func.coalesce(row["content_chars"].astext.cast(BigInteger), -1)))
+        # a release covers its exact JARVIS row (identity.exact; migration 0008 brain_exact()), never another message
+        # at a reused row id
+        func.brain_exact(BrainWithholdExemption.role, BrainWithholdExemption.tool_call_id,
+                         BrainWithholdExemption.source_at, BrainWithholdExemption.source_uid,
+                         func.coalesce(row["role"].astext, ""), func.coalesce(row["tool_call_id"].astext, ""),
+                         case((row["at"].astext.op("~")(r"^\d{4}-\d\d-\d\d"),
+                               row["at"].astext.cast(DateTime(timezone=True))), else_=None),
+                         func.coalesce(row["source_uid"].astext, "")))
     return [message & ImportRecord.source_key.in_(select(BrainTombstone.source_key).where(
                 BrainTombstone.reason == WITHHELD_BY_ADMIN)),
             message & exists().where(BrainTombstone.reason == WITHHELD_BY_ADMIN,

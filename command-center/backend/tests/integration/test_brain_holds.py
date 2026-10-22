@@ -36,7 +36,9 @@ pytestmark = pytest.mark.usefixtures("clean_db")
 
 STUB = "[tool output pruned to save context]"
 EVIDENCE = {"message", "session", "title", "position", "role", "at", "content_chars", "state", "rule",
-            "withheld_message", "compare", "neighbours", "evidence"}  # evidence: rules062-confirm's honest sentence
+            "withheld_message", "compare", "neighbours", "evidence",  # evidence: rules062-confirm's honest sentence
+            # 0.6.2 plan 4.6: the computed relations, the typed confirmation, the pre-selection, the decision backup
+            "relations", "confirm_required", "preselected", "decided_on"}
 
 
 @pytest.fixture
@@ -79,7 +81,8 @@ async def test_holds_list_shows_evidence_and_no_text(client, fx):
     [hold] = r.json()["holds"]
     assert set(hold) == EVIDENCE and r.json()["total"] == 1
     assert (hold["message"], hold["session"], hold["role"], hold["state"]) == (stub.id, stub.session_id, "tool", "live")
-    assert (hold["rule"], hold["compare"]) == ("same message id, different text", "different text")
+    assert (hold["rule"], hold["compare"]) == (identity.UID_HOLD, "other text")
+    assert identity.SAME_UID in hold["relations"] and not hold["confirm_required"]
     assert hold["content_chars"] == len(STUB) and hold["title"] == "Probe conversation"
     assert hold["withheld_message"] == {"id": full.id, "position": full.position, "role": "tool",
                                         "at": full.at.isoformat(), "content_chars": full.content_chars}
@@ -107,7 +110,7 @@ async def test_keep_makes_a_hold_permanent(client, fx):
     assert stone.review == identity.KEPT
     [kept] = await audit_of("archive.hold_kept")
     assert kept.detail == {"message": stub.id, "session": stub.session_id, "anchor": stone.anchor_key,
-                           "rule": "same message id, different text"}
+                           "rule": identity.UID_HOLD}
     assert (await client.get("/api/brain/holds")).json()["holds"] == []
     r = await client.post("/api/brain/holds/%d/release" % stub.id)
     assert r.status_code == 400 and "not held for review" in r.text
@@ -129,10 +132,11 @@ async def test_release_refused_for_certain_matches(client, fx):
         r = await client.post("/api/brain/holds/%d/release" % mid)
         assert r.status_code == 400 and "not held for review" in r.text, r.text
     # A certain stone (decisions-apply's binding, an admin's own) names the held row's JARVIS row: it IS the message.
-    async with session_scope() as s:
+    async with session_scope() as s:  # bound to the exact JARVIS row (0.6.2 plan 3.1: role, call, time, uid)
         await identity.put_stone(s, identity.Stone(
             key="jarvis:message:prune_01:%s:decided" % stub.source_message_id, session="prune_01",
-            row=stub.source_message_id, role="tool", via="decisions-apply", bound=True), actor="admin")
+            row=stub.source_message_id, role="tool", tool_call_id=stub.tool_call_id, at=stub.at,
+            via="decisions-apply", bound=True), actor="admin")
     r = await client.post("/api/brain/holds/%d/release" % stub.id)
     assert r.status_code == 400 and "it cannot be released" in r.text, r.text
     assert (await stones())[stub.source_key].review == identity.PENDING  # nothing changed
@@ -148,10 +152,15 @@ async def test_release_restores_text_at_next_import_and_audits(client, fx):
     assert r.status_code == 200 and r.json()["released"] is True, r.text
     [released] = await audit_of("archive.hold_released")
     assert released.detail == {"message": stub.id, "session": stub.session_id, "anchor": anchor,
-                               "rule": "same message id, different text"}
+                               "rule": identity.UID_HOLD}
     assert stub.source_key not in await stones()
     async with session_scope() as s:
-        assert await s.get(BrainWithholdExemption, (anchor, "prune_01", stub.source_message_id)) is not None
+        [exemption] = (await s.scalars(select(BrainWithholdExemption).where(
+            BrainWithholdExemption.anchor_key == anchor, BrainWithholdExemption.source_session_id == "prune_01",
+            BrainWithholdExemption.source_row_id == stub.source_message_id))).all()
+        # bound to the exact JARVIS row it releases (0.6.2 plan 1.2)
+        assert (exemption.role, exemption.tool_call_id, exemption.source_at, exemption.kind) == (
+            stub.role, stub.tool_call_id, stub.at, "release")
         now_ = await s.get(ArchiveMessage, stub.id)
     assert now_.withheld and now_.source_fp == "" and now_.flags["withheld_by_admin"]["released_at"]
     assert (await client.get("/api/brain/holds")).json()["holds"] == []
@@ -172,34 +181,6 @@ async def test_release_restores_text_at_next_import_and_audits(client, fx):
     assert r.status_code == 201, r.text
     v = await imp.verify(second["run_id"], bj.paths(fx))
     assert v["passed"], {k: c for k, c in v["verification"]["checks"].items() if not c["ok"]}
-
-
-async def _release_digests() -> list[tuple[str, int, str]]:
-    async with session_scope() as s:
-        return [(e.source_row_id, e.content_chars, e.content_fp)
-                for e in (await s.scalars(select(BrainWithholdExemption))).all()]
-
-
-async def test_withholding_released_content_drops_its_digest(client, fx):
-    """Review 2 S27 (tests-integrity #3): a release is bound to the content it released by a keyed digest of the
-    released row's readable text (content_fp 'r1:...'). When an admin later withholds that very content, the withhold
-    drops the digest at once (review.withhold_message -> identity.unbind_withheld): no keyed fingerprint of withheld
-    text is kept, not even until the next import (whose own unbind would clear it later)."""
-    _, stub = await held_stub(client, fx, "zqholdunbind62")
-    await as_(client, "admin")
-    assert (await client.post("/api/brain/holds/%d/release" % stub.id)).status_code == 200
-    await run(fx)
-    [back] = await message_of("prune_01", stub.source_message_id)
-    assert (back.withheld, back.content) == (False, STUB)
-    bound = await _release_digests()
-    assert bound and all(fp.startswith("r1:") for _, _, fp in bound), bound
-    await withhold(client, back.id)  # the admin withholds the released content itself
-    async with session_scope() as s:
-        now_ = await s.get(ArchiveMessage, back.id)
-        assert now_.withheld and now_.content == ""
-    assert all(fp == "" for _, _, fp in await _release_digests()), await _release_digests()  # before any import
-    await run(fx)
-    assert all(fp == "" for _, _, fp in await _release_digests()), await _release_digests()
 
 
 async def test_holds_routes_are_admin_only_and_scoped(client, fx):
@@ -286,6 +267,7 @@ async def test_withhold_preview_counts_and_include_identical(client, fx):
     assert [x["id"] for x in p["same_message_rows"]] == [child_same[0].id]
     assert sorted(x["id"] for x in p["held_rows"]) == sorted([other.id, child_other[0].id])
     assert sorted(x["id"] for x in p["identical_text_rows"]) == sorted([identical.id, child_identical[0].id])
+    assert all(x["preselected"] for x in p["identical_text_rows"])  # listed pre-ticked (0.6.2 plan 4.5)
     assert p["rowless_copies"] >= 1 and p["first_user_message"] is False and p["items_with_this_text"] == []
     assert mark not in r.text  # ids and positions, never text
     assert await stones() == {}  # read-only
@@ -293,11 +275,15 @@ async def test_withhold_preview_counts_and_include_identical(client, fx):
     assert r.status_code == 200, r.text
     done = r.json()
     assert done["also_withheld"] == [child_same[0].id]
-    assert sorted(done["held_for_review"]) == sorted([other.id, child_other[0].id])
+    # the ticked identical rows are held for review (best effort, plan 4.5: Settle decides them), as are the rows with
+    # the same uid and other text
+    assert sorted(done["held_for_review"]) == sorted([other.id, child_other[0].id, identical.id,
+                                                       child_identical[0].id])
     assert done["identical_withheld"] == 2 and done["title_hidden"] is False
     assert done["keys_tombstoned"] >= 6  # its own, the copy, two held, two identical, the repeat (no row)
     st = await stones()
-    assert st[identical.source_key].via == identity.IDENTICAL and st[identical.source_key].review == ""
+    assert (st[identical.source_key].via, st[identical.source_key].review) == (identity.MATCHING_HOLD,
+                                                                                identity.PENDING)
     assert st[other.source_key].review == identity.PENDING
     [entry] = await audit_of("archive.message_withheld")
     assert entry.detail["identical_withheld"] == 2 and entry.detail["also_withheld"] == [child_same[0].id]
@@ -314,12 +300,16 @@ async def test_withhold_preview_counts_and_include_identical(client, fx):
 
 
 async def test_withhold_without_the_box_leaves_identical_text_readable(client, fx):
+    """0.6.2 plan 4.5: the identical rows are listed pre-ticked; with the box cleared (include_identical false) the
+    admin leaves every one readable, and that choice stands at the next import ('left readable')."""
     mark = "zqnobox62"
     ids = _preview_backup(fx, mark)
     await run(fx)
     [answer] = await message_of("pv_parent", ids["answer"])
     [identical] = await message_of("pv_parent", ids["identical"])
-    await withhold(client, answer.id)
+    await as_(client, "admin")
+    r = await client.post("/api/brain/messages/%d/withhold" % answer.id, json={"include_identical": False})
+    assert r.status_code == 200 and r.json()["left_readable"] == 2, r.text
     second = await run(fx)
     async with session_scope() as s:
         again = await s.get(ArchiveMessage, identical.id)

@@ -20,7 +20,7 @@
 # Brain's removals across a restore (0.6.2; a stand-in docker, nothing is restored); -SeedFromBackup; Remove; the
 # pre-check again. Steps that need "python -m app.cli brain-import" and /api/brain (spec 6.7 steps 5, 6, 9 and the
 # planted-value check of 11, and 0.6.2's durable withholding: status line, a withhold kept through a re-import,
-# -Mode Repair, a version 4 decisions file without text) run only when the test copy's image has them; otherwise
+# -Mode Repair, a version 5 decisions file without text) run only when the test copy's image has them; otherwise
 # they are reported as SKIP (with --require-importer, as FAIL). Exit status: 0 all ran steps passed, 1 a step failed.
 #
 # Environment: REGISTRY and EXTRA_CA_BUNDLE as for docker compose (passed to the scripts' builds); PWSH_IMAGE;
@@ -819,7 +819,7 @@ step_api_brain() {  # 6. sign-in with the test cookie; overview; search; session
   check_fp "brain API"
 }
 
-step_withhold_identity() {  # 0.6.2: a withhold survives a re-import of the same backup; Repair; Status; decisions v4
+step_withhold_identity() {  # 0.6.2: a withhold survives a re-import of the same backup; Repair; Status; decisions v5
   [ "$(login)" = 200 ] || { fail "sign-in for the withhold check"; return; }
   local id
   # A message whose text no other row holds: identical text elsewhere stays readable by design (0.6.2 withholds the same
@@ -858,7 +858,7 @@ data = json.load(open(sys.argv[2], encoding="utf-8"))
 flat = open(sys.argv[2], encoding="utf-8").read()
 dump = open(sys.argv[3], encoding="utf-8", errors="replace").read()
 p = []
-if data.get("version") != 4: p.append("version %r" % data.get("version"))
+if data.get("version") != 5: p.append("version %r" % data.get("version"))
 withholds = [r for r in data["removals"] if r["reason"] == "withheld by an admin"]
 if not withholds or not all({"session", "row", "role", "uid", "anchor"} <= set(r) for r in withholds): p.append("no binding")
 if text in flat: p.append("text in the decisions file")
@@ -866,7 +866,7 @@ if text in dump: p.append("text in the database")
 print("; ".join(p))
 EOF
 )
-  [ -n "$file" ] && [ -z "$verdict" ] && pass "message $id stays withheld through a re-import; the version 4 decisions file names its JARVIS row, and neither it nor the database holds its text" \
+  [ -n "$file" ] && [ -z "$verdict" ] && pass "message $id stays withheld through a re-import; the version 5 decisions file names its JARVIS row, and neither it nor the database holds its text" \
     || fail "withhold identity: $verdict"
   rm -f "$WORK/withheld.txt" "$WORK/after-withhold.sql"
   check_fp "withhold identity"
@@ -957,7 +957,7 @@ else
   for s in "5. jarvis-import -Target Test: Plan, Import -Sample 2, Verify, Import -All, Verify" \
            "6. brain API: overview, search, sessions, Supervisor recall" "8. imported rows persist across a restart" \
            "9. Rollback, then zero rows" "11. no planted value in the brain tables" \
-           "0.6.2: a withhold kept through a re-import, Status, Repair, decisions version 4"; do skip "$s"; done
+           "0.6.2: a withhold kept through a re-import, Status, Repair, decisions version 5"; do skip "$s"; done
 fi
 step_seed
 step_remove

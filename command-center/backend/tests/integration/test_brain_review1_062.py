@@ -804,8 +804,10 @@ def r15_family(db: str, how: str, mark: str, *, later_repeat: bool = False) -> N
 @pytest.mark.parametrize("how", ["gateway_branch", "rotation_no_uids", "cli_branch_control"])
 async def test_r15_a_copy_jarvis_made_before_the_withhold_is_withheld_and_never_promoted(client, tmp_path, how):
     """R15 (readers-privacy #0): the child's copy, stored by the same import before the admin's withhold, is withheld
-    by the withhold itself (listed as the same message), stays withheld through a re-import and a later backup, is
-    read by no reader (sessions, Supervisor history, recall), cannot be promoted, and verify and status agree."""
+    by the withhold itself (a CLI branch's copy, the same uid and text, as the same message; a fresh uid or none:
+    listed pre-ticked, 0.6.2 plan 4.5), certain once Settle runs (5.3 R1/R15: rule 6), stays withheld through a
+    re-import and a later backup, is read by no reader (sessions, Supervisor history, recall), cannot be promoted, and
+    verify and status agree."""
     from .test_brain_agents import ask
     mark = "zqr15" + how.replace("_", "")[:9]
     fx = bj.mini(tmp_path / "fx")
@@ -815,10 +817,14 @@ async def test_r15_a_copy_jarvis_made_before_the_withhold_is_withheld_and_never_
     [copy] = [m for m in await rows_of("r15_c") if mark in (m.content or "")]
     await as_(client, "admin")
     preview = (await client.get("/api/brain/messages/%d/withhold-preview" % orig.id)).json()
-    assert [r["id"] for r in preview["same_message_rows"]] == [copy.id], preview
-    assert preview["identical_text_rows"] == [], preview
+    member = how == "cli_branch_control"
+    assert [r["id"] for r in preview["same_message_rows"]] == ([copy.id] if member else []), preview
+    assert [r["id"] for r in preview["identical_text_rows"]] == ([] if member else [copy.id]), preview
     w = await client.post("/api/brain/messages/%d/withhold" % orig.id)
-    assert w.status_code == 200 and w.json()["also_withheld"] == [copy.id], w.text
+    assert w.status_code == 200 and w.json()["also_withheld" if member else "held_for_review"] == [copy.id], w.text
+    await bj.settle(fx, keep=False)
+    async with session_scope() as s:
+        assert (await s.get(BrainTombstone, copy.source_key)).review == identity.CERTAIN
     await imp.run(bj.paths(fx), ALL)
     bj.add_row(fx["db"], "r15_p", "user", "one more question later", T + 2 * DAY)
     later = await imp.run(bj.paths(fx), ALL)
@@ -842,13 +848,16 @@ async def test_r15_a_copy_jarvis_made_before_the_withhold_is_withheld_and_never_
 @pytest.mark.parametrize("how", ["gateway_branch", "rotation_no_uids"])
 async def test_r15_the_next_import_repairs_a_copy_an_earlier_withhold_missed(client, tmp_path, monkeypatch, how):
     """R15: a database where the withhold already missed the copy (as 0.6.2 before review 1 did: the lineage walk is
-    switched off for the withhold) is repaired by the next import (a copy JARVIS made is never a row the admin saw),
-    and the user's own later repeat of the words in the child stays readable (another role: not a copy)."""
+    switched off for the withhold) is repaired by Settle (0.6.2 plan 4, 5.3 R1/R15: the copy is certain by rule 6;
+    the 'admin saw it' guard is gone). The user's own later repeat of the words in the child (another role, another
+    time: never certain) is held for review, 'identical', pre-selected for release only when it has its own uid."""
     mark = "zqr15rep" + how[:4]
     fx = bj.mini(tmp_path / "fx")
     r15_family(fx["db"], how, mark, later_repeat=True)
     await imp.run(bj.paths(fx), ALL)
     [orig] = [m for m in await rows_of("r15_p") if mark in (m.content or "")]
+    [missed] = [m for m in await rows_of("r15_c") if m.role == "assistant" and mark in (m.content or "")]
+    [repeat] = [m for m in await rows_of("r15_c") if m.role == "user" and mark in (m.content or "")]
     real = identity.lineage
 
     async def only_self(s, ids):
@@ -863,12 +872,15 @@ async def test_r15_the_next_import_repairs_a_copy_an_earlier_withhold_missed(cli
     assert (await client.post("/api/brain/messages/%d/withhold" % orig.id)).status_code == 200
     monkeypatch.setattr(identity, "lineage", real)
     monkeypatch.setattr(identity, "LINEAGE", kinds)
-    [missed] = [m for m in await rows_of("r15_c") if m.role == "assistant" and mark in (m.content or "")]
-    await imp.run(bj.paths(fx), ALL)
+    await bj.settle(fx, keep=False)
     after = {m.id: m for m in await rows_of("r15_c")}
     assert after[missed.id].withheld and mark not in (after[missed.id].content or "")
-    repeat = [m for m in after.values() if m.role == "user" and mark in (m.content or "")]
-    assert len(repeat) == 1 and not repeat[0].withheld, "the user's own later words were withheld by text alone"
+    async with session_scope() as s:
+        assert (await s.get(BrainTombstone, missed.source_key)).review == identity.CERTAIN
+        assert (await s.get(BrainTombstone, repeat.source_key)).review == identity.PENDING
+    await as_(client, "admin")
+    [held] = [h for h in (await client.get("/api/brain/holds")).json()["holds"] if h["message"] == repeat.id]
+    assert identity.IDENTICAL_REL in held["relations"] and held["confirm_required"], held
 
 
 # ======================= R16 / R17: the hidden title on live, after a restore, and in children ====================
@@ -947,6 +959,7 @@ async def test_r16_an_explicit_hide_title_travels_from_the_test_copy_to_live(cli
     await as_(client, "admin")
     r = await client.post("/api/brain/messages/%d/withhold" % m.id, json={"hide_title": True})
     assert r.status_code == 200 and r.json()["title_hidden"] is True, r.text
+    await bj.settle(fx)  # 0.6.2 plan 4.7: decisions-export refuses until the withhold is finished
     out = tmp_path / "decisions.json"
     await decisions_export(str(out))
     assert [x.get("title_hidden") for x in json.loads(out.read_text())["removals"]] == [True]
@@ -1298,7 +1311,8 @@ async def test_r29_a_withhold_finds_deleted_copies_through_the_partial_indexes()
     one record per message). The query is prepared exactly as the driver sends it (values as parameters) and planned
     generically (as a reused prepared statement is): its plan reads one of 0008's partial indexes of deleted rows
     (which one depends on the table's statistics), by uid and by conversation. With the JSON keys or the record type
-    sent as parameters, no partial index applies."""
+    sent as parameters, no partial index applies. Since 0.6.2 step 6 the lookup is by uid only (the same-time
+    lookup of a uid-less row was a time rule, plan 4.3): there is no query without a uid."""
     from types import SimpleNamespace
 
     def literal(v: object) -> str:
@@ -1309,7 +1323,8 @@ async def test_r29_a_withhold_finds_deleted_copies_through_the_partial_indexes()
         conn = await s.connection()
         await conn.exec_driver_sql("SET LOCAL enable_seqscan = off")
         await conn.exec_driver_sql("SET LOCAL plan_cache_mode = force_generic_plan")
-        for n, uid in enumerate(("u-r29-plan", "")):
+        assert identity.deleted_copies_query(row, "") is None
+        for n, uid in enumerate(("u-r29-plan",)):
             compiled = identity.deleted_copies_query(row, uid).compile(dialect=conn.dialect)
             params = compiled.construct_params()
             values = [params[k] for k in compiled.positiontup or []]

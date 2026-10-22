@@ -1,0 +1,247 @@
+{
+  "messages": [
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:00:01+00:00",
+      "key": "jarvis:message:uid:60200000000000000000000000000001",
+      "role": "user",
+      "row": "1",
+      "session": "root",
+      "tool_call_id": "",
+      "uid": "60200000000000000000000000000001"
+    },
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:00:02+00:00",
+      "key": "jarvis:message:uid:60200000000000000000000000000002",
+      "role": "assistant",
+      "row": "2",
+      "session": "root",
+      "tool_call_id": "",
+      "uid": "60200000000000000000000000000002"
+    },
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:00:03+00:00",
+      "key": "jarvis:message:uid:60200000000000000000000000000003",
+      "role": "assistant",
+      "row": "3",
+      "session": "root",
+      "tool_call_id": "call_g1",
+      "uid": "60200000000000000000000000000003"
+    },
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:00:04+00:00",
+      "key": "jarvis:message:uid:60200000000000000000000000000004",
+      "role": "tool",
+      "row": "4",
+      "session": "root",
+      "tool_call_id": "call_g1",
+      "uid": "60200000000000000000000000000004"
+    },
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:00:05+00:00",
+      "key": "jarvis:message:root:5",
+      "role": "user",
+      "row": "5",
+      "session": "root",
+      "tool_call_id": "",
+      "uid": ""
+    },
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:00:06+00:00",
+      "key": "jarvis:message:root:6",
+      "role": "user",
+      "row": "6",
+      "session": "root",
+      "tool_call_id": "",
+      "uid": ""
+    },
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:00:02+00:00",
+      "key": "jarvis:message:root:7",
+      "role": "assistant",
+      "row": "7",
+      "session": "root",
+      "tool_call_id": "",
+      "uid": "60200000000000000000000000000002"
+    },
+    {
+      "absorbed": [
+        "60200000000000000000000000000008",
+        "60200000000000000000000000000009"
+      ],
+      "at": "2026-07-01T00:00:07+00:00",
+      "key": "jarvis:message:uid:60200000000000000000000000000007",
+      "role": "assistant",
+      "row": "8",
+      "session": "root",
+      "tool_call_id": "",
+      "uid": "60200000000000000000000000000007"
+    },
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:00:08+00:00",
+      "key": "jarvis:message:uid:6020000000000000000000000000000a",
+      "role": "user",
+      "row": "9",
+      "session": "root",
+      "tool_call_id": "",
+      "uid": "6020000000000000000000000000000a"
+    },
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:00:01+00:00",
+      "key": "jarvis:message:rot:10",
+      "role": "user",
+      "row": "10",
+      "session": "rot",
+      "tool_call_id": "",
+      "uid": "60200000000000000000000000000001"
+    },
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:01:41+00:00",
+      "key": "jarvis:message:uid:6020000000000000000000000000000b",
+      "role": "user",
+      "row": "11",
+      "session": "rot",
+      "tool_call_id": "",
+      "uid": "6020000000000000000000000000000b"
+    },
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:03:21+00:00",
+      "key": "jarvis:message:cont:12",
+      "role": "user",
+      "row": "12",
+      "session": "cont",
+      "tool_call_id": "",
+      "uid": ""
+    },
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:00:01+00:00",
+      "key": "jarvis:message:uid:6020000000000000000000000000000c",
+      "role": "user",
+      "row": "13",
+      "session": "gwb",
+      "tool_call_id": "",
+      "uid": "6020000000000000000000000000000c"
+    },
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:05:01+00:00",
+      "key": "jarvis:message:uid:6020000000000000000000000000000d",
+      "role": "assistant",
+      "row": "14",
+      "session": "gwb",
+      "tool_call_id": "",
+      "uid": "6020000000000000000000000000000d"
+    },
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:06:41+00:00",
+      "key": "jarvis:message:uid:6020000000000000000000000000000e",
+      "role": "user",
+      "row": "15",
+      "session": "reset",
+      "tool_call_id": "",
+      "uid": "6020000000000000000000000000000e"
+    },
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:08:21+00:00",
+      "key": "jarvis:message:uid:6020000000000000000000000000000f",
+      "role": "user",
+      "row": "16",
+      "session": "deleg",
+      "tool_call_id": "",
+      "uid": "6020000000000000000000000000000f"
+    },
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:10:01+00:00",
+      "key": "jarvis:message:slack:C123:thread:9:17",
+      "role": "user",
+      "row": "17",
+      "session": "slack:C123:thread:9",
+      "tool_call_id": "",
+      "uid": ""
+    },
+    {
+      "absorbed": [],
+      "at": "2026-07-01T00:10:02+00:00",
+      "key": "jarvis:message:uid:60200000000000000000000000000010",
+      "role": "assistant",
+      "row": "18",
+      "session": "slack:C123:thread:9",
+      "tool_call_id": "",
+      "uid": "60200000000000000000000000000010"
+    }
+  ],
+  "newest_at": "2026-07-01T00:11:40+00:00",
+  "orphans": [
+    {
+      "key": "jarvis:message:uid:60200000000000000000000000000011",
+      "row": "19",
+      "session": "gone"
+    }
+  ],
+  "sessions": {
+    "cont": {
+      "hermes_parent": "root",
+      "lineage": "continuation",
+      "markers": {},
+      "parent": "root"
+    },
+    "deleg": {
+      "hermes_parent": "root",
+      "lineage": "delegated",
+      "markers": {
+        "_delegate_from": "root"
+      },
+      "parent": "root"
+    },
+    "gwb": {
+      "hermes_parent": "root",
+      "lineage": "branch",
+      "markers": {
+        "_branched_from": "root"
+      },
+      "parent": "root"
+    },
+    "reset": {
+      "hermes_parent": "root",
+      "lineage": "reset",
+      "markers": {
+        "_reset_from": "root"
+      },
+      "parent": "root"
+    },
+    "root": {
+      "hermes_parent": "",
+      "lineage": "",
+      "markers": {},
+      "parent": ""
+    },
+    "rot": {
+      "hermes_parent": "",
+      "lineage": "continuation",
+      "markers": {
+        "_compressed_from": "root-deleted"
+      },
+      "parent": "root-deleted"
+    },
+    "slack:C123:thread:9": {
+      "hermes_parent": "",
+      "lineage": "",
+      "markers": {},
+      "parent": ""
+    }
+  }
+}

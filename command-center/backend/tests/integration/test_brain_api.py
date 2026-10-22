@@ -610,7 +610,7 @@ async def test_withholding_a_message_recomputes_its_session(client):
                                 "withheld_messages": 1, "tombstone": True, "copies": [], "versions_blanked": 0,
                                 "rollback_copies_blanked": 0, "answers_scrubbed": 0, "via": "api",
                                 "also_withheld": [], "held_for_review": [], "identical_withheld": 0,
-                                "keys_tombstoned": 1, "title_hidden": False}
+                                "keys_tombstoned": 1, "title_hidden": False, "left_readable": 0}
 
 
 async def test_promoting_a_message_keeps_the_highest_sensitivity(client):

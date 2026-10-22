@@ -59,6 +59,37 @@ async def readable_everywhere(client, sid: str, source_id: int, words: str, mark
     return row
 
 
+async def held_for_review_only(client, fx: dict[str, str], sid: str, source_id: int, words: str, mark: str, *,
+                               preselected: bool | None = None) -> None:
+    """0.6.2 plan 5.3: a new row of a withheld conversation family in a later backup that is neither certain nor a
+    safe copy is held for review (fail-safe), never withheld for good: its stone is pending ('new in a later backup',
+    with its computed evidence), it is listed for an admin, and a release (typed when it is, holds or quotes the
+    withheld text: plan 4.6) brings its text back at the next import, readable everywhere."""
+    [m] = await message_of(sid, source_id)
+    st = (await stones())[m.source_key]
+    assert (m.withheld, m.content, st.review, st.via) == (True, "", identity.PENDING, identity.LATER_HOLD), (
+        sid, source_id, st.via, st.review)
+    await as_(client, "admin")
+    [hold] = [h for h in (await client.get("/api/brain/holds")).json()["holds"] if h["message"] == m.id]
+    if preselected is not None:
+        assert hold["preselected"] is preselected, hold
+    body = {"confirm": identity.CONFIRM_WORD} if hold["confirm_required"] else None
+    r = await client.post("/api/brain/holds/%d/release" % m.id, json=body)
+    assert r.status_code == 200, r.text
+    await run(fx)
+    await readable_everywhere(client, sid, source_id, words, mark)
+
+
+async def withhold_leaving(client, sid: str, source_id: int, *readable_ids: int) -> None:
+    """The admin withholds a row and unticks, in the dialog, the stored rows she knows are other messages (0.6.2
+    plan 4.5: rows that equal or contain the withheld text are listed pre-ticked; unticking writes 'left readable')."""
+    [m] = await message_of(sid, source_id)
+    others = [r.id for i in readable_ids for r in await message_of(sid, i)]
+    await as_(client, "admin")
+    r = await client.post("/api/brain/messages/%d/withhold" % m.id, json={"leave_readable": others})
+    assert r.status_code == 200, r.text
+
+
 async def withheld_row(sid: str, source_id: int) -> ArchiveMessage:
     [m] = await message_of(sid, source_id)
     assert m.withheld and m.content == ""
@@ -101,18 +132,22 @@ async def test_o2_similar_text(client, fx):
     bj.hermes_compact(fx["db"], "o2_a", head_n=1, tail_n=4, ts=T + 100)  # the similar answer is copied too
     await run(fx)
     similar = [r for r in bj.rows(fx["db"], "o2_a") if r["content"] == secret(mark[:-1] + "x") and r["active"]]
-    await readable_everywhere(client, "o2_a", similar[0]["id"], secret(mark[:-1] + "x"), mark[:-1] + "x")
+    # the stored similar answer stays as it was (plan 5.2); its copy, new in this later backup with another time, is
+    # held for review only (plan 5.3), never withheld for good
+    await held_for_review_only(client, fx, "o2_a", similar[0]["id"], secret(mark[:-1] + "x"), mark[:-1] + "x")
+    await readable_everywhere(client, "o2_a", ids[3], secret(mark[:-1] + "x"), mark[:-1] + "x")
     await readable_everywhere(client, "o2_b", other[1], secret(mark[:-1] + "y"), mark[:-1] + "y")
 
 
 async def test_o3_identical_text_stored_before_the_withhold(client, fx):
-    """The admin saw the same words stored twice and withheld one: the other stays, through re-imports, a later
-    backup and a compaction that copies both."""
+    """The admin saw the same words stored twice and withheld one, unticking the other in the dialog (0.6.2 plan 4.5;
+    the 'admin saw it' guard is gone): it stays, through re-imports and a later backup (plan 5.2); the copy a
+    compaction makes of it with another time is held for review only (plan 5.3)."""
     mark = "zqothree62"
     ids = conversation(fx["db"], "o3", T, [("user", "Give me the headline number."), ("assistant", secret(mark)),
                                            ("user", "Say it again?"), ("assistant", secret(mark))])
     await run(fx)
-    await withhold(client, (await message_of("o3", ids[1]))[0].id)
+    await withhold_leaving(client, "o3", ids[1], ids[3])
     await run(fx)
     bj.add_row(fx["db"], "o3", "user", "Thanks.", T + 10)
     await run(fx)
@@ -122,11 +157,14 @@ async def test_o3_identical_text_stored_before_the_withhold(client, fx):
     copies = [r for r in bj.rows(fx["db"], "o3") if r["content"] == secret(mark) and r["active"]]
     by_uid = {r["message_uid"]: r for r in copies}
     original_uid = bj.rows(fx["db"], "o3")[3]["message_uid"]
-    await readable_everywhere(client, "o3", by_uid[original_uid]["id"], secret(mark), mark)
+    await readable_everywhere(client, "o3", ids[3], secret(mark), mark)
+    await held_for_review_only(client, fx, "o3", by_uid[original_uid]["id"], secret(mark), mark)
 
 
 async def test_o4_independent_repeat_own_uid(client, fx):
-    """A later, non-adjacent repeat with its own uid, the withheld message's uid known."""
+    """A later, non-adjacent repeat with its own uid, the withheld message's uid known: new in a later backup of the
+    withheld family, so held for review (0.6.2 plan 5.3; the independence guard is gone, plan 4.3), pre-selected for
+    release (its own uid, another time), never withheld for good."""
     mark = "zqofour62"
     ids = _two_turns(fx["db"], "o4", T, secret(mark))
     await run(fx)
@@ -135,7 +173,7 @@ async def test_o4_independent_repeat_own_uid(client, fx):
     later = bj.add_row(fx["db"], "o4", "assistant", secret(mark), T + DAY + 1)
     await run(fx)
     await run(fx)
-    await readable_everywhere(client, "o4", later, secret(mark), mark)
+    await held_for_review_only(client, fx, "o4", later, secret(mark), mark, preselected=True)
 
 
 async def test_o5_parallel_tool_results(client, fx):
@@ -147,7 +185,7 @@ async def test_o5_parallel_tool_results(client, fx):
     first = bj.add_row(fx["db"], "o5", "tool", words, T + 2, tool_call_id="call_1", tool_name="http")
     second = bj.add_row(fx["db"], "o5", "tool", words, T + 3, tool_call_id="call_2", tool_name="http")
     await run(fx)
-    await withhold(client, (await message_of("o5", first))[0].id)
+    await withhold_leaving(client, "o5", first, second)  # listed pre-ticked (plan 4.5): the admin unticks it
     await run(fx)
     await readable_everywhere(client, "o5", second, words, mark)
 
@@ -185,13 +223,16 @@ async def test_o7_uid_collision_other_role(client, fx):
     [target] = await message_of("o7", answer)
     preview = (await client.get("/api/brain/messages/%d/withhold-preview" % target.id)).json()
     assert preview["same_message_rows"] == [] and preview["held_rows"] == []
-    await withhold(client, target.id)
+    assert [r["id"] for r in preview["identical_text_rows"]] == [(await message_of("o7", echo))[0].id]
+    await withhold_leaving(client, "o7", answer, echo)  # the echo: listed pre-ticked, unticked (plan 4.5)
     bj.hermes_compact(fx["db"], "o7", head_n=0, tail_n=2, ts=T + 100)
     await run(fx)
     copies = [r for r in bj.rows(fx["db"], "o7") if r["role"] == "user" and r["content"] == secret(mark)
               and r["active"]]
-    await readable_everywhere(client, "o7", copies[0]["id"], secret(mark), mark)
     assert copies[0]["id"] != echo
+    await readable_everywhere(client, "o7", echo, secret(mark), mark)  # the stored row, kept (plan 5.2)
+    # its copy (the shared uid, another time): never certain, held for review only (plan 5.3)
+    await held_for_review_only(client, fx, "o7", copies[0]["id"], secret(mark), mark)
 
 
 async def test_o8_twins_of_readable_messages(client, fx):
@@ -233,15 +274,16 @@ async def test_o9_paired_tool_result_and_summary(client, fx):
     bj.hermes_compact(fx["db"], "o9", head_n=0, tail_n=0, ts=T + 100)
     await run(fx)
     summary = [r for r in bj.rows(fx["db"], "o9") if r["content"].startswith("[CONTEXT COMPACTION]")]
-    [stored] = await message_of("o9", summary[0]["id"])
-    assert not stored.withheld and stored.source_key not in await stones()
-    for source_id in (result, after):  # archived, still readable
+    for source_id in (result, after):  # archived, still readable (stored rows of the family are kept: plan 5.2)
         assert not (await message_of("o9", source_id))[0].withheld
+    # the summary is new in this later backup: held for review only (plan 5.3), never withheld for good
+    await held_for_review_only(client, fx, "o9", summary[0]["id"], summary[0]["content"], "CONTEXT COMPACTION")
 
 
 async def test_o10_new_turns_of_children(client, fx):
     """A rotation child carries the withheld answer on (withheld) and then says new things, an identical repeat with
-    its own uid included: those stay."""
+    its own uid included: new rows of the withheld family in a later backup, held for review only (0.6.2 plan 5.3),
+    never withheld for good; a release brings each back."""
     mark = "zqoten62"
     ids = _two_turns(fx["db"], "o10", T, secret(mark))
     await run(fx)
@@ -253,8 +295,8 @@ async def test_o10_new_turns_of_children(client, fx):
     carried = [r for r in bj.rows(fx["db"], "o10_child") if r["content"] == secret(mark) and r["id"] != repeat]
     for c in carried:
         assert (await message_of("o10_child", c["id"]))[0].withheld
-    await readable_everywhere(client, "o10_child", new, "A new question about the budget (%s)." % mark, mark)
-    await readable_everywhere(client, "o10_child", repeat, secret(mark), mark)
+    await held_for_review_only(client, fx, "o10_child", new, "A new question about the budget (%s)." % mark, mark)
+    await held_for_review_only(client, fx, "o10_child", repeat, secret(mark), mark, preselected=True)
 
 
 async def test_o11_delegated_session(client, fx):
@@ -296,7 +338,9 @@ async def test_o13_independent_repeat_first_seen_compacted(client, fx):
     bj.add_row(fx["db"], "o13", "user", "Months later, the same question.", T + 30 * DAY)
     archived = bj.add_row(fx["db"], "o13", "assistant", secret(mark), T + 30 * DAY + 1, active=0, compacted=1)
     await run(fx)
-    row = await readable_everywhere(client, "o13", archived, secret(mark), mark)
+    # 0.6.2 plan 5.3 (the independence guard is gone): new in a later backup, held for review only, pre-selected
+    await held_for_review_only(client, fx, "o13", archived, secret(mark), mark, preselected=True)
+    [row] = await message_of("o13", archived)
     assert row.state == "compacted"
 
 
@@ -374,7 +418,9 @@ async def test_o16_unrelated_rollback_copy_kept(scratch):
 
 
 async def test_documented_fail_closed_outcomes_a_to_f(client, fx, scratch):
-    # (a) an adjacent verbatim repeat first seen after the withhold: a member (it is a duplicate of the withheld row).
+    # (a) an adjacent verbatim repeat first seen after the withhold, with its own uid: the importer's duplicate of the
+    # withheld row (no row of its own), kept withheld with its stone, but certain only with that row's uid (plan 4.2
+    # (5), 5.3): its key holds for review.
     ids = _two_turns(fx["db"], "fa", T, secret("zqfaila62"))
     await run(fx)
     withheld = await withheld_row_after(client, "fa", ids[1])
@@ -382,7 +428,7 @@ async def test_documented_fail_closed_outcomes_a_to_f(client, fx, scratch):
     await run(fx)
     key = "jarvis:message:uid:%s" % [r for r in bj.rows(fx["db"], "fa") if r["id"] == repeat][0]["message_uid"]
     stone = (await stones())[key]
-    assert (stone.anchor_key, stone.via, stone.review) == (withheld.source_key, "duplicate", "")
+    assert (stone.anchor_key, stone.via, stone.review) == (withheld.source_key, "duplicate", identity.PENDING)
     # (b) a backup without uids: a later verbatim repeat in the same conversation is a hold, an admin can release it.
     ids = conversation(fx["db"], "fb", T + DAY, [("user", "Q?"), ("assistant", secret("zqfailb62"))], uid=False)
     await run(fx)
@@ -394,7 +440,9 @@ async def test_documented_fail_closed_outcomes_a_to_f(client, fx, scratch):
     [held] = await message_of("fb", later)
     assert held.withheld and (await stones())[held.source_key].review == identity.PENDING
     await as_(client, "admin")
-    assert (await client.post("/api/brain/holds/%d/release" % held.id)).status_code == 200
+    assert (await client.post("/api/brain/holds/%d/release" % held.id)).status_code == 400  # identical: typed
+    assert (await client.post("/api/brain/holds/%d/release" % held.id,
+                              json={"confirm": identity.CONFIRM_WORD})).status_code == 200
     await run(fx)
     assert not (await message_of("fb", later))[0].withheld
     # (c) a same-role uid collision with nothing to compare (the withheld row is gone from the backup): a member.
@@ -411,28 +459,31 @@ async def test_documented_fail_closed_outcomes_a_to_f(client, fx, scratch):
             ArchiveMessage.source_key == "jarvis:message:uid:" + shared))
         assert not await s.scalar(select(ArchiveMessage.id).where(ArchiveMessage.content == "Other words entirely."))
     assert member.withheld and (await stones())[member.source_key].review == ""
-    # (d) a fold composite holding the withheld text: a member, never releasable.
+    # (d) a later backup where JARVIS folded the withheld text into a stored row in place: the stored row keeps what
+    # it holds, its own words (plan 5.2; owner question 7: JARVIS's edits there are not followed), and the composite
+    # holding the withheld text is never stored; the withheld row stays withheld, never releasable. (A fold Hermes
+    # commits as a new row is certain: test_brain_later_062.)
     ids = conversation(fx["db"], "fd", T + 4 * DAY, [("user", secret("zqfaild62")), ("assistant", "Noted."),
                                                      ("user", "Anything else?")])
     await run(fx)
-    await withheld_row_after(client, "fd", ids[0])
+    withheld_d = await withheld_row_after(client, "fd", ids[0])
     bj.fold(fx["db"], "fd", survivor=ids[2], dropped=[ids[0]])
     await run(fx)
-    [composite] = await message_of("fd", ids[2])
-    assert composite.withheld and (await stones())[composite.source_key].via == "merged into another message"
+    [survivor] = await message_of("fd", ids[2])
+    assert (survivor.withheld, survivor.content) == (False, "Anything else?")
+    assert await bj.nowhere("zqfaild62") == []
+    [still] = await message_of("fd", ids[0])
+    assert still.id == withheld_d.id and still.withheld
     await as_(client, "admin")
-    assert (await client.post("/api/brain/holds/%d/release" % composite.id)).status_code == 400
+    assert (await client.post("/api/brain/holds/%d/release" % still.id)).status_code == 400
     # (e) and (f), after the upgrade of a real 0.6.1 leak database: 0.6.1's C2 victim (row 210, a row it rewrote and
-    # withheld under a moved key) stays withheld; the upgrade heuristics (uid, same text) are holds an admin reviews.
+    # withheld under a moved key) stays withheld; the data is legacy (0.6.2 plan 1.7): marked for the legacy lock and
+    # reset, never re-derived into holds by the upgrade's text and uid heuristics (plan 1.6).
     conn = await _fx(scratch)
     try:
         assert await conn.fetchval("SELECT withheld FROM archive_messages WHERE id = 210") is True
-        held_ids = [r["id"] for r in await conn.fetch(
-            "SELECT m.id FROM archive_messages m JOIN brain_tombstones t ON t.source_key = m.source_key "
-            "WHERE t.review = 'pending' ORDER BY m.id")]
-        assert held_ids == [177, 179, 240, 242]
-        vias = {r["via"] for r in await conn.fetch("SELECT via FROM brain_tombstones WHERE review = 'pending'")}
-        assert vias <= {"upgrade: same message id", "upgrade: same text"}
+        assert await conn.fetchval("SELECT count(*) FROM brain_tombstones WHERE review = 'pending'") == 0
+        assert await conn.fetchval("SELECT count(*) FROM brain_maintenance WHERE name = 'legacy_brain_data'") == 1
     finally:
         await conn.close()
 
@@ -445,8 +496,9 @@ async def withheld_row_after(client, sid: str, source_id: int) -> ArchiveMessage
 
 async def test_no_stone_was_created_for_readable_rows_after_every_case(client, fx):
     """Across a session with every inverse case at once (identical text before, a later own-uid repeat, a parallel
-    tool result, a similar sentence) and three later backups, the only stones are the admin's own and the copies of
-    the withheld message; every readable row stays readable."""
+    tool result, a similar sentence) and three later backups: the identical row the admin unticked in the dialog and
+    the similar sentence stay readable with no stone (0.6.2 plan 4.5, 5.2); the rows new in the later backups (the
+    own-uid repeat, the follow-ups) are held for review only (plan 5.3); nothing but the admin's own row is certain."""
     mark = "zqoall62"
     bj.add_session(fx["db"], "oall", started=T)
     ask = bj.add_row(fx["db"], "oall", "user", "Give me the number.", T + 1)
@@ -455,18 +507,19 @@ async def test_no_stone_was_created_for_readable_rows_after_every_case(client, f
     before = bj.add_row(fx["db"], "oall", "assistant", secret(mark), T + 4)
     similar = bj.add_row(fx["db"], "oall", "assistant", secret(mark[:-1] + "q"), T + 5)
     await run(fx)
-    await withhold(client, (await message_of("oall", target))[0].id)
+    await withhold_leaving(client, "oall", target, before)
     bj.add_row(fx["db"], "oall", "user", "Next month?", T + DAY)
     later = bj.add_row(fx["db"], "oall", "assistant", secret(mark), T + DAY + 1)
     for n in range(3):
         bj.add_row(fx["db"], "oall", "user", "Follow-up %d." % n, T + DAY + 10 + n)
         last = await run(fx)
-    held = {k for k, st in (await stones()).items()}
     [withheld] = await message_of("oall", target)
-    assert held == {withheld.source_key}
-    for source_id, words, m in ((before, secret(mark), mark), (later, secret(mark), mark),
-                                (similar, secret(mark[:-1] + "q"), mark[:-1] + "q")):
-        await readable_everywhere(client, "oall", source_id, words, m)
-    assert not (await message_of("oall", ask))[0].withheld
+    certain = {k for k, st in (await stones()).items() if st.review != identity.PENDING}
+    assert certain == {withheld.source_key}
+    assert {st.via for st in (await stones()).values() if st.review == identity.PENDING} == {identity.LATER_HOLD}
     v = await imp.verify(last["run_id"], bj.paths(fx))
     assert v["passed"], {k: c for k, c in v["verification"]["checks"].items() if not c["ok"]}
+    for source_id, words, m in ((before, secret(mark), mark), (similar, secret(mark[:-1] + "q"), mark[:-1] + "q")):
+        await readable_everywhere(client, "oall", source_id, words, m)
+    assert not (await message_of("oall", ask))[0].withheld
+    await held_for_review_only(client, fx, "oall", later, secret(mark), mark, preselected=True)
