@@ -4214,6 +4214,11 @@ async def status(run_id: int | None = None) -> dict[str, Any]:
                 purge_fingerprints_made_with_another_key=int(pending["purge_fingerprints_other_key"]),
                 # 0.6.2 plan 5.3, 5.5: conversations an admin stopped importing, and the newest run's tripwire (counts
                 # and archive ids only)
+                # 0.6.2 plan 1.8, 9.4: withholds not finished on their backup (Settle), Settle's holds waiting for review,
+                # and rows a later backup held in a withheld conversation family
+                unsettled_decisions=int(pending.get("unsettled_decisions") or 0),
+                unreviewed_settle_holds=int(pending.get("unreviewed_settle_holds") or 0),
+                later_backup_holds=int(pending.get("quarantined_rows") or 0),
                 frozen_conversations=int(pending.get("frozen_sessions") or 0),
                 last_tripwire=pending.get("last_tripwire") or None,
                 # 0.6.2 plan 8.1: legacy 0.6.0/0.6.1 data, locked until brain-import legacy-reset

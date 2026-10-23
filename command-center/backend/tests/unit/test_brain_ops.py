@@ -487,7 +487,9 @@ def test_the_precheck_reads_keys_brain_withhold_pending_returns():
     precheck = script("brain-precheck.ps1")
     read = set(re.findall(r"\$pending\.(\w+)", precheck))
     assert read == {"readable_by_key", "readable_by_jarvis_row", "readable_by_fold", "readable_in_restricted_sessions",
-                    "held_for_review", "repair_done", "legacy_lock"}  # 0.6.2 step 6: no time-rule counter; 8.1
+                    "held_for_review", "repair_done", "legacy_lock",  # 0.6.2 step 6: no time-rule counter; 8.1
+                    # plan 1.8, 9.4: the decisions' counters
+                    "unsettled_decisions", "unreviewed_settle_holds", "quarantined_rows", "frozen_sessions"}
     sql = (ROOT / "backend" / "app" / "migrations" / "0008_brain_withhold_identity.sql").read_text()
     pending = sql[sql.index("FUNCTION brain_withhold_pending()"):]
     built = set(re.findall(r"'(\w+)',", pending))

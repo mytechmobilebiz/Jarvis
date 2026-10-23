@@ -250,8 +250,11 @@ async def overview(caller: Caller = Depends(any_user), session: AsyncSession = D
                    settings: Settings = Depends(get_settings)) -> dict:
     await importer.mark_dead_runs(session)  # "Last import: Running" only while its process is alive
     values = await customer_settings.load(session, settings)
-    return await review.overview(session, caller.scope, ai_context=str(values.get(store.AI_CONTEXT_KEY) or "off"),
-                                 instance_label=str(getattr(settings, "instance_label", "") or ""))
+    out = await review.overview(session, caller.scope, ai_context=str(values.get(store.AI_CONTEXT_KEY) or "off"),
+                                instance_label=str(getattr(settings, "instance_label", "") or ""))
+    if caller.scope.is_admin:  # 0.6.2 plan 9.2, 9.4: the "Finish decisions needed" banner and the counters
+        out["decisions"] = await review.decision_status(session)
+    return out
 
 
 @router.get("/items")
@@ -572,7 +575,7 @@ async def list_holds(caller: Caller = Depends(admin), session: AsyncSession = De
     """Rows withheld because they may be a withheld message (the same uid with other text, the same text outside a
     copy position, an upgrade heuristic), with the evidence; never their text."""
     found = await review.holds(session, caller.scope)
-    return {"holds": found, "total": len(found)}
+    return {"holds": found, "total": len(found), "status": await review.decision_status(session)}
 
 
 async def _hold_audit(session: AsyncSession, caller: Caller, action: str, message: ArchiveMessage,

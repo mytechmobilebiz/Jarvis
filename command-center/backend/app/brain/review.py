@@ -607,6 +607,28 @@ async def _decision_backup_read_only(session: AsyncSession, sess: ArchiveSession
 
 # --- Holds: rows withheld for an admin's review (spec 8.2) ------------------------------------------------------
 
+# The holds groups of the Review tab (0.6.2 plan 9.2, 9.3): by the engine that held the row.
+HOLD_GROUPS = {identity.SETTLE_HOLD: "settle", identity.LATER_HOLD: "later"}
+
+
+async def decision_status(session: AsyncSession) -> dict[str, Any]:
+    """The withhold decisions' counters (plan 1.8, 9.4) for admins: withholds whose decision backup is not finished
+    yet (Settle), holds Settle found that wait for review, rows a later backup held, every held row, conversations an
+    admin stopped importing, the legacy lock, and the newest import's tripwire as counts (its locations stay in
+    `brain-import status`). Counts only; brain_withhold_pending() (0008)."""
+    if not await session.scalar(sql_text("SELECT to_regprocedure('brain_withhold_pending()') IS NOT NULL")):
+        return {}
+    p = dict((await session.execute(sql_text("SELECT brain_withhold_pending()"))).scalar() or {})
+    tw = p.get("last_tripwire") if isinstance(p.get("last_tripwire"), dict) else None
+    return {"unsettled_decisions": int(p.get("unsettled_decisions") or 0),
+            "unreviewed_settle_holds": int(p.get("unreviewed_settle_holds") or 0),
+            "later_backup_holds": int(p.get("quarantined_rows") or 0),
+            "held_for_review": int(p.get("held_for_review") or 0),
+            "frozen_conversations": int(p.get("frozen_sessions") or 0),
+            "legacy_lock": bool(p.get("legacy_lock")),
+            "tripwire": {"run": tw.get("run"), "inside_family": int(tw.get("inside_family") or 0),
+                         "outside_family": int(tw.get("outside_family") or 0)} if tw else None}
+
 # A hold written before its evidence was computed (a development build's via): what that via says, as relation codes.
 LEGACY_RELATIONS = {"same text": (identity.IDENTICAL_REL,), "upgrade: same text": (identity.IDENTICAL_REL,),
                     "same message id, contains the withheld text": (identity.SAME_UID, identity.CONTAINS),
@@ -648,6 +670,7 @@ async def holds(session: AsyncSession, scope: PersonScope) -> list[dict[str, Any
                ArchiveMessage.withheld.is_(True), person_sessions(scope), person_messages(scope))
         .order_by(ArchiveSession.started_at.desc().nulls_last(), ArchiveSession.id, ArchiveMessage.position,
                   ArchiveMessage.id))).all()
+    frozen = set((await session.scalars(select(BrainFrozenSession.source_session_id))).all())
     out = []
     for row, sess, stone in found:
         anchor = stone.anchor_key or stone.source_key
@@ -691,6 +714,9 @@ async def holds(session: AsyncSession, scope: PersonScope) -> list[dict[str, Any
             "preselected": bool(own_uid) and own_uid != w_uid and (w_at is None or row.at != w_at)
                            and not copy_position,
             "decided_on": (stone.decided_on or "")[:12],
+            # the Review tab's group (plan 9.2, 9.3) and whether later backups still import this conversation
+            "group": HOLD_GROUPS.get(stone.via, "other"),
+            "frozen": sess.source_session_id in frozen,
             "neighbours": [i for i in (before, after) if i is not None]})
     return out
 

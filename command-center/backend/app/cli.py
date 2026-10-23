@@ -393,6 +393,12 @@ async def _brain_command(args: argparse.Namespace) -> int:
                               out.get("rows_blanked_by_the_database_guard", 0),
                               out.get("quotes_of_removed_sources", 0),
                               out.get("purge_fingerprints_made_with_another_key", 0)))
+            if "unsettled_decisions" in out:
+                # 0.6.2 plan 1.8, 9.4 (brain-precheck.ps1 shows the same counters)
+                print("withhold decisions: not finished on their backup (run Settle): %d; found when finishing "
+                      "decisions, waiting for review: %d; new in a later backup, held: %d" % (
+                          out["unsettled_decisions"], out.get("unreviewed_settle_holds", 0),
+                          out.get("later_backup_holds", 0)))
             if out.get("legacy_lock"):
                 # 0.6.2 plan 8.1 (scripts/jarvis-import.ps1 and brain-precheck.ps1 show this line)
                 print("legacy JARVIS Brain data (Command Center 0.6.0 or 0.6.1): LOCKED, hidden from every reader, "

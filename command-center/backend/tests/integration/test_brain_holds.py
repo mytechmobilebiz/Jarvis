@@ -38,7 +38,9 @@ STUB = "[tool output pruned to save context]"
 EVIDENCE = {"message", "session", "title", "position", "role", "at", "content_chars", "state", "rule",
             "withheld_message", "compare", "neighbours", "evidence",  # evidence: rules062-confirm's honest sentence
             # 0.6.2 plan 4.6: the computed relations, the typed confirmation, the pre-selection, the decision backup
-            "relations", "confirm_required", "preselected", "decided_on"}
+            "relations", "confirm_required", "preselected", "decided_on",
+            # plan 9.2, 9.3: the Review tab's group (settle, later, other) and whether importing was stopped
+            "group", "frozen"}
 
 
 @pytest.fixture
@@ -454,3 +456,30 @@ async def test_every_reader_after_a_group_withhold(client, fx, make_worker, serv
     await as_(client, "operator")
     summary = (await client.get("/api/supervisor/requests/%d" % request_id)).json()["request"]["summary"]
     assert mark not in summary
+
+
+async def test_decision_counters_for_admins_and_the_holds_groups(client, fx):
+    """Plan 9.2-9.4: the holds list says each hold's group and whether its conversation was stopped, and carries the
+    decision counters; the overview carries them for admins only; stopping a conversation shows in both."""
+    mark = "zqholdcount62"
+    _, stub = await held_stub(client, fx, mark)
+    await as_(client, "admin")
+    body = (await client.get("/api/brain/holds")).json()
+    [hold] = body["holds"]
+    assert (hold["group"], hold["frozen"]) == ("other", False)  # held at the withhold (same uid, other text)
+    status = body["status"]
+    assert set(status) == {"unsettled_decisions", "unreviewed_settle_holds", "later_backup_holds", "held_for_review",
+                           "frozen_conversations", "legacy_lock", "tripwire"}
+    assert status["unsettled_decisions"] == 1 and status["held_for_review"] == 1 and status["legacy_lock"] is False
+    assert (await client.get("/api/brain/overview")).json()["decisions"] == status
+    r = await client.post("/api/brain/sessions/%d/stop-importing" % stub.session_id)
+    assert r.status_code == 200, r.text
+    body = (await client.get("/api/brain/holds")).json()
+    assert body["holds"][0]["frozen"] is True and body["status"]["frozen_conversations"] == 1
+    for who in ("viewer", "operator", "operator+"):
+        await as_(client, who)
+        assert "decisions" not in (await client.get("/api/brain/overview")).json(), who
+        assert (await client.get("/api/brain/holds")).status_code == 403, who
+    await bj.settle(fx)  # Settle finishes the decision on this backup: nothing is unsettled any more
+    await as_(client, "admin")
+    assert (await client.get("/api/brain/holds")).json()["status"]["unsettled_decisions"] == 0

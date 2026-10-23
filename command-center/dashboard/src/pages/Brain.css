@@ -636,3 +636,48 @@
     min-width: 0;
   }
 }
+
+/* 0.6.2 plan 9: the withhold dialog's matching rows, the held-for-review groups and the decisions' counters. */
+.br-matching {
+  border: 1px solid var(--border, #d0d5dd);
+  border-radius: 8px;
+  margin: 8px 0;
+  padding: 6px 10px 8px;
+}
+.br-matching legend {
+  font-size: 0.9em;
+  padding: 0 4px;
+}
+.br-matching .check {
+  display: flex;
+  gap: 6px;
+  margin: 4px 0;
+}
+.br-hold-group + .br-hold-group {
+  margin-top: 18px;
+}
+.br-subhead {
+  margin: 10px 0 4px;
+  font-size: 1em;
+}
+.br-hold-conversation {
+  border-top: 1px solid var(--border, #d0d5dd);
+  padding-top: 8px;
+  margin-top: 8px;
+}
+.br-counters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 16px;
+  margin: 0;
+}
+.br-counters dd {
+  margin: 0;
+  text-align: right;
+}
+.br-finish strong {
+  margin-right: 4px;
+}
+.br-decision-backup {
+  font-weight: 500;
+}

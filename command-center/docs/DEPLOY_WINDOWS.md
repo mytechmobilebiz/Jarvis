@@ -484,31 +484,57 @@ deleted too.
 An interrupted import continues with `-Mode Resume -Run <run number>` and the
 same `-BackupDb` and `-Restored`.
 
-**5. Your review** happens in the test copy at http://127.0.0.1:8190. When you
-withhold a message, the dialog says how many other stored rows are the same
-JARVIS message (withheld too) and how many are held for your review; it offers
-to withhold other messages with exactly the same text in that conversation
-(off unless you tick it) and to hide the conversation's title (ticked for the
-conversation's first message), and lists the memory items that contain the
-text, for you to purge. Look at "Held for review" before you finish: keep each
-held row withheld, or release it. When you are done, save your decisions so
-they can be carried over to the live installation: what you decided on the
-imported memory items (approved, rejected, archived, deleted, and your edits
-of them), plus the messages you withheld (with the JARVIS rows they are), the
-held rows you kept or released and the items you purged (keys and ids only,
-never their text). Rows still held for review are not carried over: the live
-import holds them again. A decisions file exported by 0.6.0 or 0.6.1
-(version 3) applies only through `-Mode LegacyReset -Decisions <file> -Actor
-<admin email>`: export again with 0.6.2.
+**5. Your review, finishing your decisions, and the export** happen in the
+test copy at http://127.0.0.1:8190 (JARVIS Brain page). Decisions are taken on
+one JARVIS backup file, the `$db` of step 1, and travel with it: live later
+imports **that same file** and replays them word for word.
+
+- **Withhold.** The dialog names the JARVIS backup the decision is taken on.
+  It says how many other stored rows are the same JARVIS message (withheld
+  too) and how many share its JARVIS id with other text (held for your
+  review). It lists, ticked, the stored rows of the conversation and its
+  continuations and branches that equal, contain, restate or quote the
+  message, each with what links it; untick a row to leave it readable (your
+  decision is recorded). It hides the conversation's title when this is its
+  first user message (untick to keep it), and lists the memory items that
+  contain the text, for you to purge.
+- **Finish your decisions (Settle)** once you have withheld what you want. It
+  goes through every conversation family that holds a withhold on this backup,
+  also the sessions a `-Sample` import skipped, with the withheld text in
+  memory: rows that are certainly the withheld message are withheld for good,
+  rows that may be are held for your review with what links them. Until you
+  run it, the JARVIS Brain page shows **Finish decisions needed** and the
+  export refuses.
+
+  ```powershell
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Test -Mode Settle -BackupDb $db -Restored $restored
+  ```
+
+- **Review** on the Review tab, "Held for review", group **Found when
+  finishing decisions**: keep each row withheld, or release it. Rows that look
+  independent (their own JARVIS id, another time, not a copy JARVIS made) are
+  pre-selected for release; nothing is released until you confirm. A row whose
+  text is, contains, restates or quotes the withheld text, or has any other
+  relation to it, is released only after you type `RELEASE`. The export
+  refuses while one of these rows waits for you.
+- **Export** what you decided: the memory items (approved, rejected,
+  archived, deleted, your edits), every withhold with the JARVIS row it names
+  and the backup it was decided on, every hold you kept or released, the rows
+  you left readable, hidden titles, conversations you stopped importing and
+  the items you purged (keys, ids and times only, never their text). The file
+  is version 5. A decisions file exported by 0.6.0 or 0.6.1 (version 3)
+  applies only through `-Mode LegacyReset -Decisions <file> -Actor <admin
+  email>`: export again with 0.6.2.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Test -Mode ExportDecisions
+```
+
 Not carried over, so write them down and do them again in the live
 installation after step 7: edits of customer or Credit Repair items (the
 export prints how many it left out, and step 7 lists them), conflicts you
 resolved, workflow drafts you reviewed, changed or converted, messages you
 promoted, and redacted versions.
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Test -Mode ExportDecisions
-```
 
 It writes `import-reports\decisions-test-<time>.json`. Then run the pre-check
 of step 2 again and compare the two reports. These lines must be the same:
@@ -535,37 +561,47 @@ made with another database password. Set `$db`, `$restored` and `$discovery`
 again (step 1) before step 7.
 
 **7. The import into the live installation.** From the live installation's
-folder only (the script refuses anywhere else). `Import` asks you to type
-`IMPORT INTO PRODUCTION`; before importing it writes a dump of the
-`command_center` database to `import-reports\pre-import\`, checks it and
-prints its path and SHA-256. `ApplyDecisions` asks you to type
-`APPLY DECISIONS TO PRODUCTION`; run it right after the import, before anyone
-else uses the dashboard, because the messages you withheld in the test copy
-have their text until then. To undo an import use
-`-Mode Rollback -Run <run number>` (it asks you to type `ROLL BACK PRODUCTION`).
-After `ApplyDecisions`, or once you have reviewed any item of that run, also
-add `-DiscardReviewed`, or the rollback is refused; the reviewed items are
-then deleted too. Restoring the dump is only for a disaster, because it also
-loses everything done since. The dump holds your
-data unencrypted: keep it on this PC and delete it once the import is
-verified and reviewed.
+folder only (the script refuses anywhere else). Import **the same JARVIS
+backup file** the test copy imported, with the decisions file of step 5:
+`-Decisions` applies your decisions first and then imports, so a withheld
+message is never readable on live, not even for a moment. The script prints
+the backup's SHA-256 and says whether it is the file the decisions were taken
+on (`The decisions were taken on this very backup file ... the import replays
+them`). If it warns that it is not, stop: another file is a *later backup* for
+every conversation that holds a withheld message, and their new rows arrive
+held for review (section "Later JARVIS backups" below).
+
+`Import` asks you to type `IMPORT INTO PRODUCTION`; before importing it writes
+a dump of the `command_center` database to `import-reports\pre-import\`,
+checks it and prints its path and SHA-256. To undo an import use
+`-Mode Rollback -Run <run number>` (it asks you to type `ROLL BACK
+PRODUCTION`); once you have reviewed any item of that run, also add
+`-DiscardReviewed`, or the rollback is refused; the reviewed items are then
+deleted too. Restoring the dump is only for a disaster, because it also loses
+everything done since. The dump holds your data unencrypted: keep it on this
+PC and delete it once the import is verified and reviewed. The decisions file
+must be in the reports folder (`import-reports`), where step 5 wrote it.
 
 ```powershell
-$db = "C:\InfiniteAI\JarvisMigration\backups\jarvis-state-<time>.db"
+$db = "C:\InfiniteAI\JarvisMigration\backups\jarvis-state-<time>.db"   # the SAME file as in the test copy
 $restored = "C:\InfiniteAI\JarvisMigration\restored"
 $discovery = "C:\InfiniteAI\JarvisMigration\discovery-<time>\discovery-summary.json"
 Set-Location "C:\InfiniteAI\v0.6.2\InfiniteAI-CommandCenter"
+Get-FileHash -Algorithm SHA256 $db   # the same SHA-256 the test copy's import report and the decisions file name
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\backup.ps1   # a full backup (Command Center, n8n, Credit Repair) before every live import
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Plan -All -BackupDb $db -Restored $restored -Discovery $discovery
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Import -All -BackupDb $db -Restored $restored -Discovery $discovery
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Import -All -BackupDb $db -Restored $restored -Discovery $discovery -Decisions "C:\InfiniteAI\JarvisMigration\import-reports\decisions-test-<time>.json" -Actor <your admin email>
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Verify -Run <run number> -BackupDb $db -Restored $restored
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode ApplyDecisions -Run <run number> -Decisions "C:\InfiniteAI\JarvisMigration\import-reports\decisions-test-<time>.json" -Actor <your admin email>
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Status
 ```
 
-After `ApplyDecisions`, run `-Mode Status` again: `readable rows matching a
-withhold` must be 0. Review the rows held for review on the live JARVIS Brain
-page ("Held for review"); a later import of a newer JARVIS backup keeps every
-withhold, hold and release.
+`-Mode Status` must say `readable rows matching a withhold: 0` and
+`withhold decisions: not finished on their backup (run Settle): 0`. Every row
+has the same state as on the test copy: withheld, held or readable. Review
+any row held for review on the live JARVIS Brain page (Review tab, "Held for
+review"). `-Mode ApplyDecisions` after an import is only for a version 4 file
+of a 0.6.2 development build: it applies fail-safe (its releases are listed
+for you to release again).
 
 Workflows converted from JARVIS's jobs are created **switched off**. Switch
 the matching job off in JARVIS first, then switch the Command Center's
@@ -593,6 +629,43 @@ fix that and run the same command again. If one prints
 `THE LIVE INSTALLATION (infinite-command-center) CHANGED DURING THIS RUN`,
 stop and send the whole output together with the output of `status.ps1` from
 the live folder.
+
+### Later JARVIS backups
+
+Each later import of a newer JARVIS backup into the live installation is a
+*later backup*. What it does with the conversations that hold a message you
+withheld (a conversation and its continuations and branches, a "family"):
+- **Nothing you decided changes.** A stored row of the family never gains
+  text or becomes readable without your release, and no withhold, hold,
+  release, left-readable choice, hidden title or stopped conversation is
+  re-evaluated.
+- **Every new row of the family gets one of three states:** withheld, when it
+  is provably the withheld message (the same JARVIS row, or JARVIS's own copy
+  of it: the same message id, time, role and tool call, or a message that
+  absorbed it); readable, only when it is identical in role, tool call, time
+  and text to a readable stored row of the family; otherwise **held for your
+  review**, with what links it to the withheld text (identical, contains,
+  quotes part of it, restated, the same id, tool call or time, or no relation
+  found). A new conversation of the family keeps its title hidden until you
+  release its rows.
+- **Conversations outside every family** import as usual.
+- **Before importing**, `-Mode Plan` says how many rows would be held, per
+  withheld conversation.
+- **After importing**, the Review tab's group **New in a later backup** lists
+  the held rows by conversation. Per row: **Keep withheld** or **Release**
+  (type `RELEASE` when it has any relation to the withheld text). Per
+  conversation: **Release this conversation's rows with no relation** (offered
+  only when the backup held every withheld text of that conversation, so the
+  comparison could be made), or **Stop importing this conversation** (later
+  backups leave it out and count it; what is stored stays as it is).
+- **A check for withheld text (tripwire).** Every import compares the rows it
+  makes readable with the withheld texts the backup holds: inside a family a
+  match is held and the run's `Verify` fails; outside, `-Mode Status` lists
+  the rows by location (never their text) for an admin to look at.
+
+JARVIS's own later edits and deletions inside a withheld conversation are not
+copied into the Command Center: it keeps what it had and never brings text
+back.
 
 ## Trying it against a throwaway WordPress
 

@@ -713,6 +713,18 @@ export interface WithholdRow {
   at: string | null;
   state: "live" | "compacted";
   withheld: boolean;
+  /** 0.6.2 plan 4.6: the computed relation codes of this row's text to the message's text (never text). */
+  relations?: string[];
+  /** The relations in one sentence. */
+  evidence?: string;
+  /** identical_text_rows: ticked by default (plan 4.5); unticking one leaves it readable as the admin's decision. */
+  preselected?: boolean;
+}
+
+/** The JARVIS backup a withhold is decided on (plan 4.1): its label and the start of its SHA-256. */
+export interface DecisionBackup {
+  label: string;
+  sha256: string;
 }
 
 /** GET /api/brain/messages/{id}/withhold-preview (admin, read-only, 0.6.2): what a withhold would also take. Rows outside
@@ -723,7 +735,8 @@ export interface WithholdPreview {
   same_message_rows: WithholdRow[];
   /** Rows sharing its JARVIS id with other text: withheld and held for an admin's review. */
   held_rows: WithholdRow[];
-  /** Readable rows with exactly this text in the conversation and its continuations or branches: only when asked for. */
+  /** Stored rows of the conversation family that equal, contain, restate or quote this text (0.6.2 plan 4.5): held for
+   * review with it, pre-ticked; each one the admin unticks stays readable (leave_readable). */
   identical_text_rows: WithholdRow[];
   /** Rows of the three lists above that are outside the admin's scope: one total, so it never tells which list. */
   rows_outside_your_scope?: number;
@@ -732,6 +745,8 @@ export interface WithholdPreview {
   /** Imported memory items whose text contains the message's text (to purge separately; nothing is automatic). */
   items_with_this_text: { id: number; title: string }[];
   first_user_message: boolean;
+  /** The JARVIS backup this decision is taken on; Settle on that backup finishes it (null: no import names it). */
+  decision_backup?: DecisionBackup | null;
 }
 
 /** POST /api/brain/messages/{id}/withhold: what was withheld (0.6.2 adds the same-message and held rows). */
@@ -740,8 +755,12 @@ export interface WithholdResult {
   also_withheld?: number[];
   held_for_review?: number[];
   identical_withheld?: number;
+  /** Rows of the family the admin unticked: left readable as the admin's decision. */
+  left_readable?: number;
   keys_tombstoned?: number;
   title_hidden?: boolean;
+  /** What finishes the decision (Settle on its backup). */
+  next?: string;
 }
 
 /** GET /api/brain/holds (admin, 0.6.2): a row withheld because it may be a withheld message. Evidence only, never text. */
@@ -761,8 +780,38 @@ export interface BrainHold {
   compare: "identical text" | "different text" | "contains the withheld text" | "nothing to compare";
   /** The evidence in one sentence (what links it to the withheld message, and how sure that is); never text. */
   evidence?: string;
+  /** 0.6.2 plan 4.6: the computed relation codes (identical, contains, part_of, restated, same_uid, same_call,
+   * same_time, reused_row, stale, orphan, not_in_backup, none). */
+  relations?: string[];
+  /** A release needs the typed confirmation RELEASE (its text is, holds or quotes the withheld text). */
+  confirm_required?: boolean;
+  /** It looks independent (its own message id, another time, no copy position): pre-selected for release. */
+  preselected?: boolean;
+  /** The start of the SHA-256 of the JARVIS backup the hold was found in. */
+  decided_on?: string;
+  /** settle: found when finishing decisions; later: new in a later backup; other: held at the withhold or by a decisions file. */
+  group?: "settle" | "later" | "other";
+  /** An admin stopped importing this conversation: later backups leave it out. */
+  frozen?: boolean;
   /** Ids of the readable messages before and after it. */
   neighbours: number[];
+}
+
+/** The withhold decisions' counters (admins; GET /api/brain/holds `status`, GET /api/brain/overview `decisions`). Counts only. */
+export interface DecisionStatus {
+  /** Withholds whose decision backup is not finished yet: run Settle on it before exporting the decisions. */
+  unsettled_decisions: number;
+  /** Rows Settle found that wait for an admin's review (the export refuses until they are reviewed). */
+  unreviewed_settle_holds: number;
+  /** Rows a later JARVIS backup brought into a withheld conversation, held for review. */
+  later_backup_holds: number;
+  held_for_review: number;
+  /** Conversations an admin stopped importing. */
+  frozen_conversations: number;
+  /** 0.6.0/0.6.1 data locked until the legacy reset. */
+  legacy_lock: boolean;
+  /** The newest import's tripwire: rows held inside withheld conversations, readable rows outside them that hold a withheld text. */
+  tripwire: { run: number | null; inside_family: number; outside_family: number } | null;
 }
 
 export interface BrainSearchHit {
@@ -905,6 +954,8 @@ export interface BrainOverview {
   /** The owner's setting brain_ai_context: "off" (default: memory never goes into AI prompts) or "approved_general". */
   ai_context: string;
   instance_label?: string | null;
+  /** Admins only (0.6.2). */
+  decisions?: DecisionStatus | Record<string, never>;
 }
 
 /** GET /api/brain/agents: what each agent reads (policy.describe()), where it reads memory, and counts. Counts may be absent

@@ -10,9 +10,13 @@ import {
   emptiedCopy,
   FlagChips,
   hiddenText,
+  canReleaseUnrelated,
+  decisionBackupText,
+  finishDecisionsText,
   HOLDS_INTRO,
   holdRuleText,
-  identicalLabel,
+  matchingIntro,
+  releaseNeedsTyping,
   previewText,
   PURGE_PROMOTED_TEXT,
   QUARANTINED_TEXT,
@@ -496,8 +500,13 @@ describe("JARVIS Brain: withholding the same JARVIS message (0.6.2)", () => {
   const row = (id: number, position: number) => ({ id, session: 11, position, role: "user", at: "2026-03-01T08:00:00Z", state: "live" as const, withheld: false });
   function preview(over: Record<string, unknown> = {}) {
     return {
-      message: 101, same_message_rows: [row(140, 4)], held_rows: [row(141, 5), row(142, 6)], identical_text_rows: [row(150, 9), row(151, 12)],
-      rowless_copies: 1, items_with_this_text: [{ id: 66, title: "Weekly sweep notes" }], first_user_message: true, ...over,
+      message: 101, same_message_rows: [row(140, 4)], held_rows: [row(141, 5), row(142, 6)],
+      identical_text_rows: [
+        { ...row(150, 9), relations: ["identical"], evidence: "identical text", preselected: true },
+        { ...row(151, 12), session: 12, relations: ["contains"], evidence: "contains the withheld text", preselected: true },
+      ],
+      rowless_copies: 1, items_with_this_text: [{ id: 66, title: "Weekly sweep notes" }], first_user_message: true,
+      decision_backup: { label: "state-2026-10-01", sha256: "c83ee64b358a" }, ...over,
     };
   }
   function withholdRoutes(over: Record<string, unknown> = {}) {
@@ -513,7 +522,7 @@ describe("JARVIS Brain: withholding the same JARVIS message (0.6.2)", () => {
     };
   }
 
-  it("lists the same message's other rows and the held ones, offers identical text unticked and the title ticked for the first user message", async () => {
+  it("names the decision backup, lists the family's matching rows pre-ticked with their evidence, and the title ticked for the first user message (plan 9.1)", async () => {
     const calls = renderAt("/brain?tab=conversations&session=11", admin, withholdRoutes());
     const dialog = await screen.findByRole("dialog", { name: "Weekly SEO sweep" });
     await within(dialog).findByText("Run the weekly sweep");
@@ -521,10 +530,16 @@ describe("JARVIS Brain: withholding the same JARVIS message (0.6.2)", () => {
     const confirm = await screen.findByRole("dialog", { name: "Withhold message #0" });
     expect(await within(confirm).findByText("1 other stored row is the same JARVIS message and is withheld too; 2 are held for your review.")).toBeInTheDocument();
     expect(within(confirm).getByText(/1 copy JARVIS keeps without a stored row/)).toBeInTheDocument();
-    const identical = within(confirm).getByRole("checkbox", { name: identicalLabel(2) });
-    // Review 1 R15: identical rows can be in a continuation or a branch, and the label says so.
-    expect(identicalLabel(2)).toBe("Also withhold 2 other messages with exactly this text in this conversation and its continuations and branches");
-    expect(identical).not.toBeChecked();
+    // The decision backup and what finishes the decision (plan 9.1).
+    expect(within(confirm).getByText(decisionBackupText({ label: "state-2026-10-01", sha256: "c83ee64b358a" }))).toBeInTheDocument();
+    expect(confirm.textContent).toMatch(/"state-2026-10-01" \(SHA-256 c83ee64b358a…\)\. Finish it on that backup with Settle/);
+    // Review 1 R15 and plan 4.5: matching rows can be in a continuation or a branch, the intro says so, and each row is
+    // listed with its evidence, pre-ticked.
+    expect(within(confirm).getByText(matchingIntro(2))).toBeInTheDocument();
+    const same = within(confirm).getByRole("checkbox", { name: "Message #9 (User): identical text" });
+    const other = within(confirm).getByRole("checkbox", { name: "Message #12 in conversation 12 (User): contains the withheld text" });
+    expect(same).toBeChecked();
+    expect(other).toBeChecked();
     const title = within(confirm).getByRole("checkbox", { name: "Hide the conversation title" });
     expect(title).toBeChecked();
     expect(within(confirm).getByText(/1 imported memory item contains this text\. They are not removed/)).toBeInTheDocument();
@@ -532,20 +547,21 @@ describe("JARVIS Brain: withholding the same JARVIS message (0.6.2)", () => {
     // The 0.6.1 wording stays.
     expect(within(confirm).getByText(WITHHOLD_REMOVES)).toBeInTheDocument();
     expect(within(confirm).getByText(WITHHOLD_NOT_REACHED)).toBeInTheDocument();
-    // Nothing is withheld before the admin confirms, and identical text only when ticked.
+    // Nothing is withheld before the admin confirms; a row the admin unticks is left readable (recorded by the server).
     expect(calls.some((c) => c.method === "POST")).toBe(false);
-    fireEvent.click(identical);
+    fireEvent.click(other);
+    expect(other).not.toBeChecked();
     fireEvent.click(title);
     fireEvent.click(within(confirm).getByRole("button", { name: "Withhold this message" }));
-    await waitFor(() => expect(calls.find((c) => c.method === "POST" && c.path === "/api/brain/messages/101/withhold")?.body).toEqual({ include_identical: true, hide_title: false }));
+    await waitFor(() => expect(calls.find((c) => c.method === "POST" && c.path === "/api/brain/messages/101/withhold")?.body).toEqual({ leave_readable: [151], hide_title: false }));
     expect(
       await within(dialog).findByText(
-        "Withheld. 0 promoted item(s) emptied. 1 other stored row of the same JARVIS message withheld too. 2 held for your review (JARVIS Brain → Review). 2 messages with exactly this text withheld. The conversation's title is hidden.",
+        "Withheld. 0 promoted item(s) emptied. 1 other stored row of the same JARVIS message withheld too. 2 held for your review (JARVIS Brain → Review). 2 matching rows held for your review with it. The conversation's title is hidden.",
       ),
     ).toBeInTheDocument();
   });
 
-  it("sends the defaults when the admin changes nothing: identical text left alone, the title as the preview says", async () => {
+  it("sends the defaults when the admin changes nothing: every matching row held, the title as the preview says", async () => {
     const calls = renderAt("/brain?tab=conversations&session=11", admin, withholdRoutes({
       "GET /api/brain/messages/102/promoted": { message: 102, count: 0, items: [] },
       "GET /api/brain/messages/102/withhold-preview": preview({ message: 102, same_message_rows: [], held_rows: [], identical_text_rows: [], rowless_copies: 0, items_with_this_text: [], first_user_message: false }),
@@ -557,14 +573,14 @@ describe("JARVIS Brain: withholding the same JARVIS message (0.6.2)", () => {
     const confirm = await screen.findByRole("dialog", { name: "Withhold message #1" });
     const title = await within(confirm).findByRole("checkbox", { name: "Hide the conversation title" });
     expect(title).not.toBeChecked();
-    expect(within(confirm).queryByRole("checkbox", { name: /Also withhold/ })).toBeNull();
+    expect(within(confirm).queryByRole("group")).toBeNull();
     expect(confirm.textContent).not.toMatch(/same JARVIS message/);
     fireEvent.click(within(confirm).getByRole("button", { name: "Withhold this message" }));
-    await waitFor(() => expect(calls.find((c) => c.method === "POST")?.body).toEqual({ include_identical: false, hide_title: false }));
+    await waitFor(() => expect(calls.find((c) => c.method === "POST")?.body).toEqual({ leave_readable: [], hide_title: false }));
     expect(await within(dialog).findByText("Withheld. 0 promoted item(s) emptied.")).toBeInTheDocument();
   });
 
-  it("still withholds when the preview cannot be loaded, and leaves the title to the server", async () => {
+  it("still withholds when the preview cannot be loaded, and leaves the matching rows and the title to the server", async () => {
     const calls = renderAt("/brain?tab=conversations&session=11", admin, withholdRoutes({
       "GET /api/brain/messages/101/withhold-preview": { status: 500, json: { detail: "the database refused this change; nothing was saved" } },
     }));
@@ -575,7 +591,8 @@ describe("JARVIS Brain: withholding the same JARVIS message (0.6.2)", () => {
     expect(await within(confirm).findByText(/^Could not list the other stored copies of this message/)).toBeInTheDocument();
     expect(within(confirm).queryByRole("checkbox")).toBeNull();
     fireEvent.click(within(confirm).getByRole("button", { name: "Withhold this message" }));
-    await waitFor(() => expect(calls.find((c) => c.method === "POST")?.body).toEqual({ include_identical: false, hide_title: null }));
+    // the server holds every matching row it finds (none left readable) and decides the title
+    await waitFor(() => expect(calls.find((c) => c.method === "POST")?.body).toEqual({ leave_readable: [], hide_title: null }));
   });
 
   it("says why a withheld message is withheld, and that a title is hidden", async () => {
@@ -611,7 +628,9 @@ describe("JARVIS Brain: withholding the same JARVIS message (0.6.2)", () => {
     expect(previewText(preview({ same_message_rows: [row(1, 1), row(2, 2)], held_rows: [], rowless_copies: 0 }))).toEqual([
       "2 other stored rows are the same JARVIS message and are withheld too; 0 are held for your review.",
     ]);
-    expect(identicalLabel(1)).toBe("Also withhold 1 other message with exactly this text in this conversation and its continuations and branches");
+    expect(matchingIntro(1)).toBe(
+      "1 other stored row of this conversation and its continuations and branches matches this text. Ticked rows are held for your review with it; untick a row to leave it readable (your decision is recorded).",
+    );
   });
 
   it("counts rows outside the admin's scope in one sentence of their own, never per list (review 1 R19)", () => {
@@ -1218,5 +1237,158 @@ describe("Task view: reference notes from memory", () => {
     const dialog = await screen.findByRole("dialog", { name: "Task #5" });
     await within(dialog).findByText("Brief written");
     expect(within(dialog).queryByText("Reference notes from memory")).toBeNull();
+  });
+});
+
+describe("JARVIS Brain: finishing decisions and later backups (0.6.2 plan 9)", () => {
+  const base = {
+    session: 11, title: "Weekly SEO sweep", role: "assistant", at: "2026-03-01T08:05:00Z", content_chars: 120, state: "live",
+    withheld_message: { id: 102, position: 1, role: "assistant", at: "2026-03-01T08:01:00Z", content_chars: 118 }, neighbours: [],
+  };
+  const settleIdentical = { ...base, message: 201, position: 3, rule: "found when finishing decisions", group: "settle", relations: ["identical"],
+    compare: "identical text", evidence: "identical text", confirm_required: true, preselected: false };
+  const settleIndependent = { ...base, message: 202, position: 4, rule: "found when finishing decisions", group: "settle", relations: ["restated"],
+    compare: "the withheld text restated", evidence: "the withheld text restated after a compaction", confirm_required: true, preselected: true };
+  const laterNone = { ...base, message: 301, session: 21, title: "Telegram chat", position: 40, rule: "new in a later backup", group: "later",
+    relations: ["none"], compare: "other text", evidence: "no relation to the withheld text was found", confirm_required: false, preselected: false };
+  const laterTime = { ...laterNone, message: 302, position: 41, relations: ["same_time"], evidence: "the same time and role" };
+  const laterBlind = { ...laterNone, message: 401, session: 22, title: null, position: 2, relations: ["not_in_backup"], compare: "nothing to compare",
+    evidence: "the withheld text is not in this backup" };
+  const status = { unsettled_decisions: 2, unreviewed_settle_holds: 2, later_backup_holds: 3, held_for_review: 5, frozen_conversations: 0, legacy_lock: false,
+    tripwire: { run: 9, inside_family: 3, outside_family: 1 } };
+  function routes9(over: Record<string, unknown> = {}) {
+    return {
+      "GET /api/brain/items?status=quarantined&limit=100": { items: [], total: 0 },
+      "GET /api/brain/items?status=pending_review&limit=100": { items: [], total: 0 },
+      "GET /api/brain/conflicts": { conflicts: [], total: 0 },
+      "GET /api/brain/items?include_deleted=true&limit=200": { items: [], total: 0 },
+      "GET /api/brain/holds": { holds: [settleIdentical, settleIndependent, laterNone, laterTime, laterBlind], total: 5, status },
+      "POST /api/brain/holds/201/release": { json: { released: true } },
+      "POST /api/brain/holds/202/release": { json: { released: true } },
+      "POST /api/brain/holds/301/release": { json: { released: true } },
+      "POST /api/brain/holds/302/keep": { json: { review: "kept" } },
+      "POST /api/brain/sessions/21/holds/release-unrelated": { json: { session: 21, released: [301] } },
+      "POST /api/brain/sessions/21/stop-importing": { json: { session: 21, frozen: true } },
+      ...over,
+    };
+  }
+  const card = async () => (await screen.findByRole("heading", { name: "Held for review" })).closest(".card") as HTMLElement;
+
+  it("shows the Finish decisions needed banner and three holds groups with relation chips (plan 9.2, 9.3)", async () => {
+    renderAt("/brain?tab=review", admin, routes9());
+    const c = await card();
+    expect(await within(c).findByText("Finish decisions needed.")).toBeInTheDocument();
+    for (const line of finishDecisionsText(status)) expect(within(c).getByText(line, { exact: false })).toBeInTheDocument();
+    const settle = within(c).getByRole("region", { name: "Found when finishing decisions" });
+    const later = within(c).getByRole("region", { name: "New in a later backup" });
+    expect(within(c).queryByRole("region", { name: "Other held messages" })).toBeNull();
+    expect(within(settle).getAllByRole("listitem").length).toBe(2);
+    expect(within(settle).getByText("identical text", { selector: ".br-chip" })).toBeInTheDocument();
+    expect(within(later).getAllByRole("heading", { level: 4 }).map((h) => h.textContent)).toEqual([
+      "Telegram chat (2 rows)",
+      "A conversation whose title is hidden (1 row)",
+    ]);
+    expect(within(later).getByText("no relation found", { selector: ".br-chip" })).toBeInTheDocument();
+    expect(within(later).getByText("same time and role", { selector: ".br-chip" })).toBeInTheDocument();
+    expect(c.textContent).not.toMatch(/[0-9a-f]{64}/);
+  });
+
+  it("asks for the typed confirmation before releasing a row related to the withheld text, and sends it", async () => {
+    const calls = renderAt("/brain?tab=review", admin, routes9());
+    const c = await card();
+    fireEvent.click(await within(c).findByRole("button", { name: "Release message #3 (Assistant)" }));
+    const confirm = await screen.findByRole("dialog", { name: "Release message #3" });
+    const go = within(confirm).getByRole("button", { name: "Release" });
+    expect(go).toBeDisabled();
+    fireEvent.change(within(confirm).getByRole("textbox"), { target: { value: "release" } });
+    expect(go).toBeDisabled();
+    fireEvent.change(within(confirm).getByRole("textbox"), { target: { value: "RELEASE" } });
+    fireEvent.click(go);
+    await waitFor(() => expect(calls.find((x) => x.method === "POST" && x.path === "/api/brain/holds/201/release")?.body).toEqual({ confirm: "RELEASE" }));
+  });
+
+  it("releases a row with no relation after a plain confirmation", async () => {
+    const calls = renderAt("/brain?tab=review", admin, routes9());
+    const c = await card();
+    fireEvent.click(await within(c).findByRole("button", { name: "Release message #40 (Assistant)" }));
+    const confirm = await screen.findByRole("dialog", { name: "Release message #40" });
+    expect(within(confirm).queryByRole("textbox")).toBeNull();
+    fireEvent.click(within(confirm).getByRole("button", { name: "Release" }));
+    await waitFor(() => expect(calls.find((x) => x.method === "POST" && x.path === "/api/brain/holds/301/release")?.body).toEqual({}));
+  });
+
+  it("pre-selects the rows Settle found independent and releases the selection only after the typed confirmation", async () => {
+    const calls = renderAt("/brain?tab=review", admin, routes9());
+    const c = await card();
+    const settle = within(c).getByRole("region", { name: "Found when finishing decisions" });
+    expect(await within(settle).findByRole("checkbox", { name: "Select message #4 (Assistant) for release" })).toBeChecked();
+    expect(within(settle).getByRole("checkbox", { name: "Select message #3 (Assistant) for release" })).not.toBeChecked();
+    fireEvent.click(within(settle).getByRole("button", { name: "Release the selected rows (1)" }));
+    const confirm = await screen.findByRole("dialog", { name: "Release message #4" });
+    fireEvent.change(within(confirm).getByRole("textbox"), { target: { value: "RELEASE" } });
+    fireEvent.click(within(confirm).getByRole("button", { name: "Release" }));
+    await waitFor(() => expect(calls.find((x) => x.method === "POST" && x.path === "/api/brain/holds/202/release")?.body).toEqual({ confirm: "RELEASE" }));
+    expect(calls.some((x) => x.path === "/api/brain/holds/201/release")).toBe(false);
+  });
+
+  it("offers the one-click release per conversation only when every withheld text was in its backup, and stops importing on request", async () => {
+    const calls = renderAt("/brain?tab=review", admin, routes9());
+    const c = await card();
+    const later = within(c).getByRole("region", { name: "New in a later backup" });
+    const [telegram, hidden] = Array.from(later.querySelectorAll(".br-hold-conversation")) as HTMLElement[];
+    expect(within(hidden).queryByRole("button", { name: "Release this conversation's rows with no relation" })).toBeNull();
+    expect(within(hidden).getByText(/No one-click release/)).toBeInTheDocument();
+    fireEvent.click(within(telegram).getByRole("button", { name: "Release this conversation's rows with no relation" }));
+    let confirm = await screen.findByRole("dialog", { name: "Release the rows with no relation" });
+    expect(calls.some((x) => x.path.endsWith("/release-unrelated"))).toBe(false);
+    fireEvent.click(within(confirm).getByRole("button", { name: "Release them" }));
+    await waitFor(() => expect(calls.some((x) => x.method === "POST" && x.path === "/api/brain/sessions/21/holds/release-unrelated")).toBe(true));
+    fireEvent.click(await within(telegram).findByRole("button", { name: "Stop importing this conversation" }));
+    confirm = await screen.findByRole("dialog", { name: "Stop importing this conversation" });
+    fireEvent.click(within(confirm).getByRole("button", { name: "Stop importing" }));
+    await waitFor(() => expect(calls.some((x) => x.method === "POST" && x.path === "/api/brain/sessions/21/stop-importing")).toBe(true));
+  });
+
+  it("marks a conversation whose importing was stopped and offers no second stop", async () => {
+    renderAt("/brain?tab=review", admin, routes9({
+      "GET /api/brain/holds": { holds: [{ ...laterNone, frozen: true }], total: 1, status: { ...status, unsettled_decisions: 0, unreviewed_settle_holds: 0, frozen_conversations: 1 } },
+    }));
+    const c = await card();
+    expect(await within(c).findByText("importing stopped")).toBeInTheDocument();
+    expect(within(c).queryByRole("button", { name: "Stop importing this conversation" })).toBeNull();
+    expect(within(c).queryByText("Finish decisions needed.")).toBeNull();
+  });
+
+  it("shows admins the banner and the counters on the overview (plan 9.4); operators get neither", async () => {
+    renderAt("/brain", admin, { "GET /api/brain/overview": { ...overview, decisions: status } });
+    expect(await screen.findByText("Finish decisions needed.")).toBeInTheDocument();
+    const counters = (await screen.findByRole("heading", { name: "Withhold decisions" })).closest(".card") as HTMLElement;
+    expect(within(counters).getByText("Withholds not finished (Settle)").nextElementSibling?.textContent).toBe("2");
+    expect(within(counters).getByText("New in a later backup, held").nextElementSibling?.textContent).toBe("3");
+    expect(within(counters).getByText(/run 9: 3 rows held in withheld conversations; 1 readable row elsewhere/)).toBeInTheDocument();
+    cleanup();
+    renderAt("/brain", operator, { "GET /api/brain/overview": overview });
+    await screen.findByText("Memory items");
+    expect(screen.queryByText("Finish decisions needed.")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Withhold decisions" })).toBeNull();
+  });
+
+  it("names the legacy lock for admins", async () => {
+    renderAt("/brain", admin, { "GET /api/brain/overview": { ...overview, decisions: { ...status, unsettled_decisions: 0, unreviewed_settle_holds: 0, legacy_lock: true } } });
+    expect(await screen.findByText(/imported is locked: hidden from every reader/)).toBeInTheDocument();
+    expect(screen.queryByText("Finish decisions needed.")).toBeNull();
+  });
+
+  it("puts the rules in plain functions", () => {
+    expect(releaseNeedsTyping({ relations: ["none"] })).toBe(false);
+    expect(releaseNeedsTyping({ relations: [] })).toBe(false);
+    expect(releaseNeedsTyping({ relations: ["same_time"] })).toBe(true);
+    expect(releaseNeedsTyping({ relations: ["none"], confirm_required: true })).toBe(true);
+    expect(canReleaseUnrelated([{ relations: ["none"] }, { relations: ["same_uid"] }])).toBe(true);
+    expect(canReleaseUnrelated([{ relations: ["none"] }, { relations: ["not_in_backup"] }])).toBe(false);
+    expect(canReleaseUnrelated([{ relations: ["contains"] }])).toBe(false);
+    expect(finishDecisionsText({ unsettled_decisions: 0, unreviewed_settle_holds: 0 })).toEqual([]);
+    expect(finishDecisionsText({ unsettled_decisions: 1, unreviewed_settle_holds: 0 })[0]).toMatch(/^1 withhold is not finished on its JARVIS backup\. Run Settle/);
+    expect(decisionBackupText(null)).toMatch(/^No import names this conversation's JARVIS backup yet/);
   });
 });

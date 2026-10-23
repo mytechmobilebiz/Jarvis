@@ -12,6 +12,7 @@ import {
   type BrainHold,
   type BrainOverview,
   type BrainSearch,
+  type DecisionStatus,
   type ConflictKind,
   type ConflictResolution,
   type ImportReport,
@@ -88,7 +89,60 @@ export const PURGE_PROMOTED_TEXT = "The conversation message it came from is kep
 /** 0.6.2: what a release of a held row does (the importer restores it from the source; emptied copies stay empty). */
 export const RELEASE_CONFIRM = "Its text comes back at the next import; promoted copies stay empty.";
 export const HOLDS_INTRO =
-  "These messages were withheld because they may be a message an admin withheld: they share its JARVIS id but their text differs, contains it or could not be compared, JARVIS restated its request under a new id, or they repeat its exact text outside a copy JARVIS made. Each says what links it. Their text is not shown. Keep one withheld for good, or release it: a release covers only the text it released. Certain copies (the same JARVIS row, a carried-on copy, the original JARVIS kept when it pruned the row) are never listed here and cannot be released.";
+  "These messages are withheld because they may be a message an admin withheld. Each says what links it to the withheld text, computed by comparison: identical, contains it, quotes part of it, restated, the same JARVIS id or tool call with other text, the same time, or no relation. Their text is not shown. Keep one withheld for good, or release it: a release covers only that row and its text. Certain copies (the same JARVIS row, the same JARVIS id with the same text, a copy JARVIS made at the same time) are never listed here and cannot be released.";
+/** The word a release of a hold with a relation to the withheld text needs (backend identity.CONFIRM_WORD). */
+export const RELEASE_WORD = "RELEASE";
+/** The relation codes of a hold or a matching row (backend identity.RELATION_TEXT), in words. */
+export const RELATION_TEXT: Record<string, string> = {
+  identical: "identical text",
+  restated: "restated after a compaction",
+  contains: "contains the withheld text",
+  part_of: "quotes part of it (reply)",
+  same_uid: "same JARVIS id, other text",
+  same_call: "same tool call, other text",
+  same_time: "same time and role",
+  reused_row: "reused row number",
+  stale: "stale stored row",
+  orphan: "orphan row",
+  not_in_backup: "withheld text not in this backup",
+  none: "no relation found",
+};
+/** A hold's release needs the typed confirmation when it has any relation to the withheld text (plan 9.3), or when the
+ * server says so (its text is, holds or quotes the withheld text). */
+export function releaseNeedsTyping(h: { relations?: string[]; confirm_required?: boolean }): boolean {
+  const r = h.relations ?? [];
+  return !!h.confirm_required || (r.length > 0 && !(r.length === 1 && r[0] === "none"));
+}
+/** "Release this conversation's rows with no relation" (plan 9.3, section 2 correction 4): offered only while no hold of
+ * the conversation says the withheld text was not in its backup, and some hold has no relation. */
+export function canReleaseUnrelated(holds: { relations?: string[] }[]): boolean {
+  if (holds.some((h) => (h.relations ?? []).includes("not_in_backup"))) return false;
+  return holds.some((h) => (h.relations ?? []).length === 1 && h.relations?.[0] === "none");
+}
+/** The withhold dialog: the JARVIS backup the decision is taken on, and what finishes it (plan 9.1). */
+export function decisionBackupText(b: { label: string; sha256: string } | null | undefined): string {
+  if (!b) {
+    return "No import names this conversation's JARVIS backup yet. After the withhold, import the backup and finish the decision on it with Settle before you export the decisions.";
+  }
+  const name = b.label ? `"${b.label}"` : "the newest one imported";
+  return `This decision is taken on the JARVIS backup ${name} (SHA-256 ${b.sha256}…). Finish it on that backup with Settle (jarvis-import.ps1 -Mode Settle) before you export the decisions; live must import that same file.`;
+}
+/** The "Finish decisions needed" banner (plan 9.2) and the other counters in words; empty when nothing waits. */
+export function finishDecisionsText(d: { unsettled_decisions?: number; unreviewed_settle_holds?: number } | null | undefined): string[] {
+  if (!d) return [];
+  const out: string[] = [];
+  const n = d.unsettled_decisions ?? 0;
+  const k = d.unreviewed_settle_holds ?? 0;
+  if (n > 0) {
+    out.push(
+      `${plural(n, "withhold")} ${n === 1 ? "is" : "are"} not finished on ${n === 1 ? "its" : "their"} JARVIS backup. Run Settle on that backup (jarvis-import.ps1 -Mode Settle -BackupDb <the file>). The decisions file cannot be exported until then.`,
+    );
+  }
+  if (k > 0) {
+    out.push(`${plural(k, "row")} found when finishing decisions ${k === 1 ? "waits" : "wait"} for your review (Review tab). The decisions file cannot be exported until ${k === 1 ? "it is" : "they are"} kept or released.`);
+  }
+  return out;
+}
 
 /** Emptied because its source message was withheld (backend store.emptied()): flagged and without text. A copy 0.6.0
  * flagged can still hold its text until the next start or a rescan empties it. */
@@ -139,6 +193,19 @@ export function identicalLabel(k: number): string {
   return `Also withhold ${plural(k, "other message")} with exactly this text in this conversation and its continuations and branches`;
 }
 
+/** 0.6.2 plan 4.5, 9.1: the stored rows of the conversation family that equal, contain, restate or quote the text. Each is
+ * ticked: held for review with the message. Unticking one leaves it readable, as the admin's recorded decision. */
+export function matchingIntro(k: number): string {
+  return `${plural(k, "other stored row")} of this conversation and its continuations and branches ${k === 1 ? "matches" : "match"} this text. Ticked rows are held for your review with it; untick a row to leave it readable (your decision is recorded).`;
+}
+
+/** One matching row's checkbox label: where it is and how it relates to the text (never its text). */
+export function matchingRowLabel(r: { position: number; role: string; session: number; relations?: string[]; evidence?: string }, here: number | null): string {
+  const where = r.session === here ? `Message #${r.position}` : `Message #${r.position} in conversation ${r.session}`;
+  const how = (r.relations ?? []).map((c) => RELATION_TEXT[c] ?? c).join(", ") || r.evidence || "matches this text";
+  return `${where} (${ROLE_LABEL[r.role] ?? cap(r.role)}): ${how}`;
+}
+
 /** What a hold's rule means: what releasing it brings back. */
 export function holdRuleText(rule: string): string {
   switch (rule) {
@@ -161,6 +228,16 @@ export function holdRuleText(rule: string): string {
     case "upgrade: same message id":
     case "same message id":
       return "It shares the withheld message's JARVIS id; its text could not be compared. Releasing brings back whatever it holds.";
+    case "found when finishing decisions":
+      return "Settle found it in the conversation family of a withheld message, on the JARVIS backup the withhold was taken on. Releasing brings back its own text from that backup.";
+    case "new in a later backup":
+      return "A later JARVIS backup brought it into a conversation that holds a withheld message. Nothing new there is shown until you look. Releasing brings back its own text at the next import.";
+    case "matches the withheld text":
+      return "When the message was withheld, this stored row of the same conversation family matched its text, so it was held with it. Releasing brings back its text.";
+    case "same message id, other text":
+      return "It shares the withheld message's JARVIS id, with other text. Releasing brings back that other text.";
+    case "decided on another backup":
+      return "The withhold was decided on another JARVIS backup than the one this conversation was imported from, so its rows at the withheld message's role, time or id are held until you look. Releasing brings back its text.";
     default:
       return `Held by the rule "${rule}".`;
   }
@@ -1137,15 +1214,17 @@ function MessageRow({
  * items that contain the text (listed to purge by hand: nothing is removed automatically). */
 function WithholdChoices({
   preview,
-  includeIdentical,
-  setIncludeIdentical,
+  sessionId,
+  leaveReadable,
+  setLeaveReadable,
   hideTitle,
   setHideTitle,
   onOpenItem,
 }: {
   preview: { data: WithholdPreview | null; error: string | null };
-  includeIdentical: boolean;
-  setIncludeIdentical: (v: boolean) => void;
+  sessionId: number;
+  leaveReadable: number[];
+  setLeaveReadable: (v: number[]) => void;
   hideTitle: boolean | null;
   setHideTitle: (v: boolean) => void;
   onOpenItem: (id: number) => void;
@@ -1154,23 +1233,41 @@ function WithholdChoices({
   if (!p) {
     return (
       <p>
-        Could not list the other stored copies of this message ({preview.error || "no answer"}); every stored row of the same JARVIS message is withheld too, and the
-        title is hidden when this is the conversation's first user message.
+        Could not list the other stored copies of this message ({preview.error || "no answer"}); every stored row of the same JARVIS message is withheld too, the
+        rows of its conversation family that match its text are held for your review, and the title is hidden when this is the conversation's first user message.
       </p>
     );
   }
-  const identical = p.identical_text_rows.length;
+  const matching = p.identical_text_rows;
   const items = p.items_with_this_text ?? [];
+  const held = p.held_rows;
   return (
     <>
+      <p className="br-decision-backup">{decisionBackupText(p.decision_backup)}</p>
       {previewText(p).map((line) => (
         <p key={line}>{line}</p>
       ))}
-      {identical > 0 ? (
-        <label className="check">
-          <input type="checkbox" checked={includeIdentical} onChange={(e) => setIncludeIdentical(e.target.checked)} />
-          {identicalLabel(identical)}
-        </label>
+      {held.some((r) => r.evidence) ? (
+        <ul className="br-list small">
+          {held.map((r) => (
+            <li key={r.id}>{matchingRowLabel(r, sessionId)}</li>
+          ))}
+        </ul>
+      ) : null}
+      {matching.length > 0 ? (
+        <fieldset className="br-matching">
+          <legend>{matchingIntro(matching.length)}</legend>
+          {matching.map((r) => (
+            <label key={r.id} className="check">
+              <input
+                type="checkbox"
+                checked={!leaveReadable.includes(r.id)}
+                onChange={(e) => setLeaveReadable(e.target.checked ? leaveReadable.filter((i) => i !== r.id) : [...leaveReadable, r.id])}
+              />
+              {matchingRowLabel(r, sessionId)}
+            </label>
+          ))}
+        </fieldset>
       ) : null}
       <label className="check">
         <input type="checkbox" checked={!!hideTitle} onChange={(e) => setHideTitle(e.target.checked)} />
@@ -1227,7 +1324,8 @@ export function SessionModal({
   const [copies, setCopies] = useState<{ count: number | null; error: string | null } | undefined>(undefined);
   /** 0.6.2: the other stored rows of the same message, held rows and identical text (undefined while it loads). */
   const [preview, setPreview] = useState<{ data: WithholdPreview | null; error: string | null } | undefined>(undefined);
-  const [includeIdentical, setIncludeIdentical] = useState(false);
+  /** 0.6.2 plan 4.5: the matching rows the admin unticked (left readable); every other one is held with the message. */
+  const [leaveReadable, setLeaveReadable] = useState<number[]>([]);
   /** null: the server decides (it hides the title for the conversation's first user message). */
   const [hideTitle, setHideTitle] = useState<boolean | null>(null);
   const [withheldNote, setWithheldNote] = useState<string | null>(null);
@@ -1254,7 +1352,7 @@ export function SessionModal({
   useEffect(() => {
     setCopies(undefined);
     setPreview(undefined);
-    setIncludeIdentical(false);
+    setLeaveReadable([]);
     setHideTitle(null);
     if (!withhold) return;
     let live = true;
@@ -1279,12 +1377,15 @@ export function SessionModal({
     setBusy(true);
     setWithholdError(null);
     try {
-      const r = await api.post<WithholdResult>(`${BASE}/messages/${m.id}/withhold`, { include_identical: includeIdentical, hide_title: hideTitle });
+      // The matching rows are held unless the admin unticked them (plan 4.5): the server holds every matching row it finds,
+      // the ones this preview listed and any it did not, except those named here.
+      const r = await api.post<WithholdResult>(`${BASE}/messages/${m.id}/withhold`, { leave_readable: leaveReadable, hide_title: hideTitle });
       setWithhold(null);
       const note = [`Withheld. ${(r?.copies?.items?.length ?? 0).toLocaleString()} promoted item(s) emptied.`];
       if (r?.also_withheld?.length) note.push(`${plural(r.also_withheld.length, "other stored row")} of the same JARVIS message withheld too.`);
       if (r?.held_for_review?.length) note.push(`${r.held_for_review.length.toLocaleString()} held for your review (JARVIS Brain → Review).`);
-      if (r?.identical_withheld) note.push(`${plural(r.identical_withheld, "message")} with exactly this text withheld.`);
+      if (r?.identical_withheld) note.push(`${plural(r.identical_withheld, "matching row")} held for your review with it.`);
+      if (r?.left_readable) note.push(`${plural(r.left_readable, "matching row")} left readable, as you chose.`);
       if (r?.title_hidden) note.push("The conversation's title is hidden.");
       setWithheldNote(note.join(" "));
       await detail.refresh();
@@ -1441,8 +1542,9 @@ export function SessionModal({
               ))}
               <WithholdChoices
                 preview={preview}
-                includeIdentical={includeIdentical}
-                setIncludeIdentical={setIncludeIdentical}
+                sessionId={id}
+                leaveReadable={leaveReadable}
+                setLeaveReadable={setLeaveReadable}
                 hideTitle={hideTitle}
                 setHideTitle={setHideTitle}
                 onOpenItem={onOpenItem}
@@ -1472,6 +1574,7 @@ function Overview({ rev }: { rev: number }) {
   return (
     <>
       <ErrorNote error={ov.error ? `Could not load the overview: ${ov.error}` : null} />
+      {isAdmin ? <DecisionsBanner status={d?.decisions} /> : null}
       <div className={`tiles${canOperate ? " br-tiles-6" : ""}`}>
         <Tile
           icon="brain"
@@ -1720,6 +1823,22 @@ function Overview({ rev }: { rev: number }) {
             ) : null}
           </dl>
           <p className="muted small">Counts cover what you may see{user.role === "admin" ? "" : ", not what is kept for other roles"}.</p>
+        </Card>
+      ) : null}
+      {isAdmin && d?.decisions && "unsettled_decisions" in d.decisions ? (
+        <Card
+          title={
+            <>
+              <Icon name="lock" size={18} className="card-icon" /> Withhold decisions
+            </>
+          }
+          actions={
+            <Link className="small" to="/brain?tab=review">
+              Review held messages
+            </Link>
+          }
+        >
+          <DecisionCounters d={d.decisions as DecisionStatus} />
         </Card>
       ) : null}
     </>
@@ -3005,29 +3124,233 @@ function DeletedList({ rev, onOpenItem }: { rev: number; onOpenItem: (id: number
   );
 }
 
-/** Admins (0.6.2): rows withheld because they may be a message an admin withheld, with the evidence (never their text):
- * keep one withheld for good, or release it (its text comes back at the next import). */
+/** The relation chips of a hold or a matching row (plan 9.3): computed codes, never text. */
+function RelationChips({ relations }: { relations?: string[] }) {
+  if (!relations?.length) return null;
+  return (
+    <>
+      {relations.map((c) => (
+        <span key={c} className={`br-chip${c === "none" ? "" : " br-chip-risk"}`}>
+          {RELATION_TEXT[c] ?? c}
+        </span>
+      ))}
+    </>
+  );
+}
+
+/** The withhold decisions' counters and the "Finish decisions needed" banner (admins; plan 9.2, 9.4). */
+export function DecisionsBanner({ status }: { status: DecisionStatus | Record<string, never> | null | undefined }) {
+  const d = status && "unsettled_decisions" in status ? (status as DecisionStatus) : null;
+  if (!d) return null;
+  const lines = finishDecisionsText(d);
+  return (
+    <>
+      {d.legacy_lock ? (
+        <div className="alert alert-bad" role="alert">
+          JARVIS Brain data that Command Center 0.6.0 or 0.6.1 imported is locked: hidden from every reader, and imports and withholds are refused. Reset it with
+          jarvis-import.ps1 -Mode LegacyReset, then import the same JARVIS backup again and run Settle.
+        </div>
+      ) : null}
+      {lines.length ? (
+        <div className="alert alert-warn br-finish" role="status">
+          <strong>Finish decisions needed.</strong>
+          {lines.map((l) => (
+            <span key={l}> {l}</span>
+          ))}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/** The counters in one list (plan 9.4). */
+function DecisionCounters({ d }: { d: DecisionStatus }) {
+  const tw = d.tripwire;
+  return (
+    <dl className="br-dl br-counters small">
+      <dt>Withholds not finished (Settle)</dt>
+      <dd className="tabular">{d.unsettled_decisions.toLocaleString()}</dd>
+      <dt>Found when finishing decisions, waiting for review</dt>
+      <dd className="tabular">{d.unreviewed_settle_holds.toLocaleString()}</dd>
+      <dt>New in a later backup, held</dt>
+      <dd className="tabular">{d.later_backup_holds.toLocaleString()}</dd>
+      <dt>Held for review in all</dt>
+      <dd className="tabular">{d.held_for_review.toLocaleString()}</dd>
+      <dt>Conversations not imported (stopped)</dt>
+      <dd className="tabular">{d.frozen_conversations.toLocaleString()}</dd>
+      <dt>Newest import's check for withheld text</dt>
+      <dd>
+        {tw
+          ? `run ${tw.run ?? "?"}: ${plural(tw.inside_family, "row")} held in withheld conversations; ${plural(tw.outside_family, "readable row")} elsewhere holding a withheld text${tw.outside_family ? " (locations: brain-import status)" : ""}`
+          : "no import since 0.6.2"}
+      </dd>
+    </dl>
+  );
+}
+
+type HoldGroupKey = "settle" | "later" | "other";
+const HOLD_GROUPS: { key: HoldGroupKey; title: string; intro: string }[] = [
+  {
+    key: "settle",
+    title: "Found when finishing decisions",
+    intro:
+      "Settle found these rows in the conversation family of a message you withheld, on the backup the withhold was taken on. Rows that look independent (their own JARVIS id, another time, not a copy) are pre-selected for release; nothing is released until you confirm. The decisions file cannot be exported while one is waiting.",
+  },
+  {
+    key: "later",
+    title: "New in a later backup",
+    intro:
+      "A later JARVIS backup brought these rows into conversations that hold a withheld message. Nothing new there is shown until you look. Keep or release each row, release a conversation's rows that have no relation to the withheld text in one go, or stop importing the conversation.",
+  },
+  { key: "other", title: "Other held messages", intro: "Held when a message was withheld, or by a decisions file decided on another backup." },
+];
+
+function HoldRow({
+  h,
+  busy,
+  selectable,
+  selected,
+  onSelect,
+  onKeep,
+  onRelease,
+  onOpenMessage,
+}: {
+  h: BrainHold;
+  busy: boolean;
+  selectable?: boolean;
+  selected?: boolean;
+  onSelect?: (v: boolean) => void;
+  onKeep: () => void;
+  onRelease: () => void;
+  onOpenMessage: (session: number, message?: number) => void;
+}) {
+  const w = h.withheld_message;
+  const label = `message #${h.position} (${ROLE_LABEL[h.role] ?? cap(h.role)})`;
+  return (
+    <li className="br-hit br-review-row br-hold">
+      <div className="br-review-main">
+        {selectable ? (
+          <label className="check small">
+            <input type="checkbox" checked={!!selected} onChange={(e) => onSelect?.(e.target.checked)} aria-label={`Select ${label} for release`} />
+            {h.preselected ? "looks independent: selected for release" : "select for release"}
+          </label>
+        ) : null}
+        <button type="button" className="br-hit-title link-button" onClick={() => onOpenMessage(h.session, h.message)}>
+          {cap(label)} in {h.title === null ? "a conversation whose title is hidden" : h.title || "an untitled conversation"}
+        </button>
+        <div className="br-hit-meta small">
+          <span className="br-chip br-chip-risk">held for review</span>
+          <RelationChips relations={h.relations} />
+          <span className="muted">
+            <When iso={h.at} /> · {h.content_chars.toLocaleString()} characters · {h.state} · {h.compare}
+          </span>
+        </div>
+        <p className="small">{holdRuleText(h.rule)}</p>
+        {h.evidence ? <p className="small muted">{`Evidence: ${h.evidence}.`}</p> : null}
+        <p className="small muted">
+          The withheld message it may be: {w.position != null ? `#${w.position}` : "no longer stored"} ({ROLE_LABEL[w.role] ?? (w.role ? cap(w.role) : "role unknown")}
+          {w.content_chars != null ? `, ${w.content_chars.toLocaleString()} characters` : ""}
+          {w.at ? ", " : ""}
+          {w.at ? <When iso={w.at} /> : null}).
+        </p>
+      </div>
+      <div className="row-actions br-review-actions">
+        <button type="button" className="btn small" disabled={busy} aria-label={`Keep ${label} withheld`} onClick={onKeep}>
+          Keep withheld
+        </button>
+        <button type="button" className="btn small ghost" disabled={busy} aria-label={`Release ${label}`} onClick={onRelease}>
+          Release
+        </button>
+      </div>
+    </li>
+  );
+}
+
+/** Admins (0.6.2): rows withheld because they may be a message an admin withheld, in three groups (plan 9.2, 9.3), with
+ * the computed evidence (never their text): keep one withheld for good, or release it (a release of a row related to the
+ * withheld text needs the typed confirmation); per conversation of a later backup, release the rows with no relation,
+ * or stop importing it. */
 function HeldForReview({ rev, onChanged, onOpenMessage }: { rev: number; onChanged: () => void; onOpenMessage: (session: number, message?: number) => void }) {
-  const list = usePoll(() => api.get<{ holds: BrainHold[]; total: number }>(`${BASE}/holds`), 0, [rev]);
+  const list = usePoll(() => api.get<{ holds: BrainHold[]; total: number; status?: DecisionStatus }>(`${BASE}/holds`), 0, [rev]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
-  const [release, setRelease] = useState<BrainHold | null>(null);
+  /** The rows of one release dialog (one row, or the selected rows of the Settle group). */
+  const [release, setRelease] = useState<BrainHold[] | null>(null);
+  /** The Settle group's selection for release (null: the server's pre-selection). */
+  const [selected, setSelected] = useState<number[] | null>(null);
+  const [conversation, setConversation] = useState<{ session: number; what: "unrelated" | "stop"; title: string } | null>(null);
   const holds = list.data?.holds ?? null;
+  const settle = (holds ?? []).filter((h) => h.group === "settle");
+  const chosen = selected ?? settle.filter((h) => h.preselected).map((h) => h.message);
 
-  async function act(h: BrainHold, what: "keep" | "release") {
+  async function done() {
+    setRelease(null);
+    setConversation(null);
+    setSelected(null);
+    onChanged();
+    await list.refresh();
+  }
+
+  async function keep(h: BrainHold) {
     setBusy(h.message);
     setError(null);
     try {
-      await api.post(`${BASE}/holds/${h.message}/${what}`);
-      setRelease(null);
-      onChanged();
-      await list.refresh();
+      await api.post(`${BASE}/holds/${h.message}/keep`);
+      await done();
     } catch (err) {
       setError(errText(err));
     } finally {
       setBusy(null);
     }
   }
+
+  async function doRelease(rows: BrainHold[], typed: string | null) {
+    setError(null);
+    for (const h of rows) {
+      setBusy(h.message);
+      try {
+        await api.post(`${BASE}/holds/${h.message}/release`, typed ? { confirm: typed } : {});
+      } catch (err) {
+        setError(`Message #${h.position}: ${errText(err)}`);
+        setBusy(null);
+        await list.refresh();
+        return;
+      }
+    }
+    setBusy(null);
+    await done();
+  }
+
+  async function doConversation(c: { session: number; what: "unrelated" | "stop" }) {
+    setError(null);
+    setBusy(-c.session);
+    try {
+      await api.post(`${BASE}/sessions/${c.session}/${c.what === "unrelated" ? "holds/release-unrelated" : "stop-importing"}`);
+      await done();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const typedNeeded = !!release && release.some(releaseNeedsTyping);
+  const byConversation = new Map<number, BrainHold[]>();
+  for (const h of (holds ?? []).filter((x) => x.group === "later")) byConversation.set(h.session, [...(byConversation.get(h.session) ?? []), h]);
+
+  const row = (h: BrainHold, selectable = false) => (
+    <HoldRow
+      key={h.message}
+      h={h}
+      busy={busy === h.message}
+      selectable={selectable}
+      selected={chosen.includes(h.message)}
+      onSelect={(v) => setSelected(v ? [...chosen.filter((i) => i !== h.message), h.message] : chosen.filter((i) => i !== h.message))}
+      onKeep={() => void keep(h)}
+      onRelease={() => setRelease([h])}
+      onOpenMessage={onOpenMessage}
+    />
+  );
 
   return (
     <Card
@@ -3038,66 +3361,133 @@ function HeldForReview({ rev, onChanged, onOpenMessage }: { rev: number; onChang
       }
       actions={holds ? <span className="small">{plural(holds.length, "message")}</span> : null}
     >
+      <DecisionsBanner status={list.data?.status} />
       <p className="muted small">{HOLDS_INTRO}</p>
-      <ErrorNote error={list.error ? `Could not load the held messages: ${list.error}` : release ? null : error} />
+      <ErrorNote error={list.error ? `Could not load the held messages: ${list.error}` : release || conversation ? null : error} />
       {!holds ? (
         list.error ? null : <Empty>Loading…</Empty>
       ) : !holds.length ? (
         <Empty>No messages are held for review.</Empty>
       ) : (
-        <ul className="br-hits">
-          {holds.map((h) => {
-            const w = h.withheld_message;
-            const label = `message #${h.position} (${ROLE_LABEL[h.role] ?? cap(h.role)})`;
-            return (
-              <li key={h.message} className="br-hit br-review-row br-hold">
-                <div className="br-review-main">
-                  <button type="button" className="br-hit-title link-button" onClick={() => onOpenMessage(h.session, h.message)}>
-                    {cap(label)} in {h.title === null ? "a conversation whose title is hidden" : h.title || "an untitled conversation"}
-                  </button>
-                  <div className="br-hit-meta small">
-                    <span className="br-chip br-chip-risk">held for review</span>
-                    <span className="muted">
-                      <When iso={h.at} /> · {h.content_chars.toLocaleString()} characters · {h.state} · {h.compare}
-                    </span>
+        HOLD_GROUPS.map((g) => {
+          const rows = holds.filter((h) => (h.group ?? "other") === g.key);
+          if (!rows.length) return null;
+          return (
+            <section key={g.key} className="br-hold-group" aria-label={g.title}>
+              <h3 className="br-subhead">
+                {g.title} <span className="muted small">({rows.length.toLocaleString()})</span>
+              </h3>
+              <p className="muted small">{g.intro}</p>
+              {g.key === "settle" ? (
+                <>
+                  <ul className="br-hits">{rows.map((h) => row(h, true))}</ul>
+                  <div className="row-actions">
+                    <button
+                      type="button"
+                      className="btn small ghost"
+                      disabled={!chosen.length || busy !== null}
+                      onClick={() => setRelease(settle.filter((h) => chosen.includes(h.message)))}
+                    >
+                      {`Release the selected rows (${chosen.length.toLocaleString()})`}
+                    </button>
                   </div>
-                  <p className="small">{holdRuleText(h.rule)}</p>
-                  {h.evidence ? <p className="small muted">{`Evidence: ${h.evidence}.`}</p> : null}
-                  <p className="small muted">
-                    The withheld message it may be: {w.position != null ? `#${w.position}` : "no longer stored"} ({ROLE_LABEL[w.role] ?? (w.role ? cap(w.role) : "role unknown")}
-                    {w.content_chars != null ? `, ${w.content_chars.toLocaleString()} characters` : ""}
-                    {w.at ? ", " : ""}
-                    {w.at ? <When iso={w.at} /> : null}).
-                  </p>
-                </div>
-                <div className="row-actions br-review-actions">
-                  <button type="button" className="btn small" disabled={busy === h.message} aria-label={`Keep ${label} withheld`} onClick={() => void act(h, "keep")}>
-                    Keep withheld
-                  </button>
-                  <button type="button" className="btn small ghost" disabled={busy === h.message} aria-label={`Release ${label}`} onClick={() => setRelease(h)}>
-                    Release
-                  </button>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+                </>
+              ) : g.key === "later" ? (
+                [...byConversation.entries()].map(([sid, convRows]) => {
+                  const title = convRows[0].title === null ? "A conversation whose title is hidden" : convRows[0].title || "An untitled conversation";
+                  const frozen = convRows.some((h) => h.frozen);
+                  return (
+                    <div key={sid} className="br-hold-conversation">
+                      <h4 className="br-subhead small">
+                        {title} <span className="muted">({plural(convRows.length, "row")})</span>
+                        {frozen ? <span className="br-chip">importing stopped</span> : null}
+                      </h4>
+                      <ul className="br-hits">{convRows.map((h) => row(h))}</ul>
+                      <div className="row-actions">
+                        {canReleaseUnrelated(convRows) ? (
+                          <button type="button" className="btn small ghost" disabled={busy !== null} onClick={() => setConversation({ session: sid, what: "unrelated", title })}>
+                            Release this conversation's rows with no relation
+                          </button>
+                        ) : convRows.some((h) => (h.relations ?? []).includes("not_in_backup")) ? (
+                          <span className="small muted">
+                            No one-click release: a withheld text of this conversation was not in its backup, so rows cannot be told apart. Review them one by one, or stop
+                            importing the conversation.
+                          </span>
+                        ) : null}
+                        {!frozen ? (
+                          <button type="button" className="btn small ghost" disabled={busy !== null} onClick={() => setConversation({ session: sid, what: "stop", title })}>
+                            Stop importing this conversation
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <ul className="br-hits">{rows.map((h) => row(h))}</ul>
+              )}
+            </section>
+          );
+        })
       )}
-      {release ? (
-        <ConfirmModal
-          title={`Release message #${release.position}`}
+      {release && typedNeeded ? (
+        <TypedConfirm
+          title={release.length === 1 ? `Release message #${release[0].position}` : `Release ${plural(release.length, "message")}`}
+          name={RELEASE_WORD}
           action="Release"
-          busy={busy === release.message}
           error={error}
-          onConfirm={() => void act(release, "release")}
+          onConfirm={(typed) => doRelease(release, typed)}
           onCancel={() => {
             setRelease(null);
             setError(null);
           }}
         >
           <p>{RELEASE_CONFIRM}</p>
-          <p>{holdRuleText(release.rule)}</p>
-          {release.evidence ? <p className="small muted">{`Evidence: ${release.evidence}.`}</p> : null}
+          <p>
+            {release.length === 1 ? "This row is" : "Some of these rows are"} related to the withheld text
+            {release.length === 1 && release[0].evidence ? ` (${release[0].evidence})` : ""}: releasing can bring that text back.
+          </p>
+          {release.length === 1 ? <p>{holdRuleText(release[0].rule)}</p> : null}
+        </TypedConfirm>
+      ) : release ? (
+        <ConfirmModal
+          title={release.length === 1 ? `Release message #${release[0].position}` : `Release ${plural(release.length, "message")}`}
+          action="Release"
+          busy={busy !== null}
+          error={error}
+          onConfirm={() => void doRelease(release, null)}
+          onCancel={() => {
+            setRelease(null);
+            setError(null);
+          }}
+        >
+          <p>{RELEASE_CONFIRM}</p>
+          {release.length === 1 ? <p>{holdRuleText(release[0].rule)}</p> : null}
+          {release.length === 1 && release[0].evidence ? <p className="small muted">{`Evidence: ${release[0].evidence}.`}</p> : null}
+        </ConfirmModal>
+      ) : null}
+      {conversation ? (
+        <ConfirmModal
+          title={conversation.what === "unrelated" ? "Release the rows with no relation" : "Stop importing this conversation"}
+          action={conversation.what === "unrelated" ? "Release them" : "Stop importing"}
+          busy={busy !== null}
+          error={error}
+          onConfirm={() => void doConversation(conversation)}
+          onCancel={() => {
+            setConversation(null);
+            setError(null);
+          }}
+        >
+          {conversation.what === "unrelated" ? (
+            <p>
+              {conversation.title}: every held row whose evidence is "no relation found" is released; their text comes back at the next import. Rows with any relation to
+              the withheld text stay held.
+            </p>
+          ) : (
+            <p>
+              {conversation.title}: later JARVIS backups leave this conversation out (counted, never imported). What is stored of it stays as it is, held rows included.
+            </p>
+          )}
         </ConfirmModal>
       ) : null}
     </Card>

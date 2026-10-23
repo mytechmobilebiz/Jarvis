@@ -878,7 +878,7 @@ per case, are `tests/integration/test_brain_withhold_identity.py` and
 
 | Route | Who | Behaviour |
 |---|---|---|
-| `GET /overview` | user | `{memory:{total, by_status, by_kind, by_agent}, archive:{sessions, messages, withheld_messages, first_at, last_at, by_staff}, review:{pending_items, quarantined_items, open_conflicts}, workflows:{drafts, by_status}, imports:{runs, latest: ImportRunOut\|null}, ai_context, instance_label}`. Counts follow the person's scope; viewers get archive totals only. |
+| `GET /overview` | user | `{memory:{total, by_status, by_kind, by_agent}, archive:{sessions, messages, withheld_messages, first_at, last_at, by_staff}, review:{pending_items, quarantined_items, open_conflicts}, workflows:{drafts, by_status}, imports:{runs, latest: ImportRunOut\|null}, ai_context, instance_label}`, and for admins `decisions` (as `GET /holds` `status`, 0.6.2 plan 9.4). Counts follow the person's scope (`decisions` is global, counts only); viewers get archive totals only. |
 | `GET /items` | user | `q, kind, agent, status, include_deleted (admin), limit ≤ 200, offset` → `{items:[MemoryItemOut + excerpt + rank], total, filtered}` |
 | `GET /items/{id}` | user | `{item, versions}`. Versions only for operators and admins. |
 | `POST /items` | operator; admin when `needs_admin` for the result | `{kind, title, body, agent?, tags?}` → `{item}`, `memory.created` |
@@ -894,11 +894,11 @@ per case, are `tests/integration/test_brain_withhold_identity.py` and
 | `GET /messages/{id}/promoted` | admin | `{message, count, items:[{id, status, deleted}]}`: every memory item promoted from the message (what a withhold empties); `items` lists those in the admin's scope |
 | `POST /messages/{id}/withhold` | admin | 409 while an import, a rollback, a rescan or another admin's withhold, keep, release, purge or redaction holds the lock (the message names them all). Optional body `{include_identical: false, hide_title: null}`. Content `''`, `withheld`, flags note, admin tombstone (its stone, 2.9), and every other stored row of the same JARVIS message withheld too (2.9: members, and holds for the same uid with other text); identical text elsewhere only with `include_identical`; the title hidden with `hide_title` (default: when it is the conversation's first user message); its rollback copies blanked (also under older row ids); every promoted item emptied (below); quotes removed; session derived fields recomputed → `{message, session, copies:{items, versions_blanked}, answers_scrubbed, rollback_copies_blanked, also_withheld, held_for_review, identical_withheld, keys_tombstoned, title_hidden}`, `archive.message_withheld` (the same keys), `memory.source_withheld` per emptied item. All or nothing |
 | `GET /messages/{id}/withhold-preview` | admin | read-only: `same_message_rows`, `held_rows`, `identical_text_rows` (ids, positions, roles, times, states; rows outside the scope counted in one total, `rows_outside_your_scope`, never per list), `rowless_copies` (a count, including rows of the message an import deleted, kept only as rollback copies), `items_with_this_text` (imported items in the scope whose text contains the message's, 32+ characters: `[{id, title}]`, to purge by hand), `first_user_message`. Never text |
-| `GET /holds` | admin | every withheld row whose stone is pending, in the scope, with its evidence and never its text: `{message, session, title (null when hidden), position, role, at, content_chars, state, rule, withheld_message:{id, position, role, at, content_chars}, compare: identical text\|different text\|contains the withheld text\|nothing to compare, evidence, neighbours}`. `withheld_message` is described only when it is in the admin's scope; otherwise `{id: null, position: null, role, at: null, content_chars: null}` (an admin without the sensitive-data permission learns nothing of a Credit Repair or restricted row) |
+| `GET /holds` | admin | every withheld row whose stone is pending, in the scope, with its evidence and never its text: `{message, session, title (null when hidden), position, role, at, content_chars, state, rule, withheld_message:{id, position, role, at, content_chars}, compare, evidence, relations (plan 4.6 codes), confirm_required, preselected, decided_on (12 hex), group: settle\|later\|other, frozen, neighbours}` and `status: {unsettled_decisions, unreviewed_settle_holds, later_backup_holds, held_for_review, frozen_conversations, legacy_lock, tripwire: {run, inside_family, outside_family}\|null}` (global counts). `withheld_message` is described only when it is in the admin's scope; otherwise `{id: null, position: null, role, at: null, content_chars: null}` (an admin without the sensitive-data permission learns nothing of a Credit Repair or restricted row) |
 | `POST /holds/{id}/keep` | admin | 409 during an import. The stone becomes `kept` (permanent) → `archive.hold_kept {message, session, anchor, rule}` |
 | `POST /holds/{id}/release` | admin | 409 during an import. 400 when a certain stone names its JARVIS row ("it is the same message as a withheld one: it cannot be released"). Deletes the pending stone, writes the exemption, sets the release marker; its text comes back at the next import of a backup holding it; promoted copies emptied meanwhile stay empty → `archive.hold_released {message, session, anchor, rule}` |
 | `POST /messages/{id}/promote` | operator | `{kind, title, agent?}` → a pending item: origin `promoted`, `import_run_id NULL`, `source_ref = "JARVIS session <source id> · message <position>"`, sensitivity = the highest of the message and its session → `memory.promoted`. A withheld message, or one with an admin's withhold tombstone → 400; since 0.6.2 also a row that is the same JARVIS message as a withheld one (its key has a stone, its JARVIS row is a stone's binding, or its uid is a stone's uid with an equal or unknown role and no release of that group names it) → 400 "this message is the same JARVIS message as one an admin withheld: it cannot be promoted". A readable row with identical text that the admin saw stays promotable. The message's row is locked: a withhold of it waits for the promote and then empties the new item, or the promote waits for the withhold and is refused. |
-| `GET /conflicts` | operator | `status` → `{conflicts, total}` |
+| `GET /conflicts` | operator | `status` → `{conflicts, total}`. A conflict's `existing` and `incoming` never carry a version's `source_sha256` (review 3, readers); a redaction of the version a `source_changed` conflict copied blanks its hash and title in the stored conflict too |
 | `POST /conflicts/{id}/resolve` | operator (`instruction`, `source_changed` and `workflow`: admin) | `{resolution, note?}` → `memory.conflict_resolved`; see the resolution rules below |
 | `GET /workflows`, `GET /workflows/{id}` | operator | `{drafts}` / `{draft, schedule_exists}` |
 | `PATCH /workflows/{id}` | admin | `{params?, cron?}`. Params are validated by the capability model, cron by `valid_cron` → `workflow_draft.updated` |
@@ -1044,6 +1044,15 @@ lets the test copy use `cc_session_brain_test`.
   - The task view shows them as "Reference notes from memory".
 - **Drafting.** `drafting.write(..., memory_query: str | None = None)` prefixes the
   prompt with `await ctx.memory.prompt_block(memory_query)` when non-empty.
+  - Provenance (0.6.2, review 3): `prompt_block` records the item ids it used
+    (`AgentMemory.prompt_items`); the worker stores them as the task's
+    `result.data.memory_prompt_items` and on every artifact of the task
+    (`data.memory_items`), under the quote lock (shared) until the task commits,
+    and stores the draft already removed when one of them is gone by then.
+    `quotes.scrub_quotes(item_ids=...)` (every withhold of a source message, purge,
+    rollback, rescan and redaction) replaces such drafts (`DRAFT_REMOVED`), their
+    tasks' summaries and the approval cards naming them; `/api/artifacts` and
+    `/api/tasks` check the items again when read; the start-up check scrubs the rest.
   - In that case `MEMORY_NOTE` is appended to the system prompt and
     `ctx.log("used N memory item(s) in the prompt")` is called.
   - The queries come from the operator's parameters, never customer text:
@@ -1116,17 +1125,28 @@ lets the test copy use `cc_session_brain_test`.
 - edit; delete, restore, purge and redact version for admins;
 - promote and withhold on messages.
 
-**Withhold dialog (0.6.2):** it loads `withhold-preview` and states "N other stored rows
-are the same JARVIS message and are withheld too; M are held for your review", and, in a
-sentence of its own, how many rows outside the admin's scope it does not list; the
-unticked box "Also withhold K other messages with exactly this text in this
-conversation and its continuations and branches"; "Hide the conversation title" (ticked for the first user message); the
-imported memory items that contain the text, as links. When the preview cannot be
-loaded, the withhold still works (the server decides the title).
+**Withhold dialog (0.6.2, plan 9.1):** it loads `withhold-preview` and names the decision
+backup (label and SHA-256 start; Settle finishes the decision there), states "N other stored
+rows are the same JARVIS message and are withheld too; M are held for your review", and, in a
+sentence of its own, how many rows outside the admin's scope it does not list; the matching
+rows of the family (`identical_text_rows`), one checkbox per row with its relation words,
+all ticked (held with the message); unticking one sends its id in `leave_readable`;
+"Hide the conversation title" (ticked for the first user message); the imported memory
+items that contain the text, as links. The request is `{leave_readable, hide_title}`. When
+the preview cannot be loaded, the withhold still works (the server holds every matching
+row and decides the title).
 
-**Held for review (admins, Review tab):** each held row's evidence (never its text),
-what its rule means, **Keep withheld**, and **Release** with the confirmation "Its
-text comes back at the next import; promoted copies stay empty." Chips:
+**Held for review (admins, Review tab, plan 9.2-9.4):** the "Finish decisions needed"
+banner (unsettled decisions, Settle holds waiting) and the legacy-lock banner (also on the
+Overview, with the "Withhold decisions" counters); three groups: "Found when finishing
+decisions" (Settle; the pre-selected rows ticked, "Release the selected rows (N)"), "New in
+a later backup" (by conversation: "Release this conversation's rows with no relation",
+offered only when no hold of it says the withheld text was not in its backup, and "Stop
+importing this conversation"), and "Other held messages". Each row: its evidence and
+relation chips (never its text), what its rule means, **Keep withheld**, and **Release**
+with the confirmation "Its text comes back at the next import; promoted copies stay
+empty."; a row with any relation other than "none" is released only after typing
+`RELEASE` (sent as `confirm`). Chips:
 `withheld_by_admin.review` pending ("held for review") and kept, `guard` ("withheld by
 the database guard"), released, `title_withheld` ("title hidden by an admin"),
 `purged_before`.

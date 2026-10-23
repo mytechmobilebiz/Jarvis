@@ -167,6 +167,11 @@ if ($pg -and $pg.Status -eq "running") {
           $repair = if ($pending.repair_done -eq $true) { "done" } else { "not done (the next start runs it)" }
           Add-Line ("  readable rows matching a withhold: $readable; held for review: $([int]$pending.held_for_review); " +
             "identity repair $repair")
+          # 0.6.2 plan 1.8, 9.4: decisions not finished on their backup (Settle), Settle's holds waiting for review,
+          # rows a later backup held, conversations an admin stopped importing
+          Add-Line ("  withhold decisions not finished (Settle): $([int]$pending.unsettled_decisions); found when finishing " +
+            "decisions, waiting for review: $([int]$pending.unreviewed_settle_holds); new in a later backup, held: " +
+            "$([int]$pending.quarantined_rows); conversations not imported (stopped by an admin): $([int]$pending.frozen_sessions)")
           if ($pending.legacy_lock -eq $true) {
             # 0.6.2 plan 8.1: data that 0.6.0 or 0.6.1 imported is hidden from every reader until it is imported again
             Add-Line ("  legacy JARVIS Brain data (Command Center 0.6.0 or 0.6.1): LOCKED, hidden from every reader, " +
