@@ -478,8 +478,9 @@ def w_text_in(run: Run, w: Withhold, snap: hs.Snapshot, st: dict[str, Any] | Non
     5.5, owner Q6; deviation 245): the withheld JARVIS row itself (session, row, role, time, and uid when both have
     one), else a Hermes copy identity of it (the same uid, time and role), else the JARVIS row of a certain member of
     its decision that holds the very words (A2 checks those derive from it). None when the backup holds none of them:
-    a copy that only text, or a tool call and time without a uid, links to it does not count, and with no original
-    left the evidence is 'the withheld text is not in this backup' (5.3 R4). An edit JARVIS made in place to the
+    a copy that only text, or a tool call and time without a uid, links to it does not count, nor does a row that
+    merged another message into W's words (owner decision A, deviation 292), and with no original left the evidence
+    is 'the withheld text is not in this backup' (5.3 R4). An edit JARVIS made in place to the
     withheld row (a prune) is what the backup holds: edits inside a withheld family are out of contract (section 3)."""
     if not norm(w.text):
         return None
@@ -511,6 +512,11 @@ def w_text_in(run: Run, w: Withhold, snap: hs.Snapshot, st: dict[str, Any] | Non
         # (fixer, deviation 288)
         same = norm(v.content) == norm(w.text) or (bool(wbody) and norm(peel(v.content)[0]) == wbody)
         if not same or norm(v.content) == norm(hs.STUB) or not run.sim.leaks(v.tag, w.lms):
+            continue
+        if set(v.absorbed) - set(w.absorbed):
+            # owner decision A (deviation 292): W's words count as held by this backup only as W's own row or an
+            # untouched copy; inside a row that merged another message (Hermes's summary carrier of W, a fold)
+            # the evidence is 'nothing to compare' and the one-click release is refused (fail-closed)
             continue
         if (sid, row, v.role, tkey(v.ts)) in rows or (v.uid and (v.uid, tkey(v.ts), v.role) in copies):
             return v.content

@@ -659,7 +659,10 @@ withheld (a conversation and its continuations and branches, a "family"):
   (type `RELEASE` when it has any relation to the withheld text). Per
   conversation: **Release this conversation's rows with no relation** (offered
   only when the backup held every withheld text of that conversation, so the
-  comparison could be made), or **Stop importing this conversation** (later
+  comparison could be made; a withheld text counts as held only as its own
+  message or an unchanged copy of it, so when JARVIS merged it into another
+  message or into a summary the rows show "nothing to compare" and are
+  released one at a time), or **Stop importing this conversation** (later
   backups leave it out and count it; what is stored stays as it is).
 - **A check for withheld text (tripwire).** Every import compares the rows it
   makes readable with the withheld texts the backup holds: inside a family a

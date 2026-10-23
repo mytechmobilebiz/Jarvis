@@ -501,3 +501,67 @@ async def test_the_stored_original_of_a_re_sent_message_folded_into_the_withheld
     assert await w.status(p, orig) == "held"
     assert "part_of" in await w.relations(p, orig)
     assert not await w.readable_with(x)
+
+
+V292 = "Please draft the quarterly hiring plan for the design team."
+
+
+async def _release_unrelated(w, p):
+    [sess] = [s for s in await cc.sessions() if s.get("source_session_id") == p]
+    return await w.api.call("POST", "/api/brain/sessions/%d/holds/release-unrelated" % sess["id"])
+
+
+async def test_a_fold_of_a_restated_request_with_the_withheld_one_never_counts_as_its_text(world):
+    """Deviation 292 (owner decision A; the leak that refuted 291): a compaction restates an unanswered request V as
+    its own row (REPLAY_HEADER + V, V's uid), the user sends W before any answer, and Hermes folds the two user turns
+    (HEADER + V + '\\n\\n' + W, absorbing W's uid). After a destructive replace removed W's own row, that fold is not
+    W's text: a new row quoting W is never 'none', the one-click release is refused, and W's words never become
+    readable."""
+    w = world()
+    p = w.session("cli")
+    w.turn(p, "Please summarise the vendor situation for me.")
+    w.add(p, "user", V292)
+    new = w.sim.compact(p, 0, 0, restate="row")
+    wrow = w.add(p, "user", W2)
+    assert w.sim.fold(p, (new[-1], wrow))
+    d = w.snap("d")
+    await w.imp(d)
+    await w.withhold(p, wrow)
+    w.settle(d)
+    await w.review_all()
+    w.sim.replace(p, drop_last_turn=False)
+    u, _ = w.turn(p, "Quick note on my earlier request: " + W2 + " Thanks a lot.")
+    x = w.snap("x")
+    assert not any(v.content == W2 for v in x.rows.values())
+    await w.imp(x)
+    rel = await w.relations(p, u)
+    assert "none" not in rel and "not_in_backup" in rel, rel
+    assert (await _release_unrelated(w, p)).status_code == 400
+    await w.imp(w.snap("x"))
+    assert not await w.readable_with(W2)
+
+
+async def test_the_withheld_request_inside_hermess_summary_carrier_leaves_nothing_to_compare(world):
+    """Deviation 292 (owner decision A; oracle seed 7746): a compaction merged the unfinished W onto the summary row
+    (SUMMARY + REPLAY_HEADER + W, absorbing W's uid) and a destructive replace removed W's own row. W's words survive
+    only inside a row that merged another message, so they do not count as held by the later backup: the new rows'
+    evidence is 'not in this backup' (nothing to compare), the one-click release is refused, and W stays unreadable."""
+    w = world()
+    p = w.session("cli")
+    w.turn(p, "Please summarise the vendor situation for me.")
+    wrow = w.add(p, "user", W2)
+    w.add(p, "assistant", "Working on it, the first part is ready.")
+    new = w.sim.compact(p, 2, 1, restate="carrier")
+    d = w.snap("d")
+    assert d.rows[(p, new[-2])].content.endswith(hs.REPLAY_HEADER + "\n" + W2)
+    await w.imp(d)
+    await w.withhold(p, wrow)
+    w.settle(d)
+    await w.review_all()
+    w.sim.replace(p, drop_last_turn=False)
+    u, _ = w.turn(p, "Please tidy up the pricing table before the weekly call.")
+    x = w.snap("x")
+    await w.imp(x)
+    assert await w.relations(p, u) == {"not_in_backup"}
+    assert (await _release_unrelated(w, p)).status_code == 400
+    assert not await w.readable_with(W2)
