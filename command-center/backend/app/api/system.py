@@ -24,6 +24,7 @@ from ..models import (
     Task,
     WorkerHeartbeat,
 )
+from ..brain.quotes import guard_drafts
 from ..worker.scheduler import next_fire, valid_cron
 from .deps import Principal, client_ip, get_db, require_admin, require_operator, require_user, to_dict
 
@@ -169,7 +170,8 @@ async def list_artifacts(
     if status:
         q = q.where(Artifact.status == status)
     rows = (await session.scalars(q.order_by(Artifact.id.desc()).limit(limit))).all()
-    return {"artifacts": [to_dict(a, exclude=("content",)) for a in rows]}
+    # the read-time guard of drafts written with memory that was removed since (review 3, readers)
+    return {"artifacts": await guard_drafts(session, [to_dict(a, exclude=("content",)) for a in rows])}
 
 
 @router.get("/artifacts/{artifact_id}")
@@ -177,7 +179,7 @@ async def get_artifact(artifact_id: int, _: Principal = Depends(require_user), s
     artifact = await session.get(Artifact, artifact_id)
     if artifact is None:
         raise HTTPException(404, "no such artifact")
-    return {"artifact": to_dict(artifact)}
+    return {"artifact": (await guard_drafts(session, [to_dict(artifact)]))[0]}
 
 
 @router.patch("/artifacts/{artifact_id}")
@@ -193,7 +195,7 @@ async def patch_artifact(
     artifact.updated_at = datetime.now(UTC)
     await audit.record(session, principal.name, f"artifact.{body.status}", "artifact", artifact.id, ip=client_ip(request))
     await session.commit()
-    return {"artifact": to_dict(artifact, exclude=("content",))}
+    return {"artifact": (await guard_drafts(session, [to_dict(artifact, exclude=("content",))]))[0]}
 
 
 @router.get("/schedules")

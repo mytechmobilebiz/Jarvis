@@ -22,7 +22,7 @@ from ..agents.registry import get_agent
 from ..agents.wp_server import SiteBusy
 from ..brain.notes import reference_notes
 from ..brain.policy import POLICIES, SENSITIVE_AGENT
-from ..brain.quotes import QuotesBusy, lock_quotes
+from ..brain.quotes import QuotesBusy, dead_items, lock_quotes, scrub_drafts
 from ..brain.store import AgentMemory
 from ..config import Settings
 from ..db import describe_error, session_scope, sessionmaker
@@ -286,7 +286,14 @@ class Worker:
                         result = await asyncio.wait_for(agent.run(ctx, cap_name, params), timeout=timeout)
                         if memory is not None and agent_name != SENSITIVE_AGENT:  # never for Credit Repair
                             await self._add_memory_notes(session, task_id, memory, params, result)
-                        await self._complete(session, task_id, agent_name, result, logs)
+                        used = sorted(set(memory.prompt_items)) if memory is not None else []
+                        if used:
+                            # The memory items an AI prompt held are recorded on the task and its drafts (review 3,
+                            # readers), under the quote lock (shared) until this task commits: a removal that starts
+                            # now waits and then finds the drafts; one that committed already is seen below.
+                            await lock_quotes(session, shared=True)
+                            result.data = {**result.data, "memory_prompt_items": used}
+                        await self._complete(session, task_id, agent_name, result, logs, used)
                         await session.commit()
                     except BaseException:
                         await session.rollback()
@@ -341,7 +348,8 @@ class Worker:
             except Exception as exc:  # noqa: BLE001 - a missed beat is retried next minute
                 log.warning("heartbeat for task %s failed: %s", task_id, exc)
 
-    async def _complete(self, session: Any, task_id: int, agent_name: str, result: AgentResult, logs: list[tuple[str, str]]) -> None:
+    async def _complete(self, session: Any, task_id: int, agent_name: str, result: AgentResult, logs: list[tuple[str, str]],
+                        memory_items: list[int] | None = None) -> None:
         for spec in result.artifacts:
             session.add(
                 Artifact(
@@ -375,6 +383,15 @@ class Worker:
         for level, message in logs:
             session.add(TaskLog(task_id=task_id, level=level, message=message[:4000]))
         await session.flush()
+        if memory_items:
+            # every draft of this task (from result.artifacts, or stored by the capability itself) names the memory
+            # items its prompt held; one removed while the model wrote is removed from the draft now
+            for art in (await session.scalars(select(Artifact).where(Artifact.task_id == task_id))).all():
+                art.data = {**(art.data or {}), "memory_items": list(memory_items)}
+            await session.flush()
+            dead = await dead_items(session, memory_items)
+            if dead:
+                await scrub_drafts(session, dead)
         await task_service.on_task_terminal(session, self.settings, task)
 
     async def _requeue(self, task_id: int, reason: str, logs: list[tuple[str, str]]) -> None:

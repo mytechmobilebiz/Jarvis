@@ -4756,6 +4756,8 @@ async def _refuse_unsettled(s: AsyncSession) -> None:
 # JARVIS row, time or decision backup: it applies only through the legacy reset (legacy_reset(decisions=...)), which
 # binds what it can exactly and leaves the rest to the re-import and Settle.
 LEGACY_DECISIONS_VERSION = 3
+V4_RELEASE = ("a version 4 file's release, not applied (it names no JARVIS backup; fail-safe): release the row again "
+              "on the JARVIS Brain page")
 LEGACY_FILE_REFUSAL = ("this is a version %d decisions file (Command Center 0.6.0 or 0.6.1): its withholds name a key "
                        "only, so it applies only through the legacy reset: brain-import legacy-reset --decisions FILE "
                        "--actor ADMIN_EMAIL --export NEW_FILE --yes (jarvis-import -Mode LegacyReset -Decisions FILE "
@@ -4846,7 +4848,12 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
         # rule but the withheld message's own row and text). The rows they free are released after the removals.
         releases = data.get("releases") or []
         fresh: set[tuple[str, str, str]] = set()
-        for r in releases if isinstance(releases, list) else []:
+        # 0.6.2 plan 7.1: a version 4 file (dev only) applies fail-safe. Its releases name no decision backup, so
+        # nothing can tell whether the row here holds the content the admin released: none is applied, and the rows of
+        # its withholds' conversations stay as the withholds leave them (held for review where another backup stored
+        # them: _hold_other_backup). An admin releases them again here.
+        legacy_releases = version < DECISIONS_VERSION
+        for r in releases if isinstance(releases, list) and not legacy_releases else []:
             if isinstance(r, dict) and all(isinstance(r.get(k), str) and r[k] for k in ("anchor", "session", "row")):
                 row = (r["anchor"], r["session"][:200], r["row"][:200])
                 async with s.begin_nested():
@@ -4893,6 +4900,9 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
         released: Counter[str] = Counter()
         releases_listed: dict[str, list[int]] = {}
         for n, r in enumerate(releases if isinstance(releases, list) else [], 1):
+            if legacy_releases:
+                releases_listed.setdefault(V4_RELEASE, []).append(n)
+                continue
             outcome = await _apply_release(s, r, decider, review, via=via, fresh=fresh, removals_only=removals_only)
             if outcome in RELEASE_DONE:
                 released[outcome] += 1
@@ -5286,7 +5296,8 @@ def _carried_stone(r: dict[str, Any], *, via: str, after: int) -> identity.Stone
                               if isinstance(x, str))))
 
 
-async def _apply_removal(s: AsyncSession, r: Any, user: Any, review: Any, *, via: str, after: int) -> str:
+async def _apply_removal(s: AsyncSession, r: Any, user: Any, review: Any, *, via: str, after: int,
+                         hold_other: bool = True) -> str:
     """One removal from the decisions file: the tombstone, then the message withheld or the item purged if this
     database holds it, each audited as the API audits it (ids and counts). Returns what happened, or why it was not
     applied.
@@ -5296,7 +5307,8 @@ async def _apply_removal(s: AsyncSession, r: Any, user: Any, review: Any, *, via
     JARVIS row it names (identity.exact_rows); nothing else is re-derived from stored data (0.6.2 plan step 6: a
     version 4 file's families are a later backup for the next import, Settle decides the decision backup). A hold
     carried from the test copy is held on its own row. A purge and its tombstone go together: a refusal (the
-    sensitive-data permission) leaves neither."""
+    sensitive-data permission) leaves neither. hold_other False (the legacy reset under the legacy lock, whose rows are
+    rolled back right after, and imported again and finished by Settle) holds no other row of the family."""
     if not isinstance(r, dict) or not isinstance(r.get("source_key"), str) or not r["source_key"] or r.get(
             "reason") not in (WITHHELD_BY_ADMIN, PURGED_BY_ADMIN):
         return "not a removal"
@@ -5329,7 +5341,7 @@ async def _apply_removal(s: AsyncSession, r: Any, user: Any, review: Any, *, via
                             "answers_scrubbed": done.answers_scrubbed, "via": via})
                         outcome = "held for review"
                     return outcome
-                held_here = await _hold_other_backup(s, binding, certain, user, review, via=via)
+                held_here = await _hold_other_backup(s, binding, certain, user, review, via=via) if hold_other else 0
                 if not certain:
                     # No row of it here (not imported yet, or removed by a rollback or an import): its rollback
                     # copies, and the items promoted from an earlier row of it, which kept the text, lose it.
@@ -5595,8 +5607,12 @@ async def legacy_reset(out_path: str, *, actor: str = DEFAULT_ACTOR, confirm: bo
             after = await identity.current_after_run(s)
             removals = data.get("removals") if isinstance(data.get("removals"), list) else []
             for _, r in sorted(enumerate(removals, 1), key=_removal_order):
-                carried[await _apply_removal(s, r, decider, review, via="legacy-reset", after=after)] += 1
+                carried[await _apply_removal(s, r, decider, review, via="legacy-reset", after=after,
+                                             hold_other=not locked)] += 1
         bound = await _bind_legacy(s)
+        # a purge 0.6.0/0.6.1 made of an incoming version (a plain hash in the item's flags) survives the rollback that
+        # deletes the item: as a keyed fingerprint (review 3, readers)
+        await identity.legacy_rejected_hashes(s, actor=actor)
         content, counts = await _decisions_content(s, removals_only=False)
         rolled: dict[str, Any] = {"deleted": {}, "restored": {}, "reverted": {}}
         discarded = 0

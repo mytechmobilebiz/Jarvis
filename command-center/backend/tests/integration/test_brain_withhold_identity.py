@@ -464,8 +464,10 @@ def as_v3(path: Path) -> None:
 
 async def test_d_v3_file_still_applies(client, tmp_path):
     """The test copy's backup has no uids (key <session>:<row>); the live one has them (key uid:...). A version 3
-    decisions file (0.6.1) names the row-form key only: the key gives the JARVIS row, and decisions-apply withholds the
-    live row stored for it under its uid key at once (0.6.1 kept it for a later import, which brought the text back)."""
+    decisions file (0.6.1) names the row-form key only: the key gives the JARVIS row, and the legacy reset withholds the
+    live row stored for it under its uid key at once (0.6.1 kept it for a later import, which brought the text back).
+    0.6.2 plan 7.1: decisions-apply refuses a version 3 file (before any change); it applies only through the legacy
+    reset (brain-import legacy-reset --decisions), which also writes it out as a version 5 file."""
     mark = "zqdthree62"
     test_copy = bj.mini(tmp_path / "test")
     ids = conversation(test_copy["db"], "d_01", T, [("user", "What is it worth?"), ("assistant", secret(mark))],
@@ -480,8 +482,12 @@ async def test_d_v3_file_still_applies(client, tmp_path):
     live = bj.mini(tmp_path / "live")
     conversation(live["db"], "d_01", T, [("user", "What is it worth?"), ("assistant", secret(mark))])
     production = await run(live)
-    result = await imp.decisions_apply(str(out), production["run_id"], actor=ADMIN[0], apply=True)
-    assert result["removals"] == {"withheld": 1}
+    with pytest.raises(imp.Refused, match="legacy-reset"):
+        await imp.decisions_apply(str(out), production["run_id"], actor=ADMIN[0], apply=True)
+    assert await row_with(mark) is not None  # the refusal changed nothing
+    result = await imp.legacy_reset(str(tmp_path / "v5.json"), actor=ADMIN[0], confirm=True, decisions=str(out))
+    assert result["version_3_file"] == {"withheld": 1} and result["runs_rolled_back"] == []
+    assert not result["lock_lifted"] and json.loads((tmp_path / "v5.json").read_text())["version"] == 5
     assert await row_with(mark) is None
     later = await run(live)
     await leak_free(client, mark, live, (later["run_id"],))
@@ -510,8 +516,9 @@ async def test_d_reverse_v3_closed_at_next_import(client, tmp_path):
     bj.add_row(live["db"], "d_02", "assistant", "An earlier answer.", T + 0.5, uid=shared)  # keeps the uid key
     bj.add_row(live["db"], "d_02", "user", "What is it worth?", T + 1)
     bj.add_row(live["db"], "d_02", "assistant", secret(mark), T + 2, uid=shared)
-    production = await run(live)
-    assert (await imp.decisions_apply(str(out), production["run_id"], actor=ADMIN[0], apply=True))["removals"]
+    await run(live)
+    result = await imp.legacy_reset(str(tmp_path / "v5.json"), actor=ADMIN[0], confirm=True, decisions=str(out))
+    assert result["version_3_file"]  # 0.6.2 plan 7.1: a version 3 file applies through the legacy reset
     later = await run(live)
     assert (await row_with(mark)) is None
     [held] = await message_of("d_02", 3)

@@ -164,7 +164,9 @@ or a purge brought the text back silently.
 - **A database guard** blanks any row the withhold names, whatever code writes
   it. `verify` reports it if the guard ever had to act.
 - **Repair.** Every database where 0.6.0 or 0.6.1 let the text come back is
-  repaired during the migration, before the first request; the repair runs
+  repaired during the migration, before the first request, and the JARVIS
+  Brain data those versions imported is locked until it is imported again
+  (section 4, the legacy reset); the repair runs
   again at every start, before every import, with `rescan --yes` and with the
   new `brain-import repair --yes`.
 - **Changed keys.** When JARVIS changes only a message's key (message ids
@@ -256,9 +258,9 @@ When live never stored that row at all (the test copy's backup predates
 JARVIS's message ids, or JARVIS renumbered or rewound the row first), the rows
 of that conversation at the withheld message's very role and time, and a copy
 in a branch whose link to it is broken, are held for review at once (the
-decisions file carries the row's time, never its text). Version 3 files
-(0.6.0, 0.6.1) are still read, but a version 3 withhold names only a key:
-export again with 0.6.2.
+decisions file carries the row's time, never its text). A version 3 file
+(0.6.0, 0.6.1) names only a key: it applies only through the legacy reset
+(section 4); export again with 0.6.2.
 
 **Restores.** `restore.ps1` first checks that the installed application is
 this folder's: it stops before any change when the api image is another
@@ -300,7 +302,19 @@ command). While either is there, `start.ps1` starts nothing, and the api
 and the worker refuse to start (also after a plain `docker compose up` or from
 another folder). The next `restore.ps1` applies those files first, never
 exporting again from the restored data; `restore.ps1 -FinishPending` only
-applies them and starts the services.
+applies them and starts the services. Each apply clears its part of the
+database's mark, and `restore.ps1` acts on `restore-pending.json` only as far
+as the mark still asks: with no mark left (the files were applied, but the
+marker stayed), it applies nothing again (that would undo what admins decided
+since) and renames the stale marker. Only 0.6.2 and later read the mark:
+never start 0.6.0 or 0.6.1 on a restored database (section 5).
+
+**Version redactions** made after the backup are kept by a restore too: the
+removals file names each one (item id, creation time, version, who and when;
+no text), and it is applied again; when the restored backup predates the edit
+that made it an older version, the redacted text is the item's current text
+there: it is emptied, and the item deleted (restore it with new text, or
+purge it).
 
 **Importer and scripts.**
 - New commands: `brain-import repair [--yes]`, `brain-import fingerprints
@@ -309,8 +323,18 @@ applies them and starts the services.
   `python -m app.cli restore-carry export|apply` (restore.ps1: the users'
   access and the audit log across a restore).
 - An importer older than 1.1.0 (0.6.0, 0.6.1) is refused on a 0.6.2 database
-  (migration `0008`), before it writes anything; so is a purge by 0.6.0 or
-  0.6.1 code (section 5).
+  (migration `0008`), before it writes anything, and so is every archived
+  message that code would store (also an import that was already running when
+  0.6.2 was installed: it stops at its next write); so is a purge by 0.6.0 or
+  0.6.1 code.
+- `brain-import legacy-reset --export FILE [--yes]` (`jarvis-import.ps1 -Mode
+  LegacyReset`): JARVIS Brain data that 0.6.0 or 0.6.1 imported is locked
+  (section 4); the reset writes every decision to a version 5 file, rolls
+  those imports back and lifts the lock. A version 3 decisions file (0.6.0,
+  0.6.1) applies only through it (`--decisions FILE --actor ADMIN_EMAIL`);
+  `decisions-apply` refuses it. A version 4 file (0.6.2 development builds)
+  applies fail-safe: its withholds apply, its releases do not (release those
+  rows again).
 - When two changes to the JARVIS Brain meet (two admins at once, or an admin
   and an import), the second is refused with a message that names what can
   hold it (an import, rollback or rescan, or an admin's withhold, release,
@@ -356,7 +380,7 @@ query.
 | Certain matches | Never releasable |
 | Purges of items that came back | Quarantined for an admin; never purged automatically |
 | Purge fingerprints | Keyed from the database password; no new setting; the importer container still gets only `DATABASE_URL`, `TZ` and `ENVIRONMENT` |
-| Restores | Withholds, purges, releases, title choices, deactivations, revoked permissions, lowered roles and audit entries made after the backup are applied again before anything serves; other user changes it reverts are listed |
+| Restores | Withholds, purges, releases, title choices, version redactions, deactivations, revoked permissions, lowered roles and audit entries made after the backup are applied again before anything serves; other user changes it reverts are listed |
 
 Each default can be changed later without a migration.
 
@@ -407,14 +431,36 @@ same name and other bytes; an unrelated row's rollback copy.
 - **From 0.6.0 or 0.6.1 (withdrawn):** there is no separate guide; the same
   guide's notes cover it. Its step A stops when the API reports 0.6.0 or 0.6.1:
   send the output of `.\scripts\status.ps1` before going on.
+- **JARVIS Brain data that 0.6.0 or 0.6.1 imported is locked.** The migration
+  finds it (an import run by an importer older than 1.1.0 that was not rolled
+  back, or a withhold made before 0.6.2) and locks it: no reader shows it, an
+  admin included (search, conversations, memory items and the items promoted
+  from it, agents, the Supervisor); imports, Settle, the decisions export and
+  every withhold, keep and release refuse with a message that names the reset;
+  `-Mode Status` and `brain-precheck.ps1` say `LOCKED`. Reset it in the live
+  installation's folder:
+  `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode LegacyReset`
+  (type `RESET LEGACY BRAIN DATA`; a dump of the database is taken first). It
+  binds each withhold to its exact JARVIS row where the stored data names one,
+  writes every decision (withholds, purges, review decisions on imported
+  items) to a version 5 file in the reports folder, rolls those imports back
+  and lifts the lock; nothing an admin decided is lost, no audit entry is
+  deleted, and the withheld keys stay withheld throughout. Then import the
+  same JARVIS backup again with that file (`-Mode Import -All -Decisions
+  <file> -Actor <admin email>`) and finish the decisions on it (`-Mode
+  Settle`; review what it holds). A version 3 decisions file from a 0.6.x test
+  copy goes with the reset: `-Mode LegacyReset -Decisions <file> -Actor <admin
+  email>`.
 - **Then check the JARVIS Brain** in the live installation's folder:
   `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\jarvis-import.ps1 -Target Production -Mode Status`.
   It must say `identity repair done`; if it says `not done`, run `-Mode
   Repair` (type `REPAIR PRODUCTION`). If `held for review` is above 0, review
   the rows on the JARVIS Brain page ("Held for review").
-- **Finish or stop any import before upgrading.** The migration locks rows; an
-  import running alongside it can make PostgreSQL abort one of the two, and
-  the next start tries again.
+- **Finish or stop any import before upgrading.** The migration refuses to
+  run while an import by 0.6.0 or 0.6.1 is running (finish or stop it, then
+  start 0.6.2 again). An import still running when 0.6.2 starts is stopped by
+  the database at its next write; run it again with 0.6.2 (after the legacy
+  reset above).
 - **No new keys, no `.env` change.** The new folder gets a copy of `.env`.
   n8n restarts once, as in every upgrade.
 - **The test copy:** use 0.6.2 for it too
@@ -427,19 +473,11 @@ same name and other bytes; an unrelated row's rollback copy.
 
 ## 5. Going back
 
-- **Quick, data kept, to 0.6.1 or 0.6.0:** `install.ps1` from that version's
-  folder. Its code runs on the 0.6.2 schema (every new column has a default)
-  and the database guard keeps blanking every row a withhold names. But that
-  code is NO-GO for imports: import nothing until you are on 0.6.2 again
-  (`jarvis-import.ps1` of 0.6.2 refuses a live installation without importer
-  1.1.0, and the 0.6.2 database itself refuses an import run of an older
-  importer before it writes anything). Purge nothing with that code either:
-  0.6.0 and 0.6.1 keep no purge ledger and no keyed fingerprint, so such a
-  purge would not survive a restore of an older backup or a renamed file. The
-  0.6.2 database refuses it (the item stays deleted and hidden); purge it again
-  once you are on 0.6.2. Back on 0.6.2, its start repairs what
-  0.6.1 code left readable by key, JARVIS row or uid; a copy an older import
-  stored under a new key with no uid is repaired by the next 0.6.2 import.
+- **Going back means going back to 0.5.0 only.** Never install 0.6.0 or
+  0.6.1 over a 0.6.2 database (they are NO-GO): their code reads none of
+  0.6.2's decisions (releases, holds, legacy lock, Settle) and ignores the
+  restore mark, so after an unfinished restore it would serve every withhold,
+  purge and access change made after the backup as undone.
 - **To 0.5.0:** as section H of `releases/UPGRADE_0.5.0_TO_0.6.2_WINDOWS.md`
   describes (H-1, quick rollback, data kept); 0.5.0 ignores the JARVIS Brain
   tables.

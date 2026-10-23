@@ -103,7 +103,11 @@ keys and no `.env` change. Its migration `0008_brain_withhold_identity` ties
 every withhold of a JARVIS message to the message itself, not to one of the
 importer's keys for it, so a later import never brings the text back; it
 repairs, before the first request, any database where 0.6.0 or 0.6.1 let the
-text come back (on a PC with nothing imported it finds nothing). It also keeps
+text come back (on a PC with nothing imported it finds nothing), and locks the
+JARVIS Brain data those versions imported, hidden from everyone, until
+`jarvis-import.ps1 -Mode LegacyReset` and a new import of the same JARVIS
+backup bring it back (RELEASE_NOTES_0.6.2.md, section 4). Going back after
+0.6.2 means going back to 0.5.0 only. It also keeps
 purged items purged when JARVIS moves or renames them, and makes `restore.ps1`
 keep JARVIS Brain decisions (below, "Day to day"). Step by step:
 `releases/UPGRADE_0.5.0_TO_0.6.2_WINDOWS.md` (on GitHub, in
@@ -275,7 +279,7 @@ log; never message text, never a password hash):
 - `removals-before-restore-<time>.json`: every message an admin withheld (with
   the title choice), every item an admin purged (also manual and promoted items
   and incoming versions of a changed file), every held row an admin released,
-  and the purge fingerprints;
+  the purge fingerprints, and every version an admin redacted;
 - `access-before-restore-<time>.json`: who may sign in and what they may read,
   and the audit log.
 
@@ -315,6 +319,11 @@ again from the restored data. Only if those files are lost for good, and you
 accept that the withholds, purges and access changes made after that backup
 stay undone: delete `backups\restore-pending.json` and run
 `docker compose exec -T postgres psql -U postgres -d command_center -c "DELETE FROM brain_maintenance WHERE name = 'restore_reapply_pending'"`.
+Each apply clears its part of the database's mark: a `restore-pending.json`
+left behind after the files were applied (the mark is gone) is not applied
+again, so it cannot undo what admins decided since; `restore.ps1` renames it.
+Only 0.6.2 and later read the mark: never start 0.6.0 or 0.6.1 on a restored
+database (going back means going back to 0.5.0 only).
 
 Keep the `removals-before-restore-*.json` and `access-before-restore-*.json`
 files like backups and delete them when you no longer need them: they hold
@@ -488,8 +497,9 @@ imported memory items (approved, rejected, archived, deleted, and your edits
 of them), plus the messages you withheld (with the JARVIS rows they are), the
 held rows you kept or released and the items you purged (keys and ids only,
 never their text). Rows still held for review are not carried over: the live
-import holds them again. A decisions file exported by 0.6.0 or 0.6.1 still
-applies, but export again with 0.6.2.
+import holds them again. A decisions file exported by 0.6.0 or 0.6.1
+(version 3) applies only through `-Mode LegacyReset -Decisions <file> -Actor
+<admin email>`: export again with 0.6.2.
 Not carried over, so write them down and do them again in the live
 installation after step 7: edits of customer or Credit Repair items (the
 export prints how many it left out, and step 7 lists them), conflicts you

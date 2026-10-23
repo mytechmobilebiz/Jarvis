@@ -28,6 +28,13 @@ services:
 
   db-init:
     restart: "no"
+    # The postgres image declares VOLUME /var/lib/postgresql. db-init stores nothing there, but Docker would give
+    # every db-init container an anonymous volume, and Compose leaves the old one behind each time -Action Start
+    # recreates the container (--force-recreate; -V does not help), where -Action Remove's down --volumes never
+    # finds it. A tmpfs at that path means no volume is ever made.
+    volumes:
+      - type: tmpfs
+        target: /var/lib/postgresql
 
   api:
     image: infinite-command-center-brain-test/backend:local

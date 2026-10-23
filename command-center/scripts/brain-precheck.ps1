@@ -167,6 +167,11 @@ if ($pg -and $pg.Status -eq "running") {
           $repair = if ($pending.repair_done -eq $true) { "done" } else { "not done (the next start runs it)" }
           Add-Line ("  readable rows matching a withhold: $readable; held for review: $([int]$pending.held_for_review); " +
             "identity repair $repair")
+          if ($pending.legacy_lock -eq $true) {
+            # 0.6.2 plan 8.1: data that 0.6.0 or 0.6.1 imported is hidden from every reader until it is imported again
+            Add-Line ("  legacy JARVIS Brain data (Command Center 0.6.0 or 0.6.1): LOCKED, hidden from every reader, " +
+              "imports refused; reset it with .\scripts\jarvis-import.ps1 -Target Production -Mode LegacyReset")
+          }
         }
       } else {
         Add-Problem ("the withhold identity could not be read: " + (($p.Err | Select-Object -First 2) -join " "))

@@ -158,6 +158,11 @@ def draft_out(d: WorkflowDraft) -> dict[str, Any]:
 def conflict_out(c: MemoryConflict, *, existing_item: MemoryItem | None = None,
                  incoming_item: MemoryItem | None = None, admin_needed: bool = False) -> dict[str, Any]:
     out = {k: _iso(getattr(c, k)) for k in CONFLICT_COLUMNS}
+    # Never a version's plain SHA-256 (review 3, readers: an old version's PIN is confirmable offline from it; the
+    # dashboard never read it). The stored conflict keeps it for a rollback until that version is redacted.
+    for side in ("existing", "incoming"):
+        if isinstance(out.get(side), dict):
+            out[side] = {k: v for k, v in out[side].items() if k != "source_sha256"}
     out["existing_item"] = item_out(existing_item) if existing_item is not None else None
     out["incoming_item"] = item_out(incoming_item) if incoming_item is not None else None
     out["needs_admin"] = admin_needed
@@ -817,8 +822,60 @@ async def redact_version(session: AsyncSession, item: MemoryItem, version: int
     if is_redacted(v):
         raise BrainError("this version is already redacted")
     v.title, v.body, v.tags, v.note = REDACTED_TITLE, "", [], REDACTED_NOTE
+    await redact_conflict_copies(session, item.id, {version})
     await session.flush()
     return v, await scrub_quotes(session, item_ids=[item.id])  # a history answer may quote the old text
+
+
+def _conflict_versions(c: MemoryConflict, item_id: int) -> tuple[int | None, set[int]]:
+    """The item versions a source_changed conflict copied: the one it replaced (existing.version) and, once resolved
+    with use_incoming, the one it brought (its effects' version_after)."""
+    ex = c.existing or {}
+    before = ex.get("version") if isinstance(ex.get("version"), int) else None
+    after = {int(e["version_after"]) for e in (c.effects or {}).get("items") or []
+             if isinstance(e, dict) and e.get("id") == item_id and isinstance(e.get("version_after"), int)}
+    return before, after
+
+
+async def redact_conflict_copies(session: AsyncSession, item_id: int, versions: set[int]) -> int:
+    """A source_changed conflict keeps the title and the plain SHA-256 of the version it replaced (existing) and of
+    the version it brought (incoming). When an admin redacts that version, both go (review 3, readers: the redacted
+    bytes stayed confirmable offline from the conflict, which GET /api/brain/conflicts returned). A rollback of that
+    conflict is refused once its version_before is redacted, so nothing needs them any more. How many conflicts
+    changed."""
+    changed = 0
+    for c in (await session.scalars(select(MemoryConflict).where(
+            MemoryConflict.kind == "source_changed", MemoryConflict.existing_table == "memory_items",
+            MemoryConflict.existing_id == item_id).order_by(MemoryConflict.id))).all():
+        before, after = _conflict_versions(c, item_id)
+        hit = False
+        for side, take in (("existing", before in versions), ("incoming", bool(after & versions))):
+            data = dict(getattr(c, side) or {})
+            if take and (data.get("source_sha256") or data.get("title", REDACTED_TITLE) != REDACTED_TITLE):
+                data["source_sha256"] = ""
+                if "title" in data:
+                    data["title"] = REDACTED_TITLE
+                setattr(c, side, data)
+                hit = True
+        changed += hit
+    if changed:
+        await session.flush()
+    return changed
+
+
+async def redact_all_conflict_copies(session: AsyncSession) -> int:
+    """redact_conflict_copies() for every version redacted before it existed (the start-up check). Counts only."""
+    changed = 0
+    items = (await session.scalars(select(MemoryConflict.existing_id).where(
+        MemoryConflict.kind == "source_changed", MemoryConflict.existing_table == "memory_items",
+        MemoryConflict.existing_id.is_not(None)).distinct())).all()
+    for item_id in sorted(int(i) for i in items):
+        redacted = {int(v) for v in (await session.scalars(select(MemoryItemVersion.version).where(
+            MemoryItemVersion.item_id == item_id, MemoryItemVersion.title == REDACTED_TITLE,
+            MemoryItemVersion.body == ""))).all()}
+        if redacted:
+            changed += await redact_conflict_copies(session, item_id, redacted)
+    return changed
 
 
 def _blocks_purge(effects: dict[str, Any], item: MemoryItem, own: set[int]) -> bool:

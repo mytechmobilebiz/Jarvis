@@ -1411,6 +1411,41 @@ async def forget_other_key(s: AsyncSession, *, actor: str, apply: bool) -> int:
 PURGED_BEFORE = "purged_before"  # policy.RISK_FLAGS: an item an admin purged that came back
 
 
+async def legacy_rejected_hashes(s: AsyncSession, *, actor: str) -> int:
+    """Review 3 (readers): 0.6.0 and 0.6.1 purged the incoming version of a changed file by appending its PLAIN
+    SHA-256 to the existing item's flags.rejected_source_sha256 (0.6.2 keeps only a keyed fingerprint: S16). A version
+    no memory item holds any more was purged: it is kept out by its keyed fingerprint instead (remember_purge, via
+    'upgrade'), and the plain hash goes; a version an item still holds (keep_existing rejected it: its text is
+    readable) stays as it is. Runs at the start-up check and before the legacy reset rolls the legacy runs back (which
+    would delete the item, and the purge with it: the purged version came back at the next import). Without a
+    database password nothing changes. How many hashes became keyed fingerprints."""
+    key = purge_key()
+    if not key:
+        return 0
+    n = 0
+    for item in (await s.scalars(select(MemoryItem).where(MemoryItem.flags.has_key("rejected_source_sha256"))
+                                 .order_by(MemoryItem.id))).all():
+        flags = dict(item.flags or {})
+        rejected = [h for h in (flags.get("rejected_source_sha256") or []) if isinstance(h, str) and h]
+        keep = []
+        for sha in rejected:
+            if await s.scalar(select(MemoryItem.id).where(MemoryItem.source_sha256 == sha).limit(1)) is not None:
+                keep.append(sha)
+                continue
+            await remember_purge(s, source_key="", sha256_hex=sha, kind=purge_kind(item.source_key or ""),
+                                 actor=actor, via="upgrade", key=key)
+            n += 1
+        if keep != list(flags.get("rejected_source_sha256") or []):
+            if keep:
+                flags["rejected_source_sha256"] = keep
+            else:
+                flags.pop("rejected_source_sha256", None)
+            item.flags = flags
+    if n:
+        await s.flush()
+    return n
+
+
 async def _purged_back(s: AsyncSession, *, actor: str, first: bool) -> int:
     """R8: imported items that are the same text as an item an admin purged quarantine (admin only, never in a
     prompt; nothing is purged automatically): (a) its key has a purge tombstone (a restore of a dump older than the
@@ -1502,6 +1537,11 @@ async def finish_repair(s: AsyncSession, *, actor: str, cause: str) -> Counter[s
             sess.flags = flags
             py["sessions_recomputed"] += 1
     await s.flush()
+    # Review 3 (readers): plain hashes a purge made before 0.6.2 left, and copies of redacted versions in conflicts.
+    py["legacy_purge_hashes_keyed"] += await legacy_rejected_hashes(s, actor=actor)
+    from .review import redact_all_conflict_copies
+
+    py["conflict_copies_of_redacted_versions"] += await redact_all_conflict_copies(s)
     first = await s.get(BrainMaintenance, "purge_identity") is None
     py["purged_items_quarantined"] += await _purged_back(s, actor=actor, first=first)
     if first:

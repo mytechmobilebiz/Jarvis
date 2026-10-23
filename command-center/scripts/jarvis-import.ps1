@@ -12,7 +12,10 @@
 #       live, with the very same backup file:
 #       -Mode Import -All -Decisions <file> -Actor <admin email>   (0.6.2: the withholds, releases and purges apply
 #       first, then the import replays the decisions taken on that backup; a version 5 file)
-#   ... -Mode ApplyDecisions -Decisions <file> -Run <id> -Actor <admin email>   (after an import: version 3 and 4 files)
+#   ... -Mode ApplyDecisions -Decisions <file> -Run <id> -Actor <admin email>   (after an import: version 4 files)
+#   ... -Mode LegacyReset [-Decisions <version 3 file> -Actor <admin email>]   (0.6.2 plan 8.2: JARVIS Brain data that
+#       0.6.0 or 0.6.1 imported is locked; this writes every decision to a version 5 file in the reports folder, rolls
+#       those imports back and lifts the lock; then import the same backup again with that file, and run -Mode Settle)
 #   ... -Mode Resume -Run <id>        -Mode Rescan        -Mode Repair (0.6.2: withhold what is the same message as a
 #       withheld one now, without waiting for the next start or import)
 #
@@ -56,7 +59,7 @@ if ($PSVersionTable.PSEdition -eq "Core" -and -not $IsWindows) { $onWindows = $f
 # --- Parameters ---------------------------------------------------------------------------------------------------
 $targets = @("Test", "Production")
 $modes = @("Plan", "Import", "Settle", "Resume", "Verify", "Rollback", "Status", "ExportDecisions", "ApplyDecisions",
-  "Rescan", "Repair")
+  "Rescan", "Repair", "LegacyReset")
 if ($targets -notcontains $Target) { Stop-Brain "give -Target Test or -Target Production" }
 if ($modes -notcontains $Mode) { Stop-Brain ("give -Mode " + ($modes -join ", ")) }
 $Target = $targets | Where-Object { $_ -eq $Target }
@@ -89,8 +92,8 @@ if ($Mode -eq "Plan" -or $Mode -eq "Import") {
   Stop-Brain "-Sample, -FilesSample, -All, -Since, -Until and -NoFiles go with -Mode Plan or Import"
 }
 if ($Mode -eq "ApplyDecisions" -and -not $Decisions) { Stop-Brain "-Mode ApplyDecisions needs -Decisions <decisions file exported from the test copy>" }
-if (@("ApplyDecisions", "Import") -contains $Mode -and $Decisions -and -not $Actor) { Stop-Brain "-Mode $Mode -Decisions needs -Actor <your admin email> (recorded as the reviewer of each decision)" }
-if ($Decisions -and @("ApplyDecisions", "Import") -notcontains $Mode) { Stop-Brain "-Decisions goes with -Mode Import (version 5 files) or -Mode ApplyDecisions (older files)" }
+if (@("ApplyDecisions", "Import", "LegacyReset") -contains $Mode -and $Decisions -and -not $Actor) { Stop-Brain "-Mode $Mode -Decisions needs -Actor <your admin email> (recorded as the reviewer of each decision)" }
+if ($Decisions -and @("ApplyDecisions", "Import", "LegacyReset") -notcontains $Mode) { Stop-Brain "-Decisions goes with -Mode Import (version 5 files), -Mode ApplyDecisions (version 4 files) or -Mode LegacyReset (version 3 files of 0.6.0 and 0.6.1)" }
 
 # --- Checks before anything runs ----------------------------------------------------------------------------------
 Assert-Docker
@@ -190,7 +193,15 @@ if ($Decisions) {
     Stop-Brain "this decisions file is version ${decisionsVersion}: give it to the import itself (-Mode Import -All -Decisions <file> -Actor <admin email>, with the very backup file the test copy imported), not after it"
   }
   if ($Mode -eq "Import" -and $decisionsVersion -lt 5) {
-    Stop-Brain "-Mode Import -Decisions needs a version 5 decisions file (this one is version $decisionsVersion); apply an older file after the import with -Mode ApplyDecisions"
+    Stop-Brain "-Mode Import -Decisions needs a version 5 decisions file (this one is version $decisionsVersion); apply a version 4 file after the import with -Mode ApplyDecisions, a version 3 file with -Mode LegacyReset"
+  }
+  # 0.6.2 plan 7.1: a version 3 file (0.6.0, 0.6.1) names its withholds by key only: it applies through the legacy
+  # reset only, and the legacy reset takes nothing newer.
+  if ($Mode -eq "ApplyDecisions" -and $decisionsVersion -le 3) {
+    Stop-Brain "this decisions file is version ${decisionsVersion} (Command Center 0.6.0 or 0.6.1): apply it with -Mode LegacyReset -Decisions <file> -Actor <admin email>"
+  }
+  if ($Mode -eq "LegacyReset" -and $decisionsVersion -gt 3) {
+    Stop-Brain "-Mode LegacyReset -Decisions takes a version 3 decisions file of 0.6.0 or 0.6.1 (this one is version $decisionsVersion)"
   }
   if ($Mode -eq "Import") {
     # The decisions are replayed only on the very backup file they were taken on (its SHA-256) by the same importer
@@ -399,6 +410,12 @@ if ($Target -eq "Production") {
       Stop-Brain "$($identity.OtherKey) purged-item fingerprint(s) were made with another database password: restore that password, or in this folder run: docker compose exec -T api python -m app.cli brain-import fingerprints --forget-other-key --yes (the purges themselves stay, by their keys)"
     }
   }
+  # 0.6.2 plan 8.1: JARVIS Brain data that 0.6.0 or 0.6.1 imported is locked (brain-import status prints the line):
+  # only -Mode LegacyReset (and Status, Verify, Rollback, Rescan, Repair) runs until it is reset.
+  if ($printed -match '(?m)^legacy JARVIS Brain data \(Command Center 0\.6\.0 or 0\.6\.1\): LOCKED' -and @("Import", "Settle", "Resume", "ExportDecisions", "ApplyDecisions") -contains $Mode) {
+    Clear-ImportVars
+    Stop-Brain "the live installation holds JARVIS Brain data that Command Center 0.6.0 or 0.6.1 imported; it is locked (hidden from every reader) until it is imported again: run .\scripts\jarvis-import.ps1 -Target Production -Mode LegacyReset first (docs\RELEASE_NOTES_0.6.2.md, section 4)"
+  }
   Write-Host "Live installation: importer $importerVersion, migrations 0006_brain, 0007_brain_withhold and 0008_brain_withhold_identity present, withheld copies with text: $withheldCopies, importer image = running api code ($runningVersion)."
   if ($identity) {
     Write-Host "Withhold identity: repair $($identity.Repair); readable rows matching a withhold: $($identity.Readable) (an import repairs them first); held for review: $($identity.Held); withheld rows with a text fingerprint: $($identity.Fingerprints); rows blanked by the database guard: $($identity.Guard); quotes of removed sources: $($identity.Quotes)."
@@ -422,6 +439,7 @@ try {
       "Rescan" { Confirm-Typed "RESCAN PRODUCTION" "This re-cleans every stored JARVIS text in the LIVE Command Center with the current detectors." }
       "Repair" { Confirm-Typed "REPAIR PRODUCTION" "This withholds, in the LIVE Command Center, every stored row that is the same JARVIS message as a withheld one." }
       "ApplyDecisions" { Confirm-Typed "APPLY DECISIONS TO PRODUCTION" "This applies the review decisions from the test copy to import run $Run in the LIVE Command Center." }
+      "LegacyReset" { Confirm-Typed "RESET LEGACY BRAIN DATA" "This writes every JARVIS Brain decision of the LIVE Command Center to a decisions file in $Reports, then removes everything that imports by Command Center 0.6.0 or 0.6.1 added (their reviewed items too: their review decisions are in the file). A dump of its command_center database is taken first. Then import the same JARVIS backup again with that file, and run -Mode Settle." }
     }
   }
 
@@ -459,18 +477,24 @@ try {
       $cli = @("decisions-apply", "--in", (Get-InReports $Decisions "decisions"), "--run", "$Run", "--yes")
       if ($Actor) { $cli += @("--actor", $Actor) }
     }
+    "LegacyReset" {
+      $report = "/reports/decisions-legacy-" + $Target.ToLower() + "-$stamp.json"
+      $cli = @("legacy-reset", "--export", $report, "--yes")
+      if ($Decisions) { $cli += @("--decisions", (Get-InReports $Decisions "decisions-v3")) }
+      if ($Actor) { $cli += @("--actor", $Actor) }
+    }
   }
   if ($Discovery -and ($Mode -eq "Plan" -or $Mode -eq "Import")) { $cli += @("--discovery", (Get-InReports $Discovery "discovery-summary")) }
   if ($Decisions -and $Mode -eq "Import") { $cli += @("--decisions", (Get-InReports $Decisions "decisions")) }
 
-  if ($Target -eq "Production" -and $Mode -eq "Import") {
+  if ($Target -eq "Production" -and @("Import", "LegacyReset") -contains $Mode) {
     # A dump of command_center only, from the live postgres container, checked with pg_restore -l, then copied out.
     Write-Host "Writing a dump of the live command_center database first..."
     $dump = New-DatabaseDump $pgIds[0] (Join-Path $Reports "pre-import") "cc-pre-import-$stamp.dump"
     Write-Host "Dump of the live database (pg_restore -l: $($dump.Tables) tables): $($dump.File)" -ForegroundColor Green
     Write-Host "SHA-256 $($dump.Sha256)"
     Write-Host "Undo an import with -Mode Rollback. Restoring this dump is disaster recovery only: it loses everything since it was taken."
-    $cli += @("--pre-backup-sha256", $dump.Sha256)
+    if ($Mode -eq "Import") { $cli += @("--pre-backup-sha256", $dump.Sha256) }
   }
 
   Write-Host ("brain-import " + ($cli -join " ")) -ForegroundColor Cyan

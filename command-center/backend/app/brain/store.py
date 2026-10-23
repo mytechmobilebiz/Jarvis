@@ -520,6 +520,9 @@ class AgentMemory:
         self.session = session
         self.agent = agent
         self.policy: AgentPolicy = policy_for(agent)
+        # The memory items prompt_block() put in an AI prompt (review 3, readers): the worker records them on the task
+        # and on every draft it stores, so a withhold or purge of one reaches the draft (quotes.scrub_quotes).
+        self.prompt_items: list[int] = []
 
     async def relevant(self, query: str, *, limit: int = 5, kinds: list[str] | tuple[str, ...] | None = None,
                        general_only: bool = False) -> list[MemoryItem]:
@@ -559,6 +562,7 @@ class AgentMemory:
         items = [i for i in candidates if not any((i.flags or {}).get(f) for f in RISK_FLAGS)][:limit]
         if not items:
             return ""
+        self.prompt_items.extend(i.id for i in items if i.id not in self.prompt_items)
         parts = []
         for i in items:
             body, _ = brain_text.truncate(i.body, 4000)

@@ -84,6 +84,11 @@ async def task_views(session: AsyncSession, tasks: list[Task], principal: Princi
         data = result.get("data") if isinstance(result, dict) else None
         if isinstance(data, dict) and (dead_m or dead_i or hidden):
             view["result"] = {**result, "data": quotes.strip_dead(data, dead_m, dead_i, hidden)}
+        if dead_i and quotes._ids(((t.result or {}).get("data") or {}).get("memory_prompt_items")) & dead_i:
+            # a draft written with memory that is gone now (review 3, readers): its summary may quote the draft
+            view["summary"] = quotes.DRAFT_TASK_REMOVED
+            if isinstance(view.get("result"), dict):
+                view["result"] = {**view["result"], "summary": quotes.DRAFT_TASK_REMOVED}
         out.append(view)
     return out
 

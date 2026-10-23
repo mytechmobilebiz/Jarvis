@@ -504,9 +504,14 @@ async def _brain_command(args: argparse.Namespace) -> int:
                       out.get("withholds kept by their key only (no stored row to bind)", 0),
                       out.get("reviewed_items_deleted", 0)))
             print("decisions file (version 5): " + _counts_line(out.get("decisions_file") or {}))
-            print("the legacy lock is lifted. Next: import the same JARVIS backup again (brain-import run ... --all; "
-                  "add --decisions <this file> --actor <admin email> to apply its review decisions), then finish "
-                  "the decisions on it: brain-import settle --backup <that backup>")
+            if out.get("lock_lifted"):
+                print("the legacy lock is lifted. Next: import the same JARVIS backup again (brain-import run ... --all; "
+                      "add --decisions <this file> --actor <admin email> to apply its review decisions), then finish "
+                      "the decisions on it: brain-import settle --backup <that backup>")
+            else:  # a version 3 file applied to a database without legacy data
+                print("there was no legacy JARVIS Brain data here. The version 3 withholds hold their conversations for "
+                      "review where another JARVIS backup stored them; finish them on the newest backup imported: "
+                      "brain-import settle --backup <that backup>")
             return 0
         raise _UsageError("unknown command")
     except imp.Refused as exc:

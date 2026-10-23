@@ -131,6 +131,43 @@ async def test_a_kept_hold_and_a_release_carry_over_to_the_live_installation(cli
     await leak_free(client, kept_mark)
 
 
+async def test_a_version_4_file_applies_fail_safe_its_release_is_not_applied(client, fx, tmp_path):
+    """0.6.2 plan 7.1: a version 4 file (dev only) names no decision backup, so its conversations are a later backup
+    here. The same decisions as the test above, written as version 4: the withholds apply, the release does not (it
+    is listed, to be released again here), and the released row stays held for review: never readable on the word of
+    a release that cannot say which content it covered."""
+    mark = "zqv4failsafe62"
+    stub, twin = _held_backup(fx, mark)
+    await run(fx)
+    await _hold_decision(client, "prune_01", stub, twin, "release")
+    await bj.settle(fx)
+    out = tmp_path / "decisions.json"
+    await imp.decisions_export(str(out))
+    data = json.loads(out.read_text())
+    assert data["releases"] and all(r["decided_on"] for r in data["releases"])
+    for entry in data["removals"] + data["releases"]:
+        for field in ("decided_on", "kept_by", "kept_at", "kind"):
+            entry.pop(field, None)
+    for table in ("backups", "links", "frozen"):
+        data.pop(table)
+    data["version"] = 4
+    out.write_text(json.dumps(data))
+    await _fresh_production()
+    production = await run(fx)
+    result = await imp.decisions_apply(str(out), production["run_id"], actor=ADMIN[0], apply=True)
+    assert result["releases"] == {} and result["releases_not_applied"] == {imp.V4_RELEASE: [1]}
+    [full] = await message_of("prune_01", twin)
+    assert full.withheld and full.content == ""
+    [held] = await message_of("prune_01", stub)
+    assert held.withheld and (await stones())[held.source_key].review == identity.PENDING
+    async with session_scope() as s:
+        assert (await s.scalars(select(BrainWithholdExemption))).all() == []  # no release was written here
+    later = await run(fx)
+    [still] = await message_of("prune_01", stub)
+    assert still.withheld and still.content == ""
+    await leak_free(client, mark, fx, (later["run_id"],))
+
+
 async def test_removals_only_needs_no_run_and_no_admin_and_audits_restore(client, fx, tmp_path):
     """restore.ps1's file and apply: only removals and releases; no import run; the actor is "system (restore)"
     (every decision in it was an admin's when it was taken) unless an admin is named; each withhold and purge is
@@ -145,7 +182,8 @@ async def test_removals_only_needs_no_run_and_no_admin_and_audits_restore(client
     out = tmp_path / "removals.json"
     assert await imp.decisions_export(str(out), removals_only=True) == {"removals": 2, "releases": 0,
                                                                          "removals_only": True, "purged_items": 1,
-                                                                         "purge_fingerprints": 1}  # (review 1)
+                                                                         "purge_fingerprints": 1,
+                                                                         "redactions": 0}  # (review 1); 7.2
     data = json.loads(out.read_text())
     assert "decisions" not in data and data["removals_only"] is True
     data["decisions"] = [{"source_key": "jarvis:file:profile/x.md", "content_hash": "0", "status": "approved"}]
@@ -196,7 +234,8 @@ async def test_a_release_names_only_its_own_group_and_never_frees_a_certain_matc
     await withhold(client, full.id)
     [held] = await message_of("prune_01", stub)
     out = tmp_path / "decisions.json"
-    out.write_text(json.dumps({"format": "jarvis-brain-decisions", "version": 4, "removals": [], "releases": [
+    out.write_text(json.dumps({"format": "jarvis-brain-decisions", "version": imp.DECISIONS_VERSION, "removals": [],
+                               "releases": [
         {"anchor": full.source_key, "session": "prune_01", "row": full.source_message_id},
         {"anchor": "jarvis:message:uid:another-group", "session": "prune_01", "row": held.source_message_id},
         {"anchor": "", "session": "prune_01", "row": "1"}]}))

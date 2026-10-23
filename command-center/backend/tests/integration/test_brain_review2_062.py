@@ -768,6 +768,14 @@ async def test_s6_a_text_only_carried_record_from_061_is_not_provenance(scratch,
                for r in recs), "0.6.1 did not pair the independent tail copy by text"
     assert await _migrate(scratch) == ["0008_brain_withhold_identity"]
     await startup(scratch)
+    # 0.6.2 plan 5.3 (the S6 group) and 8.1: 0.6.1's data is locked, the import refuses until the legacy reset, which
+    # rolls 0.6.1's runs back (the withhold's stone stays, bound to its JARVIS row); the backup is then imported again.
+    done = subprocess.run([sys.executable, "-m", "app.cli", "brain-import", "run", "--db", fx["db"], "--profile",
+                           fx["profile"], "--content", fx["content"], "--all"], cwd=str(BACKEND), env=_env(scratch),
+                          capture_output=True, text=True, timeout=300)
+    assert done.returncode == 2 and "legacy-reset" in done.stdout + done.stderr, done.stdout + done.stderr
+    cli(scratch, "brain-import", "legacy-reset", "--export", str(tmp_path / "legacy-decisions.json"), "--yes")
+    assert not await q(scratch, "SELECT 1 FROM brain_maintenance WHERE name = 'legacy_brain_data'")
     import062(scratch, fx)
     if when == "on_062":
         op062(scratch, "withhold", "k0", str(ids[3]))

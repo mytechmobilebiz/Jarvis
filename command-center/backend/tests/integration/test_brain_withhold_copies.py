@@ -1086,7 +1086,7 @@ async def test_a_removal_kept_for_later_imports_blanks_rollback_copies_and_the_n
     async with session_scope() as s:
         assert (await s.get(ImportRecord, record_id)).before["content"]  # a rolled-back run's copy keeps its text
     out = tmp_path / "decisions.json"
-    out.write_text(json.dumps({"format": "jarvis-brain-decisions", "version": 3, "decisions": [],
+    out.write_text(json.dumps({"format": "jarvis-brain-decisions", "version": imp.DECISIONS_VERSION, "decisions": [],
                                "removals": [{"source_key": key, "reason": WITHHELD_BY_ADMIN}]}))
     result = await imp.decisions_apply(str(out), first["run_id"], actor=ADMIN[0], apply=True)
     assert result["removals"] == {"kept for later imports": 1}
@@ -1121,7 +1121,7 @@ async def test_decisions_apply_empties_a_copy_whose_message_this_database_no_lon
     assert await message_by_key(message.source_key) is None
     assert (await agent_reads(copy, TITLE))["relevant"] is True  # its message is gone, not withheld
     out = tmp_path / "decisions.json"
-    out.write_text(json.dumps({"format": "jarvis-brain-decisions", "version": 3, "decisions": [],
+    out.write_text(json.dumps({"format": "jarvis-brain-decisions", "version": imp.DECISIONS_VERSION, "decisions": [],
                                "removals": [{"source_key": message.source_key, "reason": WITHHELD_BY_ADMIN}]}))
     result = await imp.decisions_apply(str(out), first["run_id"], actor=ADMIN[0], apply=True)
     assert result["removals"] == {"kept for later imports": 1}
@@ -1150,7 +1150,7 @@ async def test_decisions_apply_refuses_a_purge_without_the_sensitive_data_permis
         run_id = run.id
         assert not (await s.scalar(select(User).where(User.email == ADMIN[0]))).can_access_sensitive
     out = tmp_path / "decisions.json"
-    out.write_text(json.dumps({"format": "jarvis-brain-decisions", "version": 3, "decisions": [],
+    out.write_text(json.dumps({"format": "jarvis-brain-decisions", "version": imp.DECISIONS_VERSION, "decisions": [],
                                "removals": [{"source_key": key, "reason": imp.PURGED_BY_ADMIN}]}))
     result = await imp.decisions_apply(str(out), run_id, actor=ADMIN[0], apply=True)
     assert result["removals"] == {}
@@ -2360,7 +2360,7 @@ async def test_no_audit_entry_or_log_line_holds_planted_text_across_the_lifecycl
     await check_withheld_copies()
     out = tmp_path / "decisions.json"
     await imp.decisions_export(str(out))
-    out.write_text(json.dumps({"format": "jarvis-brain-decisions", "version": 3, "decisions": [],
+    out.write_text(json.dumps({"format": "jarvis-brain-decisions", "version": imp.DECISIONS_VERSION, "decisions": [],
                                "removals": [{"source_key": third["key"], "reason": WITHHELD_BY_ADMIN}]}))
     assert (await imp.decisions_apply(str(out), run_id, actor=ADMIN[0], apply=True))["removals"] == {"withheld": 1}
     await imp.rescan(apply=True, actor=ADMIN[0])
@@ -2633,7 +2633,7 @@ async def _legacy_gone(fx: dict[str, str], gone: str) -> tuple[dict, str, int]:
 
 def _removal_file(tmp_path, key: str) -> str:
     out = tmp_path / "decisions.json"
-    out.write_text(json.dumps({"format": "jarvis-brain-decisions", "version": 3, "decisions": [],
+    out.write_text(json.dumps({"format": "jarvis-brain-decisions", "version": imp.DECISIONS_VERSION, "decisions": [],
                                "removals": [{"source_key": key, "reason": WITHHELD_BY_ADMIN}]}))
     return str(out)
 

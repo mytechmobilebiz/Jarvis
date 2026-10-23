@@ -672,8 +672,8 @@ CREATE TRIGGER brain_refuse_old_rows BEFORE INSERT OR UPDATE ON archive_messages
 
 -- 8. A purge by older code is refused on this schema (review 2, S22). 0.6.0 and 0.6.1 purge with a tombstone only: no
 -- purge ledger row (brain_purged_items) and no keyed fingerprint (brain_purged_content), which is what keeps a purge
--- through a restore of an older backup and a renamed file. Going back to 0.6.1 with the data kept is supported, so its
--- code can reach this database: removing a deleted item for good is refused unless the connection says it keeps
+-- through a restore of an older backup and a renamed file. Going back means going back to 0.5.0 only (plan 8.3), but
+-- 0.6.0/0.6.1 code installed over this database by mistake still reaches it: removing a deleted item for good is refused unless the connection says it keeps
 -- those records (app/db.py sets cc.brain_purge_ledger = 'on' on every connection of 0.6.2 and later). The deleted item
 -- stays deleted (no reader lists it) until it is purged with 0.6.2. TRUNCATE (the tests) fires no row trigger.
 CREATE OR REPLACE FUNCTION brain_refuse_old_purge() RETURNS trigger LANGUAGE plpgsql AS $fn$

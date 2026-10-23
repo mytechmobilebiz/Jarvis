@@ -38,7 +38,7 @@ from sqlalchemy import text as sql
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import ArchiveMessage, ArchiveSession, MemoryItem, SupervisorRequest, Task
+from ..models import Approval, ArchiveMessage, Artifact, ArchiveSession, MemoryItem, SupervisorRequest, Task
 from . import text as brain_text
 
 REMOVED = "- [removed: its source was withheld, changed or deleted in the JARVIS Brain]"
@@ -57,6 +57,17 @@ _DATA = Task.result.op("->", return_type=JSONB)(literal_column("'data'"))
 _SOURCES = _DATA.op("->", return_type=JSONB)(literal_column("'sources'"))
 _NOTES = _DATA.op("->", return_type=JSONB)(literal_column("'memory_notes'"))
 QUOTE_BATCH = 500  # lookups per query
+# An AI-written draft (app/agents/drafting.write) that had approved memory items in its prompt records them (review 3,
+# readers): artifacts.data.memory_items, and the task's result.data.memory_prompt_items. When one of them is withheld,
+# purged, deleted, emptied or redacted, the draft's text and title, the task's summary and the approval cards naming
+# the draft are replaced: the model may have copied the item's text into it. Drafts written before 0.6.2 recorded
+# nothing and are not reached (RELEASE_NOTES_0.6.2.md).
+DRAFT_REMOVED = ("[removed: this draft was written with JARVIS Brain memory that was later withheld, changed or "
+                 "deleted; draft it again]")
+DRAFT_REMOVED_TITLE = "[removed draft]"
+DRAFT_TASK_REMOVED = "Draft removed: it was written with JARVIS Brain memory that was later withheld, changed or deleted"
+_PROMPT_ITEMS = _DATA.op("->", return_type=JSONB)(literal_column("'memory_prompt_items'"))
+_ARTIFACT_ITEMS = Artifact.data.op("->", return_type=JSONB)(literal_column("'memory_items'"))
 
 
 def _quoting(messages: set[int], items: set[int]) -> Iterable[list[Any]]:
@@ -91,6 +102,7 @@ async def scrub_quotes(session: AsyncSession, *, message_ids: Iterable[int] = ()
     if not messages and not items:
         return 0
     await lock_quotes(session)
+    drafts = await scrub_drafts(session, items) if items else 0
     found: dict[int, Task] = {}
     for conds in _quoting(messages, items):
         for task in (await session.scalars(select(Task).where(or_(*conds)))).all():
@@ -124,7 +136,105 @@ async def scrub_quotes(session: AsyncSession, *, message_ids: Iterable[int] = ()
                     summary = summary.replace(line, REMOVED)
                 request.summary = summary
     await session.flush()
+    return changed + drafts
+
+
+def _ids(value: Any) -> set[int]:
+    return {int(i) for i in value if isinstance(i, int)} if isinstance(value, list) else set()
+
+
+async def scrub_drafts(session: AsyncSession, items: Iterable[int]) -> int:
+    """The drafts written with one of these memory items in their AI prompt, their tasks' summaries and the approval
+    cards naming them: replaced by DRAFT_REMOVED (the stored rows; the caller holds the quote lock, exclusively for a
+    removal, shared for the task that is storing the draft). How many drafts and tasks changed."""
+    wanted = sorted({int(i) for i in items})
+    if not wanted:
+        return 0
+    changed = 0
+    arts: dict[int, Artifact] = {}
+    tasks: dict[int, Task] = {}
+    for i in range(0, len(wanted), QUOTE_BATCH):
+        part = wanted[i:i + QUOTE_BATCH]
+        for a in (await session.scalars(select(Artifact).where(or_(*[_ARTIFACT_ITEMS.contains([n]) for n in part]))
+                                        )).all():
+            arts.setdefault(a.id, a)
+        for t in (await session.scalars(select(Task).where(or_(*[_PROMPT_ITEMS.contains([n]) for n in part])))).all():
+            tasks.setdefault(t.id, t)
+    for a in (arts[k] for k in sorted(arts)):
+        if (a.data or {}).get("memory_removed") and a.content == DRAFT_REMOVED:
+            continue
+        a.title, a.content = DRAFT_REMOVED_TITLE, DRAFT_REMOVED
+        a.data = {**(a.data or {}), "memory_removed": True}
+        changed += 1
+        if a.task_id is not None and a.task_id not in tasks:
+            t = await session.get(Task, a.task_id)
+            if t is not None:
+                tasks[t.id] = t
+    for t in (tasks[k] for k in sorted(tasks)):
+        result = dict(t.result or {})
+        data = dict(result.get("data") or {})
+        if data.get("memory_removed") and t.summary == DRAFT_TASK_REMOVED:
+            continue
+        t.summary = DRAFT_TASK_REMOVED
+        t.result = {**result, "summary": DRAFT_TASK_REMOVED, "data": {**data, "memory_removed": True}}
+        changed += 1
+    if arts:
+        ids = sorted(arts)
+        for ap in (await session.scalars(select(Approval).where(or_(
+                *[Approval.details["draft"]["artifact_id"].astext == str(n) for n in ids],
+                *[Approval.details["binding"]["artifact_id"].astext == str(n) for n in ids])))).all():
+            details = dict(ap.details or {})
+            draft = dict(details.get("draft") or {})
+            if draft:
+                draft.update(title=DRAFT_REMOVED_TITLE, excerpt=DRAFT_REMOVED)
+                details["draft"] = draft
+            if details.get("target"):
+                details["target"] = "a draft whose text was removed (#%s)" % (
+                    (details.get("binding") or {}).get("artifact_id") or draft.get("artifact_id") or "?")
+            ap.details = details
+    await session.flush()
     return changed
+
+
+async def dead_items(session: AsyncSession, items: Iterable[int]) -> set[int]:
+    """The memory items among these that must not be shown or used: gone, deleted, emptied (source_withheld),
+    promoted from a withheld message (policy.withheld_source()), or legacy 0.6.0/0.6.1 data under the lock."""
+    from .policy import legacy_hidden_item, withheld_source
+
+    wanted = {int(i) for i in items}
+    if not wanted:
+        return set()
+    return wanted - set((await session.scalars(select(MemoryItem.id).where(
+        MemoryItem.id.in_(sorted(wanted)), MemoryItem.deleted_at.is_(None),
+        not_(MemoryItem.flags.has_key("source_withheld")), not_(withheld_source()),
+        not_(legacy_hidden_item())))).all())
+
+
+async def guard_drafts(session: AsyncSession, views: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The read-time guard of drafts (GET /api/artifacts, /api/artifacts/{id}): a draft whose prompt memory is dead
+    (dead_items) is served as DRAFT_REMOVED, whatever the stored row still holds (a removal that committed while the
+    start-up check could not run yet). Changes the views in place and returns them."""
+    used = {i for v in views for i in _ids((v.get("data") or {}).get("memory_items"))}
+    dead = await dead_items(session, used) if used else set()
+    for v in views:
+        if _ids((v.get("data") or {}).get("memory_items")) & dead:
+            v["title"] = DRAFT_REMOVED_TITLE
+            if "content" in v:
+                v["content"] = DRAFT_REMOVED
+    return views
+
+
+async def _dead_draft_items(session: AsyncSession) -> set[int]:
+    """The dead memory items (dead_items) that a stored draft or its task still holds unremoved (refresh_quotes)."""
+    used: set[int] = set()
+    for value in (await session.scalars(select(_ARTIFACT_ITEMS).where(
+            Artifact.data.has_key("memory_items"), not_(Artifact.data.has_key("memory_removed"))))).all():
+        used |= _ids(value)
+    for value in (await session.scalars(select(_PROMPT_ITEMS).where(
+            Task.result["data"].has_key("memory_prompt_items"),
+            not_(Task.result["data"].has_key("memory_removed"))))).all():
+        used |= _ids(value)
+    return await dead_items(session, used) if used else set()
 
 
 def hidden_label(line: str, source_session_id: str) -> str:
@@ -256,6 +366,7 @@ async def refresh_quotes(session: AsyncSession) -> int:
     await lock_quotes(session)
     stale_messages, stale_items = await _stale_sources(session)
     changed = await scrub_quotes(session, message_ids=stale_messages, item_ids=stale_items)
+    changed += await scrub_drafts(session, await _dead_draft_items(session))  # drafts written with removed memory
     changed += await relabel_hidden_titles(session)  # quotes naming a conversation by a title an admin hid
     for request in await _orphan_summaries(session):
         request.summary = strip_summary(request.summary, await held_lines(session, request.id))
@@ -271,6 +382,7 @@ async def removed_sources(session: AsyncSession) -> int:
     found: set[int] = set()
     for conds in _quoting(stale_messages, stale_items):
         found |= set((await session.scalars(select(Task.id).where(or_(*conds)))).all())
+    found |= {-i for i in await _dead_draft_items(session)}  # drafts written with removed memory (one per item)
     titled = await relabel_hidden_titles(session, apply=False)  # quotes naming a hidden title
     return len(found) + titled + len(await _orphan_summaries(session))
 
@@ -323,6 +435,7 @@ async def dead_sources(session: AsyncSession, datas: Iterable[dict[str, Any]]) -
         for note in data.get("memory_notes") or []:
             if isinstance(note, dict) and isinstance(note.get("id"), int):
                 items.add(note["id"])
+        items |= _ids(data.get("memory_prompt_items"))
     dead_m = messages - set((await session.scalars(select(ArchiveMessage.id).where(
         ArchiveMessage.id.in_(messages), ArchiveMessage.withheld.is_(False),
         not_(legacy_hidden_message())))).all()) if messages else set()

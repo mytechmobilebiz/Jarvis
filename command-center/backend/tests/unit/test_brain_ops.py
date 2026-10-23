@@ -62,6 +62,10 @@ def test_the_test_copy_overlay_isolates_it_from_the_live_installation():
     assert base["networks"]["internal"]["internal"] is True  # the private network has no route out
     assert services["dashboard"]["ports"] == {"!override": ["127.0.0.1:${BRAIN_TEST_PORT:-8190}:8080"]}
     assert services["n8n"]["profiles"] == ["never"]
+    # findings-062-prep Q2: db-init gets a tmpfs where its image declares a volume, so no -Action Start leaves an
+    # anonymous volume behind (Compose orphans the old one on --force-recreate; down --volumes never finds it)
+    assert {"type": "tmpfs", "target": "/var/lib/postgresql"} in services["db-init"]["volumes"]
+    assert "/var/lib/postgresql" in [v.split(":")[1] for v in base["services"]["postgres"]["volumes"]]
     expected = {"WORKFLOW_ENGINE": "none", "LLM_PROVIDER": "rule_based", "ANTHROPIC_API_KEY": "", "N8N_EDITOR_URL": "",
                 "CC_INSTANCE_LABEL": "cc-brain-test", "SESSION_COOKIE_NAME": "cc_session_brain_test"}
     for name in ("api", "worker"):
@@ -292,6 +296,42 @@ def test_settle_mode_runs_brain_import_settle_on_the_backup_only():
     assert '"Settle"' in gate
 
 
+def test_legacy_reset_mode_runs_brain_import_legacy_reset_without_the_jarvis_sources(monkeypatch, capsys):
+    """0.6.2 plan 8.1, 8.2: jarvis-import.ps1 -Mode LegacyReset runs brain-import legacy-reset (no JARVIS file mounted),
+    writing the version 5 file into the reports folder, after its own typed confirmation and a dump on production. A
+    version 3 file goes there (with -Actor), never to -Mode ApplyDecisions or Import. On production the modes that
+    need the decisions refuse while brain-import status prints the legacy lock line (matched against the CLI's own
+    output)."""
+    from app import cli
+    from app.brain import importer
+
+    text = script("jarvis-import.ps1")
+    assert '"LegacyReset"' in re.search(r"\$modes = @\(([^)]*)\)", text).group(1)
+    assert '"LegacyReset"' not in re.search(r"\$readsSource = @\(([^)]*)\) -contains \$Mode", text).group(1)
+    assert '$cli = @("legacy-reset", "--export", $report, "--yes")' in text
+    assert 'Confirm-Typed "RESET LEGACY BRAIN DATA"' in text
+    assert 'if ($Target -eq "Production" -and @("Import", "LegacyReset") -contains $Mode) {' in text
+    assert 'if ($Mode -eq "ApplyDecisions" -and $decisionsVersion -le 3) {' in text
+    assert 'if ($Mode -eq "LegacyReset" -and $decisionsVersion -gt 3) {' in text
+    [gate] = re.findall(r'if \(@\(([^)]*)\) -contains \$Mode -and \$withheldCopies -ne "0"\) \{', text)
+    assert '"LegacyReset"' not in gate  # it brings no JARVIS text in
+
+    async def status(run=None):
+        return {"importer_version": importer.IMPORTER_VERSION, "installed": True, "runs": [], "legacy_lock": True,
+                "legacy_runs": [3, 1]}
+
+    monkeypatch.setattr(importer, "status", status)
+    assert cli.main(["cli", "brain-import", "status"]) == 0
+    printed = capsys.readouterr().out
+    pattern, modes = re.search(r"if \(\$printed -match '([^']+LOCKED)' -and @\(([^)]*)\) -contains \$Mode\)",
+                               text).groups()
+    assert re.search(pattern, printed), printed
+    assert set(re.findall(r'"(\w+)"', modes)) == {"Import", "Settle", "Resume", "ExportDecisions", "ApplyDecisions"}
+    assert "import runs 3, 1" in printed and "legacy-reset" in printed
+    precheck = script("brain-precheck.ps1")
+    assert "$pending.legacy_lock -eq $true" in precheck and "-Mode LegacyReset" in precheck
+
+
 @pytest.mark.parametrize("result", [
     {"run_id": None, "status": "nothing to finish", "decisions": 0, "waiting": {"older-backup": 1}},
     {"run_id": 7, "decisions": 2, "waiting": {}, "report": {"settle": {"certain": 3, "held": 1}}}])
@@ -447,7 +487,7 @@ def test_the_precheck_reads_keys_brain_withhold_pending_returns():
     precheck = script("brain-precheck.ps1")
     read = set(re.findall(r"\$pending\.(\w+)", precheck))
     assert read == {"readable_by_key", "readable_by_jarvis_row", "readable_by_fold", "readable_in_restricted_sessions",
-                    "held_for_review", "repair_done"}  # 0.6.2 step 6: no time-rule counter
+                    "held_for_review", "repair_done", "legacy_lock"}  # 0.6.2 step 6: no time-rule counter; 8.1
     sql = (ROOT / "backend" / "app" / "migrations" / "0008_brain_withhold_identity.sql").read_text()
     pending = sql[sql.index("FUNCTION brain_withhold_pending()"):]
     built = set(re.findall(r"'(\w+)',", pending))
