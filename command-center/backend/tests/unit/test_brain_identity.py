@@ -312,3 +312,29 @@ def test_a_stone_never_matches_a_new_message_at_a_reused_row_id():
         identity.Binding("user", "", T0, "OLD")]})
     assert released.released("G", identity.exact_of_source("S1", same))
     assert not released.released("G", identity.exact_of_source("S1", new))
+
+
+def test_titles_compare_as_hermes_stores_them_and_relate_to_the_message_they_were_derived_from():
+    """Deviation 282: titles are compared whitespace-collapsed (hermes_state_titles.sanitize_title), so a branch named
+    '<title>  #2' after a title that kept a trailing space still carries it; and a title is related to the withheld
+    text it was derived from (its first line, cut with '…'), never to an unrelated one, and is 'not in this backup'
+    when the withheld text is not known."""
+    assert identity.title_follows("Please double check the draft before  #2", "branch",
+                                  "Please double check the draft before ")
+    w = "Please move the bonus pool to the second account before Friday."
+    assert identity.PART_OF in identity.title_relations("Please move the bonus pool to the second account #3", w)
+    assert identity.PART_OF in identity.title_relations("Please move the bonus pool to the second\u2026", w)
+    assert identity.PART_OF in identity.title_relations("Hi Jarvis", "Hi Jarvis\nplease move the bonus pool now.")
+    assert identity.title_relations("Chat about the garden party", w) == set()
+    assert identity.title_relations("Chat about the garden party", None) == {identity.NOT_IN_BACKUP}
+
+
+def test_a_title_with_other_words_before_the_withheld_text_is_related():
+    """Deviation 289: Hermes derives a title from the whole first line of the first message, so a message with other
+    words before the withheld text gives a title that only overlaps it. It is related (part of): the release gate
+    keeps it hidden. A title that shares no run of MIN_RELATED characters with the withheld text stays unrelated."""
+    w = "My SSN is 123-45-6789 and my date of birth is 1 May 1980, please keep it."
+    assert identity.PART_OF in identity.title_relations("Please summarize: My SSN is 123-45-6789 and my\u2026", w)
+    assert identity.PART_OF in identity.title_relations("Note for later My SSN is 123-45-6789 #2", w)
+    assert identity.title_relations("Please summarize: the garden party plans\u2026", w) == set()
+    assert identity.title_relations("My SSN", w) == set()

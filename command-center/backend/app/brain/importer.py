@@ -83,6 +83,7 @@ from sqlalchemy import text as sql
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from .. import audit
 from ..config import get_settings
@@ -786,6 +787,7 @@ class Processor:
         # counts and locations (kept in the tally, so a resumed run reports the whole run), and this session's rows
         # it found (key -> inside a family or not; their locations are known once they are stored).
         self.w_texts: dict[str, str] = {}
+        self._w_absorbed: dict[str, set[str]] = {}
         self.tripwire = later.Tripwire.from_tally(tally.d.get("tripwire"))
         self._tripwire_keys: dict[str, bool] = {}
         self.frozen: set[str] = set()  # JARVIS sessions an admin stopped importing (plan 5.3)
@@ -885,7 +887,13 @@ class Processor:
         await self._replay_scope()
         self._later_texts = {}
         self.w_texts = {}
-        for group in sorted({g for gs in self._decision_roots.values() for g in gs}):
+        roots = sorted({g for gs in self._decision_roots.values() for g in gs})
+        self._w_absorbed = {}  # the uids the withheld row itself had absorbed (a withheld fold), per decision
+        for i in range(0, len(roots), 1000):
+            for key, absorbed in (await self.s.execute(select(ArchiveMessage.source_key, ArchiveMessage.absorbed_uids)
+                                                       .where(ArchiveMessage.source_key.in_(roots[i:i + 1000])))).all():
+                self._w_absorbed[key] = set(absorbed or [])
+        for group in roots:
             st = self.ids.by_key.get(group)
             if st is None:
                 continue
@@ -901,7 +909,7 @@ class Processor:
             sessions = self._source_sessions()
             self.settle_engine = settle_engine.Engine(
                 self.src.backup, sessions, self.ids, self.settle_scope.groups, self.settle_scope.family,
-                stored=lambda m: not self.exclusion(m), families=self.settle_scope.families)
+                stored=lambda m: not self.exclusion(m), families=self.settle_scope.families, w_texts=self.w_texts)
             self.settle_engine.decide()
 
     # Decide once, replay exactly (0.6.2 plan 3.2) ------------------------------------------------------------------
@@ -1577,7 +1585,7 @@ class Processor:
             else:  # an archived generation with other text, a pruned stub, a fold that kept this uid: a hold
                 rel = {identity.SAME_UID}
                 for c in contents:
-                    rel |= identity.text_relations(m.content, c)
+                    rel |= identity.family_relations(m.content, c)
                 if not texts:
                     rel.add(identity.NOT_IN_BACKUP)
                 held[m.key] = identity.Match(st, identity.UID_HOLD, identity.PENDING)
@@ -1635,6 +1643,11 @@ class Processor:
                 sids |= {sid for sid, r in self._family.items() if r == self._family.get(st.session, st.session)}
         return sids
 
+    def _absorbs_more(self, group: str, row: src.SourceMessage) -> bool:
+        """Whether a row absorbed a message the withheld row did not (a later fold of W keeps W's uid and time but
+        holds W and the next turn): its text is not the withheld text (integrator, deviation 275)."""
+        return bool(set(row.absorbed) - self._w_absorbed.get(group, set()))
+
     def _w_text(self, group: str) -> str | None:
         """The withheld text of a decision as this backup holds it (in memory only; plan 5.5): the exact JARVIS row
         (identity.exact) of the admin's own stone, or of a member that is the same text (the same JARVIS row, the same
@@ -1653,9 +1666,10 @@ class Processor:
             if not st.session or not st.row:
                 continue
             row = self._bound_row(st.session, st.row)
-            if row is not None and identity.same_row(identity.exact_of_stone(st),
-                                                     identity.exact_of_source(st.session, row)):
-                return row.content
+            if row is not None and not identity.is_placeholder(row.content) and not self._absorbs_more(group, row) \
+                    and identity.same_row(
+                    identity.exact_of_stone(st), identity.exact_of_source(st.session, row)):
+                return row.content  # a row JARVIS pruned in place holds a placeholder, not the text (deviation 264)
         copies = {(st.uid, st.role, st.tool_call_id, st.at) for st in cands
                   if st.uid and st.at is not None and st.via not in identity.FOLD_VIAS}
         if not copies:
@@ -1667,7 +1681,8 @@ class Processor:
                 continue
             for row in self.src.backup.messages(sid):
                 here = identity.exact_of_source(sid, row)
-                if (here.uid, here.role, here.tool_call_id, here.at) in copies:
+                if (here.uid, here.role, here.tool_call_id, here.at) in copies and not identity.is_placeholder(
+                        row.content) and not self._absorbs_more(group, row):
                     return row.content
         return None
 
@@ -1801,6 +1816,13 @@ class Processor:
             held[m.key] = identity.Match(mt.stone, "duplicate", identity.CERTAIN if ok else identity.PENDING)
             if not ok and p.duplicate_of in self.relations:
                 self.relations[m.key] = self.relations[p.duplicate_of]
+            elif not ok:
+                # a hold always carries its computed evidence (plan 4.6): the row it repeats is withheld for good, so
+                # the duplicate's own relations to that decision (integrator, deviation 263)
+                d = self._decision(mt.stone.anchor or mt.stone.key)
+                rel = later.relations(m, identity.exact_of_source(ss.id, m), d) if d is not None else {
+                    identity.NOT_IN_BACKUP}
+                self.relations[m.key] = tuple(identity.relation_order(rel or {identity.NO_RELATION}))
         return held
 
     def _stored_identity(self, ss: src.SourceSession, m: src.SourceMessage, row: dict[str, Any] | None
@@ -1944,8 +1966,15 @@ class Processor:
                                   title_c: brain_text.Cleaned, msgs: list[src.SourceMessage]) -> bool:
         """Plan 5.3: a conversation a later backup brought new into a withheld family keeps its title hidden while a
         row of it is withheld by an admin (held for review, or withheld for good); once none is, its title comes back
-        from the source (no other rule hides it: the caller checked). Whether it came back now."""
+        from the source (no other rule hides it: the caller checked). Whether it came back now.
+        The release is gated like the one-click release of rows (plan section 2 correction 4, 4.6): the title comes back
+        only when every withheld text of its family is in this backup and the title has no relation to any of them
+        (identity.title_relations: Hermes derives a title from the first user message). Otherwise it stays hidden, for
+        every reader, whatever the lineage walk found (fixer, deviation 282)."""
         if not self.write or sess is None or self.held:
+            return False
+        decisions = [self._decision(g) for g in self.family_groups(ss.id)]
+        if not decisions or any(d is None or identity.title_relations(title_c.text, d.w_text) for d in decisions):
             return False
         await self.s.flush()
         still = await self.s.scalar(select(ArchiveMessage.id).where(
@@ -1963,14 +1992,16 @@ class Processor:
                       held: dict[str, identity.Match]) -> None:
         """Owner question 8 (a), its default: outside every withheld family, a later backup's reply that quotes a
         withheld text through JARVIS's reply pointer (at least identity.MIN_RELATED characters of it) is held for
-        review ('part_of'). The withheld text is in memory only when this backup holds the admin's own row of it."""
+        review ('part_of'). The withheld text is in memory only when this backup holds the admin's own row of it.
+        A pointer is read wherever Hermes puts one (identity.reply_quotes): at the start, at a turn a fold merged in,
+        or at a request restated after the replay header (fixer, deviation 283)."""
         if not self._later_texts:
             return
         for p in plans:
             m = p.m
             if p.action != "import" or m.key in held or m.key in self.moved_keys or m.key in rows:
                 continue
-            if not (m.content.startswith("[Replying to") or m.content.startswith("[Triggering message id")):
+            if not identity.reply_quotes(m.content):
                 continue
             for group, text in self._later_texts.items():
                 rel = identity.text_relations(m.content, text)
@@ -2005,6 +2036,7 @@ class Processor:
         out: Counter[str] = Counter()
         sessions = dict((await self.s.execute(select(ArchiveSession.id, ArchiveSession.source_session_id).where(
             ArchiveSession.source_session_id.in_(sorted(scope.family))))).all())
+        held: set[int] = set()
         for group in scope.groups:
             found = eng.stale_time(group)
             if found is None or found[2] is None or not sessions:
@@ -2022,6 +2054,34 @@ class Processor:
                 rel = settle_engine.stored_relations(row.content, eng.w_text(group), stale=True)
                 await review.hold_message(self.s, row, anchor=group, actor=self.actor, cause="settle",
                                           rule=identity.SETTLE_HOLD, decided_on=self.backup_sha, relations=rel)
+                held.add(row.id)
+                out["stale_rows_held"] += 1
+        # The other stored rows of the decision's own family that this backup no longer holds (JARVIS renumbered or
+        # deleted them since an earlier import: a /retry's original, a folded turn's original), at any time: Settle has
+        # the withheld text in memory, so one whose stored text is, holds, restates or is a part of it (plan 4.3 with
+        # the family rule of deviation 274) is held with those relations, never left readable. The withhold dialog
+        # (4.5) lists only rows that equal or contain the withheld text; Settle is authoritative (fixer, deviation 287).
+        for group in scope.groups:
+            wt = eng.w_text(group)
+            mine = set(scope.families.get(group) or scope.family)
+            ids = sorted(i for i, sid in sessions.items() if sid in mine)
+            if wt is None or not ids:
+                continue
+            for row in (await self.s.scalars(select(ArchiveMessage).where(
+                    ArchiveMessage.session_id.in_(ids), ArchiveMessage.withheld.is_(False))
+                    .order_by(ArchiveMessage.id).with_for_update())).all():
+                sid = sessions.get(row.session_id, "")
+                if (row.id in held or row.source_key in eng.by_key
+                        or self.src.backup.has_row(sid, row.source_message_id)):
+                    continue
+                if not identity.family_relations(row.content, wt) & set(identity.TEXT_RELATIONS):
+                    continue
+                if await identity.exempt_covers(self.s, group, sid, row):
+                    continue  # an admin released it, or left it readable
+                rel = settle_engine.stored_relations(row.content, wt, stale=False)
+                await review.hold_message(self.s, row, anchor=group, actor=self.actor, cause="settle",
+                                          rule=identity.SETTLE_HOLD, decided_on=self.backup_sha, relations=rel)
+                held.add(row.id)
                 out["stale_rows_held"] += 1
         groups = sorted(scope.groups)
         rebased = await self.s.execute(update(BrainTombstone).where(
@@ -2215,6 +2275,14 @@ class Processor:
             group = mt.group
             existing = self.ids.by_key.get(key)
             relations = self.relations.get(key, ())
+            if mt.review == identity.PENDING and not relations and (existing is None or not existing.bound):
+                # every NEW hold carries its computed evidence (plan 4.6): one no rule gave relations to (the
+                # importer's duplicate of a held row, from any path) gets its own relations to its decision. A stone
+                # that exists keeps its own (a re-import changes nothing, B7) (integrator, deviations 263, 271)
+                d = self._decision(group)
+                rel = (later.relations(m, identity.exact_of_source(ss.id, m), d) if d is not None
+                       else {identity.NOT_IN_BACKUP})
+                relations = tuple(identity.relation_order(rel or {identity.NO_RELATION}))
             if existing is None or (existing.review == identity.PENDING and mt.review == identity.CERTAIN) or (
                     not existing.bound):
                 here = identity.exact_of_source(ss.id, m)
@@ -2323,17 +2391,31 @@ class Processor:
         out = ss.id in hidden
         sessions = self._source_sessions()
         seen, cur = {ss.id}, ss
+        # Whether every ancestor passed so far shows this title or none (Hermes moved it on: a rotation clears the
+        # parent's title, so a branch of a continuation whose title moved on can carry a hidden ancestor's title with
+        # no ancestor showing it any more; integrator, deviation 247). Fail-closed: such a title stays hidden.
+        mine, carried = identity.title_base(ss.title), True
         while (not out and cur is not None and cur.lineage in identity.LINEAGE and cur.parent_id
                and cur.parent_id not in seen):
             seen.add(cur.parent_id)
             parent = sessions.get(cur.parent_id)
             if parent is None:
-                break  # JARVIS deleted it: a new conversation of a withheld family keeps its title hidden (do_session)
+                # JARVIS deleted it: the Command Center still holds it (a lineage is never forgotten, plan 1.4), with
+                # its own hidden title; the walk goes on through the stored conversation (integrator, deviation 272)
+                kept = (await self.s.execute(select(
+                    ArchiveSession.title, ArchiveSession.lineage, ArchiveSession.parent_source_session_id).where(
+                    ArchiveSession.source_session_id == cur.parent_id[:200]).limit(1))).first()
+                if kept is None:
+                    break
+                parent = SimpleNamespace(title=kept[0] or "", lineage=kept[1] or "", parent_id=kept[2] or "")
             flagged = cur.parent_id in hidden or await self.s.scalar(select(ArchiveSession.id).where(
                 ArchiveSession.source_session_id == cur.parent_id[:200],
                 ArchiveSession.flags["title_withheld"].astext == "true").limit(1)) is not None
-            if flagged and identity.title_follows(ss.title, ss.lineage, parent.title):
+            theirs = identity.title_base(parent.title)
+            if flagged and (identity.title_follows(ss.title, ss.lineage, parent.title)
+                            or (bool(mine) and carried and not theirs)):
                 out = True
+            carried = carried and (not theirs or theirs == mine)
             cur = parent
         self._title_hidden[ss.id] = out
         return out
@@ -2571,13 +2653,16 @@ class Processor:
             # This conversation's first user message is a member of a withhold that hid its conversation's title (a
             # continuation or branch the parent's deletion orphaned: no lineage left to follow): its title hides too.
             title_hidden = member_titled = True
-            flags["title_withheld"] = True
             if sess is not None and (sess.title or not (sess.flags or {}).get("title_withheld")):
                 source_changed = source_changed or not created
                 if self.write:
+                    # A conversation this import created holds `flags` itself: a fresh dict, marked modified, or the
+                    # flag is never written and the next import shows the title again (integrator, deviation 256)
                     sess.title = ""
                     sess.flags = {**(sess.flags or {}), "title_withheld": True}
+                    flag_modified(sess, "flags")
                     await self.s.flush()
+            flags["title_withheld"] = True
         await self.apply_releases(ss, msgs, plans, rows, sess_id, staff == "sarah" or customer_channel)
         await self.inherit(ss, msgs, plans, rows, sess_id)
         changed = await self.write_messages(plans, rows, sess_id, withheld, why, ss)

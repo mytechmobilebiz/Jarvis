@@ -155,8 +155,8 @@ class Api:
             r = await self.client.request(method, url, **kw)
         return r
 
-    async def withhold(self, message_id: int) -> Any:
-        return await self.call("POST", "/api/brain/messages/%d/withhold" % message_id, json={})
+    async def withhold(self, message_id: int, **body: Any) -> Any:
+        return await self.call("POST", "/api/brain/messages/%d/withhold" % message_id, json=body)
 
     async def holds(self) -> list[dict[str, Any]]:
         r = await self.call("GET", "/api/brain/holds")
@@ -191,6 +191,16 @@ class Api:
         for rt in getattr(app, "routes", []) or []:
             path = getattr(rt, "path", "")
             if "POST" in (getattr(rt, "methods", None) or set()) and all(w in path for w in words):
+                return path
+        # FastAPI 0.143 keeps included routers as _IncludedRouter objects with no path of their own: app.routes alone
+        # never lists the API's routes, so the schema's paths are searched too (integrator, deviation 254: without
+        # this B6 was never exercised)
+        try:
+            paths = app.openapi().get("paths", {}) if app is not None else {}
+        except Exception:
+            paths = {}
+        for path, ops in paths.items():
+            if "post" in ops and all(w in path for w in words):
                 return path
         return None
 

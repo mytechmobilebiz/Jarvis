@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import shutil
 import sqlite3
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ from typing import Any, Iterable
 
 # --- Hermes constants (vendored text, checked by the conformance tests) -------------------------------------------
 
-STUB = "[tool output pruned to save context]"
+STUB = "[Old tool output cleared to save context space]"  # agent/context_compressor.py _PRUNED_TOOL_PLACEHOLDER
 SUMMARY = "[CONTEXT COMPACTION] Summary of earlier turns: the work so far is recorded above."
 MICRO_MARKER = "[CONTEXT COMPACTION] Micro summary of the tool exchange."
 # agent/context_compressor.py _INFLIGHT_TASK_REPLAY_HEADER
@@ -41,6 +42,23 @@ def discord_note(message_id: str) -> str:
     """gateway/run_inbound.py discord_triggering_note."""
     return ("[Triggering message id: `%s` — use as `message_id` for reply/react/pin via the discord tools.]"
             % message_id)
+
+
+_NUMBERED_TITLE_RE = re.compile(r'^(.*?) #(\d+)$')
+
+
+def next_title_in_lineage(conn: sqlite3.Connection, base_title: str) -> str:
+    """hermes_state_titles.next_title_in_lineage, as Hermes has it: strip any " #N" suffix, then the highest number
+    the lineage uses + 1 (the unnumbered original counts as #1)."""
+    match = _NUMBERED_TITLE_RE.match(base_title)
+    base = match.group(1) if match else base_title
+    like = base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    rows = conn.execute("SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
+                        (base, like + " #%")).fetchall()
+    if not rows:
+        return base
+    numbers = [int(m.group(2)) for m in (_NUMBERED_TITLE_RE.match(r[0]) for r in rows) if m]
+    return "%s #%d" % (base, max([1, *numbers]) + 1)
 
 
 def derive_title(text: str) -> str:
@@ -606,7 +624,7 @@ class Sim:
             c.close()
         if not rows or p is None:
             return None
-        title = ("%s #2" % p["title"]) if p["title"] else None
+        parent_titled = bool(p["title"])
         child = self.new_session(source=p["source"] if how == "gateway" else "cli", parent=sid,
                                  model_config={"_branched_from": sid}, title=None, sid=child_id)
 
@@ -618,7 +636,10 @@ class Sim:
                     self.copy_row(c, r, child)
                 else:
                     self.copy_row(c, r, child, uid=self.new_uid())
-            self.set_title(c, child, title, self.title_tags.get(sid))
+            # hermes_state_titles.next_title_in_lineage (CLI and gateway /branch alike): the parent's title, or
+            # "branch", with any " #N" stripped and the highest number in use + 1 (integrator, deviation 261)
+            title = next_title_in_lineage(c, p["title"] or "branch")
+            self.set_title(c, child, title, self.title_tags.get(sid) if parent_titled else None)
         self.write(run)
         self.log.append("%s_branch %s -> %s" % (how, sid, child))
         return child

@@ -97,7 +97,7 @@ export const RELATION_TEXT: Record<string, string> = {
   identical: "identical text",
   restated: "restated after a compaction",
   contains: "contains the withheld text",
-  part_of: "quotes part of it (reply)",
+  part_of: "part of it (a reply quote or the row's own text)",
   same_uid: "same JARVIS id, other text",
   same_call: "same tool call, other text",
   same_time: "same time and role",

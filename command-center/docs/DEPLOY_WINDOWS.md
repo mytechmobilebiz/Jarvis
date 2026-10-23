@@ -645,9 +645,12 @@ withheld (a conversation and its continuations and branches, a "family"):
   absorbed it); readable, only when it is identical in role, tool call, time
   and text to a readable stored row of the family; otherwise **held for your
   review**, with what links it to the withheld text (identical, contains,
-  quotes part of it, restated, the same id, tool call or time, or no relation
+  part of it (or quotes it), restated, the same id, tool call or time, or no relation
   found). A new conversation of the family keeps its title hidden until you
-  release its rows.
+  release its rows; after that the title comes back at the next import only
+  when that backup holds every withheld text of the family and the title has
+  no relation to any of them (JARVIS names a conversation after its first
+  message). Otherwise it stays hidden.
 - **Conversations outside every family** import as usual.
 - **Before importing**, `-Mode Plan` says how many rows would be held, per
   withheld conversation.

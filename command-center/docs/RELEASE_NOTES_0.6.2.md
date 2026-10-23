@@ -139,9 +139,12 @@ or a purge brought the text back silently.
   parent row). **Held for your review**, with the relation computed by
   comparison after removing JARVIS's wrappers (the replay header, the reply
   pointer, the Discord note): every other row of the family that is
-  identical, contains the text (16 characters or more), quotes part of it in a
-  reply, restates it, or shares its message id, tool call or time with other
-  text, and a stale stored row at its role and time. Until Settle has run, the
+  identical, contains the text (16 characters or more), is part of it (its
+  own text, or a reply quote, of 16 characters or more), restates it, or shares its message id, tool call or time with other
+  text, and a stale stored row at its role and time; also a row stored from an
+  earlier backup that this backup no longer holds (JARVIS renumbered or
+  deleted it) whose stored text is identical, contains it, is part of it or
+  restates it. Until Settle has run, the
   dashboard says **Finish decisions needed** and the decisions export
   refuses; it also refuses while a row Settle held waits for your review.
 - **Review** (Review tab, "Held for review", group "Found when finishing
@@ -175,7 +178,10 @@ with the same id, time, role and call, or a row that absorbed it), readable
 (identical in role, tool call, time and text to a readable stored row of the
 family, readable by at least the same people), or **held for your review**
 with its computed relation. A new conversation of the family keeps its title
-hidden until you release its rows. The Review tab's group "New in a later
+hidden until you release its rows; it comes back at the next import only when
+that backup holds every withheld text of the family and the title has no
+relation to any of them (JARVIS names a conversation after its first message),
+otherwise it stays hidden. The Review tab's group "New in a later
 backup" lists them by conversation, with **Release this conversation's rows
 with no relation** (offered only when the backup held every withheld text of
 that family) and **Stop importing this conversation**. Conversations outside

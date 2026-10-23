@@ -62,12 +62,14 @@ async def withhold_some(run: Run, snap: hs.Snapshot) -> None:
         r, v, _ = run.rng.choice(pool)
         if any(w.cc_id == r["id"] for w in run.withholds):
             continue
-        resp = await run.api.withhold(r["id"])
+        resp = await run.api.withhold(r["id"], **o.hide_title_choice(run, r, snap, set(v.tag.carries)))
         if resp.status_code != 200:
             run.notes.append("withhold of %s refused: %s %s" % (r["id"], resp.status_code, resp.text[:160]))
             continue
         run.withholds.append(Withhold(r["id"], r["source_key"], r["sid"], int(r["source_message_id"]),
-                                      r.get("content") or "", set(v.tag.carries), v.tag.origin))
+                                      r.get("content") or "", o.message_lms(run.sim, v.tag), v.tag.origin,
+                                      r.get("role") or "", o.epoch(r.get("at")), r.get("source_uid") or "",
+                                      tuple(v.absorbed)))
         run.sim.log.append("WITHHOLD cc %s = %s:%s %r" % (r["id"], r["sid"], r["source_message_id"],
                                                           (r.get("content") or "")[:50]))
         run.sim.hot |= set(v.tag.carries)
@@ -105,6 +107,11 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
     o.check_certain_derive(run, "A2", st, listed, fam_a, "test copy after Settle")
     o.check_evidence(run, "A3", holds, st, decision, "test copy after Settle")
     await o.scripted_review(run, holds, st, "test copy")
+    o.check_released_blank(run, "A1", await state(), "test copy after the review")
+    # the documented next import (DEPLOY_WINDOWS, RELEASE_NOTES section 4: a released row's text comes back at the
+    # next import of a backup holding it; owner Q6): the test copy imports the decision backup again (deviation 240)
+    await run.import_(decision)
+    tc_seq.append(decision)
     tc = await state()
     o.check_no_readable_leak(run, "A1", tc, fam_a, decision, "test copy after the review")
     o.check_certain_derive(run, "A2", tc, {h.get("message") for h in await run.api.holds()}, fam_a,
@@ -126,15 +133,14 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
             await _step(run, "import with decisions", run.import_(decision, decisions=out))
         finally:
             records = await cc.watch_stop()
-        o.check_watch(run, "A5", records, "live import with the decisions file (C1, any moment)")
     else:
+        records = None
         await run.import_(decision)
     live = await state()
-    o.compare_states(run, "A5", "test copy vs live", tc, live, keys=set(o.by_key(live)))
-    missing = [k for k, r in o.by_key(tc).items()
-               if (r["sid"], int(r["source_message_id"])) in decision.rows and k not in o.by_key(live)]
-    if missing:
-        run.bad("A5", "rows of the decision backup the test copy stored but live did not: %s" % missing[:5])
+    if records is not None:
+        o.check_watch(run, "A5", records, "live import with the decisions file (C1, any moment)", live,
+                      o.family(run, decision, live["rows"], live["stones"]), tc, fam_a)
+    # A5 (C1) is compared at the end, against the same imports with no decision (deviation 250)
     o.check_no_readable_leak(run, "A1", live, o.family(run, decision, live["rows"], live["stones"]), decision,
                              "live after the decisions import")
 
@@ -172,7 +178,11 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
     await b6_release_unrelated(run, post, holds, fam, later)
     st = await state()
     await o.scripted_review(run, await run.api.holds(), st, "later backup")
+    o.check_released_blank(run, "B1", await state(), "live after the review of the later backup")
+    await run.import_(later)  # the next import brings the released rows' text back (deviation 240)
+    live_seq.append(later)
     s2 = await state()
+    o.check_no_readable_leak(run, "B2", s2, fam, later, "later backup X after the review and the next import")
 
     # B7: a rollback with a re-import, a re-import, a restore with a re-import change nothing
     if x_run and x_run.get("run_id"):
@@ -190,14 +200,22 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
         await cc.export_decisions(removals, removals_only=True)
         await restore.restore(point)
         await cc.apply_removals_only(removals)
-        await run.import_(later)
+        # re-import every backup this installation imported since the restore point, in order (the point was taken
+        # before the intermediate later backups; importing X alone cannot bring back rows only they held; 244)
+        since = [snap for i, snap in enumerate(live_seq[1:]) if i == 0 or snap is not live_seq[i]]
+        for snap in since:
+            await run.import_(snap)
         o.compare_states(run, "B7", "restore of a backup taken before X, removals, re-import", s2, await state())
 
     # --- A4 and B4: the same imports with no decision ------------------------------------------------------------
     await cc.wipe()
     for snap in tc_seq:
         await cc.import_backup(snap.path, profile, content)
-    o.compare_outside(run, "A4", tc, await state(), fam_a, "test copy vs a no-withhold import")
+    plain_tc = await state()
+    o.compare_outside(run, "A4", tc, plain_tc, fam_a, "test copy vs a no-withhold import")
+    await cc.wipe()
+    await cc.import_backup(decision.path, profile, content)
+    o.compare_c1(run, "A5", tc, live, plain_tc, await state(), decision)
     await cc.wipe()
     for snap in live_seq:
         await cc.import_backup(snap.path, profile, content)
@@ -221,15 +239,39 @@ async def b6_release_unrelated(run: Run, post: dict[str, Any], holds: list[dict[
             return
         after = await state()
         b = o.by_key(before)
-        freed = [r for r in after["rows"] if not r.get("withheld") and b.get(r["source_key"], {}).get("withheld")]
+        # a released row stays withheld with no text until the next import (entry 240): the rows this call released
+        # are the ids the route returns, plus any row that became readable at once (deviation 255)
+        named = set()
+        if resp.status_code < 400:
+            try:
+                named = {int(x) for x in (resp.json() or {}).get("released") or []}
+            except (ValueError, TypeError, AttributeError):
+                named = set()
+        freed = [r for r in after["rows"] if r["id"] in named or (
+            not r.get("withheld") and b.get(r["source_key"], {}).get("withheld"))]
         for r in freed:
-            if run.derives(versions_for(run.sim, r)):
+            # the content the release covers (C3: only the exact row and its content), i.e. its version in X: it
+            # must carry no word of W and, unless it is only Hermes's prune placeholder, not derive from W
+            # (integrator, deviation 266)
+            xv = o.backup_versions(run, r, later)
+            if run.leaks(xv) or any(o.norm(v.content) != o.norm(hs.STUB) and run.derives([v]) for v in xv):
                 run.bad("B6", "'release rows with no relation' in %s released row %s (%s:%s) derived from a withheld "
                               "message" % (sid, r["id"], r["sid"], r.get("source_message_id")))
-        lacking = [w for w in run.withholds if not o.w_text_present(run, w, later)]
+        # plan section 2 correction 4: offered only when the backup that brought the rows holds every withheld text
+        # of THAT family (integrator, deviations 254, 262): each released row against its hold's decided_on backup
+        # (a hold of an earlier later backup keeps the evidence computed there; JARVIS may since have dropped its
+        # conversation, e.g. a state.db restore)
+        mine = [w for w in run.withholds if sid in o.decision_family(run, w, later, before)]
+        by_sha = {snap.sha256: snap for snap in run.imported}
+        lacking: set[str] = set()
+        for r in freed:
+            stone = before["stone_by_key"].get(r["source_key"]) or {}
+            decided = by_sha.get(stone.get("decided_on") or "", later)
+            lacking |= {w.key for w in mine if not o.w_text_present(run, w, decided, after)}
         if resp.status_code < 400 and freed and lacking:
             run.bad("B6", "'release rows with no relation' in %s was offered although the backup lacks a withheld "
-                          "text (%d of %d)" % (sid, len(lacking), len(run.withholds)))
+                          "text of its family (%d of %d)" % (sid, len(lacking), len(mine)))
+        run.notes.append("B6 exercised in %s: %s, %d rows released" % (sid, resp.status_code, len(freed)))
 
 
 async def _async(fn: Any, *args: Any) -> Any:
@@ -260,10 +302,12 @@ async def run_replay(seed: int, tmp: Any, client: Any) -> Run:
     os.makedirs(content, exist_ok=True)
     run = Run(seed, sim, profile, content, cc.Api(client), random.Random(seed))
     last: hs.Snapshot | None = None
+    done: list[tuple[Any, hs.Snapshot]] = []  # (run id, backup) of every import not rolled back (deviation 242)
     for ev, snap in events:
         if ev.kind == "import":
             pre = await state()
-            await run.import_(snap)
+            out = await run.import_(snap)
+            done.append(((out or {}).get("run_id"), snap))
             last = snap
             post = await state()
             if run.withholds:
@@ -282,14 +326,17 @@ async def run_replay(seed: int, tmp: Any, client: Any) -> Run:
                 run.notes.append("%s: the row is not stored readable here (%s)" % (ev.line, len(rows)))
                 continue
             r = rows[-1]
-            resp = await run.api.withhold(r["id"])
+            vs = versions_for(sim, r)
+            choice = o.hide_title_choice(run, r, last, set(vs[-1].tag.carries) if vs else set()) if last else {}
+            resp = await run.api.withhold(r["id"], **choice)
             if resp.status_code != 200:
                 run.notes.append("%s: refused %s %s" % (ev.line, resp.status_code, resp.text[:120]))
                 continue
-            vs = versions_for(sim, r)
             run.withholds.append(Withhold(r["id"], r["source_key"], r["sid"], ev.row, r.get("content") or "",
-                                          set(vs[-1].tag.carries) if vs else set(),
-                                          vs[-1].tag.origin if vs else -1))
+                                          o.message_lms(sim, vs[-1].tag) if vs else set(),
+                                          vs[-1].tag.origin if vs else -1,
+                                          r.get("role") or "", o.epoch(r.get("at")), r.get("source_uid") or "",
+                                          tuple(vs[-1].absorbed) if vs else ()))
             if last is not None:
                 await _step(run, "settle", _async(cc.settle, last.path, profile, content))
                 st = await state()
@@ -301,6 +348,7 @@ async def run_replay(seed: int, tmp: Any, client: Any) -> Run:
         elif ev.kind == "release":
             st = await state()
             await o.scripted_review(run, await run.api.holds(), st, "rv3 replay, %s" % ev.line)
+            o.check_released_blank(run, "RV3-B1", await state(), "rv3 replay, %s" % ev.line)
         elif ev.kind == "rollback":
             from sqlalchemy import text as sql
 
@@ -313,6 +361,9 @@ async def run_replay(seed: int, tmp: Any, client: Any) -> Run:
                     await cc.rollback(run_id)
                 except Exception as exc:
                     run.notes.append("%s: rollback refused: %s" % (ev.line, str(exc)[:120]))
+                else:
+                    done = [d for d in done if d[0] != run_id]
+                    last = done[-1][1] if done else None
     if run.withholds and last is not None:
         st = await state()
         fam = o.family(run, last, st["rows"], st["stones"])

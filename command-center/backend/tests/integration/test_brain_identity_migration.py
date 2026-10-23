@@ -9,6 +9,7 @@ REQUIRE_DOCKER_TESTS=1 makes a missing docker or container a failure instead."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 
@@ -334,6 +335,7 @@ async def test_0008_waits_for_an_older_importer_that_is_still_running(scratch):
     await _install_061(scratch, "INSERT INTO import_runs (id, status, started_at, importer_version) VALUES "
                                 "(7, 'running', now(), '1.0.1');")
     holder = await asyncpg.connect(scratch)
+    holder_pid = await holder.fetchval("SELECT pg_backend_pid()")
     try:
         assert await holder.fetchval("SELECT pg_try_advisory_lock($1::int, 7)", imp.LOCK_KEY)
         with pytest.raises(Exception, match="still running"):
@@ -342,6 +344,16 @@ async def test_0008_waits_for_an_older_importer_that_is_still_running(scratch):
                                      "'0008_brain_withhold_identity'") == 0
     finally:
         await holder.close()
+    # close() returns before the server has ended that session and freed its lock (under load the next migration
+    # could still find it held): wait until the old importer's session is gone (integrator, deviation 257)
+    probe = await asyncpg.connect(scratch)
+    try:
+        for _ in range(200):
+            if not await probe.fetchval("SELECT count(*) FROM pg_stat_activity WHERE pid = $1", holder_pid):
+                break
+            await asyncio.sleep(0.05)
+    finally:
+        await probe.close()
     assert await _migrate(scratch) == ["0008_brain_withhold_identity"]
     conn = await asyncpg.connect(scratch)
     try:

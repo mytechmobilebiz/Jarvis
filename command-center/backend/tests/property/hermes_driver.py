@@ -68,7 +68,7 @@ from hermes_cli.cli_commands_mixin import _BRANCH_COPY_KEYS  # noqa: E402
 
 T = 1_795_000_000.0
 SUMMARY = "[CONTEXT COMPACTION] Summary of earlier turns: the work so far is recorded above."
-STUB = "[tool output pruned to save context]"
+STUB = "[Old tool output cleared to save context space]"  # agent/context_compressor.py _PRUNED_TOOL_PLACEHOLDER
 ROW_COLS = ("id", "session_id", "role", "content", "tool_call_id", "tool_calls", "tool_name", "timestamp", "active",
             "compacted", "message_uid", "absorbed_message_uids")
 SESSION_COLS = ("id", "source", "parent_session_id", "model_config", "end_reason", "title", "started_at")

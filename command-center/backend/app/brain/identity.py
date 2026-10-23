@@ -222,7 +222,7 @@ RELATION_TEXT = {
     IDENTICAL_REL: "identical text",
     RESTATED_REL: "the withheld text restated after a compaction",
     CONTAINS: "contains the withheld text",
-    PART_OF: "a reply that quotes part of the withheld text",
+    PART_OF: "part of the withheld text (a reply quote, or in its conversation family the row's own text)",
     SAME_UID: "the same JARVIS message id, other text",
     SAME_CALL: "the same tool call, other text",
     SAME_TIME_REL: "the same time and role",
@@ -234,6 +234,19 @@ RELATION_TEXT = {
 }
 _DISCORD_NOTE = re.compile(r"\A\[Triggering message id: [^\n]*\]\n\n")
 _REPLY_POINTER = re.compile(r'\A\[Replying to(?: your previous message)?: "(.*?)"\]\n\n', re.S)
+# A reply pointer that starts the text or one of the turns Hermes merged into it (a micro-compaction fold writes
+# prev + '\n\n' + msg, so the second turn's own pointer follows a blank line; integrator, deviation 258)
+_REPLY_POINTER_ANY = re.compile(r'(?:\A|\n\n)\[Replying to(?: your previous message)?: "(.*?)"\]\n\n', re.S)
+
+
+# The text Hermes's proactive prune writes over a tool row in place (agent/context_compressor.py
+# _PRUNED_TOOL_PLACEHOLDER; rewrite_pruned_rows keeps the original in an archived twin): never a withheld text
+PRUNE_PLACEHOLDERS = ("[Old tool output cleared to save context space]",)
+
+
+def is_placeholder(text: str | None) -> bool:
+    """Whether a row holds only Hermes's prune placeholder (integrator, deviation 264)."""
+    return flat(text) in {flat(p) for p in PRUNE_PLACEHOLDERS}
 
 
 def flat(text: str | None) -> str:
@@ -251,15 +264,36 @@ def peel(text: str | None) -> tuple[str, str | None, bool]:
         quote, body = found.group(1), body[found.end():]
     again = REPLAY_HEADER in body
     if again:
-        body = body.rsplit(REPLAY_HEADER, 1)[1]
+        body = _restated_wrappers(body.rsplit(REPLAY_HEADER, 1)[1])
+        found = _REPLY_POINTER.match(body)
+        if found:
+            quote, body = (quote if quote is not None else found.group(1)), body[found.end():]
     return body.strip(), quote, again
+
+
+def _restated_wrappers(part: str) -> str:
+    """A restated request is the original message's text after the header (Hermes: HEADER + '\n' + the request),
+    with that message's own wrappers: the Discord note first (integrator, deviation 280)."""
+    return _DISCORD_NOTE.sub("", part.lstrip(), count=1)
+
+
+def reply_quotes(text: str | None) -> list[str]:
+    """Every quote of a reply pointer that starts the text (after a Discord note), a turn Hermes merged into it, or a
+    request Hermes restated after the replay header (integrator, deviation 280)."""
+    body = _DISCORD_NOTE.sub("", text or "", count=1)
+    out = [m.group(1) for m in _REPLY_POINTER_ANY.finditer(body)]
+    for part in body.split(REPLAY_HEADER)[1:]:
+        found = _REPLY_POINTER.match(_restated_wrappers(part))
+        if found:
+            out.append(found.group(1))
+    return out
 
 
 def text_relations(held: str | None, withheld: str | None) -> set[str]:
     """The relations of a row's text to a withheld text, computed by comparison after the peel (plan 4.6): identical
     (the same words, or the same authored text inside Hermes's wrappers); restated (identical after the replay header);
     contains (the withheld text, at least MIN_RELATED characters, inside the authored text); part_of (a reply pointer
-    quoting at least MIN_RELATED characters of the withheld text: N1). Compared in memory only."""
+    quoting at least MIN_RELATED characters of the withheld text: N1; also one that starts a turn a fold merged in). Compared in memory only."""
     out: set[str] = set()
     whole, want = flat(held), flat(withheld)
     if not want:
@@ -272,7 +306,21 @@ def text_relations(held: str | None, withheld: str | None) -> set[str]:
             out.add(RESTATED_REL)
     if len(wbody) >= MIN_RELATED and wbody in flat(body or held):
         out.add(CONTAINS)
-    if quote is not None and len(flat(quote)) >= MIN_RELATED and flat(quote) in wbody:
+    # a quote of at least MIN_RELATED characters as JARVIS wrote it (integrator, deviation 273)
+    if any(len(q) >= MIN_RELATED and flat(q) and flat(q) in wbody
+           for q in [*([quote] if quote is not None else []), *reply_quotes(held)]):
+        out.add(PART_OF)
+    return out
+
+
+def family_relations(held: str | None, withheld: str | None) -> set[str]:
+    """text_relations() for a row of a withheld conversation family (Settle, later backups, the interim import):
+    also 'part of' when the row's own text (at least MIN_RELATED characters, after the peel) is a part of the
+    withheld text, e.g. the original of a message JARVIS later folded into the withheld one. Outside every family
+    only a reply quote counts (owner question 8): that path keeps text_relations() (integrator, deviation 274)."""
+    out = text_relations(held, withheld)
+    body, wbody = flat(peel(held)[0]), flat(peel(withheld)[0])
+    if len(body) >= MIN_RELATED and body != wbody and body in wbody:
         out.add(PART_OF)
     return out
 
@@ -293,7 +341,7 @@ def compare_text(codes: Iterable[str]) -> str:
     found = set(codes)
     for code, words in ((IDENTICAL_REL, "identical text"), (RESTATED_REL, "the withheld text restated"),
                         (CONTAINS, "contains the withheld text"),
-                        (PART_OF, "part of the withheld text (reply quote)")):
+                        (PART_OF, "part of the withheld text")):
         if code in found:
             return words
     return "nothing to compare" if NOT_IN_BACKUP in found else "other text"
@@ -379,8 +427,43 @@ class Binding:
 
 
 def title_base(title: str | None) -> str:
-    """A conversation title without Hermes's branch suffix (' #2')."""
-    return TITLE_SUFFIX.sub("", (title or "").strip())
+    """A conversation title without Hermes's branch suffix (' #2'), compared as Hermes stores titles: whitespace
+    collapsed (hermes_state_titles.sanitize_title). A title that reached the backup another way (a trailing space
+    kept, a branch named '<title>  #2') is the same title (fixer, deviation 282)."""
+    return TITLE_SUFFIX.sub("", flat(title))
+
+
+def title_relations(title: str | None, withheld: str | None) -> set[str]:
+    """The relations of a conversation title to a withheld text (plan 4.6 codes; compared in memory only, never
+    stored): Hermes derives a title from the first user message (agent/title_generator.derive_title: its first line,
+    whitespace collapsed, cut at a word boundary with a trailing '…') and a branch adds ' #N'. The title, without
+    those, is related when it is identical to the withheld text, contains it, is a part of it of at least
+    MIN_RELATED characters (identity.family_relations), or is its first line. 'not in this backup' when the withheld
+    text is not known here: nothing could be compared (fixer, deviation 282)."""
+    if withheld is None:
+        return {NOT_IN_BACKUP}
+    text = title_base(title)
+    while text.endswith("…"):
+        text = text[:-1].rstrip()
+    if not text:
+        return set()
+    out = family_relations(text, withheld)
+    first = next((ln for ln in peel(withheld)[0].splitlines() if ln.strip()), "")
+    if flat(first) and text == flat(first):
+        out.add(PART_OF)
+    if not out and _shares_run(text, flat(peel(withheld)[0])):
+        out.add(PART_OF)
+    return out
+
+
+def _shares_run(title: str, wbody: str) -> bool:
+    """Whether a title and the withheld text share a run of at least MIN_RELATED characters that starts at a word
+    of the title: a title derived from a first message that has other words before the withheld text ('Please
+    summarize: <W>…'). Fail-closed: it only keeps a held title hidden (review 284/289, deviation 289)."""
+    if len(title) < MIN_RELATED or len(wbody) < MIN_RELATED:
+        return False
+    starts = [0] + [i + 1 for i, ch in enumerate(title) if ch == " "]
+    return any(len(title) - i >= MIN_RELATED and title[i:i + MIN_RELATED] in wbody for i in starts)
 
 
 def title_follows(child_title: str | None, child_lineage: str, ancestor_title: str | None) -> bool:
@@ -1060,13 +1143,22 @@ async def matching_rows(s: AsyncSession, message: ArchiveMessage, sess: ArchiveS
 
 
 async def first_user_message(s: AsyncSession, message: ArchiveMessage) -> bool:
-    """Whether this is its conversation's first user message (the lowest position): the title can paraphrase it."""
+    """Whether this is its conversation's first user message: the title can paraphrase it. The lowest position, or
+    the earliest time: Hermes titles a conversation from its first user turn, and a fold or a rewrite re-inserts the
+    history with new row ids but the same times, so a stale stored row can come first by position (integrator,
+    deviation 252; fail-closed: either order counts)."""
     if message.role != "user":
         return False
-    first = await s.scalar(select(ArchiveMessage.id).where(ArchiveMessage.session_id == message.session_id,
-                                                           ArchiveMessage.role == "user")
-                           .order_by(ArchiveMessage.position, ArchiveMessage.id).limit(1))
-    return first == message.id
+    base = select(ArchiveMessage.id).where(ArchiveMessage.session_id == message.session_id,
+                                           ArchiveMessage.role == "user")
+    first = await s.scalar(base.order_by(ArchiveMessage.position, ArchiveMessage.id).limit(1))
+    if first == message.id:
+        return True
+    if message.at is None:
+        return False
+    earlier = await s.scalar(base.where(ArchiveMessage.id != message.id, ArchiveMessage.at.is_not(None),
+                                        ArchiveMessage.at < message.at).limit(1))
+    return earlier is None
 
 
 async def matches_withheld(s: AsyncSession, message: ArchiveMessage, sess: ArchiveSession) -> bool:

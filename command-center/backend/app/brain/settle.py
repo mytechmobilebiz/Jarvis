@@ -92,13 +92,18 @@ class Decision:
     """One unfinished decision (an admin's own withhold and its group) as this backup shows it."""
     group: str
     w: Row | None = None  # the withheld row itself in this backup (None: not in this backup)
+    # the withheld text as this backup holds it when the row itself is not here: from a member with the same text or
+    # a Hermes copy identity (the importer's _w_text, in memory only; integrator deviation 251)
+    text: str | None = None
     certain: dict[str, int] = field(default_factory=dict)  # row key -> rule number
     uids: set[str] = field(default_factory=set)  # the uids of the same message (rules 1, 2; never a fold's)
     calls: set[str] = field(default_factory=set)
 
     @property
     def w_text(self) -> str | None:
-        return self.w.m.content if self.w is not None else None
+        if self.w is not None and not identity.is_placeholder(self.w.m.content):
+            return self.w.m.content
+        return self.text  # pruned in place: the text found by copy identity, if any (integrator, deviation 264)
 
 
 class Engine:
@@ -108,8 +113,9 @@ class Engine:
 
     def __init__(self, backup: src.Backup, sessions: dict[str, src.SourceSession], ids: identity.Identities,
                  groups: Iterable[str], family: Iterable[str], stored: Callable[[src.SourceMessage], bool],
-                 families: dict[str, Iterable[str]] | None = None) -> None:
+                 families: dict[str, Iterable[str]] | None = None, w_texts: dict[str, str] | None = None) -> None:
         self.backup = backup
+        self.w_texts = dict(w_texts or {})
         self.sessions = sessions
         self.ids = ids
         self.groups = sorted(set(groups))
@@ -192,6 +198,8 @@ class Engine:
         if own is not None:
             found = self._rows_of_stone(own)
             d.w = found[0] if found else None
+            if d.w is None:
+                d.text = self.w_texts.get(d.group)
         for st in certain_stones:  # a fold's own stone names a fold row: never a uid source (rule 3)
             for r in self._rows_of_stone(st):
                 d.certain.setdefault(r.key, 3 if st.via in identity.FOLD_VIAS else 1)
@@ -246,8 +254,8 @@ class Engine:
         """The relations of a family row to the decision's withheld message (identity.RELATIONS codes)."""
         own = self.ids.by_key.get(d.group)
         rel: set[str] = set()
-        if d.w is not None:
-            rel |= identity.text_relations(r.m.content, d.w_text)
+        if d.w_text is not None:
+            rel |= identity.family_relations(r.m.content, d.w_text)
         same_words = bool(rel & {identity.IDENTICAL_REL, identity.RESTATED_REL})
         if r.uid and r.uid in d.uids and not same_words:
             rel.add(identity.SAME_UID)
@@ -260,7 +268,7 @@ class Engine:
         if own is not None and own.session and own.row and (r.sid[:200], r.exact.row) == (own.session, own.row) \
                 and not identity.same_row(identity.exact_of_stone(own), r.exact):
             rel.add(identity.REUSED_ROW)
-        if rel and d.w is None:
+        if rel and d.w_text is None:
             rel.add(identity.NOT_IN_BACKUP)
         return rel
 
@@ -307,12 +315,12 @@ class Engine:
         if d is None or r is None:
             return tuple(identity.relation_order(stored)), False
         rel = self.relations(d, r)
-        if d.w is None:
+        if d.w_text is None:
             earlier = set(stored) & set(identity.TEXT_RELATIONS)
             if earlier:
                 rel = (rel - {identity.NOT_IN_BACKUP}) | earlier
         if not rel:
-            rel = {identity.NOT_IN_BACKUP if d.w is None else identity.NO_RELATION}
+            rel = {identity.NOT_IN_BACKUP if d.w_text is None else identity.NO_RELATION}
         return tuple(identity.relation_order(rel)), self.preselect(d, r)
 
     def stale_time(self, group: str) -> tuple[str, str, datetime | None, str] | None:
@@ -334,7 +342,7 @@ class Engine:
 def stored_relations(text: str | None, w_text: str | None, *, stale: bool) -> tuple[str, ...]:
     """The relations of a stored row the backup no longer holds (a stale row at the withheld row's role and time:
     plan 4.3) to the withheld text, from its stored text while it is readable."""
-    rel = identity.text_relations(text, w_text) if w_text is not None else set()
+    rel = identity.family_relations(text, w_text) if w_text is not None else set()
     if stale:
         rel.add(identity.STALE)
     if w_text is None:

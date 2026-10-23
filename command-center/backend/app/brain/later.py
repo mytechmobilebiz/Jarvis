@@ -25,7 +25,8 @@ sight, so nothing is inferred: identity is exact, and what is new waits for an a
     - HELD FOR REVIEW: everything else, a pending stone 'new in a later backup' with its computed relations to the
       family's withheld texts (plan 4.6), decided on X.
     An admin's release of that exact row decided on X stands. A new session of F keeps its title hidden while a row
-    of it is withheld by an admin. A session an admin stopped importing (brain_frozen_sessions) is not imported, and
+    of it is withheld by an admin, and after that while X lacks a withheld text of F or the title relates to one
+    (importer._release_held_title; fixer, deviation 282). A session an admin stopped importing (brain_frozen_sessions) is not imported, and
     is counted.
 5.4 A session outside every family gets a plain import; the database guard still applies, and owner question 8 (a)
     holds a reply that quotes a withheld text through JARVIS's reply pointer.
@@ -257,7 +258,7 @@ def relations(m: src.SourceMessage, here: identity.Exact, d: Decision) -> set[st
     text in this backup, and the same uid, tool call or role and time with other text, a reused row number; 'not in
     this backup' when the withheld text is not here. Empty: no relation."""
     own = d.stone
-    rel = identity.text_relations(m.content, d.w_text) if d.w_text is not None else set()
+    rel = identity.family_relations(m.content, d.w_text) if d.w_text is not None else set()
     same_words = bool(rel & {identity.IDENTICAL_REL, identity.RESTATED_REL})
     if here.uid and (here.uid in d.uids or (own.uid and here.uid == own.uid and own.via not in identity.FOLD_VIAS)) \
             and not same_words:

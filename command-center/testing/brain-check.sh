@@ -20,7 +20,7 @@
 # Brain's removals across a restore (0.6.2; a stand-in docker, nothing is restored); -SeedFromBackup; Remove; the
 # pre-check again. Steps that need "python -m app.cli brain-import" and /api/brain (spec 6.7 steps 5, 6, 9 and the
 # planted-value check of 11, and 0.6.2's durable withholding: status line, a withhold kept through a re-import,
-# -Mode Repair, a version 5 decisions file without text) run only when the test copy's image has them; otherwise
+# -Mode Repair, -Mode Settle, a version 5 decisions file without text) run only when the test copy's image has them; otherwise
 # they are reported as SKIP (with --require-importer, as FAIL). Exit status: 0 all ran steps passed, 1 a step failed.
 #
 # Environment: REGISTRY and EXTRA_CA_BUNDLE as for docker compose (passed to the scripts' builds); PWSH_IMAGE;
@@ -846,6 +846,17 @@ step_withhold_identity() {  # 0.6.2: a withhold survives a re-import of the same
     && pass "Verify run $RUN3 (checks 9-12 included)" || { fail "verify after re-import"; show verify-again; }
   ji repair "" -Mode Repair
   [[ "$CODE" = 0 && "$OUT" == *"identity repair done"* ]] && pass "-Mode Repair runs brain-import repair --yes" || { fail "Repair"; show repair; }
+  # 0.6.2 (plan 4.1, 4.7; DEPLOY_WINDOWS "Finish your decisions"): the export refuses until the decision is settled on
+  # the backup it was taken on and every hold Settle found is reviewed; here each such hold is kept (fail-closed)
+  ji settle "" -Mode Settle
+  SETTLE_RUN=$(latest_run)  # Settle is an import run of its own: the rollback step rolls it back first
+  [[ "$CODE" = 0 && "$SETTLE_RUN" != "$RUN3" ]] && pass "-Mode Settle finishes the withhold on the backup it was taken on (run $SETTLE_RUN)" || { fail "Settle"; show settle; }
+  local holds h
+  holds=$(api_get "/api/brain/holds" | jq_py '" ".join(str(x["message"]) for k in ("holds", "found_when_finishing", "settle_holds") for x in (d.get(k) or []))' || true)
+  for h in $holds; do api_post "/api/brain/holds/$h/keep" '{}' > /dev/null; done
+  ji status-settled "" -Mode Status
+  [[ "$CODE" = 0 && "$OUT" == *"not finished on their backup (run Settle): 0; found when finishing decisions, waiting for review: 0"* ]] \
+    && pass "Status after Settle: no decision unfinished, no Settle hold waiting (${holds:-none} kept)" || { fail "status after Settle"; show status-settled; }
   ji export-v4 "" -Mode ExportDecisions
   local file
   file=$(ls -t "$MIG/import-reports"/decisions-test-*.json 2>/dev/null | head -1)
@@ -916,7 +927,8 @@ EOF
 step_rollback() {  # 9. Rollback (newest first), then zero rows
   local discard=()
   [ "${BRAIN_UI:-0}" = 1 ] && discard=(-DiscardReviewed)  # the browser check approved and edited an imported item
-  local c3=0
+  local c3=0 cs=0
+  if [ -n "${SETTLE_RUN:-}" ]; then ji rollback-settle "" -Mode Rollback -Run "$SETTLE_RUN" "${discard[@]}"; cs=$CODE; fi
   if [ -n "${RUN3:-}" ]; then ji rollback-again "" -Mode Rollback -Run "$RUN3" "${discard[@]}"; c3=$CODE; fi
   ji rollback-all "" -Mode Rollback -Run "$RUN2" "${discard[@]}"
   local c2=$CODE
@@ -924,7 +936,7 @@ step_rollback() {  # 9. Rollback (newest first), then zero rows
   local rows
   rows=$(tpsql -c "SELECT (SELECT count(*) FROM memory_items) + (SELECT count(*) FROM memory_item_versions) + (SELECT count(*) FROM archive_sessions)
     + (SELECT count(*) FROM archive_messages) + (SELECT count(*) FROM memory_conflicts) + (SELECT count(*) FROM workflow_drafts)" || true)
-  [[ "$c3" = 0 && "$c2" = 0 && "$CODE" = 0 && "$rows" = 0 ]] && pass "Rollback of every run leaves zero brain rows" || fail "rollback (exit $c3/$c2/$CODE, rows $rows)"
+  [[ "$cs" = 0 && "$c3" = 0 && "$c2" = 0 && "$CODE" = 0 && "$rows" = 0 ]] && pass "Rollback of every run leaves zero brain rows" || fail "rollback (exit $cs/$c3/$c2/$CODE, rows $rows)"
   check_fp "rollback"
 }
 

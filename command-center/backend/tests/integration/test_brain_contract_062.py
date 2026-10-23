@@ -413,7 +413,16 @@ async def test_R3_R11_R12_R13_S5_a_release_survives_compaction_backfill_and_renu
     stub_lm = w.sim.tags[(p, tool)].origin if (p, tool) in w.sim.tags else None
     for (sid, row), v in x.rows.items():
         if v.tag.origin == stub_lm and v.content == hs.STUB and v.active:
-            assert await w.status(sid, row) == "readable", (sid, row)
+            got = await w.status(sid, row)
+            if got == "absent" and sid == p:
+                # plan 5.3 SAFE COPY: in the same session a safe copy is recorded as an alias of the readable stored
+                # row (same role, call, time and text), not stored twice (core-3 deviation 200; integrator 243)
+                alias = [r for r in await cc.rows() if r["sid"] == p and not r.get("withheld")
+                         and r.get("role") == v.role and (r.get("tool_call_id") or "") == (v.call or "")
+                         and abs((o.epoch(r.get("at")) or 0.0) - v.ts) < 2e-3 and r.get("content") == v.content]
+                assert alias, (sid, row)
+                continue
+            assert got == "readable", (sid, row)
     assert await w.readable_with(W1) == []
 
 
@@ -942,6 +951,7 @@ async def test_rv3_ov_3_same_second_gateway_copy_of_a_readable_message_is_a_safe
     await w.withhold(p, wrow)
     w.settle(d)
     await w.review_all(independent={(p, other)})
+    await w.imp(d)  # a released row's text comes back at the next import of a backup holding it (owner Q6; 240)
     assert await w.status(p, other) == "readable"
     c = w.sim.gateway_branch(p)
     x = w.snap("x")
@@ -1180,6 +1190,7 @@ async def _test_copy(w: World, d: hs.Snapshot, p: str, wrow: int, *, sample: int
         if vs and not any(w.sim.derives(v.tag, {w_origin}) for v in vs):
             independent.add((r["sid"], int(r["source_message_id"])))
     await w.review_all(independent)
+    await w.imp(d)  # the documented next import brings the released rows' text back (owner Q6; deviation 240)
     return await state_rows(), await w.export()
 
 
