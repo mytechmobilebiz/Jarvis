@@ -139,6 +139,14 @@ async def test_settle_holds_related_rows_with_computed_evidence_and_the_export_w
         assert (await client.post("/api/brain/holds/%d/keep" % rows[i].id)).status_code == 200
     await imp.decisions_export(str(tmp_path / "decisions.json"))
     await run(fx)  # the released quote comes back at the next import; the kept rows stay withheld
+    # option C (rebuild R2, D-23): the quote's hold was listed under the first decision (it quotes that text too), but
+    # the row is also a row of the second withheld conversation: a release under one group never frees a row of two.
+    # The admin releases it there as well (the typed word: its evidence), and the next import brings it back.
+    again = (await message_of("st3", ids3[3]))[0]
+    assert again.withheld and (await stones())[again.source_key].via == identity.GROUP_HOLD
+    r = await client.post("/api/brain/holds/%d/release" % again.id, json={"confirm": identity.CONFIRM_WORD})
+    assert r.status_code == 200, r.text
+    await run(fx)
     assert not (await message_of("st3", ids3[3]))[0].withheld
     assert [(await message_of("st3", ids3[i]))[0].withheld for i in (2, 4)] == [True, True]
     assert await bj.nowhere(mark3) == []

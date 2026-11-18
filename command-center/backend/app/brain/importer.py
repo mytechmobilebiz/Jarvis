@@ -2995,7 +2995,9 @@ class Processor:
                           held_now if held is not None and not row["withheld"] else {})
             reason = "key changed since an earlier import"
         else:
-            values = self.message_values(p, withheld)
+            # a held row (option C: a row held with its conversation group) is a hold, never 'restricted data in this
+            # conversation' because its stored row was already withheld (rebuild R2)
+            values = self.message_values(p, session_withheld if held is not None else withheld)
             if kept:
                 values["flags"] = {**values["flags"], **kept}
                 if not session_withheld:  # withheld by an admin or a rescan: the conversation itself stays as it was
