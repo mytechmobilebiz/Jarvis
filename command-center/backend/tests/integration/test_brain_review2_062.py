@@ -269,6 +269,17 @@ async def holds_of(client) -> list[dict]:
     return r.json()["holds"]
 
 
+def non_group(holds: list[dict]) -> list[dict]:
+    """Option C (rebuild R2, D-25): the holds listed but the rows held only with their conversation group."""
+    return [h for h in holds if h["rule"] not in (identity.GROUP_HOLD, identity.UNCERTAIN_HOLD)]
+
+
+def sessions_open(out: dict) -> bool:
+    """D-25: the conversation opens for every reader (never restricted as a whole); its other rows may be held with
+    the withheld group (option C), so search and history need not show them."""
+    return all(v == 200 for k, v in out.items() if k.endswith("GET session"))
+
+
 async def who_reads(client, mark: str) -> dict:
     """Where the marker is readable: database columns, search and session detail per role, the Supervisor's history
     and recall; with status and the holds listed."""
@@ -332,8 +343,11 @@ async def test_s1_branch_of_a_branch_with_the_middle_branch_deleted(client, fx):
     v = await imp.verify(r, bj.paths(fx))
     show("S1a", {**out, "b2": state, "verify": v["passed"]})
     assert not leaked(out), out
-    assert [s[1:] for s in state] == [(True, identity.LATER_HOLD, identity.PENDING)]
-    [held] = [h for h in await holds_of(client) if h["rule"] == identity.LATER_HOLD]
+    # D-25: held as new in a later backup, or with its conversation group (option C), always pending
+    assert state and all(s[1] and s[3] == identity.PENDING for s in state), state
+    # D-25: the branch's other rows are held too (copies of rows held with the group); the copy of W is the one
+    [held] = [h for h in await holds_of(client) if h["rule"] == identity.LATER_HOLD
+              and identity.IDENTICAL_REL in h["relations"]]
     assert {identity.SAME_TIME_REL, identity.IDENTICAL_REL} <= set(held["relations"]), held
     assert out["status_readable_matching"] == 0 and v["passed"]
 
@@ -391,7 +405,9 @@ async def test_s1_test_copy_to_live_branch_made_after_the_test_copys_backup(clie
     after_next = await who_reads(client, mark)
     show("S1c", {"apply": res["removals"], "after_apply": after_apply, "after_next": after_next,
                  "b": await copy_state("s1c_b", mark)})
-    assert res["removals"] == {"held for review": 1}
+    # D-25: and the group's holds the file carries (the withheld conversation's other rows)
+    assert res["removals"].get("held for review", 0) >= 1, res
+    assert set(res["removals"]) <= {"held for review", "kept for later imports", "already done"}, res
     assert not leaked(after_apply) and not leaked(after_next)
     assert after_apply["status_readable_matching"] == 0
     assert {s[1:3] for s in await copy_state("s1c_b", mark)} == {(True, identity.OTHER_BACKUP_HOLD)}
@@ -413,7 +429,9 @@ async def test_s1_settle_holds_a_grandchild_copy_the_withhold_could_not_reach(cl
     await run(fx)
     [w] = await stored_at("s1s_p", ids[2])
     await api_withhold(client, w.id)
-    assert leaked(await who_reads(client, mark))  # before Settle: the grandchild's copy is still readable
+    # option C (rebuild R2, D-25): the grandchild is in the withheld group: its copy is held at the withhold already
+    # (i22: readable until Settle)
+    assert not leaked(await who_reads(client, mark))
     await bj.settle(fx, keep=False)
     out = await who_reads(client, mark)
     assert not leaked(out) and out["status_readable_matching"] == 0, out
@@ -465,7 +483,8 @@ async def test_s2_decisions_apply_holds_the_live_copy_of_a_row_live_never_stored
     after_third = await who_reads(client, mark)
     show("S2 %s" % event, {"apply": res["removals"], "after_apply": after_apply, "after_next": after_next,
                            "after_third": after_third})
-    assert res["removals"] == {"held for review": 1}, res
+    assert res["removals"].get("held for review", 0) >= 1, res  # D-25: and the group's holds the file carries
+    assert set(res["removals"]) <= {"held for review", "kept for later imports", "already done"}, res
     assert after_apply["holds"] and after_apply["status_readable_matching"] == 0
     for out in (after_apply, after_next, after_third):
         assert not leaked(out), out
@@ -572,7 +591,7 @@ async def test_s4_prune_twin_of_a_member_copy_is_a_member(client, fx, variant):
         hermes_delete_session(fx["db"], "s4p")
     twin = hermes_prune(fx["db"], copies[1])
     await run(fx)
-    hs = await holds_of(client)
+    hs = non_group(await holds_of(client))  # D-25: the group's own holds of the other rows are not this test's
     [t] = await stored_at("s4c", twin)
     async with session_scope() as s:
         st = await s.get(BrainTombstone, t.source_key)
@@ -583,7 +602,9 @@ async def test_s4_prune_twin_of_a_member_copy_is_a_member(client, fx, variant):
         assert (await client.post("/api/brain/holds/%d/release" % h["message"])).status_code == 200
     await run(fx)
     out = await who_reads(client, mark)
-    assert not hs, hs
+    # D-25: the rotation's copies of rows held with the group are no safe copies: held as new in a later backup
+    # (released blindly above: the withheld text stays nowhere readable)
+    assert all(h["rule"] == identity.LATER_HOLD for h in hs), hs
     assert t.withheld and st is not None and st.review == identity.CERTAIN
     assert not leaked(out), out
 
@@ -613,14 +634,14 @@ async def test_s5_released_stub_stays_released_after_a_gateway_retry(client, fx,
     [full] = await stored_at(sid, twin)
     await api_withhold(client, full.id)
     [stub] = await stored_at(sid, tool)
-    assert [h["message"] for h in await holds_of(client)] == [stub.id]
+    assert [h["message"] for h in non_group(await holds_of(client))] == [stub.id]  # D-25
     await as_(client, "admin")
     assert (await client.post("/api/brain/holds/%d/release" % stub.id)).status_code == 200
     await run(fx)
     moved = hermes_gateway_retry(fx["db"], sid, ts=T + 100) if event == "gateway_retry" else {}
     await run(fx)
     await run(fx)
-    hs = await holds_of(client)
+    hs = non_group(await holds_of(client))  # D-25
     out = await who_reads(client, mark)
     tool_rows = [(m.source_message_id, m.withheld, m.content[:20]) for m in await rows_of(sid) if m.role == "tool"]
     show("S5 %s" % event, {"holds": [(h["message"], h["rule"]) for h in hs], "tool_rows": tool_rows,
@@ -942,8 +963,9 @@ async def test_s13_rolling_back_the_run_that_deleted_a_branch_childs_copy(client
     show("S13 branch", {"after_rollback": st2, "readers2": rd2, "after_import": st3, "readers3": rd3,
                         "nowhere": await bj.nowhere(mark)})
     assert st2["sens"] != "restricted" and st3["sens"] != "restricted", (st2, st3)
-    assert readable_everywhere(rd2) and readable_everywhere(rd3), (rd2, rd3)
-    assert [r for r in st3["rows"] if other in r[4] and not r[2]], st3
+    # option C (rebuild R2, D-25): the other messages are held with the withheld group (pending, never restricted)
+    assert sessions_open(rd2) and sessions_open(rd3), (rd2, rd3)
+    assert all(r[3] != "restricted" for r in st3["rows"]), st3
     assert await bj.nowhere(mark) == []
 
 
@@ -988,7 +1010,7 @@ async def test_s13_rolling_back_the_compaction_run_keeps_the_conversation_readab
     show("S13 compaction uids=%s legacy=%s" % (uids, legacy),
          {"after_rollback": st2, "readers2": rd2, "after_import": st3, "readers3": rd3})
     assert st2["sens"] != "restricted" and st3["sens"] != "restricted", (st2, st3)
-    assert readable_everywhere(rd2) and readable_everywhere(rd3), (rd2, rd3)
+    assert sessions_open(rd2) and sessions_open(rd3), (rd2, rd3)  # D-25: other messages held with the group
     assert await bj.nowhere(mark) == []
 
 
@@ -1050,7 +1072,7 @@ async def test_s14_a_withhold_in_a_child_reaches_the_parents_original(client, tm
                           "status": st["readable_rows_matching_a_withhold"]})
     assert orig2.withheld and not any(rd.values()), rd
     assert p.status_code == 400
-    assert not await holds_of(client)
+    assert not non_group(await holds_of(client))  # D-25
     assert await bj.nowhere(mark) == []
 
 
@@ -1080,7 +1102,7 @@ async def test_s14_inverse_a_donor_timestamp_makes_the_origin_a_hold_never_a_wro
     assert all(v is not None and v.review == identity.PENDING for v in st.values()), st
     assert sorted(w["held_for_review"]) == sorted([parent[str(r1)].id, parent[str(r5)].id]), w
     await imp.run(bj.paths(fx), ALL)
-    assert len(await holds_of(client)) == 2
+    assert len(non_group(await holds_of(client))) == 2  # D-25
     assert await bj.nowhere(mark) == []
 
 
@@ -1171,7 +1193,9 @@ async def test_s15_a_withhold_in_a_cli_branch_child_hides_the_parents_derived_ti
             await imp.run(bj.paths(fx), ALL)
         got = await titles()
         if hide is False:
-            assert got["s15_p"][0].startswith("Payroll file") and not got["s15_p"][1], got  # nothing hidden by choice
+            # option C (rebuild R1, D-8): nothing hidden by choice, but both conversations are in the withheld group:
+            # their titles are hidden by membership
+            assert got["s15_p"] == ("", True), got
             continue
         assert got["s15_p"] == ("", True) and got["s15_c"] == ("", True), (when, got)
         assert await title_readers(client, mark) == {}, when
@@ -1885,7 +1909,7 @@ async def test_s21_identical_text_left_readable_survives_a_restore_and_the_next_
     await restore_point.restore(files)
     await run(fx)
     assert await _repeat_state("s21a_s", ids[3]) == [(False, None)]
-    assert await holds_of(client) == []
+    assert non_group(await holds_of(client)) == []  # D-25
 
 
 async def test_s21_identical_text_left_readable_survives_a_rollback_and_reimport(client, fx):
@@ -1894,7 +1918,7 @@ async def test_s21_identical_text_left_readable_survives_a_rollback_and_reimport
     await imp.rollback(2, actor="admin@test.local", confirm=True)
     await run(fx)
     assert await _repeat_state("s21b_s", ids[3]) == [(False, None)]
-    assert await holds_of(client) == []
+    assert non_group(await holds_of(client)) == []  # D-25
 
 
 async def test_s21_inverse_a_new_repeat_the_admin_never_saw_is_still_held(client, fx):
@@ -2092,7 +2116,7 @@ async def test_s23_a_keep_made_after_the_backup_says_kept_after_the_restore(clie
     flag = row.flags["withheld_by_admin"]
     assert row.withheld and stone.review == identity.KEPT
     assert (flag.get("review"), flag.get("kept_by"), flag.get("kept_at")) == ("kept", "admin@test.local", kept_at)
-    assert await holds_of(client) == []
+    assert non_group(await holds_of(client)) == []  # D-25
 
 
 # --- S24: the 409 names what can hold the lock --------------------------------------------------------------------------
