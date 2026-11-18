@@ -10,6 +10,8 @@ counters say how many group rows wait and how many are readable without a releas
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from sqlalchemy import select, text
 
@@ -121,26 +123,36 @@ async def test_hgr_a_release_under_one_group_never_frees_a_row_of_two(client, fx
         assert stone.review == identity.PENDING
         anchor = stone.anchor_key
     assert (await client.post("/api/brain/holds/%d/release" % first)).status_code == 200
-    await run(fx)
-    # released under one group: the next import holds it under the other one
+    out = await run(fx)
+    # released under one group: the next import holds it under the other one (the import itself: the guard is quiet)
     assert await state("tg_c", ca[0]) == "held"
+    checks = (await imp.verify(out["run_id"], bj.paths(fx)))["verification"]["checks"]
+    assert checks["database_guard_quiet"]["ok"], checks["database_guard_quiet"]
     async with session_scope() as s:
         stone = await s.get(BrainTombstone, (await s.get(ArchiveMessage, first)).source_key)
         assert stone.review == identity.PENDING and stone.anchor_key != anchor
 
 
 async def test_hgr_a_later_backup_s_rows_of_a_group_conversation_are_held_by_the_import(client, fx):
-    """A later backup brings new rows to a conversation of the group and a new markerless child: the import holds
-    them itself (the database guard never acts: verify's database_guard_quiet holds)."""
+    """A later backup brings new rows to conversations of the group, one of them recorded in the group without the
+    sweep (restore's file, older code: its stored rows still readable), and a new markerless child: the import holds
+    every such row itself, the stored ones too (the database guard never acts: verify's database_guard_quiet)."""
     db = fx["db"]
     pa = conversation(db, "lb_p", T, [("user", "What is the deal worth?"), ("assistant", secret("zqlb"))])
+    xa = conversation(db, "lb_x", T + DAY, [("user", "Plan the offsite."), ("assistant", "Planned.")])
     await run(fx)
-    await withhold(client, await row_id("lb_p", pa[1]))
-    turn = bj.add_row(db, "lb_p", "user", "One more question.", T + DAY)
-    ka = conversation(db, "lb_k", T + 2 * DAY, [("user", "Draft the mail."), ("assistant", "Drafted.")],
+    w = (await message_of("lb_p", pa[1]))[0]
+    await withhold(client, w.id)
+    await join("lb_x", w.source_key)
+    assert [await state("lb_x", r) for r in xa] == ["readable", "readable"]
+    turn = bj.add_row(db, "lb_p", "user", "One more question.", T + 3 * DAY)
+    more = bj.add_row(db, "lb_x", "user", "And the agenda?", T + 3 * DAY)
+    ka = conversation(db, "lb_k", T + 4 * DAY, [("user", "Draft the mail."), ("assistant", "Drafted.")],
                       parent="lb_p")
     out = await run(fx)
     assert await state("lb_p", turn) == "held" and [await state("lb_k", r) for r in ka] == ["held", "held"]
+    assert [await state("lb_x", r) for r in [*xa, more]] == ["held", "held", "held"]
+    assert (await pending())["group_rows_readable"] == 0
     checks = (await imp.verify(out["run_id"], bj.paths(fx)))["verification"]["checks"]
     assert checks["database_guard_quiet"]["ok"] and checks["withheld_identity_holds"]["ok"], checks
 
@@ -225,8 +237,10 @@ async def test_hgr_the_startup_repair_and_a_rollback_hold_the_group_rows(client,
 
 
 async def test_hgr_restore_s_removals_only_file_holds_the_group_rows(client, fx, tmp_path):
-    """restore.ps1: a database restored without the holds (nothing withheld yet in the dump); the removals-only file
-    brings the withhold and its group, and decisions-apply holds every row of the group conversation at once."""
+    """restore.ps1: a database restored without the holds (nothing withheld yet in the dump), whose import no longer
+    holds the withheld row itself (JARVIS deleted it since: the file's withhold is kept for later imports, no withhold
+    runs here); the removals-only file brings the withhold and its group, and decisions-apply's sweep holds every row
+    of the group's conversations at once."""
     db = fx["db"]
     pa = conversation(db, "rr_p", T, [("user", "What is the deal worth?"), ("assistant", secret("zqrr"))])
     ca = conversation(db, "rr_c", T + DAY, [("user", "Draft the follow-up mail."), ("assistant", "Drafted.")],
@@ -238,10 +252,12 @@ async def test_hgr_restore_s_removals_only_file_holds_the_group_rows(client, fx,
     await _fresh_production()
     async with session_scope() as s:  # an older dump: no group recorded yet
         await s.execute(text("TRUNCATE brain_withheld_sessions, brain_hidden_titles"))
+    bj.change(db, "DELETE FROM messages WHERE id = ?", pa[1])
+    extra = bj.add_row(db, "rr_c", "user", "One more question.", T + 2 * DAY)  # after the export: no hold carried
     await run(fx)
-    assert await state("rr_c", ca[0]) == "readable"
+    assert await state("rr_c", extra) == "readable" and await message_of("rr_p", pa[1]) == []
     await imp.decisions_apply(str(out), None, actor=None, apply=True, removals_only=True)
-    assert [await state("rr_c", r) for r in ca] == ["held", "held"]
+    assert [await state("rr_c", r) for r in [*ca, extra]] == ["held", "held", "held"]
     assert await state("rr_p", pa[0]) == "held"
 
 
@@ -256,3 +272,57 @@ async def test_hgr_decision_status_counts_the_group_rows(client, fx):
     async with session_scope() as s:
         found = await review.decision_status(s)
     assert found["group_conversations"] == 1 and found["group_rows_held"] == 2 and found["group_rows_readable"] == 0
+
+
+async def test_hgr_the_legacy_reset_holds_the_group_rows(client, fx, tmp_path):
+    """Legacy data (0.6.1: a withhold, no group, the rest of the conversation readable): the legacy reset records the
+    group and the sweep holds every row of it."""
+    db = fx["db"]
+    pa = conversation(db, "lr_p", T, [("user", "What is the deal worth?"), ("assistant", secret("zqlr"))])
+    ca = conversation(db, "lr_c", T + DAY, [("user", "Draft the follow-up mail."), ("assistant", "Drafted.")],
+                      parent="lr_p")
+    first = await run(fx)
+    await withhold(client, await row_id("lr_p", pa[1]))
+    async with session_scope() as s:  # what 0.6.1 left: the withheld row only, no group, its conversation readable
+        await s.execute(text("UPDATE import_runs SET importer_version = '1.0.4' WHERE id = :r"),
+                        {"r": first["run_id"]})
+        await s.execute(text(
+            "UPDATE brain_tombstones SET source_session_id = '', source_row_id = '', role = '', tool_call_id = '', "
+            "message_uid = '', uid_known = false, decided_on = '', bound = false, source_at = NULL "
+            "WHERE reason = :r AND anchor_key = ''"), {"r": identity.WITHHELD_BY_ADMIN})
+        await s.execute(text("DELETE FROM brain_tombstones WHERE anchor_key <> ''"))
+        await s.execute(text("ALTER TABLE archive_messages DISABLE TRIGGER archive_messages_keep_withheld"))
+        await s.execute(text("UPDATE archive_messages m SET withheld = false, content = 'Drafted.', flags = '{}' "
+                             "FROM archive_sessions s WHERE s.id = m.session_id AND s.source_session_id = 'lr_c'"))
+        await s.execute(text("ALTER TABLE archive_messages ENABLE TRIGGER archive_messages_keep_withheld"))
+        await s.execute(text("INSERT INTO brain_maintenance (name, detail) VALUES ('legacy_brain_data', "
+                             "'{\"found_by\": \"test\"}'::jsonb)"))
+        await s.execute(text("TRUNCATE brain_withheld_sessions"))  # 0.6.1 kept no group
+        await s.commit()
+    assert await state("lr_c", ca[1]) == "readable"
+    out = tmp_path / "reset.json"
+    await imp.legacy_reset(str(out), actor=ADMIN[0], confirm=True)
+    # the reset's version 5 file carries a hold for each row of the group conversation (decided before the rollbacks),
+    # and the re-import the owner runs next holds them
+    carried = {r["source_key"]: r for r in json.loads(out.read_text())["removals"]}
+    keys = [k for k, r in carried.items() if r.get("via") == identity.GROUP_HOLD and r.get("review") == "pending"]
+    assert len(keys) >= 2
+    await run(fx)
+    assert [await state("lr_c", r) for r in ca] == ["held", "held"]
+
+
+async def test_hgr_an_import_of_the_decision_backup_holds_a_group_conversation_it_stores_first(client, fx):
+    """The test copy imported part of a backup (a date range), the admin withheld a message there, and then imports
+    the whole backup: a markerless child the first import left out joins the group in that import and its rows are
+    held by the import itself, as it stores them (the database guard never acts)."""
+    db = fx["db"]
+    pa = conversation(db, "dr_p", T, [("user", "What is the deal worth?"), ("assistant", secret("zqdr"))])
+    ca = conversation(db, "dr_c", T + 10 * DAY, [("user", "Draft the follow-up mail."), ("assistant", "Drafted.")],
+                      parent="dr_p")
+    await imp.run(bj.paths(fx), imp.Selection(since="2026-11-17", until="2026-11-19"))
+    assert await message_of("dr_c", ca[0]) == []
+    await withhold(client, await row_id("dr_p", pa[1]))
+    out = await run(fx)
+    assert [await state("dr_c", r) for r in ca] == ["held", "held"]
+    checks = (await imp.verify(out["run_id"], bj.paths(fx)))["verification"]["checks"]
+    assert checks["database_guard_quiet"]["ok"], checks["database_guard_quiet"]

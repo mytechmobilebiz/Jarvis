@@ -38,3 +38,21 @@ def test_the_new_hold_vias_and_the_state_are_known_codes():
     assert identity.GROUP_HOLD in identity.HOLD_VIA and identity.COPY_HOLD in identity.HOLD_VIA
     assert identity.OTHER_NOT_COMPARED in identity.RELATIONS and identity.OTHER_NOT_COMPARED in identity.RELATION_TEXT
     assert not identity.needs_confirmation([identity.OTHER_NOT_COMPARED])
+
+
+def test_a_kept_hold_held_only_with_its_conversation_never_seeds_a_group():
+    """RECON-16: a hold an admin kept that the sweep held only with its conversation (GROUP_HOLD, UNCERTAIN_HOLD) says
+    nothing of the withheld message: it never seeds a group and its uid never joins one ('shared_uid'); a kept hold of
+    a related row (a Settle hold) still does (R1, RECON-6)."""
+    from app.brain import groups
+
+    ids = identity.Identities([
+        identity.Stone(key="w", session="S0", row="1", role="user", uid="u0"),
+        identity.Stone(key="g", anchor="w", session="S1", row="2", role="user", uid="u1", via=identity.GROUP_HOLD,
+                       review=identity.KEPT),
+        identity.Stone(key="u", anchor="w", session="S2", row="3", role="user", uid="u2", via=identity.UNCERTAIN_HOLD,
+                       review=identity.KEPT),
+        identity.Stone(key="k", anchor="w", session="S3", row="4", role="user", uid="u3", via=identity.SETTLE_HOLD,
+                       review=identity.KEPT)])
+    assert groups.seeds(ids) == {"w": {"S0", "S3"}}
+    assert groups.certain_uids(ids) == {"w": {"u0", "u3"}}
