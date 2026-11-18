@@ -113,9 +113,15 @@ async def test_settle_holds_related_rows_with_computed_evidence_and_the_export_w
     await run(fx)
     await withhold(client, (await message_of("st3", ids3[1]))[0].id)
     await bj.settle(fx, keep=False)
-    for i in (2, 3, 4):  # the first decision: the admin's 'left readable' choices stand (plan 4.5)
+    for i in (2, 4):  # the first decision: the admin's 'left readable' choices stand (plan 4.5)
         assert not (await message_of("st2", ids[i]))[0].withheld
+    # option C (rebuild R3, D-31): the reply quote of st2 quotes 40 characters the second withheld text has too (the
+    # two differ only in the marker): a carrier of that text outside its group, held on its own for it (the first
+    # decision's 'left readable' covers only the first text)
     found = await holds(client)
+    quote2 = (await message_of("st2", ids[3]))[0]
+    assert quote2.withheld and found[quote2.id]["rule"] in (identity.CARRIER_HOLD, identity.SETTLE_HOLD)
+    assert identity.PART_OF in found[quote2.id]["relations"] and found[quote2.id]["confirm_required"]
     rows = {i: (await message_of("st3", ids3[i]))[0] for i in range(2, 6)}
     assert identity.CONTAINS in found[rows[2].id]["relations"]
     assert found[rows[3].id]["relations"] == [identity.PART_OF]
@@ -128,7 +134,8 @@ async def test_settle_holds_related_rows_with_computed_evidence_and_the_export_w
         h = found[rows[i].id]
         assert (h["rule"], h["confirm_required"], h["decided_on"] != "") == (identity.SETTLE_HOLD, True, True), h
         assert mark3 not in str(h)
-    assert (await pending())["unreviewed_settle_holds"] == 3
+    # D-31: and st2's quote, when Settle found it again for the second text (its own Settle hold)
+    assert (await pending())["unreviewed_settle_holds"] == 3 + (found[quote2.id]["rule"] == identity.SETTLE_HOLD)
     with pytest.raises(imp.Refused, match="wait for review"):
         await imp.decisions_export(str(tmp_path / "decisions.json"))
     r = await client.post("/api/brain/holds/%d/release" % rows[3].id)
@@ -137,6 +144,8 @@ async def test_settle_holds_related_rows_with_computed_evidence_and_the_export_w
     assert r.status_code == 200, r.text
     for i in (2, 4):
         assert (await client.post("/api/brain/holds/%d/keep" % rows[i].id)).status_code == 200
+    # D-31: the admin keeps st2's quote of the second text's words too (reviewed: the export no longer waits)
+    assert (await client.post("/api/brain/holds/%d/keep" % quote2.id)).status_code == 200
     await imp.decisions_export(str(tmp_path / "decisions.json"))
     await run(fx)  # the released quote comes back at the next import; the kept rows stay withheld
     # option C (rebuild R2, D-23): the quote's hold was listed under the first decision (it quotes that text too), but

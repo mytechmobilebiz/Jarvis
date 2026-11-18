@@ -279,6 +279,7 @@ async def test_withhold_preview_counts_and_include_identical(client, fx):
     assert sorted(x["id"] for x in p["identical_text_rows"]) == sorted([identical.id, child_identical[0].id])
     assert all(x["preselected"] for x in p["identical_text_rows"])  # listed pre-ticked (0.6.2 plan 4.5)
     assert p["rowless_copies"] >= 1 and p["first_user_message"] is False and p["items_with_this_text"] == []
+    assert elsewhere.id in {x["id"] for x in p["carrier_rows"]}  # D-28: listed as a carrier the withhold holds
     assert mark not in r.text  # ids and positions, never text
     assert await stones() == {}  # read-only
     r = await client.post("/api/brain/messages/%d/withhold" % answer.id, json={"include_identical": True})
@@ -297,10 +298,14 @@ async def test_withhold_preview_counts_and_include_identical(client, fx):
     assert st[other.source_key].review == identity.PENDING
     [entry] = await audit_of("archive.message_withheld")
     assert entry.detail["identical_withheld"] == 2 and entry.detail["also_withheld"] == [child_same[0].id]
-    # Identical words in another conversation are never the same message, whatever the admin ticks.
+    # Identical words in another conversation are never the same message, whatever the admin ticks. Option C
+    # (rebuild R3, D-28): they are a carrier, held on its own (a pending carrier hold, its evidence 'identical', the
+    # typed word needed), never a member and never withheld for good
     async with session_scope() as s:
-        assert (await s.get(ArchiveMessage, elsewhere.id)).withheld is False
-    assert elsewhere.source_key not in st
+        assert (await s.get(ArchiveMessage, elsewhere.id)).withheld is True
+    assert (st[elsewhere.source_key].via, st[elsewhere.source_key].review) == (identity.CARRIER_HOLD,
+                                                                                identity.PENDING)
+    assert identity.IDENTICAL_REL in st[elsewhere.source_key].relations
     second = await run(fx)  # the next import keeps every choice
     for m in (child_same[0], identical, child_identical[0], other, child_other[0]):
         async with session_scope() as s:
@@ -337,10 +342,13 @@ async def _title(sid: str) -> tuple[str, bool]:
 async def test_hide_title_default_for_first_user_message(client, fx):
     cases = {"t_first": (0, None, True), "t_answer": (1, None, False), "t_asked": (1, True, True),
              "t_kept": (0, False, False)}
+    # option C (rebuild R3, D-29): each case's words are its own (with one text shared by the four, the first
+    # withhold holds the others' rows as carriers, and a held row cannot be withheld again: tests/integration/
+    # test_brain_carriers_r2_062.py holds such carriers)
     for n, sid in enumerate(cases):
-        bj.add_session(fx["db"], sid, started=T + n * DAY, title="Vendor contract for zqtitle62")
-        bj.add_row(fx["db"], sid, "user", "What is the vendor contract worth? zqtitle62", T + n * DAY + 1)
-        bj.add_row(fx["db"], sid, "assistant", secret("zqtitle62"), T + n * DAY + 2)
+        bj.add_session(fx["db"], sid, started=T + n * DAY, title="Vendor contract for zqtitle62 %s" % sid)
+        bj.add_row(fx["db"], sid, "user", "What is the vendor contract worth? zqtitle62 %s" % sid, T + n * DAY + 1)
+        bj.add_row(fx["db"], sid, "assistant", secret("zqtitle62 " + sid), T + n * DAY + 2)
     await run(fx)
     await as_(client, "admin")
     for sid, (index, hide, hidden) in cases.items():

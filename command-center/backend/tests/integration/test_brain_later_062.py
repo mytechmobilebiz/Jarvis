@@ -346,8 +346,13 @@ async def test_outside_every_family_a_plain_import_and_the_tripwire_lists_the_wi
     await decided(client, fx, "lt7", ids[1])
     elsewhere = conversation(db, "lt7_other", T + DAY, [("user", "Remind me: %s" % w), ("assistant", "Yes.")])
     done = await run(fx)
-    assert await state("lt7_other", elsewhere[0]) == "readable"
+    # option C (rebuild R3, D-26): a carrier outside every group is held on its own (a pending carrier hold, its
+    # evidence 'identical'/'contains', the typed word needed), never readable and never withheld for good; the
+    # tripwire still lists it by location
+    assert await state("lt7_other", elsewhere[0]) == "held"
     [row] = await message_of("lt7_other", elsewhere[0])
+    h = (await holds(client))[row.id]
+    assert h["rule"] == identity.CARRIER_HOLD and identity.CONTAINS in h["relations"] and h["confirm_required"]
     tw = done["report"]["tripwire"]
     assert (tw["inside_family"], tw["outside_family"]) == (0, 1)
     assert tw["outside"] == [{"session": row.session_id, "message": row.id}]
@@ -370,7 +375,9 @@ async def test_the_tripwire_holds_a_safe_copy_with_the_withheld_text_and_fails_v
     ids = conversation(db, "lt8", T, [("user", "What is the deal worth?"), ("assistant", w)])
     elsewhere = conversation(db, "lt8_q", T + DAY, [("user", "Read it again?"), ("assistant", w)])
     await decided(client, fx, "lt8", ids[1])
-    assert await state("lt8_q", elsewhere[1]) == "readable"  # another conversation: never withheld for its text
+    # option C (rebuild R3, D-26): another conversation's identical row is a carrier, held at the withhold on its own;
+    # decided() keeps every hold, so it is kept (certain): never readable
+    assert await state("lt8_q", elsewhere[1]) in ("held", "certain")
     bj.add_row(db, "lt8_q", "assistant", "Noted.", T + 2 * DAY, uid=uid_of(db, "lt8", ids[1]))  # joins the family
     branch = bj.gateway_branch(db, "lt8_q", "lt8_qb", T + 3 * DAY)
     done = await run(fx)
@@ -379,7 +386,7 @@ async def test_the_tripwire_holds_a_safe_copy_with_the_withheld_text_and_fails_v
     # Option C (rebuild R2, D-9): lt8_q joins the group in this very import, so its own stored row with the withheld
     # text is held with its conversation, and the branch's copy of it is no safe copy any more: held by the classifier
     # with its evidence (identical) instead of by the tripwire (i22: a tripwire hit that failed verify).
-    assert await state("lt8_q", elsewhere[1]) == "held"
+    assert await state("lt8_q", elsewhere[1]) in ("held", "certain")  # D-26: a kept carrier stays withheld
     assert identity.IDENTICAL_REL in (await holds(client))[held.id]["relations"]
     tw = done["report"]["tripwire"]
     assert tw["inside_family"] in (0, 1) and tw["inside"] in ([], [{"session": held.session_id, "message": held.id}])

@@ -1809,6 +1809,9 @@ async def matching_rows(s: AsyncSession, message: ArchiveMessage, sess: ArchiveS
         rel = text_relations(fields, message.content)
         if not rel:
             continue
+        # a family row: its evidence is every relation a family row has (a cut beginning that is also its own text
+        # being part of the withheld one says both)
+        rel |= family_relations(fields, message.content)
         sid = sessions.get(r.session_id, "")
         here = exact_of_row(r, sid)
         covering = [b for rsid, rrow, b in released if (rsid, rrow) == (here.session, here.row) and b.covers(here)]

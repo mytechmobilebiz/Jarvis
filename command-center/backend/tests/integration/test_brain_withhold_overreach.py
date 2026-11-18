@@ -49,8 +49,10 @@ async def release_group_hold(client, sid: str, source_id: int) -> bool:
     for _ in range(2):  # RECON-20: a release covers the content it was compared on; a later backup asks again
         rows = await message_of(sid, source_id)
         st = (await stones()).get(rows[-1].source_key) if rows else None
+        # option C (rebuild R3, D-27): a carrier outside every group (identical words elsewhere) is held on its own
+        # the same way, and released the same way
         if not rows or not rows[-1].withheld or st is None or st.review != identity.PENDING or st.via not in (
-                identity.GROUP_HOLD, identity.UNCERTAIN_HOLD):
+                identity.GROUP_HOLD, identity.UNCERTAIN_HOLD, identity.CARRIER_HOLD):
             return done
         await as_(client, "admin+")
         [hold] = [h for h in (await client.get("/api/brain/holds")).json()["holds"] if h["message"] == rows[-1].id]

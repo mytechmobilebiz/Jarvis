@@ -92,7 +92,12 @@ async def plant(key: str = "w1", *, labels: tuple[str, ...] = ("accomplishment",
                                   at=start + timedelta(minutes=position), **kw)
 
         rows = [row(0, "user", "Please renew the certificate."),
-                row(1, "assistant", content or "The %s certificate was renewed and the site is up again." % MSG,
+                # option C (rebuild R3, D-32): a second planted conversation's message is its own words (the very
+                # same text in another conversation is a carrier of the first's, held at its withhold)
+                row(1, "assistant", content or ("The %s certificate was renewed and the site is up again." % MSG
+                                                if key == "w1" else
+                                                "The %s certificate for %s was renewed; the site is up again." % (
+                                                    MSG, key)),
                     labels=list(labels), redactions=dict(redactions or {})),
                 row(2, "assistant", "Closing the ticket now.")]
         s.add_all(rows)

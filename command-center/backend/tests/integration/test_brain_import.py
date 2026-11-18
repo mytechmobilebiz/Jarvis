@@ -1144,7 +1144,14 @@ async def test_withheld_messages_and_purged_items_carry_over_from_the_test_copy(
     removals_n = (await imp.decisions_export(str(out)))["removals"]
     exported = json.loads(out.read_text())
     group_holds = [r for r in exported["removals"] if r.get("via") == identity.GROUP_HOLD]
-    assert removals_n == 2 + len(group_holds) and all(r.get("review") == "pending" for r in group_holds)
+    assert all(r.get("review") == "pending" for r in group_holds)
+    # option C (rebuild R3, D-30): the kit says the withheld text again in other conversations: each is a carrier,
+    # held on its own at the withhold, found again by Settle (its evidence 'identical') and kept by bj.settle's
+    # review; the file carries them as removals of their own (never the withhold itself)
+    carriers = [r for r in exported["removals"] if r.get("via") in (identity.CARRIER_HOLD, identity.SETTLE_HOLD)]
+    assert all(set(r.get("relations") or ()) & {identity.IDENTICAL_REL, identity.CONTAINS} for r in carriers)
+    assert removals_n == 2 + len(group_holds) + len(carriers)
+    group_holds += carriers
     assert exported["version"] == 5  # 0.6.2: a withhold carries its exact JARVIS row and decision backup (no text)
     assert {(r["source_key"], r["reason"]) for r in exported["removals"] if r not in group_holds} == {
         (message_key, "withheld by an admin"), (item_key, imp.PURGED_BY_ADMIN)}
@@ -1185,7 +1192,12 @@ async def test_withheld_messages_and_purged_items_carry_over_from_the_test_copy(
         assert "withheld_by_admin" in withheld.flags
         assert await s.scalar(select(MemoryItem).where(MemoryItem.source_key == item_key)) is None
         reasons = dict((await s.execute(select(BrainTombstone.source_key, BrainTombstone.reason).where(
-            BrainTombstone.via != identity.GROUP_HOLD))).all())  # D-10: and the sweep's holds of the group
+            BrainTombstone.via.not_in((identity.GROUP_HOLD, identity.CARRIER_HOLD))))).all())  # D-10: and the
+        # sweep's holds of the group; D-30: the withhold decisions-apply makes here (the stored text in hand) holds
+        # the kit's carriers on their own as the test copy did
+        n_carriers = await s.scalar(select(func.count()).select_from(BrainTombstone).where(
+            BrainTombstone.via == identity.CARRIER_HOLD, BrainTombstone.review == identity.PENDING))
+        assert n_carriers == len(carriers), (n_carriers, len(carriers))
         assert reasons == {message_key: "withheld by an admin", item_key: imp.PURGED_BY_ADMIN,
                            "jarvis:message:never-imported:1": "withheld by an admin"}
         logged = await s.scalar(select(AuditLog).where(AuditLog.action == "brain.decisions_applied"))
