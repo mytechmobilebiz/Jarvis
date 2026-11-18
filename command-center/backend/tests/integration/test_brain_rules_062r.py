@@ -478,8 +478,11 @@ async def test_r0_inverse_branch_copy_of_an_unwithheld_identical_message(client,
     [p2] = await message_of("i0_parent", ids[3])
     show("inverse " + order, {"parent second": p2.withheld, "child copy of first": c1.withheld,
                               "child copy of second": c2.withheld})
-    assert not p2.withheld
-    assert not c2.withheld, "the copy of a message the admin did not withhold was withheld"
+    # option C (rebuild R2, D-24): never withheld for good, but rows of the withheld group's conversations are held
+    # with them (pending holds); i22: readable
+    for row in (p2, c2):
+        assert not row.withheld or (await stones())[row.source_key].review == identity.PENDING, \
+            "the copy of a message the admin did not withhold was withheld for good"
 
 
 async def test_r7_rollback_of_the_run_that_deleted_the_original(client, tmp_path):
@@ -913,12 +916,13 @@ async def test_r5_title_choice_travels_to_live_and_comes_back_with_the_conversat
             sess = await s.scalar(select(ArchiveSession).where(ArchiveSession.source_session_id == "t_s"))
             return sess.title, bool((sess.flags or {}).get("title_withheld"))
 
-    expected = ("", True) if hide else (first[:48], False)
+    # option C (rebuild R1, D-8): the conversation is in the withheld group: its title is hidden by membership alone
+    expected = ("", True)
     assert await title() == expected
     await imp.rollback(live["run_id"], actor=ADMIN[0], confirm=True)
     await run(fx)
     assert await title() == expected
-    assert (await bj.nowhere(mark) == []) == hide  # the title holds the marker only when it was left shown
+    assert await bj.nowhere(mark) == []  # D-8: the title (holding the marker) is hidden by group membership too
 
 
 async def test_r_branch_copy_of_a_held_row_is_held_until_released(client, fx):
@@ -1006,12 +1010,17 @@ async def test_r4_decisions_apply_holds_the_rewound_twin_on_live(client, tmp_pat
     # 0.6.2: decisions-apply no longer re-derives the rewound twin (plan step 6); live's newest import of the
     # conversation is of another backup than the decision's, so the rows that import stored are held at once
     # (plan 5.3 R5/S2/rv3-res-3: a fail-safe hold), and the rows the decision backup stored stay as they are
-    assert res["removals"] == {"held for review": 1}, res
+    # D-24: and the group's holds the file carries (the withheld conversation's other rows)
+    n_group = sum(r.get("via") == identity.GROUP_HOLD for r in json.loads(Path(out).read_text())["removals"])
+    assert res["removals"].get("held for review", 0) >= 1 and sum(res["removals"].values()) == 1 + n_group, res
+    assert set(res["removals"]) <= {"held for review", "kept for later imports", "already done"}, res
     after = await who_reads(client, mark)
     assert after["readable_rows"] == [] and after["api"] == [] and after["columns"] == [], after
     await run(fx)
     assert (await who_reads(client, mark))["readable_rows"] == []
-    assert await readable_with("Lunch at noon.")  # the other turns stay
+    # the other turns stay: readable, or (option C, rebuild R2, D-24) held with the withheld conversation group
+    assert await readable_with("Lunch at noon.") or [h for h in await holds_listed(client)
+                                                      if h[1] == identity.GROUP_HOLD]
 
 
 async def test_r5_hidden_title_survives_the_rollback_of_a_run_that_updated_the_conversation(client, tmp_path):
@@ -1048,6 +1057,23 @@ async def _state(sid: str, row_id: int) -> tuple:
     m = rows[0]
     st = (await stones()).get(m.source_key)
     return (m.withheld, m.content, st and st.via, st and st.review)
+
+
+def group_pending(state: tuple) -> bool:
+    """Option C (rebuild R2, D-24): a row held with its conversation group: withheld, a pending hold of the group
+    (never withheld for good)."""
+    return state[0] is True and state[3] == identity.PENDING and state[2] in (identity.GROUP_HOLD,
+                                                                              identity.UNCERTAIN_HOLD)
+
+
+def left_readable_or_group_pending(state: tuple, words: str) -> bool:
+    """D-24: readable as the admin left it, or held with its conversation group (never withheld for good)."""
+    return state[:2] == (False, words) or group_pending(state)
+
+
+async def non_group_holds(client) -> list[tuple]:
+    """D-24: the holds listed, but the rows held only with their conversation group."""
+    return [h for h in await holds_listed(client) if h[1] not in (identity.GROUP_HOLD, identity.UNCERTAIN_HOLD)]
 
 
 async def _holds_full(client) -> list[dict]:
@@ -1115,7 +1141,9 @@ async def test_c3_rewound_original_rollback_copy_loses_the_text_at_withhold(clie
     await imp.rollback(second["run_id"], actor=ADMIN[0], confirm=True)
     after = await who_reads(client, mark)
     assert after["readable_rows"] == [] and after["api"] == [] and after["columns"] == [], after
-    assert await readable_with("Give me the headline.")  # the other turns stay
+    # the other turns stay: readable, or (option C, rebuild R2, D-24) held with the withheld conversation group
+    assert await readable_with("Give me the headline.") or [h for h in await holds_listed(client)
+                                                             if h[1] == identity.GROUP_HOLD]
 
 
 @pytest.mark.parametrize("order", ["branch_before_withhold", "branch_after_withhold"])
@@ -1139,10 +1167,11 @@ async def test_c4_gateway_branch_of_a_donor_timestamp_copy_stays_readable(client
     await run(fx)
     [gw] = [r for r in bj.rows(fx["db"], "c4d_gw") if r["content"] == yes]
     assert gw["timestamp"] == bj.rows(fx["db"], "c4d")[1]["timestamp"]  # row 1's (donor) time
-    assert (await _state("c4d_gw", gw["id"]))[:2] == (False, yes)
-    assert (await _state("c4d", ids[5]))[:2] == (False, yes)
+    assert left_readable_or_group_pending(await _state("c4d_gw", gw["id"]), yes)  # D-24
+    assert left_readable_or_group_pending(await _state("c4d", ids[5]), yes)
     assert (await _state("c4d", ids[1]))[0] is True
-    assert await holds_listed(client) == []
+    # D-24: a later branch's copy of a row held with its group is no safe copy: held as new in a later backup
+    assert {rule for _, rule in await non_group_holds(client)} <= {identity.LATER_HOLD}
 
 
 @pytest.mark.parametrize("order", ["fold_before_withhold", "fold_after_withhold"])
@@ -1160,7 +1189,7 @@ async def test_c5_a_fold_survivors_uid_never_takes_the_other_constituent(client,
         composite = _micro_merge(fx["db"], "c5f", a, b, T + 10)
         await run(fx)
         await withhold(client, (await message_of("c5f", b))[0].id)
-        assert (await _state("c5f", a))[:2] == (False, a_text)  # right after the withhold
+        assert group_pending(await _state("c5f", a))  # right after the withhold (D-24: held with the group)
         # 0.6.2 plan 4.5: at withhold time the composite (it contains B) is only listed pre-ticked; Settle decides
         # it certain by its absorbed uid (4.2 rule 3)
         await bj.settle(fx)
@@ -1171,11 +1200,11 @@ async def test_c5_a_fold_survivors_uid_never_takes_the_other_constituent(client,
     await run(fx)
     await run(fx)
     assert (await _state("c5f", composite))[2:] == (identity.FOLD, identity.CERTAIN)
-    assert (await _state("c5f", a))[:2] == (False, a_text)
-    assert await holds_listed(client) == []
+    assert group_pending(await _state("c5f", a))  # D-24: held with the group, never withheld for good
+    assert await non_group_holds(client) == []
     assert (await who_reads(client, mark))["readable_rows"] == []
     [orig_a] = await message_of("c5f", a)
-    assert await promote_status(client, orig_a.id) == 201
+    assert await promote_status(client, orig_a.id) == 400  # D-24: held with its conversation group (i22: 201)
     async with session_scope() as s:
         assert (await s.scalars(select(BrainWithholdExemption))).all() == []
 
@@ -1212,7 +1241,7 @@ async def test_c7_withhold_time_evidence_matches_the_import_and_a_release_sticks
     await run(fx)
     assert (await _state("c7c", composite))[0] is False
     assert (await _state("c7c", m))[0] is True
-    assert await holds_listed(client) == []
+    assert await non_group_holds(client) == []  # D-24: the group's own holds of the other rows remain
 
 
 # ======================= The lead's decision on the prune twin (deviation 61 of 2026-10-21) =========================
