@@ -660,6 +660,30 @@ class BrainSessionLink(Base):
     first_at: Mapped[datetime] = _now_col()
 
 
+class BrainWithheldSession(Base):
+    """A JARVIS conversation of a withheld message's group (option C, app/brain/groups.py; 0008): never deleted, and an
+    uncertain one never becomes a member again."""
+
+    __tablename__ = "brain_withheld_sessions"
+    anchor_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    source_session_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    how: Mapped[str] = mapped_column(Text)  # withheld_here, continuation, branch, reset, delegated, child, ...
+    state: Mapped[str] = mapped_column(Text, default="member")  # member, uncertain
+    via_session: Mapped[str] = mapped_column(Text, default="")
+    first_run: Mapped[int | None] = mapped_column(BigInteger)
+    first_at: Mapped[datetime] = _now_col()
+
+
+class BrainHiddenTitle(Base):
+    """A conversation whose title an admin's withhold hid outside its group (option C; 0008, append-only)."""
+
+    __tablename__ = "brain_hidden_titles"
+    source_session_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    anchor_key: Mapped[str] = mapped_column(Text, default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    hidden_at: Mapped[datetime] = _now_col()
+
+
 class BrainFrozenSession(Base):
     """A JARVIS conversation an admin stopped importing (0008)."""
 

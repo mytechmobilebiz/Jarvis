@@ -355,6 +355,15 @@ class SourceSession:
     # copied) and _delegate_from (a sub-agent) are recorded, never family links.
     markers: dict[str, str] = field(default_factory=dict)
     hermes_parent: str = ""  # parent_session_id as Hermes stored it ('' when NULL: e.g. the parent was deleted)
+    # a lineage marker names another conversation than the parent (not copied from the parent's own markers): two
+    # parents, which the groups (app/brain/groups.py, O-D1) read as 'uncertain'
+    conflict: bool = False
+    copied_markers: tuple[str, ...] = ()  # markers that are the parent's own, copied onto this child by Hermes
+
+    @property
+    def marker_parents(self) -> tuple[str, ...]:
+        """Every conversation the markers name other than the parent (a conflicting parent when `conflict`)."""
+        return tuple(sorted({v for v in self.markers.values() if v and v != self.parent_id}))
 
     @property
     def key(self) -> str:
@@ -399,6 +408,69 @@ def _as_text(value: Any) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", "replace")
     return str(value)
+
+
+def _config(value: Any) -> dict[str, Any]:
+    """A session's model_config as a dict ({} when absent or not a JSON object)."""
+    if not value:
+        return {}
+    try:
+        loaded = json.loads(_as_text(value))
+    except ValueError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+# The fork markers (Hermes _is_explicit_fork_child_row, include_reset) and the lineage each gives. A fork marker counts
+# only when it names the session's own parent (Hermes: "markers only count when they point at parent_session_id:
+# compression copies model_config onto the continuation"); with no parent (NULL: Hermes deleted it, or never set it)
+# any fork marker counts, as in Hermes. Round 3 fix A (groups-paths A: an older Hermes's rotation of a sub-agent
+# inherits _delegate_from of the sub-agent's parent and is a continuation, not a delegate).
+FORK_MARKERS = ("_delegate_from", "_branched_from", "_reset_from")
+FORK_LINEAGE = {"_delegate_from": "delegated", "_branched_from": "branch", "_reset_from": "reset"}
+
+
+def _markers(markers: dict[str, str], parent: str, parent_end_reason: str, parent_own: dict[str, str]
+             ) -> tuple[str, str, bool]:
+    """(lineage, parent, conflict) of a session from its lineage markers, its Hermes parent, how that parent ended and
+    the parent's own markers. In order:
+    1. a fork marker that names the parent (any fork marker when the parent is NULL): its kind (_delegate_from, then
+       _branched_from, then _reset_from), the parent it names;
+    2. _compressed_from (a rotation, hermes_state_mutation_compress): a continuation, also when JARVIS deleted the
+       parent since (the marker stays: review 3, rv3-res-4);
+    3. the parent ended 'branched' (a CLI branch) or 'compression' (a rotation without the marker);
+    4. a fork marker that is the parent's own, copied onto the child (the parent was reopened since, so its end_reason
+       says nothing): a continuation (fail-closed: linked both ways; Hermes would read the child as the parent's
+       continuation, round 3 A);
+    5. a fork marker naming another conversation, not copied from the parent: it keeps its kind (as f7b did), and the
+       session has two parents (conflict: groups.py reads it as 'uncertain', O-D1).
+    Otherwise a markerless child of its parent (lineage '') or no lineage. A gateway reset (_reset_from) copies no
+    rows and is never a continuation (Hermes: a reset child is never a continuation)."""
+    lineage, chosen = _lineage(markers, parent, parent_end_reason, parent_own)
+    # Two parents: a marker naming a conversation other than the parent read above, not copied from the parent's own
+    # markers (a parent's own marker is carried onto its continuation: hermes _publish_child_session_row).
+    conflict = any(v != chosen and parent_own.get(k) != v for k, v in markers.items() if v)
+    return lineage, chosen, conflict
+
+
+def _lineage(markers: dict[str, str], parent: str, parent_end_reason: str, parent_own: dict[str, str]
+             ) -> tuple[str, str]:
+    counted = [k for k in FORK_MARKERS if markers.get(k) and (not parent or markers[k] == parent)]
+    if counted:
+        return FORK_LINEAGE[counted[0]], parent or markers[counted[0]]
+    if markers.get("_compressed_from"):
+        return "continuation", parent or markers["_compressed_from"]
+    if parent and parent_end_reason == "branched":
+        return "branch", parent
+    if parent and parent_end_reason == "compression":
+        return "continuation", parent
+    unbound = [k for k in FORK_MARKERS if markers.get(k)]
+    foreign = [k for k in unbound if parent_own.get(k) != markers[k]]
+    if unbound and not foreign:
+        return "continuation", parent  # copied from the parent, which was reopened since
+    if foreign:
+        return FORK_LINEAGE[foreign[0]], parent
+    return "", parent
 
 
 def _as_flag(value: Any) -> int | None:
@@ -474,37 +546,21 @@ class Backup:
         rows = [dict(zip(cols, r, strict=True)) for r in
                 self.con.execute("SELECT %s FROM sessions" % self._select("sessions"))]
         end_reasons = {_as_text(r["id"]): _as_text(r.get("end_reason")) for r in rows}
+        configs = {_as_text(r["id"]): _config(r.get("model_config")) for r in rows}
+        # each session's own lineage markers: a child's marker that is its parent's own was copied from the parent
+        parent_markers = {sid: {k: c[k] for k in LINEAGE_MARKERS if isinstance(c.get(k), str) and c[k]}
+                          for sid, c in configs.items()}
         out = []
         for r in rows:
             sid = _as_text(r["id"])
             started, local_a = parse_time(r.get("started_at"), self.tz)
             ended, local_b = parse_time(r.get("ended_at"), self.tz)
             parent = _as_text(r.get("parent_session_id"))
-            lineage = ""
-            config = {}
-            if r.get("model_config"):
-                try:
-                    loaded = json.loads(_as_text(r["model_config"]))
-                    config = loaded if isinstance(loaded, dict) else {}
-                except ValueError:
-                    config = {}
+            config = configs[sid]
             markers = {k: config[k] for k in LINEAGE_MARKERS if isinstance(config.get(k), str) and config[k]}
-            if "_delegate_from" in markers:
-                lineage, parent = "delegated", parent or markers["_delegate_from"]
-            elif "_branched_from" in markers:
-                lineage, parent = "branch", parent or markers["_branched_from"]
-            elif "_compressed_from" in markers:
-                # A rotation (Hermes hermes_state_mutation_compress): a continuation, also when JARVIS deleted the
-                # parent since (delete_session sets parent_session_id to NULL; the marker stays: review 3, rv3-res-4).
-                lineage, parent = "continuation", parent or markers["_compressed_from"]
-            elif "_reset_from" in markers:
-                # A gateway reset (/new): a new session that copies no rows (gateway/session_recovery). Never a family
-                # link, whatever the parent's end_reason says (Hermes: a reset child is never a continuation).
-                lineage, parent = "reset", parent or markers["_reset_from"]
-            elif parent and end_reasons.get(parent) == "branched":
-                lineage = "branch"
-            elif parent and end_reasons.get(parent) == "compression":
-                lineage = "continuation"
+            own = parent_markers.get(parent, {})
+            copied = tuple(sorted(k for k, v in markers.items() if parent and own.get(k) == v and v != parent))
+            lineage, parent, conflict = _markers(markers, parent, end_reasons.get(parent, ""), own)
             counts = {k: int(r[k]) for k in ("message_count", "tool_call_count")
                       if isinstance(r.get(k), (int, float)) and not isinstance(r.get(k), bool)}
             out.append(SourceSession(
@@ -515,7 +571,7 @@ class Backup:
                 hermes_archived=bool(_as_flag(r.get("archived"))), hermes_counts=counts,
                 attribution=attribute(sid, self.job_names, self.template_jobs),
                 time_assumed_local=local_a or local_b, markers=markers,
-                hermes_parent=_as_text(r.get("parent_session_id"))))
+                hermes_parent=_as_text(r.get("parent_session_id")), conflict=conflict, copied_markers=copied))
         out.sort(key=SourceSession.sort_key)
         self._sessions = out
         return out

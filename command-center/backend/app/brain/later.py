@@ -72,6 +72,7 @@ TRIPWIRE = "last_tripwire"  # brain_maintenance name: the newest run's tripwire 
 TRIPWIRE_LIST_CAP = 200  # locations listed per run
 SENSITIVITY = {"general": 0, "customer": 1, "restricted": 2}
 LINK_HOWS = ("shared_uid", "copied_rows")
+FAMILY_LINKS = ("parent", "branched_from", "compressed_from", "shared_uid", "copied_rows")  # groups.FAMILY_LINKS
 
 
 # --- 5.1 The family -------------------------------------------------------------------------------------------------
@@ -102,7 +103,9 @@ async def session_families(s: AsyncSession, backup: src.Backup) -> dict[str, str
         for marker in ("_branched_from", "_compressed_from"):
             if ss.markers.get(marker):
                 union(ss.id, ss.markers[marker])
-    for a, b in (await s.execute(select(BrainSessionLink.a, BrainSessionLink.b))).all():
+    # only the links that copy rows: a delegate's, a reset's and a markerless child's links (option C) are the groups'
+    for a, b in (await s.execute(select(BrainSessionLink.a, BrainSessionLink.b).where(
+            BrainSessionLink.how.in_(FAMILY_LINKS)))).all():
         union(a, b)
     for a, b in (await s.execute(select(ArchiveSession.source_session_id,
                                         ArchiveSession.parent_source_session_id).where(

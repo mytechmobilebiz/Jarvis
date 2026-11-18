@@ -89,8 +89,12 @@ UID_HOLD = "same message id, other text"  # the withhold dialog: the same uid, o
 # decisions-apply on a database whose newest import of the family is of another JARVIS backup than the decision's:
 # the fail-safe hold of its stored rows at the withheld row's role, call and time or with its uid (plan 5.3 R5/S2/S1)
 OTHER_BACKUP_HOLD = "decided on another backup"
+# Option C (O-D1): a row of a conversation an uncertain link puts in a withheld group (app/brain/groups.py): held, never
+# released in one click, and the export waits while one waits
+UNCERTAIN_HOLD = "held with its conversation: an uncertain link to a withheld conversation"
 # What a hold's via may be (a decisions file's hold keeps its own; older vias of 0.6.2 development builds are read).
-HOLD_VIA = (SETTLE_HOLD, LATER_HOLD, MATCHING_HOLD, UID_HOLD, OTHER_BACKUP_HOLD, "same message id, different text",
+HOLD_VIA = (SETTLE_HOLD, LATER_HOLD, MATCHING_HOLD, UID_HOLD, OTHER_BACKUP_HOLD, UNCERTAIN_HOLD,
+            "same message id, different text",
             "same message id, contains the withheld text", "same text", "copied by JARVIS, nothing to compare",
             "same message id, nothing to compare", "restated after a compaction, new message id", "same message id",
             "upgrade: same message id", "upgrade: same text", "same conversation, role and time; nothing to compare")
@@ -102,6 +106,7 @@ def importer_older(version: str | None, floor: tuple[int, ...] = CARRIED_UID_SIN
     return found is None or tuple(int(x) for x in found.groups()) < floor
 
 
+FAMILY_LINKS = ("parent", "branched_from", "compressed_from", "shared_uid", "copied_rows")  # never option C's own
 LINEAGE = ("continuation", "branch")  # a child that copied its parent's history (never "delegated")
 ENTRY = re.compile(r"#entry-([0-9a-f]{16})(?:-[0-9]+)?$")  # a memory entry's key ends with its digest
 NOTE = "withheld by an admin"
@@ -211,11 +216,13 @@ MIN_RELATED = 16  # characters, normalised: 'contains' and 'part of (reply quote
 IDENTICAL_REL, CONTAINS, PART_OF, RESTATED_REL = "identical", "contains", "part_of", "restated"
 SAME_UID, SAME_CALL, SAME_TIME_REL, REUSED_ROW = "same_uid", "same_call", "same_time", "reused_row"
 STALE, ORPHAN, NOT_IN_BACKUP, NO_RELATION = "stale", "orphan", "not_in_backup", "none"
+UNCERTAIN_REL = "uncertain"  # option C (O-D1): the row's conversation is in a withheld group by an uncertain link
 TEXT_RELATIONS = (IDENTICAL_REL, RESTATED_REL, CONTAINS, PART_OF)
-RELATIONS = (*TEXT_RELATIONS, SAME_UID, SAME_CALL, SAME_TIME_REL, REUSED_ROW, STALE, ORPHAN, NOT_IN_BACKUP, NO_RELATION)
+RELATIONS = (*TEXT_RELATIONS, SAME_UID, SAME_CALL, SAME_TIME_REL, REUSED_ROW, STALE, ORPHAN, NOT_IN_BACKUP,
+             UNCERTAIN_REL, NO_RELATION)
 # Releasing a hold with one of these needs a typed confirmation (plan 4.6): its text is, holds or quotes the withheld
-# text.
-CONFIRM_RELATIONS = (IDENTICAL_REL, RESTATED_REL, CONTAINS, PART_OF)
+# text; or (O-D1) its conversation's link to the withheld one is uncertain: never released in one click.
+CONFIRM_RELATIONS = (IDENTICAL_REL, RESTATED_REL, CONTAINS, PART_OF, UNCERTAIN_REL)
 CONFIRM_WORD = "RELEASE"
 # What each relation says, in words an admin reads (never text of either row).
 RELATION_TEXT = {
@@ -230,6 +237,7 @@ RELATION_TEXT = {
     STALE: "a stale stored row at the withheld message's role and time",
     ORPHAN: "an orphan row",
     NOT_IN_BACKUP: "the withheld text is not in this backup",
+    UNCERTAIN_REL: "its conversation's link to the withheld conversation is uncertain (a parent not found, or two)",
     NO_RELATION: "no relation to the withheld text was found",
 }
 _DISCORD_NOTE = re.compile(r"\A\[Triggering message id: [^\n]*\]\n\n")
@@ -1092,7 +1100,8 @@ async def family_sessions(s: AsyncSession, source_session_ids: Iterable[str]) ->
         found = set(await lineage(s, sorted(frontier)))
         ids = sorted(frontier)
         for a, b in (await s.execute(select(BrainSessionLink.a, BrainSessionLink.b).where(
-                or_(BrainSessionLink.a.in_(ids), BrainSessionLink.b.in_(ids))))).all():
+                or_(BrainSessionLink.a.in_(ids), BrainSessionLink.b.in_(ids)),
+                BrainSessionLink.how.in_(FAMILY_LINKS)))).all():
             found |= {a, b}
         frontier = {x for x in found if x and x not in out}
         out |= frontier
@@ -1648,10 +1657,17 @@ async def repair(s: AsyncSession, *, actor: str, cause: str, refresh_quotes: boo
     quote of a removed source. The caller holds the import lock (importer.GLOBAL_LOCK) and commits. An import repairs
     without refreshing quotes (a first import never takes the quote lock when it has nothing to remove; the start-up
     check refreshes them even while an import runs). Counts only, audited when the Python steps changed something."""
-    from . import archive, quotes
+    from . import archive, groups, quotes
 
+    # Option C first: every withhold's conversation group over what this database knows (recorded, never forgotten;
+    # its titles hidden by the trigger), and the rows an uncertain link holds; repair_rows() then blanks the rollback
+    # copies of the groups' rows (R9).
+    await groups.refresh(s, run_id=None)
+    held = await groups.hold_uncertain(s, actor=actor, cause=cause)
     counts = await repair_rows(s, cause=cause)
     py = await finish_repair(s, actor=actor, cause=cause)
+    if held:
+        py["uncertain_rows_held"] += held
     swept = await archive.sweep_withheld_copies(s, actor=actor, cause=cause)
     py["copies_emptied"] += len(swept)
     py["rollback_copies_blanked"] += await archive.sweep_withheld_records(s)

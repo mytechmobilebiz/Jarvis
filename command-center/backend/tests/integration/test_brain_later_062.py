@@ -106,7 +106,9 @@ async def test_links_found_through_a_shared_uid_or_copied_history_are_recorded_a
     assert await state("lt1_u", shared) == "held"  # the same uid at another time: never certain (5.3)
     assert identity.IDENTICAL_REL in (await holds(client))[(await message_of("lt1_u", shared))[0].id]["relations"]
     assert await state("lt1_c", later_c) == "held"
-    assert await state("lt1_c", copied) == "readable"  # a safe copy of the family's stored readable row
+    # Option C (rebuild R1, D-3): lt1_c joins the withheld group by one copied row (J8: weak, 'uncertain'), so its rows
+    # are held with the conversation, the safe copy too (held, never one-click; i22 left it readable).
+    assert await state("lt1_c", copied) == "held"
     # The evidence goes (JARVIS deleted those rows); the links stay, so new turns there are still held.
     bj.change(fx["db"], "DELETE FROM messages WHERE id IN (?, ?)", shared, copied)
     again_u = bj.add_row(fx["db"], "lt1_u", "user", "Another question about lunch.", T + 4 * DAY)
@@ -282,7 +284,9 @@ async def test_a_new_conversation_of_the_family_keeps_its_title_hidden_until_no_
     await run(fx)
     async with session_scope() as s:
         sess = await s.scalar(select(ArchiveSession).where(ArchiveSession.source_session_id == "lt5_b"))
-        assert sess.title == "Branch about the garden party" and "title_held" not in sess.flags
+        # Option C (rebuild R1, D-2): the branch is a conversation of the withheld group, so the title trigger keeps
+        # its title hidden by membership alone, also after its holds are released (i22 brought the title back).
+        assert sess.title == "" and sess.flags.get("title_withheld") is True
     assert await state("lt5_b", turn) == "readable"
 
 

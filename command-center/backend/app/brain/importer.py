@@ -94,10 +94,12 @@ from ..models import (
     AuditLog,
     BrainDecisionBackup,
     BrainFrozenSession,
+    BrainHiddenTitle,
     BrainMaintenance,
     BrainPurgedContent,
     BrainPurgedItem,
     BrainSessionLink,
+    BrainWithheldSession,
     BrainTombstone,
     BrainWithholdExemption,
     ImportRecord,
@@ -111,6 +113,7 @@ from ..models import (
     WorkflowDraft,
 )
 from . import IMPORTER_VERSION, identity, later
+from . import groups as brain_groups
 from . import jarvis_kit as kit
 from . import mapping
 from . import source as src
@@ -776,6 +779,10 @@ class Processor:
         # on: a session of such a family in another backup is a later backup there (later_groups)
         self._decision_roots: dict[str, list[str]] = {}
         self._joined: dict[str, list[str]] = {}  # family root -> decisions it joins (joined_families)
+        # option C (app/brain/groups.py): each withhold's conversation group (anchor -> conversation -> how it joined),
+        # and per conversation the withholds whose group holds it: their families as this import reads them
+        self.groups: dict[str, dict[str, brain_groups.Member]] = {}
+        self._group_of: dict[str, set[str]] = {}
         self._joins: list[later.Join] = []  # the sessions that joined a family that way (links to record: plan 5.1)
         self._readable_uids: set[str] = set()  # certain stone uids a readable or released stored row carries
         self._later_session = False  # do_session: a session of a withheld family in a later backup (plan 5.2)
@@ -871,6 +878,11 @@ class Processor:
         self._joins = []
         self._joined = await joined_families(self.s, self.src.backup, self.ids, self._family, self._decision_roots,
                                              joins=self._joins)
+        # Option C: each withhold's group over this backup, the archive and the recorded links (J1-J9, O-D1,
+        # uncertain), recorded by a writing run before any row is stored (so the title trigger hides its titles).
+        self.groups = await brain_groups.refresh(self.s, backup=self.src.backup, run_id=self.run_id, ids=self.ids,
+                                                 write=self.write)
+        self._group_of = brain_groups.sessions_of(self.groups)
         self.frozen = await later.frozen_sessions(self.s)
         self._decisions = {}
         # The uids of certain stones that a readable stored row or a released one carries: never a copy identity
@@ -989,8 +1001,14 @@ class Processor:
         links: set[tuple[str, str]] = set()
         if ss.lineage in identity.LINEAGE and ss.hermes_parent:
             links.add((ss.hermes_parent[:200], "parent"))
-        for marker, how in (("_branched_from", "branched_from"), ("_compressed_from", "compressed_from")):
-            if ss.markers.get(marker):
+        elif ss.hermes_parent:
+            # option C: a delegated sub-agent's, a gateway reset's or a markerless child's parent (groups follow it
+            # from the parent down only, a reset both ways); never a family link of later.session_families
+            links.add((ss.hermes_parent[:200], "child"))
+        for marker, how in brain_groups.MARKER_LINKS.items():
+            # every marker but one copied from the parent (the parent's own: recorded on the parent), so a later
+            # backup whose Hermes deleted the parent or dropped the marker keeps the link (and a second parent)
+            if ss.markers.get(marker) and marker not in ss.copied_markers:
                 links.add((ss.markers[marker][:200], how))
         for a, how in sorted(links):
             if a and a != ss.id[:200]:
@@ -1621,7 +1639,8 @@ class Processor:
         """Every decision whose conversation family holds this JARVIS session (plan 5.1: the sessions bound by its
         stones, the links and markers, and the sessions that joined it through a shared uid or copied history)."""
         root = self._family.get(session_id[:200], session_id[:200])
-        return sorted(set(self._decision_roots.get(root, ())) | set(self._joined.get(root, ())))
+        return sorted(set(self._decision_roots.get(root, ())) | set(self._joined.get(root, ()))
+                      | self._group_of.get(session_id[:200], set()))
 
     def later_groups(self, session_id: str) -> list[str]:
         """The decisions whose conversation family holds this JARVIS session and that were taken on another backup
@@ -1637,6 +1656,8 @@ class Processor:
         roots = {r for r, gs in self._decision_roots.items() if want & set(gs)}
         roots |= {r for r, gs in self._joined.items() if want & set(gs)}
         sids = {sid for sid, r in self._family.items() if r in roots} | roots
+        for g in want:  # option C: the conversations of each withhold's group
+            sids |= set(self.groups.get(g, {}))
         for st in self.ids.by_key.values():
             if st.group in want and st.session:
                 sids.add(st.session)
@@ -2522,7 +2543,7 @@ class Processor:
         # is never re-keyed, deleted or adopted (0.6.2 plan 5.2, step 6); a row of it under a new key is not stored
         # twice (later_rows: identity.exact).
         root = self._family.get(ss.id[:200], ss.id[:200])
-        in_family = root in self._decision_roots or root in self._joined
+        in_family = root in self._decision_roots or root in self._joined or ss.id[:200] in self._group_of
         if not in_family:
             await self.adopt_rows(ss, msgs, rows, sess)
         self.same_stored = {}
@@ -2573,6 +2594,11 @@ class Processor:
             flags["title_redactions"] = dict(title_c.secret_types)
         if ss.hermes_counts:
             flags["hermes_counts"] = ss.hermes_counts
+        # option C (groups.py): Hermes stored no parent (the parent read comes from a marker only), or two parents
+        if ss.parent_id and not ss.hermes_parent:
+            flags["orphan"] = True
+        if ss.conflict:
+            flags["two_parents"] = True
         # A conversation's lineage and parent are never forgotten (0.6.2 plan 1.4; migration 0008 keeps them too):
         # a later backup whose Hermes deleted the parent leaves them '' there, never here.
         lineage = ss.lineage or (sess.lineage if sess is not None else "") or ""
@@ -3229,7 +3255,10 @@ async def settle_scope(s: AsyncSession, sources: Sources) -> SettleScope:
         sids = sorted(set((await s.scalars(select(BrainTombstone.source_session_id).where(
             BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.source_session_id != "",
             or_(BrainTombstone.source_key == st.source_key, BrainTombstone.anchor_key == st.source_key)))).all()))
-        newest = await identity.decision_backup(s, sids) if sids else ""
+        # option C: the newest backup that wrote the group's conversations whose link is certain (an uncertain member
+        # never moves the decision to another backup)
+        definite = await brain_groups.definite_sessions(s, st.source_key, sids)
+        newest = await identity.decision_backup(s, definite) if definite else ""
         if newest and newest == sha:
             groups.append(st.source_key)
             bound[st.source_key] = sids
@@ -3257,8 +3286,12 @@ async def settle_scope(s: AsyncSession, sources: Sources) -> SettleScope:
         for g in joined:
             if g in roots_of:
                 roots_of[g].add(root)
+    # option C: each decision's group in this backup (J1-J9, O-D1, uncertain), read only (the run records it)
+    grouped = await brain_groups.refresh(s, backup=sources.backup, ids=await identity.Identities.load(s),
+                                         anchors=groups, write=False)
     families = {g: sorted(ss.id[:200] for ss in sources.backup.sessions()
-                          if fam.get(ss.id[:200], ss.id[:200]) in roots_of[g]) for g in groups}
+                          if fam.get(ss.id[:200], ss.id[:200]) in roots_of[g] or ss.id[:200] in grouped.get(g, {}))
+                for g in groups}
     family = {sid for sids in families.values() for sid in sids}
     return SettleScope(groups, family, dict(waiting), families)
 
@@ -3413,6 +3446,10 @@ async def _execute(run_id: int, sources: Sources, selection: Selection, checkpoi
             if proc.tripwire.texts or proc.tripwire.inside or proc.tripwire.outside:
                 # plan 5.5: the newest run's tripwire, for admins (counts and archive ids only)
                 await later.note_tripwire(s, run_id, tally.d["tripwire"])
+            # option C (O-D1): the rows of a conversation an uncertain link puts in a withheld group are held
+            held_uncertain = await brain_groups.hold_uncertain(s, actor=actor, cause="import")
+            if held_uncertain:
+                tally.d["uncertain_rows_held"] = int(tally.d.get("uncertain_rows_held") or 0) + held_uncertain
             if settle is not None:
                 tally.d["settle"] = await proc.finish_settle()
                 await audit.record(s, actor, "brain.decisions_settled", "import_run", run_id, {
@@ -4742,10 +4779,19 @@ async def _decisions_content(s: AsyncSession, *, removals_only: bool) -> tuple[d
     frozen = [{"session": f.source_session_id, "by": f.frozen_by or "", "at": _iso(f.frozen_at)}
               for f in (await s.scalars(select(BrainFrozenSession).order_by(
                   BrainFrozenSession.source_session_id))).all()]
+    # Option C: each withhold's conversation group (how each conversation joined, and whether its link is uncertain)
+    # and the titles a withhold hid outside its group: ids only, never text.
+    grouped = [{"anchor": w.anchor_key, "session": w.source_session_id, "how": w.how, "state": w.state,
+                "via": w.via_session or ""}
+               for w in (await s.scalars(select(BrainWithheldSession).order_by(
+                   BrainWithheldSession.anchor_key, BrainWithheldSession.source_session_id))).all()]
+    hidden = [{"session": h.source_session_id, "anchor": h.anchor_key or "", "reason": h.reason or ""}
+              for h in (await s.scalars(select(BrainHiddenTitle).order_by(BrainHiddenTitle.source_session_id))).all()]
     content: dict[str, Any] = {"format": "jarvis-brain-decisions", "version": DECISIONS_VERSION,
                                "exported_at": now().isoformat(), "importer_version": IMPORTER_VERSION,
                                "handling": DECISIONS_HANDLING, "removals": removals, "releases": releases,
-                               "backups": backups, "links": links, "frozen": frozen}
+                               "backups": backups, "links": links, "frozen": frozen, "groups": grouped,
+                               "hidden_titles": hidden}
     if removals_only:
         content.update(removals_only=True, purged_items=purged_items, purge_fingerprints=fingerprints,
                        redactions=redactions)
@@ -4840,6 +4886,12 @@ async def _refuse_unsettled(s: AsyncSession) -> None:
     if holds:
         raise Refused("%d row(s) found when finishing decisions wait for review: keep or release each one (JARVIS "
                       "Brain page, Held for review) before exporting" % holds)
+    uncertain = int(pending.get("uncertain_waiting") or 0)
+    if uncertain:
+        # option C (O-D1): rows of a conversation an uncertain link puts in a withheld group wait for an admin
+        raise Refused("%d row(s) of %d conversation(s) whose link to a withheld conversation is uncertain wait for "
+                      "review: keep or release each one (JARVIS Brain page, Held for review) before exporting" % (
+                          uncertain, int(pending.get("uncertain_sessions") or 0)))
 
 
 # 0.6.2 plan 7.1: a decisions file of 0.6.0 or 0.6.1 (version 3 or older) names each withhold by its key only, with no
@@ -5325,10 +5377,23 @@ async def _carry_tables(s: AsyncSession, data: dict[str, Any]) -> Counter[str]:
     for link in data.get("links") or [] if isinstance(data.get("links"), list) else []:
         if not isinstance(link, dict) or not all(isinstance(link.get(k), str) and link[k] for k in ("a", "b", "how")):
             continue
-        if link["how"] not in ("parent", "branched_from", "compressed_from", "shared_uid", "copied_rows"):
+        if link["how"] not in brain_groups.LINK_HOW:
             continue
         out["links"] += (await s.execute(pg_insert(BrainSessionLink).values(
             a=link["a"][:200], b=link["b"][:200], how=link["how"]).on_conflict_do_nothing())).rowcount or 0
+    # option C: the groups (added; an uncertain conversation stays uncertain) and the hidden titles (added)
+    for w in data.get("groups") or [] if isinstance(data.get("groups"), list) else []:
+        if (not isinstance(w, dict) or not all(isinstance(w.get(k), str) and w[k] for k in ("anchor", "session", "how"))
+                or w["how"] not in brain_groups.HOWS):
+            continue
+        state = brain_groups.UNCERTAIN if w.get("state") == brain_groups.UNCERTAIN else brain_groups.MEMBER
+        out["groups"] += await brain_groups.record(s, w["anchor"], {w["session"][:200]: brain_groups.Member(
+            w["how"], state, str(w.get("via") or "")[:200])})
+    for h in data.get("hidden_titles") or [] if isinstance(data.get("hidden_titles"), list) else []:
+        if not isinstance(h, dict) or not isinstance(h.get("session"), str) or not h["session"]:
+            continue
+        out["hidden_titles"] += await brain_groups.hide_titles(s, [h["session"]], anchor=str(h.get("anchor") or ""),
+                                                               reason=str(h.get("reason") or ""))
     for f in data.get("frozen") or [] if isinstance(data.get("frozen"), list) else []:
         if not isinstance(f, dict) or not isinstance(f.get("session"), str) or not f["session"]:
             continue
@@ -5700,6 +5765,9 @@ async def legacy_reset(out_path: str, *, actor: str = DEFAULT_ACTOR, confirm: bo
                 carried[await _apply_removal(s, r, decider, review, via="legacy-reset", after=after,
                                              hold_other=not locked)] += 1
         bound = await _bind_legacy(s)
+        # option C: the groups of the withholds just bound (recorded before the rollbacks, which never forget them)
+        await brain_groups.refresh(s)
+        await brain_groups.hold_uncertain(s, actor=actor, cause="legacy-reset")
         # a purge 0.6.0/0.6.1 made of an incoming version (a plain hash in the item's flags) survives the rollback that
         # deletes the item: as a keyed fingerprint (review 3, readers)
         await identity.legacy_rejected_hashes(s, actor=actor)

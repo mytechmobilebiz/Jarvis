@@ -45,6 +45,7 @@ from ..models import (
 )
 from ..worker.scheduler import valid_cron
 from . import AGENTS, KINDS, identity, store
+from . import groups as brain_groups
 from . import text as brain_text
 from .archive import WITHHELD_BY_ADMIN, _blank_records, promoted_ref, recompute_session, withhold_copies
 from .quotes import relabel_hidden_titles, scrub_quotes
@@ -392,7 +393,13 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
     # The JARVIS backup this decision is taken on: the newest that wrote the conversation's family here. An import of
     # that very file replays it word for word once Settle finished it (0.6.2 plan 3.2, 4.4); a new decision on a
     # backup already finished needs finishing again (plan 4.7).
-    decided_on = await identity.decision_backup(session, [sess.source_session_id])
+    # Option C: the group's conversations whose link is certain decide the backup (an uncertain member never moves the
+    # decision to another backup: groups-d1 'definite').
+    member_sids = set((await session.scalars(select(ArchiveSession.source_session_id).where(
+        ArchiveSession.id.in_(sorted({g.row.session_id for g in group.members}))))).all()) if group.members else set()
+    pre = await brain_groups.closure_for(session, [sess.source_session_id, *member_sids],
+                                         [u for u in [identity.row_uid(message)] if u])
+    decided_on = await identity.decision_backup(session, sorted(sid for sid, m in pre.items() if not m.uncertain))
     await identity.reopen_decision_backup(session, decided_on)
     uid = identity.row_uid(message)
     if hide_title is None:
@@ -489,6 +496,10 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
                         child.title = ""
                         child.flags = {**(child.flags or {}), "title_withheld": True}
             frontier = nxt
+        # Kept for good (option C): a rollback, a restore or a re-import hides each of them again (title trigger).
+        await brain_groups.hide_titles(session, list((await session.scalars(select(
+            ArchiveSession.source_session_id).where(ArchiveSession.id.in_(hidden_ids)))).all()), anchor=root,
+            reason="hidden by an admin's withhold")
         # The rollback copies of those conversations keep no title either (a rollback never brings it back).
         await session.execute(update(ImportRecord).where(
             ImportRecord.target_table == "archive_sessions", ImportRecord.target_id.in_(hidden_ids),
@@ -513,6 +524,15 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
             identity.DELETED_COPY, ImportRecord.source_key == key,
             or_(ImportRecord.source_key == identity.UID_KEY + u,
                 identity.deleted_field("source_uid") == u))])
+    # Option C: the withhold's conversation group (J1-J9, O-D1, uncertain) is recorded: the title trigger hides every
+    # group conversation's title, the startup repair blanks their rollback copies (R9), and the rows of a conversation
+    # an uncertain link holds are held now (never released in one click; the export waits).
+    if root:
+        await session.flush()
+        await brain_groups.refresh(session, anchors=[root])
+        await brain_groups.hold_uncertain(session, actor=actor, cause=cause)
+        for obj in [o for o in session.identity_map.values() if isinstance(o, ArchiveSession)]:
+            await session.refresh(obj, ["title", "flags"])  # the title trigger changed stored conversations
     for sid in sorted({r.session_id for r in blanked} - {message.session_id}):
         await recompute_session(session, sid)
     out.session = await recompute_session(session, message.session_id)
@@ -608,7 +628,7 @@ async def _decision_backup_read_only(session: AsyncSession, sess: ArchiveSession
 # --- Holds: rows withheld for an admin's review (spec 8.2) ------------------------------------------------------
 
 # The holds groups of the Review tab (0.6.2 plan 9.2, 9.3): by the engine that held the row.
-HOLD_GROUPS = {identity.SETTLE_HOLD: "settle", identity.LATER_HOLD: "later"}
+HOLD_GROUPS = {identity.SETTLE_HOLD: "settle", identity.LATER_HOLD: "later", identity.UNCERTAIN_HOLD: "uncertain"}
 
 
 async def decision_status(session: AsyncSession) -> dict[str, Any]:
@@ -671,6 +691,7 @@ async def holds(session: AsyncSession, scope: PersonScope) -> list[dict[str, Any
         .order_by(ArchiveSession.started_at.desc().nulls_last(), ArchiveSession.id, ArchiveMessage.position,
                   ArchiveMessage.id))).all()
     frozen = set((await session.scalars(select(BrainFrozenSession.source_session_id))).all())
+    uncertain = await brain_groups.uncertain_sessions(session)  # O-D1: shown, never one-click
     out = []
     for row, sess, stone in found:
         anchor = stone.anchor_key or stone.source_key
@@ -692,6 +713,8 @@ async def holds(session: AsyncSession, scope: PersonScope) -> list[dict[str, Any
             .order_by(ArchiveMessage.position, ArchiveMessage.id).limit(1))
         hidden = bool((sess.flags or {}).get("title_withheld"))
         relations = hold_relations(stone)
+        if sess.source_session_id in uncertain and identity.UNCERTAIN_REL not in relations:
+            relations = identity.relation_order([*relations, identity.UNCERTAIN_REL])
         own_uid = identity.row_uid(row)
         copy_position = (sess.lineage in identity.LINEAGE and sess.started_at is not None and row.at is not None
                          and row.at <= sess.started_at)
@@ -712,11 +735,12 @@ async def holds(session: AsyncSession, scope: PersonScope) -> list[dict[str, Any
             "evidence": identity.evidence_text(relations) if relations else "the text could not be compared",
             "confirm_required": identity.needs_confirmation(relations),
             "preselected": bool(own_uid) and own_uid != w_uid and (w_at is None or row.at != w_at)
-                           and not copy_position,
+                           and not copy_position and sess.source_session_id not in uncertain,
             "decided_on": (stone.decided_on or "")[:12],
             # the Review tab's group (plan 9.2, 9.3) and whether later backups still import this conversation
             "group": HOLD_GROUPS.get(stone.via, "other"),
             "frozen": sess.source_session_id in frozen,
+            "uncertain": sess.source_session_id in uncertain,
             "neighbours": [i for i in (before, after) if i is not None]})
     return out
 
@@ -753,7 +777,10 @@ async def release_hold(session: AsyncSession, message: ArchiveMessage, sess: Arc
     names (a stone that is not a hold binds its JARVIS row): it is the withheld message itself. Promoted copies
     emptied while it was held stay empty."""
     stone = await _hold(session, message)
-    if (identity.needs_confirmation(hold_relations(stone)) and not confirmed
+    relations = hold_relations(stone)
+    if identity.UNCERTAIN_REL not in relations and await brain_groups.in_uncertain(session, sess.id):
+        relations = [*relations, identity.UNCERTAIN_REL]  # O-D1: its conversation's link is uncertain
+    if (identity.needs_confirmation(relations) and not confirmed
             and (confirm or "").strip() != identity.CONFIRM_WORD):
         # plan 4.6: a hold whose text is, holds or quotes the withheld text is released only on a typed confirmation
         raise BrainError(CONFIRM_NEEDED)
@@ -790,6 +817,9 @@ async def release_hold(session: AsyncSession, message: ArchiveMessage, sess: Arc
     return stone
 
 
+UNCERTAIN_ONE_CLICK = ("this conversation's link to a withheld conversation is uncertain (its parent was not found, or "
+                       "it has two): its rows are never released in one click; review them one by one (each release "
+                       "needs the typed confirmation)")
 NOT_COMPARABLE = ("this conversation has a hold whose withheld text was not in the JARVIS backup it came from ('the "
                   "withheld text is not in this backup'): nothing can say which rows have no relation to it, so the "
                   "one-click release is not offered; review its rows one by one, or stop importing it")
@@ -812,6 +842,9 @@ async def release_unrelated(session: AsyncSession, sess: ArchiveSession, scope: 
         .order_by(ArchiveMessage.position, ArchiveMessage.id).with_for_update(of=ArchiveMessage))).all()
     if any(identity.NOT_IN_BACKUP in hold_relations(stone) for _, stone in found):
         raise BrainError(NOT_COMPARABLE)
+    if await brain_groups.in_uncertain(session, sess.id):
+        # O-D1: a conversation an uncertain link puts in a withheld group is never released in one click
+        raise BrainError(UNCERTAIN_ONE_CLICK)
     out = []
     for message, stone in found:
         if hold_relations(stone) != [identity.NO_RELATION]:

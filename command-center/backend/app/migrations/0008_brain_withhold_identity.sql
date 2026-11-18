@@ -275,6 +275,73 @@ CREATE TABLE IF NOT EXISTS brain_frozen_sessions (
     frozen_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- 3b. Option C (0.6.2): a withheld message is held with its conversation group (app/brain/groups.py) -------------------
+-- Link kinds: besides the links that copy rows, the links groups follow from the parent down only (a delegated
+-- sub-agent, a markerless child: O-D1) and the gateway reset (linked both ways), each recorded the first time an import
+-- sees it and never forgotten, so a later backup whose Hermes deleted the parent or dropped the marker keeps them.
+DO $$
+DECLARE
+    c text;
+BEGIN
+    FOR c IN SELECT conname FROM pg_constraint WHERE conrelid = 'brain_session_links'::regclass AND contype = 'c'
+                AND pg_get_constraintdef(oid) LIKE '%how%' LOOP
+        EXECUTE format('ALTER TABLE brain_session_links DROP CONSTRAINT %I', c);
+    END LOOP;
+    ALTER TABLE brain_session_links ADD CONSTRAINT brain_session_links_how_check
+        CHECK (how IN ('parent', 'branched_from', 'compressed_from', 'shared_uid', 'copied_rows', 'delegate_from',
+                       'reset_from', 'child', 'provenance'));
+END
+$$;
+-- The conversations of each withhold's group (anchor_key: the admin's own stone): how each joined, from which
+-- conversation, and whether the link is certain ('member') or not ('uncertain': a parent that does not resolve, or two
+-- parents: held, never released in one click, and the export waits). Durable: a row is never deleted and an uncertain
+-- one never becomes a member again (a rollback, a restore and a later backup only add).
+CREATE TABLE IF NOT EXISTS brain_withheld_sessions (
+    anchor_key         TEXT NOT NULL,
+    source_session_id  TEXT NOT NULL,
+    how                TEXT NOT NULL CHECK (how IN ('withheld_here', 'continuation', 'branch', 'reset', 'delegated',
+                                                    'child', 'linked', 'shared_uid', 'copied_rows', 'provenance')),
+    state              TEXT NOT NULL DEFAULT 'member' CHECK (state IN ('member', 'uncertain')),
+    via_session        TEXT NOT NULL DEFAULT '',
+    first_run          BIGINT,
+    first_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (anchor_key, source_session_id)
+);
+CREATE INDEX IF NOT EXISTS brain_withheld_sessions_session_idx ON brain_withheld_sessions (source_session_id);
+CREATE OR REPLACE FUNCTION brain_withheld_sessions_keep() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'brain_withheld_sessions keeps every conversation of a withheld group: none is forgotten';
+    END IF;
+    IF NEW.anchor_key <> OLD.anchor_key OR NEW.source_session_id <> OLD.source_session_id THEN
+        RAISE EXCEPTION 'brain_withheld_sessions: a group member is never moved';
+    END IF;
+    IF OLD.state = 'uncertain' AND NEW.state <> 'uncertain' THEN
+        NEW.state := 'uncertain';  -- fail closed: an uncertain link stays uncertain
+    END IF;
+    RETURN NEW;
+END
+$fn$;
+DROP TRIGGER IF EXISTS brain_withheld_sessions_keep ON brain_withheld_sessions;
+CREATE TRIGGER brain_withheld_sessions_keep BEFORE UPDATE OR DELETE ON brain_withheld_sessions
+    FOR EACH ROW EXECUTE FUNCTION brain_withheld_sessions_keep();
+-- Conversations whose title an admin's withhold hid outside the group (a conversation whose first user message is a
+-- member: Hermes derived its title from it), kept so a rollback, a restore or a re-import hides it again. Append-only.
+CREATE TABLE IF NOT EXISTS brain_hidden_titles (
+    source_session_id  TEXT PRIMARY KEY,
+    anchor_key         TEXT NOT NULL DEFAULT '',
+    reason             TEXT NOT NULL DEFAULT '',
+    hidden_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE OR REPLACE FUNCTION brain_hidden_titles_keep() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+    RAISE EXCEPTION 'brain_hidden_titles is append-only: a hidden title is never shown again';
+END
+$fn$;
+DROP TRIGGER IF EXISTS brain_hidden_titles_keep ON brain_hidden_titles;
+CREATE TRIGGER brain_hidden_titles_keep BEFORE UPDATE OR DELETE ON brain_hidden_titles
+    FOR EACH ROW EXECUTE FUNCTION brain_hidden_titles_keep();
+
 -- 4. Purges: keyed fingerprints (HMAC, app/brain/identity.purge_fp) of purged imported items, never a plain hash ------
 CREATE TABLE IF NOT EXISTS brain_purged_content (
     fp          TEXT PRIMARY KEY,                     -- 'k1:<key id>:<hex>'
@@ -358,6 +425,48 @@ DROP TRIGGER IF EXISTS archive_messages_keep_withheld ON archive_messages;
 CREATE TRIGGER archive_messages_keep_withheld BEFORE INSERT OR UPDATE ON archive_messages
     FOR EACH ROW WHEN (NOT NEW.withheld) EXECUTE FUNCTION archive_messages_keep_withheld();
 
+-- Option C: the title of every conversation of a withheld group is hidden by its membership alone (Hermes derives a
+-- title from the first user message and carries it on to continuations and branches), and so is a title an admin's
+-- withhold hid outside the group (brain_hidden_titles), whatever code writes the conversation: an import, a rollback,
+-- a restore's re-import.
+CREATE OR REPLACE FUNCTION archive_sessions_hide_title() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF (coalesce(NEW.title, '') <> '' OR coalesce(NEW.flags ->> 'title_withheld', '') <> 'true')
+       AND (EXISTS (SELECT 1 FROM brain_withheld_sessions w WHERE w.source_session_id = NEW.source_session_id)
+            OR EXISTS (SELECT 1 FROM brain_hidden_titles h WHERE h.source_session_id = NEW.source_session_id)) THEN
+        NEW.title := '';
+        NEW.flags := coalesce(NEW.flags, '{}'::jsonb) || '{"title_withheld": true}'::jsonb;
+    END IF;
+    RETURN NEW;
+END
+$fn$;
+DROP TRIGGER IF EXISTS archive_sessions_hide_title ON archive_sessions;
+CREATE TRIGGER archive_sessions_hide_title BEFORE INSERT OR UPDATE ON archive_sessions
+    FOR EACH ROW EXECUTE FUNCTION archive_sessions_hide_title();
+-- A conversation that joins a group (or whose title an admin hid) loses its title at once, and so do its rollback
+-- copies (a rollback never brings the title back).
+CREATE OR REPLACE FUNCTION brain_hide_title_now() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+    UPDATE archive_sessions s SET title = '', flags = coalesce(s.flags, '{}'::jsonb) || '{"title_withheld": true}'::jsonb
+     WHERE s.source_session_id = NEW.source_session_id
+       AND (coalesce(s.title, '') <> '' OR coalesce(s.flags ->> 'title_withheld', '') <> 'true');
+    UPDATE import_records x SET before = x.before || '{"title": ""}'::jsonb
+      FROM archive_sessions s
+     WHERE s.source_session_id = NEW.source_session_id AND x.target_table = 'archive_sessions'
+       AND x.target_id = s.id AND x.before ? 'title' AND coalesce(x.before ->> 'title', '') <> '';
+    UPDATE import_records x SET before = x.before || '{"title": ""}'::jsonb
+     WHERE x.record_type = 'session' AND x.before ? 'title' AND coalesce(x.before ->> 'title', '') <> ''
+       AND x.source_key = 'jarvis:session:' || NEW.source_session_id;
+    RETURN NEW;
+END
+$fn$;
+DROP TRIGGER IF EXISTS brain_withheld_sessions_hide_title ON brain_withheld_sessions;
+CREATE TRIGGER brain_withheld_sessions_hide_title AFTER INSERT ON brain_withheld_sessions
+    FOR EACH ROW EXECUTE FUNCTION brain_hide_title_now();
+DROP TRIGGER IF EXISTS brain_hidden_titles_hide_title ON brain_hidden_titles;
+CREATE TRIGGER brain_hidden_titles_hide_title AFTER INSERT ON brain_hidden_titles
+    FOR EACH ROW EXECUTE FUNCTION brain_hide_title_now();
+
 -- 6. The repair ----------------------------------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION brain_withhold_repair(p_cause text) RETURNS jsonb LANGUAGE plpgsql AS $fn$
 DECLARE
@@ -377,6 +486,7 @@ DECLARE
     n_records_blank int := 0;
     n_sessions int := 0;
     n_times int := 0;
+    n_group_copies int := 0;
     v_out jsonb;
 BEGIN
     PERFORM set_config('client_min_messages', 'warning', true);
@@ -562,6 +672,39 @@ BEGIN
     GET DIAGNOSTICS n = ROW_COUNT;
     n_times := n_times + n;
 
+    -- R9 (option C). Every rollback copy of a row of a withheld group's conversation keeps no text: the group's rows
+    -- are held with their conversation (app/brain/groups.py), so a rollback, whatever wrote the copy, never puts one
+    -- back readable. A copy is the conversation's by the stored row it names, by the deleted row it keeps, or, for the
+    -- copy of a row changed and later deleted, by that row's deletion copy.
+    WITH g AS (
+        SELECT DISTINCT s.id FROM archive_sessions s
+          JOIN brain_withheld_sessions w ON w.source_session_id = s.source_session_id
+    ), gone AS (
+        SELECT DISTINCT (y.before -> 'deleted_row' ->> 'id') AS id FROM import_records y
+         WHERE y.record_type = 'message' AND y.before ? 'deleted_row'
+           AND (y.before -> 'deleted_row' ->> 'session_id') IN (SELECT id::text FROM g)
+    ), blanked AS (
+        UPDATE import_records x
+           SET before = CASE WHEN x.before ? 'deleted_row' THEN
+                            jsonb_set(x.before, '{deleted_row}', (x.before -> 'deleted_row')
+                                || jsonb_build_object('content', '', 'tool_calls', '[]'::jsonb, 'labels', '[]'::jsonb,
+                                                      'withheld', true, 'truncated', false,
+                                                      'source_fp', 'w1:' || coalesce(x.before -> 'deleted_row' ->> 'state', 'live')))
+                        ELSE x.before || jsonb_build_object('content', '', 'tool_calls', '[]'::jsonb, 'labels', '[]'::jsonb,
+                                                             'withheld', true, 'truncated', false,
+                                                             'source_fp', 'w1:' || coalesce(x.before ->> 'state', 'live'))
+                        END
+         WHERE x.record_type = 'message' AND x.before <> '{}'::jsonb
+           AND (x.before ? 'content' OR x.before ? 'deleted_row')
+           AND coalesce(x.before -> 'deleted_row' ->> 'withheld', x.before ->> 'withheld', 'false') <> 'true'
+           AND ((x.target_table = 'archive_messages'
+                 AND x.target_id IN (SELECT m.id FROM archive_messages m WHERE m.session_id IN (SELECT id FROM g)))
+                OR (x.before -> 'deleted_row' ->> 'session_id') IN (SELECT id::text FROM g)
+                OR (x.target_table = 'archive_messages' AND x.target_id::text IN (SELECT id FROM gone)))
+        RETURNING 1
+    )
+    SELECT count(*) INTO n_group_copies FROM blanked;
+
     INSERT INTO brain_maintenance (name, done_at, detail)
     VALUES ('withhold_identity', now(), jsonb_build_object('records_to', v_max_record, 'cause', p_cause))
     ON CONFLICT (name) DO UPDATE SET done_at = EXCLUDED.done_at, detail = EXCLUDED.detail;
@@ -570,8 +713,10 @@ BEGIN
         'stones_added', n_stones_added, 'withheld_by_key', n_key, 'withheld_by_jarvis_row', n_row,
         'withheld_by_fold', n_fold, 'restricted_rows_withheld', n_restricted,
         'fingerprints_removed', n_rows_fp + n_records_fp, 'rollback_copies_blanked', n_records_blank,
-        'sessions_to_recompute', n_sessions, 'stone_times_learned', n_times, 'full', v_full);
-    IF n_stones_added + n_key + n_row + n_fold + n_restricted + n_rows_fp + n_records_fp + n_records_blank > 0 THEN
+        'sessions_to_recompute', n_sessions, 'stone_times_learned', n_times, 'full', v_full,
+        'group_rollback_copies_blanked', n_group_copies);
+    IF n_stones_added + n_key + n_row + n_fold + n_restricted + n_rows_fp + n_records_fp + n_records_blank
+       + n_group_copies > 0 THEN
         INSERT INTO audit_log (actor, action, target_type, target_id, detail)
         VALUES (v_actor, 'brain.withhold_identity_repaired', 'brain', '', v_out);
     END IF;
@@ -619,6 +764,35 @@ CREATE OR REPLACE FUNCTION brain_withhold_pending() RETURNS jsonb LANGUAGE sql S
                               WHERE reason = 'withheld by an admin' AND review = 'pending'
                                 AND via = 'new in a later backup'),
         'frozen_sessions', (SELECT count(*) FROM brain_frozen_sessions),
+        -- option C: conversations of withheld groups, those whose link is uncertain, and the rows of an uncertain
+        -- conversation still waiting for an admin (readable without a release of that row for that group, or held
+        -- and neither kept nor released): the export waits while any waits (importer._refuse_unsettled)
+        'group_sessions', (SELECT count(DISTINCT source_session_id) FROM brain_withheld_sessions),
+        'uncertain_sessions', (SELECT count(DISTINCT source_session_id) FROM brain_withheld_sessions
+                                WHERE state = 'uncertain'),
+        'uncertain_waiting', (SELECT count(DISTINCT m.id) FROM brain_withheld_sessions w
+                                JOIN archive_sessions s ON s.source_session_id = w.source_session_id
+                                JOIN archive_messages m ON m.session_id = s.id
+                               WHERE w.state = 'uncertain'
+                                 AND ((NOT m.withheld AND NOT EXISTS (
+                                          SELECT 1 FROM brain_withhold_exemptions e
+                                           WHERE e.anchor_key = w.anchor_key
+                                             AND e.source_session_id = w.source_session_id
+                                             AND e.source_row_id = m.source_message_id AND e.kind = 'release'
+                                             AND brain_exact(e.role, e.tool_call_id, e.source_at, e.source_uid, m.role,
+                                                             m.tool_call_id, m.at,
+                                                             brain_row_uid(m.source_uid, m.source_key))))
+                                      OR (m.withheld AND EXISTS (
+                                          SELECT 1 FROM brain_tombstones t
+                                           WHERE t.source_key = m.source_key AND t.reason = 'withheld by an admin'
+                                             AND t.review = 'pending')))),
+        'group_rollback_copies_with_text', (SELECT count(*) FROM import_records x
+                                              JOIN archive_messages m ON x.target_table = 'archive_messages'
+                                                                     AND x.target_id = m.id
+                                              JOIN archive_sessions s ON s.id = m.session_id
+                                              JOIN brain_withheld_sessions w ON w.source_session_id = s.source_session_id
+                                             WHERE x.record_type = 'message' AND x.before ? 'content'
+                                               AND coalesce(x.before ->> 'withheld', 'false') <> 'true'),
         'legacy_lock', EXISTS (SELECT 1 FROM brain_maintenance WHERE name = 'legacy_brain_data'),
         'last_tripwire', (SELECT detail FROM brain_maintenance WHERE name = 'last_tripwire'),
         'repair_done', EXISTS (SELECT 1 FROM brain_maintenance WHERE name = 'withhold_identity'));

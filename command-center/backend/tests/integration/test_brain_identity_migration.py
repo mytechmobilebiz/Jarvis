@@ -295,7 +295,10 @@ async def test_0008_fresh_database_applies_with_0006_0007_and_writes_no_audit(sc
                            "withheld_with_text_fingerprint": 0, "held_for_review": 0, "repair_done": True,
                            # 0.6.2 plan 1.8
                            "unsettled_decisions": 0, "unreviewed_settle_holds": 0, "quarantined_rows": 0,
-                           "frozen_sessions": 0, "legacy_lock": False, "last_tripwire": None}
+                           "frozen_sessions": 0, "legacy_lock": False, "last_tripwire": None,
+                           # option C (rebuild R1, D-1): the groups' counters, all 0 on a fresh database
+                           "group_sessions": 0, "uncertain_sessions": 0, "uncertain_waiting": 0,
+                           "group_rollback_copies_with_text": 0}
         assert await conn.fetchval("SELECT count(*) FROM brain_maintenance WHERE name = 'legacy_brain_data'") == 0
         await _version_row(conn, "quarantined")  # 0007's CHECK still in force
     finally:
