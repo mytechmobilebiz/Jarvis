@@ -165,12 +165,17 @@ class World:
         r = await self.api.release(h["message"])
         assert r.status_code == 200, r.text
 
-    async def review_all(self, independent: set[tuple[str, int]] = frozenset()) -> None:
+    async def review_all(self, independent: set[tuple[str, int]] = frozenset(), *, unrelated: bool = False) -> None:
+        """The admin's review: every hold kept but the independent ones (released). With unrelated (option C, rebuild
+        R2, D-7): a row held only with its conversation group whose evidence is exactly 'none' is released too, as the
+        one-click 'release this conversation's rows with no relation' releases it (i22 never held it)."""
         rows = {r["id"]: r for r in await cc.rows()}
         for h in await self.holds():
             r = rows[h["message"]]
             key = (r["sid"], int(r["source_message_id"]))
-            resp = await (self.api.release(h["message"]) if key in independent else self.api.keep(h["message"]))
+            free = key in independent or (unrelated and h["rule"] == "held with its conversation: a withheld "
+                                          "conversation group" and h["relations"] == ["none"])
+            resp = await (self.api.release(h["message"]) if free else self.api.keep(h["message"]))
             assert resp.status_code == 200, resp.text
 
     async def export(self, name: str = "decisions.json", **kw: Any) -> str:

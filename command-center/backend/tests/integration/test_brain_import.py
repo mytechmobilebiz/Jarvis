@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select, text, update
 
+from app.brain import identity
 from app.brain import importer as imp
 from app.brain import jarvis_kit as kit
 from app.brain import mapping
@@ -1138,13 +1139,20 @@ async def test_withheld_messages_and_purged_items_carry_over_from_the_test_copy(
         await review.purge(s, item, actor="admin@test.local")
     settled = await bj.settle(built)  # 0.6.2 plan 4.7: decisions-export refuses until the withhold is finished
     out = tmp_path / "decisions.json"
-    assert (await imp.decisions_export(str(out)))["removals"] == 2
+    # option C (rebuild R2, D-10): the withheld message's conversation's other rows are held with it (pending holds of
+    # its group, carried in the file as holds): the withhold and the purge, plus those holds
+    removals_n = (await imp.decisions_export(str(out)))["removals"]
     exported = json.loads(out.read_text())
+    group_holds = [r for r in exported["removals"] if r.get("via") == identity.GROUP_HOLD]
+    assert removals_n == 2 + len(group_holds) and all(r.get("review") == "pending" for r in group_holds)
     assert exported["version"] == 5  # 0.6.2: a withhold carries its exact JARVIS row and decision backup (no text)
-    assert {(r["source_key"], r["reason"]) for r in exported["removals"]} == {
+    assert {(r["source_key"], r["reason"]) for r in exported["removals"] if r not in group_holds} == {
         (message_key, "withheld by an admin"), (item_key, imp.PURGED_BY_ADMIN)}
     flat = out.read_text()
     assert json.dumps(message_text)[1:-1] not in flat and json.dumps(item_body)[1:-1] not in flat  # keys, no text
+    # D-10: this test follows the withhold and the purge; the group's holds the file carries (above) are applied by
+    # decisions-apply in test_brain_hold_r2_062 (its sweep holds the group's rows here all the same)
+    exported["removals"] = [r for r in exported["removals"] if r not in group_holds]
     exported["removals"] += [{"source_key": "jarvis:message:never-imported:1", "reason": "withheld by an admin"},
                              {"source_key": "", "reason": "withheld by an admin"},
                              {"source_key": "jarvis:file:x", "reason": "something else"}]
@@ -1155,6 +1163,8 @@ async def test_withheld_messages_and_purged_items_carry_over_from_the_test_copy(
     await imp.rollback(test_copy["run_id"], discard_reviewed=True, confirm=True)
     async with session_scope() as s:
         await s.execute(BrainTombstone.__table__.delete())
+        # D-10: production has no withheld group either (option C keeps groups for good on the test copy)
+        await s.execute(text("TRUNCATE brain_withheld_sessions, brain_hidden_titles"))
     production = await imp.run(bj.paths(built), ALL)
     async with session_scope() as s:
         again = await s.scalar(select(ArchiveMessage).where(ArchiveMessage.source_key == message_key))
@@ -1174,7 +1184,8 @@ async def test_withheld_messages_and_purged_items_carry_over_from_the_test_copy(
         assert (withheld.withheld, withheld.content) == (True, "")
         assert "withheld_by_admin" in withheld.flags
         assert await s.scalar(select(MemoryItem).where(MemoryItem.source_key == item_key)) is None
-        reasons = dict((await s.execute(select(BrainTombstone.source_key, BrainTombstone.reason))).all())
+        reasons = dict((await s.execute(select(BrainTombstone.source_key, BrainTombstone.reason).where(
+            BrainTombstone.via != identity.GROUP_HOLD))).all())  # D-10: and the sweep's holds of the group
         assert reasons == {message_key: "withheld by an admin", item_key: imp.PURGED_BY_ADMIN,
                            "jarvis:message:never-imported:1": "withheld by an admin"}
         logged = await s.scalar(select(AuditLog).where(AuditLog.action == "brain.decisions_applied"))

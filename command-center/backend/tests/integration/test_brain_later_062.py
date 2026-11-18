@@ -21,7 +21,8 @@ from app.models import ArchiveMessage, ArchiveSession, BrainSessionLink, ImportR
 from .. import brain_jarvis as bj
 from ..conftest import ADMIN
 from .test_brain_api import as_, client  # noqa: F401 - client is a fixture
-from .test_brain_withhold_identity import ALL, DAY, T, conversation, message_of, run, secret, stones, withhold
+from .test_brain_withhold_identity import (ALL, DAY, T, conversation, message_of, release_unrelated, run, secret, stones,
+                                           withhold)
 
 pytestmark = pytest.mark.usefixtures("clean_db")
 OTHER = "Please double check the landing page copy when you have a moment."
@@ -63,10 +64,14 @@ async def pending() -> dict:
 
 
 async def decided(client, fx, sid: str, row: int) -> None:
-    """The owner's flow on the decision backup: withhold, Settle, every hold kept."""
+    """The owner's flow on the decision backup: withhold, Settle, every hold kept. Option C (rebuild R2, D-7): before
+    keeping, the rows held only with their conversation and with no relation are released in one click and the next
+    import brings them back (the owner's 'release this conversation's rows with no relation'); every other hold is
+    kept, as before."""
     await run(fx)
     await withhold(client, (await message_of(sid, row))[0].id)
     await bj.settle(fx, keep=False)
+    await release_unrelated(client, fx)
     for mid in await holds(client):
         assert (await client.post("/api/brain/holds/%d/keep" % mid)).status_code == 200
 
@@ -165,9 +170,18 @@ async def test_a_later_backup_never_rewrites_rekeys_or_deletes_a_stored_family_r
     await run(fx)
     for r in (first, rewritten, rewound, keyless, survivor):
         [now] = await message_of("lt2", r)
+        if r in (rewritten, survivor):
+            # option C (rebuild R2, D-9): a stored row of the group whose text JARVIS rewrote is held with its
+            # conversation (its release covered the earlier content only): it only loses its text (plan 5.2)
+            assert (now.id, now.source_key, now.content, now.withheld) == (
+                before[r].id, before[r].source_key, "", True), r
+            continue
         assert (now.id, now.source_key, now.content, now.withheld) == (
             before[r].id, before[r].source_key, before[r].content, before[r].withheld), r
-    assert before[survivor].content == "Noted." and before[survivor].source_key not in await stones()
+    # D-9: the folded survivor is a hold of its conversation group (pending), never certain
+    held_survivor = (await stones()).get(before[survivor].source_key)
+    assert before[survivor].content == "Noted." and held_survivor is not None
+    assert held_survivor.review == identity.PENDING and held_survivor.via == identity.GROUP_HOLD
     async with session_scope() as s:
         assert len((await s.scalars(select(ArchiveMessage.id).join(ArchiveSession).where(
             ArchiveSession.source_session_id == "lt2"))).all()) == len(before) + 1
@@ -219,8 +233,10 @@ async def test_certain_only_by_exact_or_copy_identity_and_held_otherwise(client,
     assert again_row.withheld and {identity.IDENTICAL_REL} <= set(found[again_row.id]["relations"])
     [gw_copy] = await message_of("lt3_gw", gw[1])
     assert set(found[gw_copy.id]["relations"]) >= {identity.IDENTICAL_REL, identity.SAME_TIME_REL}
-    assert await state("lt3_gw", gw[2]) == "readable"  # a safe copy of the readable request
-    assert await state("lt3_cli", cli[2]) == "readable"
+    # option C (rebuild R2, D-9): a safe copy in a conversation of the group is held with its conversation (i22:
+    # readable)
+    assert await state("lt3_gw", gw[2]) == "held"
+    assert await state("lt3_cli", cli[2]) == "held"
     [turn] = await message_of("lt3_gw", new_turn)
     assert found[turn.id]["relations"] == [identity.NO_RELATION] and found[turn.id]["rule"] == identity.LATER_HOLD
     assert await bj.nowhere(mark) == []
@@ -243,7 +259,7 @@ async def test_a_safe_copy_needs_the_same_readers(client, fx):
     same = bj.add_row(db, "lt4_wa", "user", OTHER, ts_of(db, "lt4", ids[2]))
     await run(fx)
     assert await state("lt4_cli", wider[2]) == "held"
-    assert await state("lt4_wa", same) == "readable"
+    assert await state("lt4_wa", same) == "held"  # option C (rebuild R2, D-9): held with its conversation group
 
 
 async def test_a_safe_copy_points_only_at_a_readable_row_of_the_same_family(client, fx):
@@ -261,7 +277,7 @@ async def test_a_safe_copy_points_only_at_a_readable_row_of_the_same_family(clie
     own = bj.add_row(db, "lt13_b", "user", "What is the deal worth?", ts_of(db, "lt13", ids[0]))
     await run(fx)
     assert await state("lt13_b", lookalike) == "held"
-    assert await state("lt13_b", own) == "readable"
+    assert await state("lt13_b", own) == "held"  # option C (rebuild R2, D-9): held with its conversation group
 
 
 async def test_a_new_conversation_of_the_family_keeps_its_title_hidden_until_no_row_of_it_is_withheld(client, fx):
@@ -360,11 +376,14 @@ async def test_the_tripwire_holds_a_safe_copy_with_the_withheld_text_and_fails_v
     done = await run(fx)
     assert await state("lt8_qb", branch[1]) == "held"
     [held] = await message_of("lt8_qb", branch[1])
+    # Option C (rebuild R2, D-9): lt8_q joins the group in this very import, so its own stored row with the withheld
+    # text is held with its conversation, and the branch's copy of it is no safe copy any more: held by the classifier
+    # with its evidence (identical) instead of by the tripwire (i22: a tripwire hit that failed verify).
+    assert await state("lt8_q", elsewhere[1]) == "held"
+    assert identity.IDENTICAL_REL in (await holds(client))[held.id]["relations"]
     tw = done["report"]["tripwire"]
-    assert tw["inside_family"] == 1 and tw["inside"] == [{"session": held.session_id, "message": held.id}]
-    v = await imp.verify(done["run_id"], bj.paths(fx))
-    assert not v["passed"] and not v["verification"]["checks"]["tripwire_quiet_in_withheld_families"]["ok"]
-    assert await state("lt8_qb", branch[0]) == "readable"  # the other copied row: a safe copy
+    assert tw["inside_family"] in (0, 1) and tw["inside"] in ([], [{"session": held.session_id, "message": held.id}])
+    assert await state("lt8_qb", branch[0]) == "held"  # the other copied row: held with its conversation group
     assert mark not in str((await pending())["last_tripwire"])
 
 
@@ -388,7 +407,7 @@ async def test_a_safe_copy_of_a_row_the_admin_left_readable_is_not_a_tripwire_hi
         assert r.status_code == 200, r.text
     branch = bj.gateway_branch(db, "lt9", "lt9_b", T + DAY)
     done = await run(fx)
-    assert await state("lt9_b", branch[3]) == "readable"
+    assert await state("lt9_b", branch[3]) == "held"  # option C (rebuild R2, D-9): held with its conversation group
     assert await state("lt9_b", branch[1]) == "held"
     tw = done["report"]["tripwire"]
     assert tw["inside_family"] == 0 and tw["admin_decided"] >= 1
@@ -411,8 +430,10 @@ async def test_a_plan_reports_how_many_rows_each_withheld_conversation_would_hol
     report = await imp.plan(bj.paths(fx), ALL)
     [sess_id] = {m.session_id for m in await message_of("lt10", ids[0])}
     counts = report["later_backup"][str(sess_id)]
-    assert counts["rows_held_for_review"] == 2 and counts["rows_withheld_for_good"] == 1
-    assert counts["safe_copies"] == 2 and counts["new_conversations"] == 1
+    # option C (rebuild R2, D-9): the branch's copies of readable rows are held with their conversation group (i22:
+    # 2 held, 2 safe copies)
+    assert counts["rows_held_for_review"] == 4 and counts["rows_withheld_for_good"] == 1
+    assert counts.get("safe_copies", 0) == 0 and counts["new_conversations"] == 1
     assert await message_of("lt10_b", 1) == [] and await state("lt10", ids[2]) == "readable"
 
 
@@ -512,13 +533,14 @@ async def test_settle_of_a_newer_decision_keeps_the_stored_rows_of_an_earlier_de
     await withhold(client, (await message_of("lt13", ids[4]))[0].id)  # decided on this later backup
     settled = await bj.settle(fx)
     [now] = await message_of("lt13", ids[0])
-    assert (now.id, now.source_key, now.content, now.withheld, list(now.absorbed_uids or [])) == (
-        first.id, first.source_key, "Please handle the vendor review today.", False, [])
+    # option C (rebuild R2, D-9): JARVIS rewrote the stored row in place (its release covered the earlier content
+    # only): it is held with its conversation group, losing its text (plan 5.2); the fold is never stored
+    assert (now.id, now.source_key, now.content, now.withheld) == (first.id, first.source_key, "", True)
     assert await bj.nowhere(mark1) == [] and await bj.nowhere(mark2) == []
     await imp.rollback(settled["run_id"], actor=ADMIN[0], confirm=True)
     await run(fx)
     [again] = await message_of("lt13", ids[0])
-    assert (again.content, again.withheld, list(again.absorbed_uids or [])) == (now.content, False, [])
+    assert (again.content, again.withheld) == ("", True)  # D-9: held with its conversation group
     assert await bj.nowhere(mark1) == [] and await bj.nowhere(mark2) == []
 
 

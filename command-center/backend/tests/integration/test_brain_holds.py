@@ -30,7 +30,8 @@ from app.models import (
 from .. import brain_jarvis as bj
 from ..conftest import SERVICE_TOKEN
 from .test_brain_api import as_, client  # noqa: F401 - client is a fixture
-from .test_brain_withhold_identity import DAY, T, conversation, message_of, run, secret, stones, withhold
+from .test_brain_withhold_identity import (DAY, T, conversation, message_of, release_unrelated, run, secret, stones,
+                                           withhold)
 
 pytestmark = pytest.mark.usefixtures("clean_db")
 
@@ -40,7 +41,9 @@ EVIDENCE = {"message", "session", "title", "position", "role", "at", "content_ch
             # 0.6.2 plan 4.6: the computed relations, the typed confirmation, the pre-selection, the decision backup
             "relations", "confirm_required", "preselected", "decided_on",
             # plan 9.2, 9.3: the Review tab's group (settle, later, other) and whether importing was stopped
-            "group", "frozen"}
+            "group", "frozen",
+            # option C (rebuild R1, D-8): whether an uncertain link holds its conversation (never one-click)
+            "uncertain"}
 
 
 @pytest.fixture
@@ -64,6 +67,9 @@ async def held_stub(client, fx: dict[str, str], mark: str) -> tuple[ArchiveMessa
     await run(fx)
     [full] = await message_of("prune_01", twin)
     await withhold(client, full.id)
+    # option C (rebuild R2, D-7): the conversation's other rows are held with it; the admin releases those with no
+    # relation in one click and the next import brings them back (the stub's hold is not 'none': it stays)
+    assert len(await release_unrelated(client, fx)) == 2
     [stub] = await message_of("prune_01", ids[1])
     assert stub.withheld and (await stones())[stub.source_key].review == identity.PENDING
     return full, stub
@@ -85,7 +91,8 @@ async def test_holds_list_shows_evidence_and_no_text(client, fx):
     assert (hold["message"], hold["session"], hold["role"], hold["state"]) == (stub.id, stub.session_id, "tool", "live")
     assert (hold["rule"], hold["compare"]) == (identity.UID_HOLD, "other text")
     assert identity.SAME_UID in hold["relations"] and not hold["confirm_required"]
-    assert hold["content_chars"] == len(STUB) and hold["title"] == "Probe conversation"
+    # option C (rebuild R1, D-8): the conversation is in the withhold's group: its title is hidden by membership
+    assert hold["content_chars"] == len(STUB) and hold["title"] is None
     assert hold["withheld_message"] == {"id": full.id, "position": full.position, "role": "tool",
                                         "at": full.at.isoformat(), "content_chars": full.content_chars}
     async with session_scope() as s:
@@ -142,7 +149,8 @@ async def test_release_refused_for_certain_matches(client, fx):
     r = await client.post("/api/brain/holds/%d/release" % stub.id)
     assert r.status_code == 400 and "it cannot be released" in r.text, r.text
     assert (await stones())[stub.source_key].review == identity.PENDING  # nothing changed
-    assert await audit_of("archive.hold_released") == []
+    # D-7: the one-click release of the conversation's unrelated rows (held_stub) is audited too; none of the stub
+    assert [a for a in await audit_of("archive.hold_released") if a.detail.get("message") == stub.id] == []
 
 
 async def test_release_restores_text_at_next_import_and_audits(client, fx):
@@ -152,7 +160,7 @@ async def test_release_restores_text_at_next_import_and_audits(client, fx):
     await as_(client, "admin")
     r = await client.post("/api/brain/holds/%d/release" % stub.id)
     assert r.status_code == 200 and r.json()["released"] is True, r.text
-    [released] = await audit_of("archive.hold_released")
+    [released] = [a for a in await audit_of("archive.hold_released") if a.detail.get("message") == stub.id]  # D-7
     assert released.detail == {"message": stub.id, "session": stub.session_id, "anchor": anchor,
                                "rule": identity.UID_HOLD}
     assert stub.source_key not in await stones()
@@ -341,10 +349,12 @@ async def test_hide_title_default_for_first_user_message(client, fx):
         body = {} if hide is None else {"hide_title": hide}
         r = await client.post("/api/brain/messages/%d/withhold" % m.id, json=body)
         assert r.status_code == 200 and r.json()["title_hidden"] is hidden, (sid, r.text)
-        assert await _title(sid) == (("", True) if hidden else ("Vendor contract for zqtitle62", False)), sid
+        # option C (rebuild R1, D-8): the conversation is in the withhold's group, whose title the trigger hides by
+        # membership alone, whatever the admin chose (i22 kept it when the choice was not to hide)
+        assert await _title(sid) == ("", True), sid
     await run(fx)  # the next import keeps a hidden title hidden
     assert await _title("t_first") == ("", True) and await _title("t_asked") == ("", True)
-    assert (await _title("t_answer"))[0] == "Vendor contract for zqtitle62"
+    assert (await _title("t_answer"))[0] == "" and (await _title("t_kept"))[0] == ""
 
 
 async def test_items_with_this_text_are_listed_not_purged(client, fx):
@@ -469,7 +479,10 @@ async def test_decision_counters_for_admins_and_the_holds_groups(client, fx):
     assert (hold["group"], hold["frozen"]) == ("other", False)  # held at the withhold (same uid, other text)
     status = body["status"]
     assert set(status) == {"unsettled_decisions", "unreviewed_settle_holds", "later_backup_holds", "held_for_review",
-                           "frozen_conversations", "legacy_lock", "tripwire"}
+                           "frozen_conversations", "legacy_lock", "tripwire",
+                           # option C (rebuild R2, D-8): the groups' counters
+                           "group_conversations", "uncertain_conversations", "group_rows_held", "group_rows_readable"}
+    assert status["group_conversations"] == 1 and status["group_rows_readable"] == 0
     assert status["unsettled_decisions"] == 1 and status["held_for_review"] == 1 and status["legacy_lock"] is False
     assert (await client.get("/api/brain/overview")).json()["decisions"] == status
     r = await client.post("/api/brain/sessions/%d/stop-importing" % stub.session_id)

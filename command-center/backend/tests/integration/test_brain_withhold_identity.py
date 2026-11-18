@@ -120,6 +120,27 @@ async def run(fx: dict[str, str]) -> dict:
     return await imp.run(bj.paths(fx), ALL)
 
 
+async def release_unrelated(client, fx: dict[str, str] | None = None) -> list[int]:
+    """Option C (rebuild R2): the admin's one-click 'release this conversation's rows with no relation' for every
+    conversation with rows held only with their conversation group (GROUP_HOLD), then (with fx) the next import,
+    which brings their text back. The flow an i22 test assumed when it expected those rows readable (D-7). Only
+    exactly 'none' is ever released; every other hold stays. The released message ids."""
+    async with session_scope() as s:
+        sessions = sorted(set((await s.scalars(select(ArchiveMessage.session_id).join(
+            BrainTombstone, BrainTombstone.source_key == ArchiveMessage.source_key).where(
+            BrainTombstone.review == identity.PENDING, BrainTombstone.via == identity.GROUP_HOLD,
+            ArchiveMessage.withheld.is_(True)))).all()))
+    await as_(client, "admin+")
+    out: list[int] = []
+    for sid in sessions:
+        r = await client.post("/api/brain/sessions/%d/holds/release-unrelated" % sid)
+        assert r.status_code == 200, r.text
+        out += r.json()["released"]
+    if fx is not None and out:
+        await run(fx)
+    return out
+
+
 async def leak_free(client, mark: str, fx: dict[str, str] | None = None, runs: tuple[int, ...] = ()) -> None:
     """The withheld text is nowhere, and no reader shows it: people (every role, search and sessions), the Supervisor
     (history and recall), promotion (every withheld row refuses), verify (checks 9-12 included) and status."""

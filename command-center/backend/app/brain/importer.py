@@ -1646,6 +1646,7 @@ class Processor:
                 self.held[m.key] = identity.Match(stone, identity.UNCERTAIN_HOLD if uncertain else identity.GROUP_HOLD,
                                                   identity.PENDING)
                 self.relations[m.key] = self._group_evidence(ss, m, anchor, uncertain=uncertain)
+                self._readable_new.pop(m.key, None)  # never a safe copy: held with its conversation
                 self.t.bump("group_rows_held")
                 break
 

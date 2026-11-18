@@ -77,7 +77,7 @@ M = [
 ]
 only = sys.argv[1:]
 db = "r2m"
-env = dict(os.environ, TEST_DATABASE_URL="postgresql+asyncpg://cc:cc@127.0.0.1:55432/%s" % db, HERMES_SRC="", REQUIRE_HERMES_SRC="")
+env = dict(os.environ, TEST_DATABASE_URL="postgresql+asyncpg://cc:cc@127.0.0.1:55432/%s" % db, TEST_CREDIT_REPAIR_DATABASE_URL="postgresql+asyncpg://cc:cc@127.0.0.1:55432/%s_cr" % db, HERMES_SRC="", REQUIRE_HERMES_SRC="")
 out = open(os.path.join(S, "results.tsv"), "a")
 for name, edits, tests in M:
     if only and name not in only:

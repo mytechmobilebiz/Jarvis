@@ -33,7 +33,7 @@ async def test_a_title_carried_past_ancestors_whose_title_moved_on_stays_hidden(
     await w.imp(d)
     await w.withhold(p, first, hide_title=True)
     w.settle(d)
-    await w.review_all()
+    await w.review_all(unrelated=True)  # option C (rebuild R2, D-7): the group's unrelated rows released
     if move == "branch_of_the_moved_continuation":
         c2 = w.sim.rotate(c, 0, 2)  # the title moves on again: c shows none
         b = w.sim.cli_branch(c2)
@@ -76,18 +76,23 @@ async def test_settle_reads_the_withheld_text_from_its_hermes_copy_when_the_row_
     await w.imp(d0)
     await w.withhold(p, first)  # an earlier decision: the family's stored rows keep their JARVIS rows (plan 5.2)
     w.settle(d0)
-    await w.review_all()
-    w.sim.gateway_retry(p)  # same uids and times, new row ids: the JARVIS row W1 was stored from is gone
-    _, repeat = w.turn(p, "Please send over the newsletter draft.", W1)  # independent, the very words
-    d1 = w.snap("x")
+    await w.review_all(unrelated=True)  # option C (rebuild R2, D-7): the group's unrelated rows released
+    await w.imp(d0)  # D-7: their text comes back at the next import of the backup (as i22 left them readable)
     w1_uid = d0.rows[(p, wrow)].uid
-    assert (p, wrow) not in d1.rows or d1.rows[(p, wrow)].uid != w1_uid
-    assert any(v.content == W1 and v.uid == w1_uid for v in d1.rows.values())  # its Hermes copy identity
-    await w.imp(d1)
+    # Option C (rebuild R2, D-11): after the retry the stored row of W1 is held with its conversation group (Hermes
+    # renumbered its JARVIS row: the earlier release no longer covers it), so the admin withholds W1 before the retry
+    # (its decision is then on d0, and d1 is a later backup for both decisions: the import computes the evidence with
+    # the withheld text from its Hermes copy identity, importer._w_text, as Settle does).
     w1 = [r for r in await cc.rows() if r["sid"] == p and r.get("source_uid") == w1_uid and not r.get("withheld")]
     assert w1, "the stored row of W1 is readable before its withhold"
     resp = await w.api.withhold(w1[0]["id"])
     assert resp.status_code == 200, resp.text
+    w.sim.gateway_retry(p)  # same uids and times, new row ids: the JARVIS row W1 was stored from is gone
+    _, repeat = w.turn(p, "Please send over the newsletter draft.", W1)  # independent, the very words
+    d1 = w.snap("x")
+    assert (p, wrow) not in d1.rows or d1.rows[(p, wrow)].uid != w1_uid
+    assert any(v.content == W1 and v.uid == w1_uid for v in d1.rows.values())  # its Hermes copy identity
+    await w.imp(d1)
     w.settle(d1)
     holds = await w.holds()
     for h in holds:  # both withheld texts are in this backup, under their Hermes copy identity
@@ -351,7 +356,7 @@ async def test_a_later_fold_of_the_withheld_message_is_not_taken_as_its_text(wor
     await w.imp(d)
     await w.withhold(p, wrow)
     w.settle(d)
-    await w.review_all()
+    await w.review_all(unrelated=True)  # option C (rebuild R2, D-7): the group's unrelated rows released
     comp = w.sim.fold(p, (wrow, b_row))
     assert comp
     w.sim.replace(p, drop_last_turn=False)  # destructive: W's own (now archived) row is deleted
@@ -414,7 +419,7 @@ async def test_a_held_title_derived_from_the_withheld_message_stays_hidden_when_
     [wrow] = [row for (sid, row), v in d.rows.items() if sid == p and v.content == W2]
     await w.withhold(p, wrow)  # the dialog's default hides the title (its first user message)
     w.settle(d)
-    await w.review_all()
+    await w.review_all(unrelated=True)  # option C (rebuild R2, D-7): the group's unrelated rows released
     c = w.sim.rotate(p, 0, 2)  # the title moves to the continuation
     b = w.sim.cli_branch(c)  # '<title> #2', copies the continuation's history with its times
     w.sim.delete_session(c)  # before any import saw it: the branch's parent link is gone
