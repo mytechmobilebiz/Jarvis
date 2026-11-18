@@ -732,7 +732,9 @@ async def test_rv3_res_6_branch_copy_of_a_fold_survivor_stays_readable(world):
     w.settle(d)
     a_lm = w.sim.tags[(p, a)].origin
     [a_copy] = [row for (sid, row), v in d.rows.items() if sid == c and v.tag.origin == a_lm]
-    assert await w.status(c, a_copy) == "readable"
+    # option C (rebuild R2, D-12): the branch is a conversation of the withheld group: held with it (never certain:
+    # fold stones are not uid sources); i22: readable
+    assert await w.status(c, a_copy) == "held"
     b_lm = w.sim.tags[(p, b)].origin
     [b_copy] = [row for (sid, row), v in d.rows.items() if sid == c and v.tag.origin == b_lm]
     assert await w.status(c, b_copy) in withheld_states()
@@ -964,7 +966,9 @@ async def test_rv3_ov_3_same_second_gateway_copy_of_a_readable_message_is_a_safe
     copies = [row for (sid, row), v in x.rows.items() if sid == c and v.content == OTHER]
     assert copies
     for row in copies:
-        assert await w.status(c, row) == "readable"
+        # option C (rebuild R2, D-12): a new row of a conversation of the withheld group is held with it, a safe copy
+        # too (i22: readable)
+        assert await w.status(c, row) == "held"
 
 
 @pytest.mark.parametrize("words", ["same_as_withheld", "other"])
@@ -983,7 +987,9 @@ async def test_rv3_ov_4_queued_message_before_the_child_start(world, words):
     w.settle(d)
     st = await w.status(child, q)
     assert st != "certain", st
-    assert st == ("held" if words == "same_as_withheld" else "readable"), st
+    assert st == "held", st  # option C (rebuild R2, D-12): the rotation's rows are held with the group (i22: 'other' readable)
+    if words == "same_as_withheld":
+        assert "identical" in await w.relations(child, q)
 
 
 @pytest.mark.parametrize("where", ["settle", "later_backup", "outside_the_family"])

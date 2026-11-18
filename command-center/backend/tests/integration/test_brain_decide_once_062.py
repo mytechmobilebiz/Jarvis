@@ -246,7 +246,9 @@ async def test_an_orphaned_rotation_keeps_its_lineage_from_the_marker_and_later_
         links = {(r.a, r.b, r.how) for r in (await s.scalars(select(BrainSessionLink))).all()}
     assert lineage["rot_child"] == ("continuation", "rot_parent_gone")
     assert lineage["reset_child"] == ("reset", "rot_child")  # recorded, never a family link
-    assert links == {("rot_parent_gone", "rot_child", "compressed_from")}
+    # option C (rebuild R1, D-8): the reset's own links are recorded too (groups follow them; never a family link)
+    assert links == {("rot_parent_gone", "rot_child", "compressed_from"), ("rot_child", "reset_child", "reset_from"),
+                     ("rot_child", "reset_child", "child")}
     bj.change(db, "UPDATE sessions SET model_config = '{}' WHERE id = 'rot_child'")
     later = await run(fx)
     async with session_scope() as s:
@@ -284,7 +286,8 @@ async def test_a_new_message_at_a_reused_row_id_is_never_withheld_by_the_old_wit
     new = next(m for m in rows if m.source_key != w.source_key)
     assert (await stones())[new.source_key].review == identity.PENDING
     await as_(client, "admin")
-    [hold] = (await client.get("/api/brain/holds")).json()["holds"]
+    # D-15: the conversation's other rows are held with the withheld group too; this test follows the reused row's
+    [hold] = [h for h in (await client.get("/api/brain/holds")).json()["holds"] if h["message"] == new.id]
     assert hold["message"] == new.id and identity.REUSED_ROW in hold["relations"], hold
     assert (await client.post("/api/brain/holds/%d/release" % new.id)).status_code == 200
     await run(fx)
@@ -309,7 +312,11 @@ async def test_a_withhold_never_takes_a_new_message_at_a_reused_row_id(client, f
     await withhold(client, old.id)
     after = {m.id: (m.withheld, m.content) for m in await message_of("ov0", ids[2])}
     assert after[old.id] == (True, "")
-    assert (False, other) in after.values()
+    # option C (rebuild R2, D-15): the new message is never taken as the withheld one (no certain stone), but it is a
+    # row of the withheld conversation: held with its group (i22: readable)
+    new = next(m for m in await message_of("ov0", ids[2]) if m.id != old.id)
+    st = (await stones())[new.source_key]
+    assert (st.review, st.via) == (identity.PENDING, identity.GROUP_HOLD)
 
 
 # --- Decide once, replay exactly (plan 3.2, 3.3; C1) -------------------------------------------------------------------

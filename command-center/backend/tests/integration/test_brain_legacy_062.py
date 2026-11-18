@@ -219,7 +219,9 @@ async def test_a_version_3_file_applies_only_through_the_legacy_reset(client, fx
     out = await imp.legacy_reset(str(tmp_path / "out.json"), actor=ADMIN[0], confirm=True, decisions=str(v3))
     assert answer.source_key == "jarvis:message:leg_01:2"
     assert out["version_3_file"] == {"withheld": 1} and out["runs_rolled_back"] == [first["run_id"]]
-    assert {st.review for st in (await stones()).values()} == {identity.CERTAIN}  # nothing else held
+    # nothing else held but the conversation's other rows, held with the withheld group (option C, rebuild R2, D-13)
+    assert {st.review for st in (await stones()).values() if st.via != identity.GROUP_HOLD} == {identity.CERTAIN}
+    assert {st.review for st in (await stones()).values() if st.via == identity.GROUP_HOLD} <= {identity.PENDING}
     await imp.run(bj.paths(fx), ALL)
     [back] = await message_of("leg_01", 2)
     assert back.withheld and back.content == ""

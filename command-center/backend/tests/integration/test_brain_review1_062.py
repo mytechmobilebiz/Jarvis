@@ -376,7 +376,10 @@ async def test_r22_restore_keeps_the_admins_group_and_a_release(client, fx, rest
     assert all(a in ("", orig.source_key) for a, _ in after.values()), "a copy became a group's root"
     assert not stub_after.withheld or stub_after.flags["withheld_by_admin"].get("released_at"), \
         "the admin's release was lost: the stub is held for review again"
-    assert holds == []
+    # option C (rebuild R2, D-13): the parent's and the child's other rows are held with the withheld group; no other
+    # hold is listed (the admin's release of the stub stands)
+    assert [h for h in holds if h["rule"] != identity.GROUP_HOLD] == []
+    assert stub.id not in {h["message"] for h in holds}
     await run(fx)  # and the next import keeps it so
     [stub_next] = await message_of(child, stub_row)
     assert not stub_next.withheld
@@ -962,7 +965,9 @@ async def test_r16_an_explicit_hide_title_travels_from_the_test_copy_to_live(cli
     await bj.settle(fx)  # 0.6.2 plan 4.7: decisions-export refuses until the withhold is finished
     out = tmp_path / "decisions.json"
     await decisions_export(str(out))
-    assert [x.get("title_hidden") for x in json.loads(out.read_text())["removals"]] == [True]
+    # D-13: the conversation's other row is carried as a hold of the group (pending), with no title choice
+    assert [x.get("title_hidden") for x in json.loads(out.read_text())["removals"]
+            if x.get("via") != identity.GROUP_HOLD] == [True]
     await _fresh_production()
     live = await imp.run(bj.paths(fx), ALL)
     await decisions_apply(str(out), live["run_id"], actor=ADMIN[0], apply=True)
@@ -1062,8 +1067,10 @@ async def test_r18_hiding_a_title_rewrites_every_quote_that_names_it(client, mak
     left = [c for c in await bj.nowhere(mark) if c.startswith(("tasks.", "supervisor_requests."))]
     assert left == [], "the hidden title is still stored in %s" % left
     lines = await r18_lines(mark)
-    assert lines and all("(source: session r18_a · message 1)" in line for line in lines), lines
-    assert any("The certificate was renewed" in line for line in lines), "the readable quote itself was lost"
+    assert all("(source: session r18_a · message 1)" in line for line in lines), lines
+    # option C (rebuild R2, D-13): the quoted message is held with its conversation group now (no longer readable),
+    # so its quote goes with it (i22 kept the readable quote)
+    assert not any("The certificate was renewed" in line for line in lines), lines
     assert await sweep(client, service_headers, (mark,)) == {}
 
 
@@ -1135,12 +1142,14 @@ async def test_r19_an_admin_without_the_sensitive_data_permission_learns_nothing
     w = await client.post("/api/brain/messages/%d/withhold" % cr_msg)
     assert w.status_code == 200 and w.json()["held_for_review"] == [gen_msg], w.text
     await as_(client, "admin")
-    [hold] = (await client.get("/api/brain/holds")).json()["holds"]
+    # D-13: the general conversation joins the withheld group (it carries the withheld uid): its other rows are held
+    # with it; the hold of the shared-uid row is the one this test looks at
+    [hold] = [h for h in (await client.get("/api/brain/holds")).json()["holds"] if h["message"] == gen_msg]
     assert hold["message"] == gen_msg
     assert hold["withheld_message"] == {"id": None, "position": None, "role": "assistant", "at": None,
                                         "content_chars": None}, hold
     await as_(client, "admin+")
-    [hold] = (await client.get("/api/brain/holds")).json()["holds"]
+    [hold] = [h for h in (await client.get("/api/brain/holds")).json()["holds"] if h["message"] == gen_msg]  # D-13
     assert hold["withheld_message"]["id"] == cr_msg and hold["withheld_message"]["position"] == 1
 
 
@@ -1260,7 +1269,9 @@ async def test_r29_inverse_an_identical_message_with_its_own_uid_keeps_its_rollb
     assert (await client.post("/api/brain/messages/%d/withhold" % first.id)).status_code == 200
     async with session_scope() as s:
         assert await s.get(BrainTombstone, key) is None, "an independent identical message's key got a stone"
-        assert mark in json.dumps((await s.get(ImportRecord, rec_id)).before)
+        # option C (rebuild R2, D-13): it was a row of the withheld conversation, whose rollback copies lose their
+        # text with the group (hold_deleted_copies; R9 at start-up): never the withheld message, but held with it
+        assert mark not in json.dumps((await s.get(ImportRecord, rec_id)).before)
 
 
 async def test_r29_a_deleted_row_that_only_shares_the_uid_gets_no_stone_and_a_rollback_holds_it(client, tmp_path):

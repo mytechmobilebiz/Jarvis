@@ -597,8 +597,9 @@ async def test_withholding_a_message_recomputes_its_session(client):
     message, sess = r.json()["message"], r.json()["session"]
     assert message["withheld"] is True and message["content"] == "" and message["labels"] == []
     assert message["flags"]["withheld_by_admin"]["note"]
-    assert sess["imported_messages"] == 1 and sess["withheld_messages"] == 1 and sess["labels"] == {}
-    assert "OCELOT" not in sess["summary"] and "NARWHAL" in sess["summary"]
+    # option C (rebuild R2, D-14): the conversation's other row is held with the withheld group too (i22: readable)
+    assert sess["imported_messages"] == 0 and sess["withheld_messages"] == 2 and sess["labels"] == {}
+    assert "OCELOT" not in sess["summary"] and "NARWHAL" not in sess["summary"]
     assert (await client.post("/api/brain/messages/%d/withhold" % ids["m2"])).status_code == 400
     assert (await client.get("/api/brain/search", params={"q": "OCELOT"})).json()["archive"]["total"] == 0
     assert (await client.post("/api/brain/messages/%d/withhold" % ids["m6"])).status_code == 404  # Credit Repair
@@ -606,8 +607,9 @@ async def test_withholding_a_message_recomputes_its_session(client):
         row = await s.get(ArchiveMessage, ids["m2"])
         assert row.content == "" and row.withheld and row.tool_calls == []
         entry = await s.scalar(select(AuditLog).where(AuditLog.action == "archive.message_withheld"))
-        assert entry.detail == {"message": ids["m2"], "session": ids["s1"], "imported_messages": 1,
-                                "withheld_messages": 1, "tombstone": True, "copies": [], "versions_blanked": 0,
+        # D-14: the conversation's other row is held with the withheld group (counted withheld, i22: imported)
+        assert entry.detail == {"message": ids["m2"], "session": ids["s1"], "imported_messages": 0,
+                                "withheld_messages": 2, "tombstone": True, "copies": [], "versions_blanked": 0,
                                 "rollback_copies_blanked": 0, "answers_scrubbed": 0, "via": "api",
                                 "also_withheld": [], "held_for_review": [], "identical_withheld": 0,
                                 "keys_tombstoned": 1, "title_hidden": False, "left_readable": 0}
@@ -1110,8 +1112,9 @@ async def test_audit_entries_carry_ids_kinds_statuses_and_counts_never_text(clie
         ("DELETE", "/api/brain/items/%d" % ids["H"], None),
         ("DELETE", "/api/brain/items/%d/purge" % ids["H"], None),
         ("POST", "/api/brain/items/%d/versions/1/redact" % ids["A"], None),
-        ("POST", "/api/brain/messages/%d/withhold" % ids["m2"], None),
+        # D-14: promoted before the withhold (option C holds the rest of the conversation with it)
         ("POST", "/api/brain/messages/%d/promote" % ids["m1"], {"kind": "knowledge", "title": "QUAIL promoted"}),
+        ("POST", "/api/brain/messages/%d/withhold" % ids["m2"], None),
         ("POST", "/api/brain/conflicts/%d/resolve" % cids["c_src"], {"resolution": "use_incoming", "note": "QUAIL"}),
         ("POST", "/api/brain/conflicts/%d/resolve" % cids["c_site"], {"resolution": "use_incoming"}),
         ("POST", "/api/brain/conflicts/%d/resolve" % cids["c_mem"], {"resolution": "use_incoming"}),

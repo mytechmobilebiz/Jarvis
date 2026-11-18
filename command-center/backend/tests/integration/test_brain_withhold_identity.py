@@ -466,11 +466,12 @@ async def test_c3_never_overwrites_158_and_165_never_readable(client, fx):
 
 
 async def _fresh_production() -> None:
-    """The live installation's database: neither decision, nothing imported."""
+    """The live installation's database: neither decision, nothing imported (and, option C, no withheld group or hidden
+    title either: rebuild R2, D-16)."""
     async with session_scope() as s:
         for table in ("import_records", "archive_messages", "archive_sessions", "brain_tombstones",
                       "brain_withhold_exemptions", "brain_purged_content", "brain_maintenance", "memory_items",
-                      "import_runs"):
+                      "import_runs", "brain_withheld_sessions", "brain_hidden_titles"):
             await s.execute(text("TRUNCATE %s RESTART IDENTITY CASCADE" % table))
 
 

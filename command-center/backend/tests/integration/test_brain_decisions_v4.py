@@ -111,14 +111,18 @@ async def test_a_kept_hold_and_a_release_carry_over_to_the_live_installation(cli
     await _fresh_production()
     production = await run(fx)
     result = await imp.decisions_apply(str(out), production["run_id"], actor=ADMIN[0], apply=True)
-    assert result["removals"] == {"withheld": 2, "already done": 1}  # both twins; the kept stub with its twin
+    # option C (rebuild R2, D-17): the file also carries the conversations' other rows as holds of their groups; the
+    # withholds before them held those rows already ('already done')
+    n_group = sum(r.get("via") == identity.GROUP_HOLD for r in json.loads(out.read_text())["removals"])
+    assert result["removals"] == {"withheld": 2, "already done": 1 + n_group}  # both twins; the kept stub with its twin
     assert result["releases"] == {"released": 1} and result["releases_not_applied"] == {}
     [kept] = await message_of("prune_02", stub2)
     assert kept.withheld and (await stones())[kept.source_key].review == identity.KEPT
     [released] = await message_of("prune_01", stub1)
     # The release is applied before the withholds (rules062): the released row is never blanked here.
     assert (released.withheld, released.content) == (False, STUB) and released.source_key not in await stones()
-    [api, entry] = await audits("archive.hold_released")  # the test copy's admin, then decisions-apply
+    # D-17: only the release of stub1 (the conversations' group holds are kept here, never released)
+    [api, entry] = [a for a in await audits("archive.hold_released") if a.detail.get("rule") != identity.GROUP_HOLD]
     assert "via" not in api.detail and entry.detail["via"] == "decisions-apply" and entry.actor == ADMIN[0]
     [applied] = await audits("brain.decisions_applied")
     assert applied.detail["releases"] == {"released": 1}
@@ -180,7 +184,8 @@ async def test_removals_only_needs_no_run_and_no_admin_and_audits_restore(client
     await withhold(client, message.id)
     key = await _purge_vendors()
     out = tmp_path / "removals.json"
-    assert await imp.decisions_export(str(out), removals_only=True) == {"removals": 2, "releases": 0,
+    # D-17: the conversation's other row travels as a hold of the withheld group
+    assert await imp.decisions_export(str(out), removals_only=True) == {"removals": 3, "releases": 0,
                                                                          "removals_only": True, "purged_items": 1,
                                                                          "purge_fingerprints": 1,
                                                                          "redactions": 0}  # (review 1); 7.2
@@ -192,12 +197,13 @@ async def test_removals_only_needs_no_run_and_no_admin_and_audits_restore(client
     await run(fx)
     assert await row_with(mark) is not None
     dry = await imp.decisions_apply(str(out), None, actor=None, apply=False, removals_only=True)
-    assert dry["removals"] == {"withheld": 1, "purged": 1} and dry["would_apply"] == 0
+    # D-17: the group's hold of the conversation's other row: the withhold held it already ('already done')
+    assert dry["removals"] == {"withheld": 1, "purged": 1, "already done": 1} and dry["would_apply"] == 0
     assert await row_with(mark) is not None and await audits("brain.decisions_applied") == []
     with pytest.raises(imp.Refused, match="active admin"):
         await imp.decisions_apply(str(out), None, actor="nobody@test.local", apply=True, removals_only=True)
     result = await imp.decisions_apply(str(out), None, actor=None, apply=True, removals_only=True)
-    assert result["removals"] == {"withheld": 1, "purged": 1} and result["not_applied"] == {}
+    assert result["removals"] == {"withheld": 1, "purged": 1, "already done": 1} and result["not_applied"] == {}
     assert await row_with(mark) is None and await bj.nowhere(purge_mark) == []
     async with session_scope() as s:
         assert await s.scalar(select(MemoryItem).where(MemoryItem.source_key == key)) is None
@@ -209,7 +215,7 @@ async def test_removals_only_needs_no_run_and_no_admin_and_audits_restore(client
     assert withheld.detail["via"] == "restore"
     assert [a.actor for a in await audits("memory.purged")] == [imp.RESTORE_ACTOR]
     again = await imp.decisions_apply(str(out), None, actor=ADMIN[0], apply=True, removals_only=True)
-    assert again["removals"] == {"already done": 2}
+    assert again["removals"] == {"already done": 3}  # D-17: with the group's hold
     await leak_free(client, mark)
 
 
@@ -307,7 +313,8 @@ async def test_restore_of_an_older_backup_then_removals_only_puts_every_decision
     assert await check_withheld_copies() is True
 
     result = await imp.decisions_apply(str(out), None, actor=None, apply=True, removals_only=True)  # step 2
-    assert result["removals"] == {"withheld": 2, "purged": 1}
+    n_group = sum(r.get("via") == identity.GROUP_HOLD for r in json.loads(out.read_text())["removals"])  # D-17
+    assert result["removals"] == {"withheld": 2, "purged": 1, **({"already done": n_group} if n_group else {})}
     assert result["releases"] == {"released": 1}
     assert await row_with(mark) is None and await row_with(held_mark) is None
     assert await bj.nowhere(purge_mark) == []

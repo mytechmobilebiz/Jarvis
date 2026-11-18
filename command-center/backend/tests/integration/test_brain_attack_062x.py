@@ -120,8 +120,10 @@ async def test_x1_fold_survivor_uid_takes_the_other_constituents_own_row(client,
     assert not orig_a.withheld or (st is not None and st.review == identity.PENDING), (
         "A's own message (another uid, never B's text) was withheld for good: %s" % ((st.via, st.review) if st
                                                                                      else None,))
-    # The principle's outcome: A's original is another message, readable, with no stone and no exemption needed.
-    assert (orig_a.withheld, orig_a.content, st) == (False, A_TEXT, None), (orig_a.withheld, st)
+    # The principle's outcome: A's original is another message, never withheld for good. Option C (rebuild R2, D-15):
+    # it is a row of the withheld conversation, held with its group (a pending hold, listed), not readable as in i22.
+    assert (orig_a.withheld, orig_a.content) == (True, "") and st is not None, (orig_a.withheld, st)
+    assert (st.review, st.via) == (identity.PENDING, identity.GROUP_HOLD), (st.via, st.review)
     [comp] = await message_of("x1", composite)
     assert comp.withheld and (await stones())[comp.source_key].review == identity.CERTAIN
 
@@ -156,12 +158,15 @@ async def test_x2_gateway_branch_of_a_donor_timestamp_rotation(client, fx, order
     show("continuation's copy of row 5", await state("x2_child", child_copy["id"]))
     show("gateway branch's copy of it", await state("x2_gw", gw_copy["id"]))
     show("holds", await holds_listed(client))
-    assert (await state("x2", ids[5]))[:2] == (False, yes)
-    assert (await state("x2_child", child_copy["id"]))[:2] == (False, yes)
+    # Option C (rebuild R2, D-15): every row of the withheld group's conversations is held with it (a pending hold,
+    # never withheld for good); i22's principle outcome was 'readable'. A row the admin left readable stays readable.
+    for found in (await state("x2", ids[5]), await state("x2_child", child_copy["id"])):
+        assert found[:2] == (False, yes) or (found[0] is True and found[3] == identity.PENDING), found
     gw = await state("x2_gw", gw_copy["id"])
     assert gw[:2] == (False, yes) or gw[3] == identity.PENDING, (
         "the branch's copy of a readable row was withheld for good: %s" % (gw,))
-    assert gw[:2] == (False, yes), gw  # the principle's outcome: a copy of a readable row is readable
+    # left readable by the admin (S21), or a new row of the group's conversation: held with it
+    assert gw[:2] == (False, yes) or (gw[0] is True and gw[3] == identity.PENDING), gw
 
 
 
@@ -312,9 +317,11 @@ async def test_x12_release_then_gateway_branch_then_compaction_of_the_branch(cli
     # The released stub and the branch's copy of it (a safe copy, plan 5.3) stay readable. The compaction's new rows
     # in the branch (this simulator stamps the tail copies with the compaction's time, so none is a safe copy, and the
     # summary and the branch's own turn are new) are held for review, never withheld for good (plan 5.3).
-    assert len(await readable_with(STUB)) >= 2
+    # Option C (rebuild R2, D-15): the branch is a conversation of the withheld group: its rows are held with it (the
+    # copy of the released stub too); the released stub itself stays readable (its release covers it)
+    assert len(await readable_with(STUB)) >= 1
     held = await holds_listed(client)
-    assert held and {rule for _, rule in held} == {identity.LATER_HOLD}
+    assert held and {rule for _, rule in held} <= {identity.LATER_HOLD, identity.GROUP_HOLD}
     assert not [k for k, st in (await stones()).items() if st.via == identity.LATER_HOLD
                 and st.review != identity.PENDING]
     assert await bj.nowhere(mark) == []
