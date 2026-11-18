@@ -30,7 +30,9 @@ Notes:
 - The i22 conformance test passes 24/24 on that commit.
 - Upstream Hermes removed its old session store on 2026-11-17 (`be3d6affc8`). That is out of scope here; it is reported to the owner.
 - Use `HERMES_SRC` and `REQUIRE_HERMES_SRC=1` for property tests.
-- Give each parallel test run its own database name (`TEST_DATABASE_URL=postgresql+asyncpg://cc:cc@127.0.0.1:55432/<own>`, plus `<own>_cr` created first). Drop them afterwards.
+- Give each parallel test run its own database name (`TEST_DATABASE_URL=postgresql+asyncpg://cc:cc@127.0.0.1:55432/<own>`, plus `<own>_cr` created first). Also set `TEST_CREDIT_REPAIR_DATABASE_URL=postgresql+asyncpg://cc:cc@127.0.0.1:55432/<own>_cr`; otherwise conftest uses the shared `cc_test_cr` and parallel runs collide. Drop them afterwards.
+- Do not end your turn while test runs are still going in the background: wait for them, or run them in the foreground, and only then report. A report that says "waiting for notifications" is lost.
+- Containers restart often. Commit and push at every checkpoint, and resume from `progress/<step>.md`.
 
 ## Owner rules (unchanged)
 - **Privacy first, fail closed.** Never claim that tests prove no leak remains.
