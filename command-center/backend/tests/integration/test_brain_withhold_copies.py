@@ -24,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from app import bootstrap as startup
 from app import tasks as task_service
 from app.bootstrap import check_withheld_copies
-from app.brain import archive, policy, review, store
+from app.brain import archive, identity, policy, review, store
 from app.brain import quotes as quotes_module
 from app.brain import importer as imp
 from app.brain.archive import WITHHELD_BY_ADMIN, recompute_session
@@ -75,19 +75,21 @@ nowhere = bj.nowhere  # shared with the 0.6.2 identity tests (tests/brain_jarvis
 
 
 async def plant(key: str = "w1", *, labels: tuple[str, ...] = ("accomplishment",), content: str | None = None,
-                redactions: dict[str, int] | None = None) -> dict[str, int]:
+                redactions: dict[str, int] | None = None, start: datetime | None = None) -> dict[str, int]:
     """A general conversation: a request, the planted assistant message (MSG), and a closing line, so the session's
-    summary (first user line, last assistant line) never quotes MSG."""
+    summary (first user line, last assistant line) never quotes MSG. start (D-19): another conversation planted at the
+    very same times would look like copied history of the first (option C, J8: an uncertain group link)."""
+    start = start or T0
     async with session_scope() as s:
         sess = ArchiveSession(source_key="jarvis:session:%s" % key, source_session_id=key, title="Website check",
-                              staff="jarvis", agent="supervisor", sensitivity="general", started_at=T0)
+                              staff="jarvis", agent="supervisor", sensitivity="general", started_at=start)
         s.add(sess)
         await s.flush()
 
         def row(position: int, role: str, body: str, **kw) -> ArchiveMessage:
             return ArchiveMessage(session_id=sess.id, source_key="jarvis:message:%s:%d" % (key, position),
                                   source_message_id=str(position), position=position, role=role, content=body,
-                                  at=T0 + timedelta(minutes=position), **kw)
+                                  at=start + timedelta(minutes=position), **kw)
 
         rows = [row(0, "user", "Please renew the certificate."),
                 row(1, "assistant", content or "The %s certificate was renewed and the site is up again." % MSG,
@@ -344,7 +346,7 @@ async def test_withhold_empties_a_copy_quarantined_at_promotion(client):
 async def test_withhold_empties_every_copy_of_the_message(client):
     ids = await plant()
     copies = [await promote(ids["message"], title="Copy %d %s" % (n, TITLE)) for n in range(3)]
-    other = await plant("w2", content="Another conversation entirely.")
+    other = await plant("w2", content="Another conversation entirely.", start=T0 + timedelta(days=1))  # D-19
     unrelated = await promote(other["message"], title="Unrelated copy")
     r = await withhold(client, ids["message"])
     assert sorted(r.json()["copies"]["items"]) == copies
@@ -578,8 +580,9 @@ async def test_withhold_finds_a_legacy_copy_by_source_ref_only_when_its_message_
     assert (await withhold(client, ids["message"])).json()["copies"]["items"] == [gone, gone_too]
     await assert_emptied(gone)
     await assert_emptied(gone_too)
-    item, _ = await item_state(named)
-    assert item.title == "Named elsewhere" and MSG in item.body
+    # option C (rebuild R2, D-20): the row it names is a row of the withheld conversation, held with its group, so
+    # its copy is emptied too (i22 kept it: its row stayed readable)
+    await assert_emptied(named)
 
 
 async def test_the_agents_rule_finds_the_same_legacy_copies_as_the_sweep_through_the_session_index(client):
@@ -754,7 +757,7 @@ async def test_purging_a_live_copy_keeps_its_source_message(client):
 
 
 async def test_purge_then_withhold_and_withhold_then_purge_end_the_same(client):
-    first, second = await plant("w1"), await plant("w2")
+    first, second = await plant("w1"), await plant("w2", start=T0 + timedelta(days=1))
     a, b = await promote(first["message"]), await promote(second["message"])
     await as_(client, "admin")
     await client.delete("/api/brain/items/%d" % a)
@@ -874,7 +877,7 @@ async def test_withhold_after_a_use_incoming_decision_does_not_block_that_runs_r
 
 
 async def test_an_emptied_copy_named_by_a_decided_conflict_can_be_purged(client):
-    first, second = await plant("w1"), await plant("w2")
+    first, second = await plant("w1"), await plant("w2", start=T0 + timedelta(days=1))
     emptied, live = await promote(first["message"]), await promote(second["message"])
     runs = [await conflict_on(emptied), await conflict_on(live)]
     await as_(client, "admin")
@@ -893,7 +896,7 @@ async def test_a_keep_existing_decision_does_not_block_purging_the_emptied_copy(
     """keep_existing rejects the incoming item, which the conflict's own run created: a rollback of that run skips
     the effect and deletes the item anyway, so purging the copy loses nothing it would revert. An effect on an item
     of another run still blocks."""
-    first, second = await plant("w1"), await plant("w2")
+    first, second = await plant("w1"), await plant("w2", start=T0 + timedelta(days=1))
     copy, other = await promote(first["message"]), await promote(second["message"])
     c, d = await conflict_on(copy), await conflict_on(other)
     await as_(client, "admin")
@@ -1005,6 +1008,7 @@ async def _production(built, tmp_path, *, purge: bool = False) -> dict:
     await imp.rollback(test_copy["run_id"], discard_reviewed=True, confirm=True)
     async with session_scope() as s:
         await s.execute(BrainTombstone.__table__.delete())
+        await s.execute(text("TRUNCATE brain_withheld_sessions, brain_hidden_titles"))  # no group either (D-16)
     production = await imp.run(bj.paths(built), ALL)
     message = await message_by_key(key)
     assert not message.withheld
@@ -1013,10 +1017,20 @@ async def _production(built, tmp_path, *, purge: bool = False) -> dict:
             "text": text_, "item_key": item_key}
 
 
+def with_group_holds(expected: dict, out: str, *, again: bool = False) -> dict:
+    """Option C (rebuild R2, D-17): a decisions file also carries the withheld conversation's other rows as holds of
+    its group; the withhold applied before them held those rows already ('already done'). The removals expected."""
+    n = sum(r.get("via") == identity.GROUP_HOLD for r in json.loads(Path(out).read_text())["removals"])
+    found = dict(expected)
+    if n:
+        found["already done"] = found.get("already done", 0) + n
+    return found
+
+
 async def test_decisions_apply_withholds_and_empties_productions_own_copies(built, tmp_path):
     p = await _production(built, tmp_path)
     result = await imp.decisions_apply(p["out"], p["run"], actor=ADMIN[0], apply=True)
-    assert result["removals"] == {"withheld": 1}
+    assert result["removals"] == with_group_holds({"withheld": 1}, p["out"])
     message = await message_by_key(p["key"])
     assert (message.withheld, message.content) == (True, "")
     await assert_emptied(p["copy"])
@@ -1032,7 +1046,7 @@ async def test_decisions_apply_dry_run_changes_nothing_and_logs_no_text(built, t
     p = await _production(built, tmp_path)
     before = await bj.stored_text(bj.BRAIN_TABLES + ("audit_log", "tasks"))
     dry = await imp.decisions_apply(p["out"], p["run"], actor=ADMIN[0], apply=False)
-    assert dry["removals"] == {"withheld": 1}
+    assert dry["removals"] == with_group_holds({"withheld": 1}, p["out"])
     assert await bj.stored_text(bj.BRAIN_TABLES + ("audit_log", "tasks")) == before
     assert (await item_state(p["copy"]))[0].title == "Production copy " + TITLE
     assert not [r for r in caplog.records if p["text"] in r.getMessage() or TITLE in r.getMessage()]
@@ -1198,9 +1212,10 @@ async def test_decisions_apply_refused_by_the_database_keeps_the_withhold_tombst
 
 async def test_decisions_apply_twice_reports_already_done(built, tmp_path):
     p = await _production(built, tmp_path)
-    assert (await imp.decisions_apply(p["out"], p["run"], actor=ADMIN[0], apply=True))["removals"] == {"withheld": 1}
+    assert (await imp.decisions_apply(p["out"], p["run"], actor=ADMIN[0], apply=True))["removals"] == \
+        with_group_holds({"withheld": 1}, p["out"])
     again = await imp.decisions_apply(p["out"], p["run"], actor=ADMIN[0], apply=True)
-    assert again["removals"] == {"already done": 1} and again["removals_not_applied"] == {}
+    assert again["removals"] == with_group_holds({"already done": 1}, p["out"]) and again["removals_not_applied"] == {}
     assert len(await audits("archive.message_withheld")) == 1
 
 
@@ -1222,7 +1237,7 @@ async def test_decisions_apply_audits_each_removal_with_ids_and_counts_only(buil
         item = await s.scalar(select(MemoryItem).where(MemoryItem.source_key == p["item_key"]))
         item_id, body = item.id, item.body
     result = await imp.decisions_apply(p["out"], p["run"], actor=ADMIN[0], apply=True)
-    assert result["removals"] == {"withheld": 1, "purged": 1}
+    assert result["removals"] == with_group_holds({"withheld": 1, "purged": 1}, p["out"])
     [withheld] = await audits("archive.message_withheld")
     assert set(withheld.detail) == {"message", "session", "imported_messages", "withheld_messages", "tombstone",
                                     "copies", "versions_blanked", "rollback_copies_blanked", "answers_scrubbed", "via",
@@ -1594,7 +1609,7 @@ async def test_a_withhold_of_a_message_with_no_row_removes_the_quotes_of_its_old
     """decisions-apply's withhold of a message this database holds no row of (an import deleted it as rewound, and
     the answer quoting it was kept): its old row's quotes go. A 'duplicate' record names the row of another message
     (the one it duplicates), whose quotes stay."""
-    ids, other = await plant("w1"), await plant("w2", content="Another conversation entirely.")
+    ids, other = await plant("w1"), await plant("w2", content="Another conversation entirely.", start=T0 + timedelta(days=1))
     async with session_scope() as s:
         run = ImportRun(status="completed", created_by="importer (cli)")
         s.add(run)
@@ -1826,8 +1841,8 @@ async def test_a_rescan_holds_the_quote_lock_only_for_its_last_pass(client, monk
 async def test_the_startup_check_blanks_rollback_copies_0_6_0_left_under_an_older_row_id(client):
     """0.6.0's withhold blanked a message's rollback copies by its current row id only: those kept under an older id
     of the same message (a rollback and a new import gave it a new one) kept the text, whoever withheld it."""
-    by_admin, by_import = await plant("w1"), await plant("w2")
-    other = await plant("w3", content="Another conversation entirely.")
+    by_admin, by_import = await plant("w1"), await plant("w2", start=T0 + timedelta(days=1))
+    other = await plant("w3", content="Another conversation entirely.", start=T0 + timedelta(days=2))
     row = {"position": 1, "role": "assistant", "content": "An older copy: " + MSG, "tool_calls": [],
            "labels": ["accomplishment"], "withheld": False, "sensitivity": "general", "truncated": False}
     async with session_scope() as s:
@@ -2182,7 +2197,7 @@ async def test_a_model_summary_never_delays_a_withhold_a_purge_or_a_recall(clien
     ids = await plant()
     copy = await promote(ids["message"])
     await decide(copy, "approve")
-    other = await promote((await plant("w2"))["message"], title="Other copy")
+    other = await promote((await plant("w2", start=T0 + timedelta(days=1)))["message"], title="Other copy")
     async with session_scope() as s:  # a finished request whose summary the model writes
         req = SupervisorRequest(message="check the sites", status="running", planner="rule_based")
         s.add(req)
@@ -2337,7 +2352,7 @@ async def test_every_role_after_withhold_and_purge(client, service_headers):
 
 async def test_no_audit_entry_or_log_line_holds_planted_text_across_the_lifecycle(client, tmp_path, caplog):
     caplog.set_level(logging.DEBUG)
-    first, second, third = await plant("w1"), await plant("w2"), await plant("w3")
+    first, second, third = await plant("w1"), await plant("w2", start=T0 + timedelta(days=1)), await plant("w3", start=T0 + timedelta(days=2))
     await as_(client, "operator")
     r = await client.post("/api/brain/messages/%d/promote" % first["message"],
                           json={"kind": "project", "title": "Copy " + TITLE})

@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.bootstrap import check_withheld_copies
 from app.brain import identity, review, store
@@ -116,6 +116,7 @@ async def test_promote_holding_row_lock_then_import_inherits_copy_is_emptied(cli
         await promoting.close()
     async with session_scope() as s:  # so promote the race's other order: no stone yet, row locked by the promote
         await s.execute(BrainTombstone.__table__.delete())
+        await s.execute(text("TRUNCATE brain_withheld_sessions, brain_hidden_titles"))  # no group either (D-16)
     promoting = sessionmaker()()
     try:
         message = await promoting.scalar(select(ArchiveMessage).where(ArchiveMessage.id == row.id).with_for_update())
@@ -311,7 +312,8 @@ async def test_two_admins_withholding_twins(client, tmp_path):
     assert r.status_code == 400 and "already withheld" in r.text
     async with session_scope() as s:
         st = {t.source_key: t for t in (await s.scalars(select(BrainTombstone).where(
-            BrainTombstone.reason == identity.WITHHELD_BY_ADMIN))).all()}
+            BrainTombstone.reason == identity.WITHHELD_BY_ADMIN,
+            BrainTombstone.via != identity.GROUP_HOLD))).all()}  # D-20: the conversation's other rows: group holds
         rows = {m.id: m for m in (await s.scalars(select(ArchiveMessage).where(
             ArchiveMessage.id.in_([first.id, twin_id])))).all()}
     assert set(st) == {first.source_key, "jarvis:message:uid:" + TWIN}

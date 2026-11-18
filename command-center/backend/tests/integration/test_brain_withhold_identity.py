@@ -178,6 +178,30 @@ async def leak_free(client, mark: str, fx: dict[str, str] | None = None, runs: t
     assert st["identity_repair_done"] is True
 
 
+async def group_held(sid: str, source_row: int) -> bool:
+    """Option C (rebuild R2, D-21): the stored row is held with its conversation group (withheld, a pending hold of
+    the group: never withheld for good, released by an admin)."""
+    found = await message_of(sid, source_row)
+    if not found or not found[-1].withheld:
+        return False
+    st = (await stones()).get(found[-1].source_key)
+    return st is not None and st.review == identity.PENDING and st.via in (identity.GROUP_HOLD,
+                                                                           identity.UNCERTAIN_HOLD)
+
+
+def applied_with_group_holds(removals: dict, out: Path, expected: dict) -> bool:
+    """Option C (rebuild R2, D-21): the file also carries the conversation's other rows as holds of its group; the
+    outcomes expected, plus one outcome for each of those holds (already done, held, or kept for later imports)."""
+    n = sum(r.get("via") == identity.GROUP_HOLD for r in json.loads(out.read_text())["removals"])
+    rest = dict(removals)
+    for k, v in expected.items():
+        if rest.get(k, 0) < v:
+            return False
+        rest[k] -= v
+    return sum(rest.values()) == n and set(k for k, v in rest.items() if v) <= {
+        "already done", "held for review", "kept for later imports"}
+
+
 async def inverse_readable() -> None:
     """The identical short text of another conversation stays readable, with no stone on its key (O1)."""
     [other] = [m for m in await message_of("other_0001", 1)]
@@ -268,7 +292,10 @@ async def test_a_tail_single_compaction_rewound_original_live_copy_same_uid(clie
     await leak_free(client, mark, fx, (second["run_id"],))
     # Inverse: the similar sentence (one character differs) stays readable, and so does identical text elsewhere.
     if tail_n == 6:
-        assert await readable(secret(mark[:-1] + "x"))
+        # option C (rebuild R2, D-21): the similar sentence is a row of the withheld conversation: held with its group
+        # (never withheld for good); identical text elsewhere stays readable
+        [similar] = [m["id"] for m in bj.rows(fx["db"], "a_tail_01") if m["content"] == secret(mark[:-1] + "x")][:1]
+        assert await readable(secret(mark[:-1] + "x")) or await group_held("a_tail_01", similar)
     await inverse_readable()
 
 
@@ -410,8 +437,8 @@ async def test_c1_uid_null_then_filled_adopts_keys_without_duplicating_the_archi
     new_key = "jarvis:message:uid:" + bj.rows(fx["db"], "c1_01")[1]["message_uid"]
     assert row.source_key in await stones() and new_key in await stones()
     await leak_free(client, mark, fx, (second["run_id"],))
-    [thanks] = await message_of("c1_01", ids[2])
-    assert not thanks.withheld and thanks.content == "Thanks."
+    # option C (rebuild R2, D-21): the conversation's other row is held with the withheld group (i22: readable)
+    assert await group_held("c1_01", ids[2])
     await inverse_readable()
 
 
@@ -435,8 +462,9 @@ async def test_c2_uid_reused_excludes_the_unrelated_row_and_withholds_165(client
     collided = (await records(second["run_id"]))["jarvis:message:uid:%s" % uids[1]]
     assert (collided.action, collided.reason.startswith("key collision")) == ("excluded", True)
     await leak_free(client, mark, fx, (second["run_id"],))
-    [kept] = await message_of("c2_01", r164)  # O6: the unrelated row keeps its text, readable
-    assert not kept.withheld and kept.content == unrelated
+    # O6: the unrelated row is never withheld by the withheld message's key; option C (rebuild R2, D-21): it is a row
+    # of the withheld conversation, held with its group (i22: readable)
+    assert await group_held("c2_01", r164)
 
 
 async def test_c3_never_overwrites_158_and_165_never_readable(client, fx):
@@ -455,11 +483,16 @@ async def test_c3_never_overwrites_158_and_165_never_readable(client, fx):
     second = await run(fx)
     async with session_scope() as s:
         again = await s.get(ArchiveMessage, first.id)
-    assert (again.content, again.withheld, again.source_message_id) == (plain, False, str(r164))
+    # never overwritten with the withheld text; option C (rebuild R2, D-21): held with the conversation group
+    # (its stored key is the one the withheld message takes in the later backup: whatever stone that key carries, the
+    # row keeps no text)
+    assert (again.content, again.withheld, again.source_message_id) == ("", True, str(r164))
     collided = (await records(second["run_id"]))["jarvis:message:uid:%s" % shared]
     assert collided.action == "excluded" and collided.reason.startswith("key collision")
     await leak_free(client, mark, fx, (second["run_id"],))
-    assert len(await readable(plain)) >= 1
+    # option C (rebuild R2, D-21): every row of the withheld conversation is held with it, the first row's new copy
+    # too (i22: readable as a safe copy)
+    assert len(await readable(plain)) == 0
 
 
 # --- D: decisions carried between differently keyed backups (version 3 files) -------------------------------------
@@ -476,10 +509,11 @@ async def _fresh_production() -> None:
 
 
 def as_v3(path: Path) -> None:
-    """The decisions file as 0.6.0 and 0.6.1 wrote it (version 3): each removal its key and reason only."""
+    """The decisions file as 0.6.0 and 0.6.1 wrote it (version 3): each removal its key and reason only (0.6.x had no
+    holds: a pending hold of option C's group sweep is not in such a file, D-21)."""
     data = json.loads(path.read_text())
     data.update(version=3, removals=[{"source_key": r["source_key"], "reason": r["reason"]}
-                                     for r in data["removals"]])
+                                     for r in data["removals"] if r.get("review") != "pending"])
     data.pop("releases", None)
     path.write_text(json.dumps(data))
 
@@ -577,7 +611,7 @@ async def test_d_both_directions_v4(client, tmp_path, test_uids):
     [stored] = await message_of("d_04", ids[1])
     assert stored.source_key != withheld.source_key and not stored.withheld  # keyed otherwise here
     result = await imp.decisions_apply(str(out), production["run_id"], actor=ADMIN[0], apply=True)
-    assert result["removals"] == {"withheld": 1}
+    assert applied_with_group_holds(result["removals"], out, {"withheld": 1}), result["removals"]
     assert await row_with(mark) is None
     assert (await stones())[stored.source_key].source_row_id == str(ids[1])
     later = await run(live)
@@ -683,8 +717,8 @@ async def test_owner_flow_test_copy_withhold_export_live_apply_later_backup(clie
     await imp.decisions_export(str(out))
     await _fresh_production()
     live = await run(fx)
-    assert (await imp.decisions_apply(str(out), live["run_id"], actor=ADMIN[0], apply=True))["removals"] == {
-        "withheld": 1}
+    applied = (await imp.decisions_apply(str(out), live["run_id"], actor=ADMIN[0], apply=True))["removals"]
+    assert applied_with_group_holds(applied, out, {"withheld": 1}), applied
     bj.hermes_compact(fx["db"], "a_tail_01", head_n=1, tail_n=6, ts=T + 100)
     later = await run(fx)
     await leak_free(client, mark, fx, (later["run_id"],))
@@ -716,8 +750,10 @@ async def test_gateway_branch_copy_with_fresh_uid_is_withheld_and_new_turns_are_
     [later] = await message_of("gw_child", repeat)  # O10: a new turn of the branch with its own uid
     assert later.withheld and (await stones())[later.source_key].review == identity.PENDING
     first = next(r["id"] for r in bj.rows(fx["db"], "gw_child") if r["role"] == "user" and r["timestamp"] < T + DAY)
-    [safe] = await message_of("gw_child", first)  # the copy of a readable row: a safe copy
-    assert (safe.withheld, safe.content) == (False, "Please summarise the vendor situation.")
+    # the copy of a readable row; option C (rebuild R2, D-21): a row of the group's branch, held with it (i22: a
+    # readable safe copy)
+    [safe] = await message_of("gw_child", first)
+    assert safe.withheld and (await stones())[safe.source_key].review == identity.PENDING
     allowed = ("archive_messages.content", "archive_messages.search", "archive_sessions.search",
                "archive_sessions.summary")
     assert await bj.nowhere(mark, allow=allowed) == []
@@ -776,8 +812,10 @@ async def test_fold_in_place_keeps_the_stored_survivor_and_never_stores_the_comp
     bj.fold(fx["db"], "fold_01", survivor=ids[2], dropped=[ids[0]])  # the withheld text folded into a survivor
     second = await run(fx)
     [survivor] = await message_of("fold_01", ids[2])
-    assert (survivor.withheld, survivor.content) == (False, "Anything else?")
-    assert survivor.source_key not in await stones()
+    # option C (rebuild R2, D-21): the stored survivor is a row of the withheld conversation: held with its group
+    # (never withheld for good, never storing the composite); i22 left it readable
+    assert (survivor.withheld, survivor.content) == (True, "")
+    assert await group_held("fold_01", ids[2])
     assert all(m.withheld for m in await message_of("fold_01", ids[0]))
     await leak_free(client, mark, fx, (second["run_id"],))
     await inverse_readable()
@@ -800,12 +838,14 @@ async def test_replace_messages_renumbering_keeps_withheld_and_readable_rows_as_
     await withhold(client, (await message_of("renum_01", secret_row))[0].id)
     mapping = bj.replace_renumber(fx["db"], "renum_01")
     second = await run(fx)
-    assert await message_of("renum_01", mapping[copy_row]) == []  # an alias of its stored row: never stored twice
+    # option C (rebuild R2, D-21): the renumbered copy is a new row of the withheld conversation, held with its
+    # group (i22: an alias of the readable stored row, never stored); the stored row is held too, never re-keyed
+    assert all(m.withheld for m in await message_of("renum_01", mapping[copy_row]))
     [kept] = await message_of("renum_01", copy_row)
-    assert kept.id == carried.id and not kept.withheld and kept.content == "Readable answer carried on."
+    assert kept.id == carried.id and kept.withheld and kept.content == ""
     assert not second["report"].get("keys_adopted")
     assert all(m.withheld for m in await message_of("renum_01", mapping[secret_row]))
-    assert await _archive_count("renum_01") <= before + 1  # at most the withheld row's copy, without text
+    assert await _archive_count("renum_01") <= before + 3  # D-21: the renumbered copies, held, without text
     await leak_free(client, mark, fx, (second["run_id"],))
 
 
@@ -907,7 +947,10 @@ async def test_promote_refused_for_every_member_and_hold(client, fx):
     await as_(client, "operator")
     [plain] = await message_of("prune_01", ids[0])
     r = await client.post("/api/brain/messages/%d/promote" % plain.id, json={"kind": "project", "title": "P"})
-    assert r.status_code == 201, r.text  # the request in the same conversation is not the same message
+    # the request in the same conversation is not the same message (no certain stone); option C (rebuild R2, D-21):
+    # it is held with the conversation group, so nothing of it can be promoted while it is held (i22: 201)
+    assert r.status_code == 400, r.text
+    assert await group_held("prune_01", ids[0])
 
 
 async def test_api_access_sweep_after_each_trigger(client, fx):
