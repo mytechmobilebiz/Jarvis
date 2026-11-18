@@ -206,3 +206,34 @@ def test_p2_the_quick_filter_compares_every_form_of_the_withheld_text():
     w = '[Replying to: "the earlier plan"]\n\n' + W
     assert I.quick_related(["Note: " + W], I.quick_of(w))
     assert I.CONTAINS in I.carrier_relations(["Note: " + W], w)
+    # a short authored text after a long reply pointer: only its own form finds a whole value with its words
+    w = '[Replying to: "the earlier plan about the mill at ten"]\n\nJa, 47.'
+    for row in (json.dumps({"reply": "ja, 47."}), "JA, 47."):
+        assert I.IDENTICAL_REL in I.carrier_relations([row], w)
+        assert I.quick_related([row], I.quick_of(w))
+
+
+def test_p2_the_quick_filter_keeps_a_cut_of_sixteen_characters_with_fewer_than_sixteen_of_skeleton():
+    """cr2:quick_q8: a cut of 16 characters (whitespace collapsed) may hold only 8 of the skeleton: the filter's
+    grams are 8 characters."""
+    w = "ab cd ef gh ij kl mn op qr st uv wx yz 12 34 56"
+    row = "Preview: ab cd ef gh ij kl…"
+    assert I.CUT in carries(row, w)
+    assert len(I.skeleton("ab cd ef gh ij kl")) < 16
+    assert I.quick_related([row], I.quick_of(w))
+
+
+def test_p2_a_row_only_its_decode_reads_is_never_skipped():
+    """cr2:quick_no_decode: an ensure_ascii JSON of a withheld text in another script shares no character with it
+    before the decode: always compared."""
+    w = "Ο κωδικός του χρηματοκιβωτίου είναι Πελαργός και μένει μεταξύ μας"
+    row = json.dumps({"note": w}, ensure_ascii=True)
+    assert I.CONTAINS in carries(row, w)
+    assert I.quick_related([row], I.quick_of(w))
+
+
+def test_p1_a_whole_value_that_is_a_beginning_of_w_is_a_cut():
+    """A whole value (a JSON string, a search query) that is W's beginning of at least 16 characters, with no cut
+    mark: a cut (a lead value)."""
+    assert I.CUT in carries(json.dumps({"q": W[:30]}))
+    assert not carries(json.dumps({"q": W[:12]}))  # under 16 characters (O-D4)

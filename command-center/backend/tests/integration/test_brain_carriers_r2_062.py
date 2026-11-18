@@ -30,6 +30,9 @@ pytestmark = pytest.mark.usefixtures("clean_db")
 W_LONG = ("Die Pläne für das Lager in Halle sieben liegen ab Montag im grauen Schrank, der Schlüssel dazu "
           "hängt bei Frau Okonkwo am Brett, Code Reiher-3307, und niemand außer uns darf das wissen.")
 W_SHORT_WORDS = "we go to the old mill at ten on the day of the fair and we do not say why or how"
+# A W of more than 64 words whose middle part is short words only: none of its 64 longest words is in that part
+W_MANY = (" ".join("Verwaltungsvorschrift%02d" % i for i in range(70)) + " and " + W_SHORT_WORDS + " "
+          + " ".join("Grundbuchauszug%02d" % i for i in range(10)))
 
 
 @pytest.fixture
@@ -55,13 +58,14 @@ async def title_of(sid: str) -> str:
 
 @pytest.mark.parametrize("when", ["stored_before_the_withhold", "stored_after_the_withhold"])
 async def test_skc_a_native_partial_reply_quote_of_a_long_w_is_held_wherever_it_is_found(client, fx, when):
-    """A Discord/Telegram-style native reply quoting a middle part of a long W, in a conversation with no link to the
-    withheld one: held on its own (a carrier: 'part of the withheld text', the typed word needed), whether it was
+    """A Discord/Telegram-style native reply quoting a middle part of a long W (more than 64 words; the part holds
+    none of its 64 longest), in a conversation with no link to the withheld one: held on its own (a carrier: 'part of the withheld text', the typed word needed), whether it was
     stored before the withhold (the withhold's full scan) or arrives after it (the import with W in hand); the
     conversation's other row stays readable."""
     db = fx["db"]
-    pa = conversation(db, "cq_p", T, [("user", "Where are the plans?"), ("assistant", W_LONG)])
-    quote = '[Replying to: "%s"]\n\nWhich cabinet exactly?' % W_LONG[40:120]
+    pa = conversation(db, "cq_p", T, [("user", "Where are the plans?"), ("assistant", W_MANY)])
+    quote = '[Replying to: "%s"]\n\nWhich mill exactly?' % W_SHORT_WORDS[6:60]
+    assert not any(x in quote for x in sorted(W_MANY.split(), key=len)[-64:])
     if when == "stored_before_the_withhold":
         oa = conversation(db, "cq_o", T + 9 * DAY, [("user", quote), ("assistant", "The grey one.")])
     await run(fx)

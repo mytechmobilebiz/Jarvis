@@ -159,16 +159,19 @@ async def test_derived3_a_group_row_cut_in_a_prune_line_is_never_none(client, fx
     'cut' (the typed word needed), never 'none', so the one-click release skips it."""
     db = fx["db"]
     pa = conversation(db, "dg_p", T, [("user", "Where is the key?"), ("assistant", W)])
-    t = tool_row(db, "dg_p", "[send_message] to=anna text=%s (31 chars result)" % W[:40], T + 50,
+    # a markerless child of the withheld conversation (in its group, not in its i22 family: never a matching row)
+    conversation(db, "dg_c", T + DAY, [("user", "Send it to Anna.")], parent="dg_p")
+    t = tool_row(db, "dg_c", "[send_message] to=anna text=%s (31 chars result)" % W[:40], T + DAY + 50,
                  name="send_message")
     await run(fx)
     await withhold(client, await row_id("dg_p", pa[1]))
-    h = (await holds(client))[await row_id("dg_p", t)]
+    h = (await holds(client))[await row_id("dg_c", t)]
+    assert h["rule"] == identity.GROUP_HOLD
     assert identity.CUT in h["relations"] and identity.NO_RELATION not in h["relations"] and h["confirm_required"]
     await as_(client, "admin+")
-    r = await client.post("/api/brain/sessions/%d/holds/release-unrelated" % (await message_of("dg_p", t))[0].session_id)
-    assert r.status_code == 200 and await row_id("dg_p", t) not in r.json()["released"]
-    assert await state("dg_p", t) == "held"
+    r = await client.post("/api/brain/sessions/%d/holds/release-unrelated" % (await message_of("dg_c", t))[0].session_id)
+    assert r.status_code == 200 and await row_id("dg_c", t) not in r.json()["released"]
+    assert await state("dg_c", t) == "held"
 
 
 async def test_derived3_a_rollback_copy_whose_older_text_carries_w_in_a_derived_form_loses_it(client, fx):
