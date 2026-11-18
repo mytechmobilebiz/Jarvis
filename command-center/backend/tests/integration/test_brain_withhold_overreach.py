@@ -34,13 +34,48 @@ PEOPLE = ("operator", "operator+", "admin", "admin+")  # viewers never read the 
 
 @pytest.fixture
 def fx(tmp_path) -> dict[str, str]:
-    return bj.mini(tmp_path / "fx")
+    _CURRENT["fx"] = bj.mini(tmp_path / "fx")
+    return _CURRENT["fx"]
+
+
+_CURRENT: dict[str, dict[str, str]] = {}
+
+
+async def release_group_hold(client, sid: str, source_id: int) -> bool:
+    """Option C (rebuild R2, D-22): a row of a withheld group's conversation is held with it (a pending hold, never
+    withheld for good). The admin releases it (with the typed word when its evidence needs it) and the next import
+    brings its text back. Whether there was such a hold."""
+    done = False
+    for _ in range(2):  # RECON-20: a release covers the content it was compared on; a later backup asks again
+        rows = await message_of(sid, source_id)
+        st = (await stones()).get(rows[-1].source_key) if rows else None
+        if not rows or not rows[-1].withheld or st is None or st.review != identity.PENDING or st.via not in (
+                identity.GROUP_HOLD, identity.UNCERTAIN_HOLD):
+            return done
+        await as_(client, "admin+")
+        [hold] = [h for h in (await client.get("/api/brain/holds")).json()["holds"] if h["message"] == rows[-1].id]
+        body = {"confirm": identity.CONFIRM_WORD} if hold["confirm_required"] else None
+        r = await client.post("/api/brain/holds/%d/release" % rows[-1].id, json=body)
+        assert r.status_code == 200, r.text
+        await run(_CURRENT["fx"])
+        done = True
+    return done
 
 
 async def readable_everywhere(client, sid: str, source_id: int, words: str, mark: str) -> ArchiveMessage:
     """The stored row of JARVIS row `source_id` holds `words`, is not withheld, no stone names it, and every reader
     that may read it does: archive search and its conversation for every role that reads the archive, the
-    Supervisor's history, and promote (identity.matches_withheld says no)."""
+    Supervisor's history, and promote (identity.matches_withheld says no). Option C (rebuild R2, D-22): a row of a
+    withheld group's conversation is held with it first; the admin's release of it, and the next import, make it so."""
+    if await release_group_hold(client, sid, source_id):
+        rows = await message_of(sid, source_id)
+        st = (await stones()).get(rows[-1].source_key) if rows else None
+        if rows and rows[-1].withheld:
+            # still held with its group after the admin's release (RECON-20: the release covered the content it was
+            # compared on, and this backup holds that JARVIS row under another key or other content): a pending hold,
+            # never withheld for good, its text nowhere
+            assert st is not None and st.review == identity.PENDING, (sid, source_id, st and st.review)
+            return rows[-1]
     found = [m for m in await message_of(sid, source_id) if not m.withheld]
     assert len(found) == 1, (sid, source_id, [(m.id, m.withheld) for m in await message_of(sid, source_id)])
     row = found[0]
@@ -311,7 +346,16 @@ async def test_o11_delegated_session(client, fx):
     async with session_scope() as s:
         assert (await s.scalar(select(ArchiveSession.lineage).where(
             ArchiveSession.source_session_id == "o11_sub"))) == "delegated"
-    await readable_everywhere(client, "o11_sub", copied[1], secret(mark), mark)
+    # option C (rebuild R1/R2, D-22): a delegated sub-agent joins the withheld group from the parent down (J5); its
+    # copy of the withheld text is held with it (identical, a pending hold: never withheld for good, released only with
+    # the typed word), never readable (i22: readable, not lineage)
+    [row] = await message_of("o11_sub", copied[1])
+    st = (await stones())[row.source_key]
+    assert row.withheld and st.review == identity.PENDING
+    await as_(client, "admin+")
+    [hold] = [h for h in (await client.get("/api/brain/holds")).json()["holds"] if h["message"] == row.id]
+    assert identity.IDENTICAL_REL in hold["relations"] and hold["confirm_required"]
+    assert await bj.nowhere(mark) == []
 
 
 async def test_o12_restricted_cli_branch_does_not_withhold_the_parent(client, fx):
@@ -470,7 +514,19 @@ async def test_documented_fail_closed_outcomes_a_to_f(client, fx, scratch):
     bj.fold(fx["db"], "fd", survivor=ids[2], dropped=[ids[0]])
     await run(fx)
     [survivor] = await message_of("fd", ids[2])
-    assert (survivor.withheld, survivor.content) == (False, "Anything else?")
+    # option C (rebuild R2, D-22, RECON-20): a row of the withheld conversation, held with its group (never withheld
+    # for good). Its hold was compared on its stored words; an admin's release covers that content only, so the
+    # next import, whose backup holds the composite with the withheld text there, holds it again with that evidence
+    # (contains), never the composite readable
+    assert (survivor.withheld, survivor.content) == (True, "")
+    rows_ = await message_of("fd", ids[2])
+    await as_(client, "admin+")
+    assert (await client.post("/api/brain/holds/%d/release" % rows_[-1].id, json={
+        "confirm": identity.CONFIRM_WORD})).status_code == 200
+    await run(fx)
+    [survivor] = await message_of("fd", ids[2])
+    assert (survivor.withheld, survivor.content) == (True, "")
+    assert await bj.nowhere("zqfaild62") == []
     assert await bj.nowhere("zqfaild62") == []
     [still] = await message_of("fd", ids[0])
     assert still.id == withheld_d.id and still.withheld
@@ -516,10 +572,13 @@ async def test_no_stone_was_created_for_readable_rows_after_every_case(client, f
     [withheld] = await message_of("oall", target)
     certain = {k for k, st in (await stones()).items() if st.review != identity.PENDING}
     assert certain == {withheld.source_key}
-    assert {st.via for st in (await stones()).values() if st.review == identity.PENDING} == {identity.LATER_HOLD}
+    # option C (rebuild R2, D-22): and the stored rows held with the withheld conversation group
+    assert {st.via for st in (await stones()).values() if st.review == identity.PENDING} <= {identity.LATER_HOLD,
+                                                                                               identity.GROUP_HOLD}
     v = await imp.verify(last["run_id"], bj.paths(fx))
     assert v["passed"], {k: c for k, c in v["verification"]["checks"].items() if not c["ok"]}
     for source_id, words, m in ((before, secret(mark), mark), (similar, secret(mark[:-1] + "q"), mark[:-1] + "q")):
         await readable_everywhere(client, "oall", source_id, words, m)
+    assert not (await message_of("oall", ask))[0].withheld or await release_group_hold(client, "oall", ask)  # D-22
     assert not (await message_of("oall", ask))[0].withheld
     await held_for_review_only(client, fx, "oall", later, secret(mark), mark, preselected=True)

@@ -79,6 +79,8 @@ MARKER_LINKS = {"_branched_from": "branched_from", "_compressed_from": "compress
 # A hold an admin kept that was held only with its conversation (rebuild R2, RECON-16): it says nothing of the withheld
 # message, so it never seeds a group (a seed would make an uncertain conversation a member, and spread as one)
 GROUP_VIAS = frozenset({identity.GROUP_HOLD, identity.UNCERTAIN_HOLD})
+# Holds whose evidence was computed on one backup's content (their stone's decided_on): a release covers that content
+RELEASE_ON_EVIDENCE = frozenset({identity.GROUP_HOLD, identity.UNCERTAIN_HOLD, identity.COPY_HOLD})
 J8_MIN_ROWS = 2  # copied rows that make an unanchored conversation a member (fewer: uncertain; J9 provenance: one)
 UNCERTAIN_HOLD = identity.UNCERTAIN_HOLD
 
@@ -457,7 +459,8 @@ async def hold_uncertain(s: AsyncSession, *, actor: str, cause: str) -> int:
         if await _released(s, anchor, sid, row):
             continue
         await review.hold_message(s, row, anchor=anchor, actor=actor, cause=cause, rule=UNCERTAIN_HOLD,
-                                  relations=[identity.UNCERTAIN_REL])
+                                  relations=[identity.UNCERTAIN_REL],
+                                  decided_on=await identity.stored_backup(s, row))  # RECON-20
         done.add(row.id)
     return len(done)
 
@@ -504,9 +507,12 @@ async def hold_group(s: AsyncSession, anchor: str, members: dict[str, Member], *
         relations = identity.group_relations(row.content, w_text, others, all_in_hand=all_in_hand,
                                              structural=structural)
         if row.source_key:
+            # decided on the backup the compared content came from (RECON-20): a release of this hold covers that
+            # content only, never a later backup's other text for this row (a fold JARVIS made in place)
+            sha = await identity.stored_backup(s, row) or (own.decided_on if own is not None else "")
             await identity.put_stone(s, replace(identity.binding_of(
                 row, sid, anchor=anchor, via=identity.GROUP_HOLD, review=identity.PENDING, after_run=after,
-                decided_on=own.decided_on if own is not None else ""), relations=relations), actor=actor)
+                decided_on=sha), relations=relations), actor=actor)
         review._blank(row, {"at": at, "note": identity.NOTE, "via": identity.GROUP_HOLD, "review": identity.PENDING})
         held.append(row)
     await s.flush()

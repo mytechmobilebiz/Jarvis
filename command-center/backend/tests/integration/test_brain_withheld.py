@@ -12,7 +12,7 @@ from sqlalchemy import select, update
 from app.brain import importer as imp
 from app.brain import review
 from app.db import session_scope
-from app.models import ArchiveMessage, ArchiveSession, ImportRecord, MemoryItem
+from app.models import ArchiveMessage, ArchiveSession, BrainTombstone, ImportRecord, MemoryItem
 
 from .. import brain_jarvis as bj
 from .test_brain_import import modify_copy
@@ -143,7 +143,12 @@ async def test_a_newer_copy_never_brings_back_a_message_an_admin_withheld(fx):
         assert (await s.get(ArchiveSession, sess.id)).sensitivity != "restricted"
         others = (await s.scalars(select(ArchiveMessage).where(ArchiveMessage.session_id == sess.id,
                                                                ArchiveMessage.id != message.id))).all()
-        assert others and not any(m.withheld for m in others)
+        # option C (rebuild R2, D-23): the conversation's other rows are held with the withheld group (pending holds,
+        # never withheld for good, never restricted); i22 left them readable
+        stones = {t.source_key: t for t in (await s.scalars(select(BrainTombstone).where(
+            BrainTombstone.source_key.in_([m.source_key for m in others])))).all()}
+        assert others and all(m.withheld and stones[m.source_key].review == "pending" for m in others)
+        assert all(m.sensitivity != "restricted" for m in others)
 
 
 async def test_an_admin_withhold_outlives_a_rollback_of_the_run_that_created_the_message(built):

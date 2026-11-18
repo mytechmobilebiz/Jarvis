@@ -963,6 +963,11 @@ async def release_hold(session: AsyncSession, message: ArchiveMessage, sess: Arc
     # now, or (decisions-apply after a restore) the admin and time the restore file names (review 2, S23).
     by, when = (decided_by or actor)[:200], decided_at or now()
     newest = await identity.decision_backup(session, [sess.source_session_id]) if decided_by is None else ""
+    if decided_by is None and stone.via in brain_groups.RELEASE_ON_EVIDENCE and stone.decided_on:
+        # option C (rebuild R2, RECON-20): a row held with its conversation was compared on the content of the
+        # backup its hold names; the release covers that content only (a later backup's other text for this row,
+        # e.g. a fold JARVIS made in place, is held again with its own evidence)
+        newest = stone.decided_on
     await identity.put_exemption(session, here, anchor=anchor, kind=kind,
                                  decided_on=newest or stone.decided_on or await identity.decision_backup(
                                      session, [sess.source_session_id]),

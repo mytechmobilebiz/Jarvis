@@ -71,7 +71,8 @@ async def test_export_waits_for_settle_and_a_rollback_of_settle_unsettles(client
     assert done["decisions"] == 1 and done["run_id"]
     assert list((await backups()).values()) == [done["run_id"]]
     assert (await pending())["unsettled_decisions"] == 0
-    assert (await imp.decisions_export(out))["removals"] == 1
+    # option C (rebuild R2, D-23): the conversation's other rows travel as holds of the group
+    assert (await imp.decisions_export(out))["removals"] == 1 + len(ids) - 1
     again = await bj.settle(fx, keep=False)  # nothing left to finish: no run, no change
     assert (again["run_id"], again["status"]) == (None, "nothing to finish")
     await imp.rollback(done["run_id"], actor=ADMIN[0], confirm=True)
@@ -119,7 +120,10 @@ async def test_settle_holds_related_rows_with_computed_evidence_and_the_export_w
     assert identity.CONTAINS in found[rows[2].id]["relations"]
     assert found[rows[3].id]["relations"] == [identity.PART_OF]
     assert identity.RESTATED_REL in found[rows[4].id]["relations"]
-    assert rows[5].id not in found and not rows[5].withheld
+    # option C (rebuild R2, D-23): the unrelated row is held with its conversation group, with no relation of its own
+    # (never a Settle hold, never needing the typed word); i22 left it untouched
+    assert found[rows[5].id]["rule"] == identity.GROUP_HOLD and not found[rows[5].id]["confirm_required"]
+    assert set(found[rows[5].id]["relations"]) <= {identity.NO_RELATION, identity.OTHER_NOT_COMPARED}
     for i in (2, 3, 4):
         h = found[rows[i].id]
         assert (h["rule"], h["confirm_required"], h["decided_on"] != "") == (identity.SETTLE_HOLD, True, True), h
@@ -166,7 +170,11 @@ async def test_settle_copy_position_is_certain_only_for_a_unique_same_time_origi
     [twin] = await message_of("st4", ids[3])
     assert twin.withheld and st[twin.source_key].review == identity.PENDING  # identical, another message: held
     for i in (0, 2, 4):
-        assert not (await message_of("st4_b", child[parent[ids[i]]]))[0].withheld
+        # option C (rebuild R2, D-23): the branch's other rows are held with the withheld group (pending, no relation:
+        # never certain); i22 left them untouched
+        row = (await message_of("st4_b", child[parent[ids[i]]]))[0]
+        assert row.withheld and st[row.source_key].review == identity.PENDING
+        assert set(found[row.id]["relations"]) <= {identity.NO_RELATION, identity.OTHER_NOT_COMPARED}
 
 
 async def test_the_settled_backup_is_replayed_word_for_word(client, fx):
