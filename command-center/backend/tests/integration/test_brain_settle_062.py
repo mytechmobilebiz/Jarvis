@@ -144,6 +144,7 @@ async def test_settle_holds_related_rows_with_computed_evidence_and_the_export_w
     # The admin releases it there as well (the typed word: its evidence), and the next import brings it back.
     again = (await message_of("st3", ids3[3]))[0]
     assert again.withheld and (await stones())[again.source_key].via == identity.GROUP_HOLD
+    assert "withheld" not in (again.flags or {})  # a hold, never 'restricted data in this conversation' (RECON-20)
     r = await client.post("/api/brain/holds/%d/release" % again.id, json={"confirm": identity.CONFIRM_WORD})
     assert r.status_code == 200, r.text
     await run(fx)

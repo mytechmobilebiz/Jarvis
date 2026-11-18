@@ -1017,13 +1017,14 @@ async def _production(built, tmp_path, *, purge: bool = False) -> dict:
             "text": text_, "item_key": item_key}
 
 
-def with_group_holds(expected: dict, out: str, *, again: bool = False) -> dict:
+def with_group_holds(expected: dict, out: str, *, outcome: str = "already done") -> dict:
     """Option C (rebuild R2, D-17): a decisions file also carries the withheld conversation's other rows as holds of
-    its group; the withhold applied before them held those rows already ('already done'). The removals expected."""
+    its group; the withhold applied before them held those rows already ('already done'; 'held for review' when the
+    withhold itself was refused here). The removals expected."""
     n = sum(r.get("via") == identity.GROUP_HOLD for r in json.loads(Path(out).read_text())["removals"])
     found = dict(expected)
     if n:
-        found["already done"] = found.get("already done", 0) + n
+        found[outcome] = found.get(outcome, 0) + n
     return found
 
 
@@ -1060,7 +1061,8 @@ async def test_decisions_apply_keeps_the_withhold_tombstone_when_the_withhold_is
 
     monkeypatch.setattr(review, "withhold_message", refused)
     result = await imp.decisions_apply(p["out"], p["run"], actor=ADMIN[0], apply=True)
-    assert result["removals"] == {}
+    # D-17: the group's holds still hold the conversation's other rows (fail-closed) though the withhold was refused
+    assert result["removals"] == with_group_holds({}, p["out"], outcome="held for review")
     assert result["removals_not_applied"] == {
         "withheld by an admin on the test copy, refused here: refused for this test": [1]}
     async with session_scope() as s:
@@ -1190,7 +1192,7 @@ async def test_decisions_apply_refused_by_the_database_keeps_the_withhold_tombst
 
     monkeypatch.setattr(store, "empty_withheld_copy", refused)
     result = await imp.decisions_apply(p["out"], p["run"], actor=ADMIN[0], apply=True)
-    assert result["removals"] == {}
+    assert result["removals"] == with_group_holds({}, p["out"], outcome="held for review")  # D-17
     assert result["removals_not_applied"] == {
         "withheld by an admin on the test copy, refused here by the database": [1]}
     async with session_scope() as s:

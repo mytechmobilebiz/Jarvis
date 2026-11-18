@@ -326,3 +326,26 @@ async def test_hgr_an_import_of_the_decision_backup_holds_a_group_conversation_i
     assert [await state("dr_c", r) for r in ca] == ["held", "held"]
     checks = (await imp.verify(out["run_id"], bj.paths(fx)))["verification"]["checks"]
     assert checks["database_guard_quiet"]["ok"], checks["database_guard_quiet"]
+
+
+async def test_hgr_a_release_of_a_group_hold_covers_the_content_it_was_compared_on(client, fx):
+    """RECON-20: a row held with its conversation was compared on its stored words ('none'); JARVIS then folds the
+    withheld text into that very row in place, and the admin releases the hold. The release covers the content it was
+    compared on only: the next import holds the row again (its text is the composite now), never readable with the
+    withheld text, and never labelled restricted data."""
+    db = fx["db"]
+    mark = "zqrc20"
+    ids = conversation(db, "rc_p", T, [("user", secret(mark)), ("assistant", "Noted."), ("user", "Anything else?")])
+    await run(fx)
+    await withhold(client, await row_id("rc_p", ids[0]))
+    bj.fold(db, "rc_p", survivor=ids[2], dropped=[ids[0]])  # the withheld text folded into the survivor in place
+    await run(fx)
+    held = (await message_of("rc_p", ids[2]))[0]
+    h = (await holds(client))[held.id]
+    assert h["rule"] == identity.GROUP_HOLD and h["relations"] == [identity.NO_RELATION]
+    assert (await client.post("/api/brain/holds/%d/release" % held.id)).status_code == 200
+    await run(fx)
+    [again] = await message_of("rc_p", ids[2])
+    assert again.withheld and again.content == "" and "withheld" not in (again.flags or {})
+    assert again.id in await holds(client)
+    assert await readable_with(mark) == 0 and await bj.nowhere(mark) == []

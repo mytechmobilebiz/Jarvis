@@ -1,0 +1,32 @@
+m18:title_trig_groups CAUGHT 1 failed in 3.54s
+m18:r9_off CAUGHT 1 failed in 3.51s
+gd1:r9_copy_session_off CAUGHT 1 failed in 3.36s
+m18:seed_pending_too INVALID (0 matches)
+m18:j8_always_two CAUGHT 1 failed in 3.44s
+m18:j8_reset_copies CAUGHT 1 failed in 3.56s
+gd1:child_both_ways CAUGHT 1 failed in 3.88s
+gd1:child_edge_off CAUGHT 1 failed in 3.58s
+gd1:uncertain_off CAUGHT 1 failed in 3.57s
+gd1:uncertain_no_spread CAUGHT 1 failed in 3.78s
+gd1:link_parents_off CAUGHT 1 failed in 4.01s
+gd1:marker_links_off CAUGHT 1 failed in 3.32s
+sk3_graph_marker_edges_off CAUGHT 1 failed in 3.94s
+sk3_archive_parent_edge_off CAUGHT 1 failed in 3.80s
+sk3_src_orphan_any_marker_off CAUGHT 1 failed, 3 passed in 0.23s
+ga_src_fork_binding_off CAUGHT 1 failed in 0.11s
+ga_src_copied_fallback_off CAUGHT 1 failed in 0.13s
+gd1:release_unrelated_uncertain_off CAUGHT 1 failed in 4.47s
+gd1:holds_display_off CAUGHT 1 failed in 4.50s
+gd1:confirm_uncertain_off CAUGHT 1 failed in 4.73s
+gd1:export_gate_off CAUGHT 1 failed in 4.92s
+gd1:definite_off CAUGHT 1 failed in 3.92s
+gd1:hold_uncertain_off CAUGHT 1 failed in 3.56s
+r1:orphan_delegate_anchors CAUGHT 1 failed in 3.78s
+r1:family_links_filter_off CAUGHT 1 failed in 4.87s
+r1:withhold_records_group_off CAUGHT 1 failed in 3.73s
+r1:import_records_group_off CAUGHT 1 failed in 3.61s
+r1:file_groups_off SURVIVED 1 passed in 5.13s
+r1:keep_trigger_uncertain_off CAUGHT 1 failed in 2.66s
+r1:settle_groups_off SURVIVED 1 passed in 3.77s
+r1:legacy_groups_off INVALID (0 matches)
+r1:repair_groups_off CAUGHT 1 failed in 3.83s
