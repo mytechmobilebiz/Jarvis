@@ -392,6 +392,9 @@ $fn$;
 CREATE OR REPLACE FUNCTION archive_messages_keep_withheld() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
     v_via text;
+    v_anchor text;
+    v_state text;
+    v_sid text;
 BEGIN
     SELECT 'key' INTO v_via FROM brain_tombstones t
      WHERE t.source_key = NEW.source_key AND t.reason = 'withheld by an admin';
@@ -407,6 +410,44 @@ BEGIN
                            NEW.role, NEW.tool_call_id, NEW.at, brain_row_uid(NEW.source_uid, NEW.source_key))
          LIMIT 1;
     END IF;
+    IF v_via IS NULL AND EXISTS (SELECT 1 FROM brain_withheld_sessions w0 JOIN archive_sessions s0
+                                   ON s0.source_session_id = w0.source_session_id WHERE s0.id = NEW.session_id) THEN
+        -- Option C (rebuild R2): a row of a withheld group's conversation, written readable by any code, is held with
+        -- its conversation (a pending stone in the group, listed for an admin) unless an admin released that exact
+        -- JARVIS row for EVERY group holding the conversation: a release under one group never frees a row of two,
+        -- and a release never frees another message at its row id (brain_exact). A 'left readable' choice counts for
+        -- a certain link only; a conversation an uncertain link holds needs a release.
+        SELECT w.anchor_key, w.state, s.source_session_id INTO v_anchor, v_state, v_sid
+          FROM brain_withheld_sessions w JOIN archive_sessions s ON s.source_session_id = w.source_session_id
+         WHERE s.id = NEW.session_id AND w.anchor_key <> NEW.source_key
+           AND NOT EXISTS (
+               SELECT 1 FROM brain_withhold_exemptions e
+                WHERE e.anchor_key = w.anchor_key AND e.source_session_id = w.source_session_id
+                  AND e.source_row_id = NEW.source_message_id AND NEW.source_message_id <> ''
+                  AND (e.kind = 'release' OR (e.kind = 'left_readable' AND w.state = 'member'))
+                  AND brain_exact(e.role, e.tool_call_id, e.source_at, e.source_uid, NEW.role, NEW.tool_call_id,
+                                  NEW.at, brain_row_uid(NEW.source_uid, NEW.source_key)))
+         ORDER BY w.anchor_key
+         LIMIT 1;
+        IF v_anchor IS NOT NULL THEN
+            v_via := 'group';
+            IF coalesce(NEW.source_key, '') <> '' THEN
+                INSERT INTO brain_tombstones (source_key, purged_at, purged_by, reason, anchor_key, via, review,
+                                              source_session_id, source_row_id, role, tool_call_id, message_uid,
+                                              uid_known, bound, source_at, relations)
+                VALUES (NEW.source_key, now(), 'system (database guard)', 'withheld by an admin', v_anchor,
+                        CASE WHEN v_state = 'uncertain'
+                             THEN 'held with its conversation: an uncertain link to a withheld conversation'
+                             ELSE 'held with its conversation: a withheld conversation group' END,
+                        'pending', left(v_sid, 200), left(coalesce(NEW.source_message_id, ''), 200),
+                        left(coalesce(NEW.role, ''), 40), left(coalesce(NEW.tool_call_id, ''), 200),
+                        left(brain_row_uid(NEW.source_uid, NEW.source_key), 200), false,
+                        coalesce(NEW.source_message_id, '') <> '', NEW.at,
+                        CASE WHEN v_state = 'uncertain' THEN ARRAY['uncertain'] ELSE ARRAY['not_in_backup'] END)
+                ON CONFLICT (source_key) DO NOTHING;
+            END IF;
+        END IF;
+    END IF;
     IF v_via IS NOT NULL THEN
         NEW.content := '';
         NEW.tool_calls := '[]'::jsonb;
@@ -416,7 +457,10 @@ BEGIN
         NEW.source_fp := 'w1:' || NEW.state;
         NEW.flags := coalesce(NEW.flags, '{}'::jsonb) || jsonb_build_object('withheld_by_admin',
             coalesce(NEW.flags -> 'withheld_by_admin', '{}'::jsonb)
-            || jsonb_build_object('note', 'withheld by an admin', 'guard', v_via));
+            || jsonb_build_object('note', 'withheld by an admin', 'guard', v_via)
+            || CASE WHEN v_via = 'group' THEN jsonb_build_object('review', 'pending', 'pending_copies', true,
+                                                                  'anchor', v_anchor)
+                    ELSE '{}'::jsonb END);
     END IF;
     RETURN NEW;
 END
@@ -487,6 +531,8 @@ DECLARE
     n_sessions int := 0;
     n_times int := 0;
     n_group_copies int := 0;
+    n_group_rows int := 0;
+    n_group_titles int := 0;
     v_out jsonb;
 BEGIN
     PERFORM set_config('client_min_messages', 'warning', true);
@@ -615,6 +661,73 @@ BEGIN
     )
     SELECT (SELECT count(*) FROM fixed), (SELECT count(*) FROM copies) INTO n_restricted, n;
     n_records_blank := n_records_blank + n;
+    -- R10 (option C, rebuild R2). Every readable row of a withheld group's conversation is held with its conversation
+    -- (whatever wrote it: older code, a restore of an older dump, a group recorded since): a pending stone in the
+    -- first group holding the conversation that did not release that exact JARVIS row (each group must release it;
+    -- a 'left readable' choice counts for a certain link only), the row without its text, its copies emptied by the
+    -- start-up step. No withheld text is in hand here: its evidence says so ('not in this backup'; 'uncertain' for
+    -- an uncertain link), never 'none'. Its rollback copies are R9's. Then the titles of the groups' conversations
+    -- (and those an admin's withhold hid) and their rollback copies are hidden again (the title trigger's rule).
+    DROP TABLE IF EXISTS _group_hits;
+    CREATE TEMP TABLE _group_hits ON COMMIT DROP AS
+    SELECT DISTINCT ON (m.id) m.id, w.anchor_key AS anchor, w.state, s.source_session_id AS sid
+      FROM brain_withheld_sessions w
+      JOIN archive_sessions s ON s.source_session_id = w.source_session_id
+      JOIN archive_messages m ON m.session_id = s.id
+     WHERE NOT m.withheld AND m.source_key <> w.anchor_key
+       AND NOT EXISTS (
+           SELECT 1 FROM brain_withhold_exemptions e
+            WHERE e.anchor_key = w.anchor_key AND e.source_session_id = w.source_session_id
+              AND e.source_row_id = m.source_message_id AND m.source_message_id <> ''
+              AND (e.kind = 'release' OR (e.kind = 'left_readable' AND w.state = 'member'))
+              AND brain_exact(e.role, e.tool_call_id, e.source_at, e.source_uid, m.role, m.tool_call_id, m.at,
+                              brain_row_uid(m.source_uid, m.source_key)))
+     ORDER BY m.id, w.anchor_key;
+    INSERT INTO brain_tombstones (source_key, purged_at, purged_by, reason, anchor_key, via, review, after_run,
+                                  source_session_id, source_row_id, role, tool_call_id, message_uid, uid_known, bound,
+                                  source_at, relations)
+    SELECT m.source_key, now(), v_actor, c_wh, h.anchor,
+           CASE WHEN h.state = 'uncertain' THEN 'held with its conversation: an uncertain link to a withheld conversation'
+                ELSE 'held with its conversation: a withheld conversation group' END,
+           'pending', 0, left(h.sid, 200), left(m.source_message_id, 200), left(m.role, 40), left(m.tool_call_id, 200),
+           left(brain_row_uid(m.source_uid, m.source_key), 200), false, m.source_message_id <> '', m.at,
+           CASE WHEN h.state = 'uncertain' THEN ARRAY['uncertain'] ELSE ARRAY['not_in_backup'] END
+      FROM _group_hits h JOIN archive_messages m ON m.id = h.id
+     WHERE m.source_key <> ''
+    ON CONFLICT (source_key) DO NOTHING;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    n_stones_added := n_stones_added + n;
+    UPDATE archive_messages m
+       SET content = '', tool_calls = '[]'::jsonb, labels = '{}', truncated = false, withheld = true,
+           source_fp = 'w1:' || m.state,
+           flags = m.flags || jsonb_build_object('withheld_by_admin',
+                       coalesce(m.flags -> 'withheld_by_admin', '{}'::jsonb) || jsonb_build_object(
+                           'note', 'withheld by an admin', 'review', 'pending', 'repaired', p_cause, 'anchor', h.anchor,
+                           'via', CASE WHEN h.state = 'uncertain'
+                                       THEN 'held with its conversation: an uncertain link to a withheld conversation'
+                                       ELSE 'held with its conversation: a withheld conversation group' END,
+                           'at', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"+00:00"'),
+                           'pending_copies', true))
+      FROM _group_hits h
+     WHERE m.id = h.id;
+    GET DIAGNOSTICS n_group_rows = ROW_COUNT;
+    WITH hid AS (
+        UPDATE archive_sessions s SET title = '', flags = coalesce(s.flags, '{}'::jsonb) || '{"title_withheld": true}'::jsonb
+         WHERE (coalesce(s.title, '') <> '' OR coalesce(s.flags ->> 'title_withheld', '') <> 'true')
+           AND (EXISTS (SELECT 1 FROM brain_withheld_sessions w WHERE w.source_session_id = s.source_session_id)
+                OR EXISTS (SELECT 1 FROM brain_hidden_titles t WHERE t.source_session_id = s.source_session_id))
+        RETURNING 1
+    )
+    SELECT count(*) INTO n_group_titles FROM hid;
+    UPDATE import_records x SET before = x.before || '{"title": ""}'::jsonb
+      FROM archive_sessions s
+     WHERE x.target_table = 'archive_sessions' AND x.target_id = s.id AND x.before ? 'title'
+       AND coalesce(x.before ->> 'title', '') <> ''
+       AND (EXISTS (SELECT 1 FROM brain_withheld_sessions w WHERE w.source_session_id = s.source_session_id)
+            OR EXISTS (SELECT 1 FROM brain_hidden_titles t WHERE t.source_session_id = s.source_session_id));
+    GET DIAGNOSTICS n = ROW_COUNT;
+    n_group_titles := n_group_titles + n;
+
     -- Their sessions are recomputed by the start-up step; until then they show no summary.
     WITH touched AS (
         UPDATE archive_sessions s
@@ -714,9 +827,10 @@ BEGIN
         'withheld_by_fold', n_fold, 'restricted_rows_withheld', n_restricted,
         'fingerprints_removed', n_rows_fp + n_records_fp, 'rollback_copies_blanked', n_records_blank,
         'sessions_to_recompute', n_sessions, 'stone_times_learned', n_times, 'full', v_full,
-        'group_rollback_copies_blanked', n_group_copies);
+        'group_rollback_copies_blanked', n_group_copies, 'group_rows_held', n_group_rows,
+        'group_titles_hidden', n_group_titles);
     IF n_stones_added + n_key + n_row + n_fold + n_restricted + n_rows_fp + n_records_fp + n_records_blank
-       + n_group_copies > 0 THEN
+       + n_group_copies + n_group_rows + n_group_titles > 0 THEN
         INSERT INTO audit_log (actor, action, target_type, target_id, detail)
         VALUES (v_actor, 'brain.withhold_identity_repaired', 'brain', '', v_out);
     END IF;
@@ -786,6 +900,31 @@ CREATE OR REPLACE FUNCTION brain_withhold_pending() RETURNS jsonb LANGUAGE sql S
                                           SELECT 1 FROM brain_tombstones t
                                            WHERE t.source_key = m.source_key AND t.reason = 'withheld by an admin'
                                              AND t.review = 'pending')))),
+        -- rebuild R2: readable rows of a group conversation no release of each group holding it covers (the sweep,
+        -- R10 and the database guard hold them: 0 after any of them), and the rows held with their conversation that
+        -- wait for an admin (pending)
+        'group_rows_readable', (SELECT count(DISTINCT m.id) FROM brain_withheld_sessions w
+                                  JOIN archive_sessions s ON s.source_session_id = w.source_session_id
+                                  JOIN archive_messages m ON m.session_id = s.id
+                                 WHERE NOT m.withheld AND m.source_key <> w.anchor_key
+                                   AND NOT EXISTS (
+                                       SELECT 1 FROM brain_withhold_exemptions e
+                                        WHERE e.anchor_key = w.anchor_key AND e.source_session_id = w.source_session_id
+                                          AND e.source_row_id = m.source_message_id AND m.source_message_id <> ''
+                                          AND (e.kind = 'release' OR (e.kind = 'left_readable' AND w.state = 'member'))
+                                          AND brain_exact(e.role, e.tool_call_id, e.source_at, e.source_uid, m.role,
+                                                          m.tool_call_id, m.at,
+                                                          brain_row_uid(m.source_uid, m.source_key)))),
+        'group_rows_held', (SELECT count(*) FROM brain_tombstones
+                             WHERE reason = 'withheld by an admin' AND review = 'pending'
+                               AND via IN ('held with its conversation: a withheld conversation group',
+                                           'held with its conversation: an uncertain link to a withheld conversation')),
+        'group_deleted_copies_with_text', (SELECT count(*) FROM import_records x
+                                             JOIN archive_sessions s
+                                               ON (x.before -> 'deleted_row' ->> 'session_id') = s.id::text
+                                             JOIN brain_withheld_sessions w ON w.source_session_id = s.source_session_id
+                                            WHERE x.record_type = 'message' AND x.before ? 'deleted_row'
+                                              AND coalesce(x.before -> 'deleted_row' ->> 'withheld', 'false') <> 'true'),
         'group_rollback_copies_with_text', (SELECT count(*) FROM import_records x
                                               JOIN archive_messages m ON x.target_table = 'archive_messages'
                                                                      AND x.target_id = m.id

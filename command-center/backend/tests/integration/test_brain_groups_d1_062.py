@@ -14,6 +14,7 @@ import json
 import pytest
 from sqlalchemy import select, text
 
+from app.brain import groups as brain_groups
 from app.brain import identity
 from app.brain import importer as imp
 from app.db import session_scope
@@ -107,7 +108,16 @@ async def _relinked(client, fx) -> tuple[list[int], list[int]]:
     pa = conversation(db, "d2_p", T, [("user", "What is the deal worth?"), ("assistant", secret("zqd2"))])
     ca = conversation(db, "d2_c", T + DAY, [("user", "Draft the follow-up mail."), ("assistant", "Here it is.")],
                       parent="d2_p")
-    await decided(client, fx, "d2_p", pa[1])
+    # The owner's flow (decided()), except that d2_c's rows stay held with their conversation (rebuild R2, D-4: the
+    # central sweep holds every group row; decided() would keep them, and kept rows are not the uncertain holds here)
+    await run(fx)
+    await withhold(client, (await message_of("d2_p", pa[1]))[0].id)
+    await bj.settle(fx, keep=False)
+    child = await archive_id("d2_c")
+    for mid, h in (await holds(client)).items():
+        if h["session"] != child:
+            assert (await client.post("/api/brain/holds/%d/keep" % mid)).status_code == 200
+    assert {await state("d2_c", r) for r in ca} == {"held"}
     assert (await group())["d2_c"] == ("child", "member")
     bj.add_session(db, "d2_gone", started=T + 3 * DAY)
     bj.change(db, "UPDATE sessions SET parent_session_id = 'd2_gone' WHERE id = 'd2_c'")
@@ -232,7 +242,13 @@ async def test_p2_the_startup_repair_blanks_a_copy_of_a_changed_then_deleted_gro
     await run(fx)
     assert await message_of("p2_c", ca[0]) == []  # deleted: its update copy names a row no longer stored
     assert await copies_with(mark) >= 1  # the update copy keeps the older text
-    await withhold(client, (await message_of("p2_p", pa[1]))[0].id)
+    # The group recorded without the sweep (rebuild R2, D-5: a withhold's sweep blanks these copies itself now:
+    # test_skc_d_*), as restore's removals-only file or older code records it: the startup repair (R9) blanks them.
+    async with session_scope() as s:
+        anchor = (await message_of("p2_p", pa[1]))[0].source_key
+        await brain_groups.record(s, anchor, {"p2_p": brain_groups.Member("withheld_here"),
+                                              "p2_c": brain_groups.Member("child", brain_groups.MEMBER, "p2_p")})
+        await s.commit()
     assert (await group())["p2_c"] == ("child", "member")
     async with session_scope() as s:
         counts = await identity.repair(s, actor="system (startup-check)", cause="startup-check")
@@ -310,7 +326,8 @@ async def test_settle_finishes_a_decision_over_the_whole_group(client, fx):
                       parent="sg_p", model_config={"_delegate_from": "sg_p"})
     await run(fx)
     await withhold(client, (await message_of("sg_p", pa[1]))[0].id)
-    assert await state("sg_d", da[0]) == "readable"  # the withhold dialog compares its own family only
+    # rebuild R2 (D-6): held with its conversation group at the withhold already (i22 and R1: readable until Settle)
+    assert await state("sg_d", da[0]) == "held"
     await bj.settle(fx, keep=False)
     assert await state("sg_d", da[0]) == "held"
     assert identity.CONTAINS in (await holds(client))[(await message_of("sg_d", da[0]))[0].id]["relations"]
@@ -339,3 +356,25 @@ async def test_the_legacy_reset_records_the_groups_of_the_withholds_it_binds(cli
     assert (await group()) == {"lg_p": ("withheld_here", "member"), "lg_c": ("child", "member")}
     assert {(g["session"], g["how"]) for g in json.loads(out.read_text())["groups"]} == {
         ("lg_p", "withheld_here"), ("lg_c", "child")}
+
+
+async def test_skc_d_the_older_text_of_a_group_row_changed_then_deleted_keeps_no_text_in_any_rollback_copy(client,
+                                                                                                         fx):
+    """gd1:updated_copies_gone_off (rebuild R2): a row of a group conversation changed by one import and deleted by the
+    next keeps its older text in its update copy (which names a row no longer stored) and in its deletion copy. The
+    withhold's sweep itself (no start-up repair) blanks both: the update copy is found through the deletion copy."""
+    db = fx["db"]
+    mark = "zqskcd"
+    pa = conversation(db, "sd_p", T, [("user", "What is the deal worth?"), ("assistant", secret("zqsdw"))])
+    ca = conversation(db, "sd_c", T + DAY, [("user", "The older text %s here." % mark), ("assistant", "Noted.")],
+                      parent="sd_p")
+    await run(fx)
+    bj.change(db, "UPDATE messages SET content = 'A newer text, %s too.' WHERE id = ?" % (mark + "n"), ca[0])
+    await run(fx)
+    bj.change(db, "UPDATE messages SET active = 0 WHERE id = ?", ca[0])  # rewound: the next import deletes it
+    await run(fx)
+    assert await message_of("sd_c", ca[0]) == []
+    assert await copies_with(mark) >= 2  # the update copy (older text) and the deletion copy (newer text)
+    await withhold(client, (await message_of("sd_p", pa[1]))[0].id)
+    assert (await group())["sd_c"] == ("child", "member")
+    assert await copies_with(mark) == 0

@@ -34,6 +34,7 @@ from ..models import (
     BrainFrozenSession,
     BrainPurgedItem,
     BrainTombstone,
+    BrainWithheldSession,
     ImportRecord,
     ImportRun,
     MemoryConflict,
@@ -47,7 +48,8 @@ from ..worker.scheduler import valid_cron
 from . import AGENTS, KINDS, identity, store
 from . import groups as brain_groups
 from . import text as brain_text
-from .archive import WITHHELD_BY_ADMIN, _blank_records, promoted_ref, recompute_session, withhold_copies
+from .archive import (WITHHELD_BY_ADMIN, _blank_records, blank_before, promoted_ref, recompute_session,
+                      withhold_copies)
 from .quotes import relabel_hidden_titles, scrub_quotes
 from .policy import (
     POLICIES,
@@ -377,6 +379,7 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
     sess = await session.get(ArchiveSession, message.session_id)
     assert sess is not None
     text = identity.message_text(message)  # before blanking; in memory only
+    w_content = message.content or ""  # the withheld text, in memory only: the group sweep's evidence (option C)
     group = await identity.group_rows(session, message, sess, text)
     # The rollback copies of the rewound originals Hermes wrote these rows again from (the importer's twin link, from
     # stored data: an in-place compaction's protected tail, a /retry), read while the texts are still in memory: a
@@ -530,7 +533,9 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
     if root:
         await session.flush()
         await brain_groups.refresh(session, anchors=[root])
-        await brain_groups.hold_uncertain(session, actor=actor, cause=cause)
+        # rebuild R2: every row of the group's conversations is held now (the central sweep, with this withheld text
+        # in hand), and the rollback copies of them, or anywhere whose older text relates to it, lose the text
+        await hold_group_rows(session, actor=actor, cause=cause, texts={root: w_content}, ip=ip)
         for obj in [o for o in session.identity_map.values() if isinstance(o, ArchiveSession)]:
             await session.refresh(obj, ["title", "flags"])  # the title trigger changed stored conversations
     for sid in sorted({r.session_id for r in blanked} - {message.session_id}):
@@ -540,6 +545,153 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
     out.rollback_copies_blanked, out.answers_scrubbed = done.rollback_copies_blanked, done.answers_scrubbed
     out.keys_tombstoned = written
     return out
+
+
+# --- Option C (rebuild R2): the central sweep that holds every row of a withheld conversation group -----------------
+
+# A rollback copy (import_records.before) without its text, in SQL (as blank_before and 0008's R9).
+_BLANK_COPY = """CASE WHEN x.before ? 'deleted_row' THEN
+        jsonb_set(x.before, '{deleted_row}', (x.before -> 'deleted_row')
+            || jsonb_build_object('content', '', 'tool_calls', '[]'::jsonb, 'labels', '[]'::jsonb, 'withheld', true,
+                                  'truncated', false,
+                                  'source_fp', 'w1:' || coalesce(x.before -> 'deleted_row' ->> 'state', 'live')))
+    ELSE x.before || jsonb_build_object('content', '', 'tool_calls', '[]'::jsonb, 'labels', '[]'::jsonb,
+                                        'withheld', true, 'truncated', false,
+                                        'source_fp', 'w1:' || coalesce(x.before ->> 'state', 'live')) END"""
+_COPY_WITH_TEXT = ("x.record_type = 'message' AND x.before <> '{}'::jsonb AND (x.before ? 'content' OR x.before ? "
+                   "'deleted_row') AND coalesce(x.before -> 'deleted_row' ->> 'withheld', x.before ->> 'withheld', "
+                   "'false') <> 'true'")
+
+
+async def admin_anchors(session: AsyncSession) -> set[str]:
+    """Every admin's own withhold (its key: the anchor of its group), whose withheld text 'none' must be compared with
+    (identity.group_relations: all_in_hand)."""
+    return set((await session.scalars(select(BrainTombstone.source_key).where(
+        BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.anchor_key == "",
+        BrainTombstone.review != identity.PENDING))).all())
+
+
+async def hold_group_rows(session: AsyncSession, *, actor: str, cause: str, texts: dict[str, str | None] | None = None,
+                          anchors: Iterable[str] | None = None, ip: str = "") -> dict[str, int]:
+    """The central sweep of option C (rebuild R2), run by a withhold, every import and Settle, decisions-apply (live
+    and restore's removals-only file), a rollback, the legacy reset and the start-up repair: every readable row of a
+    conversation a recorded group holds is held (groups.hold_uncertain for an uncertain link, groups.hold_group for a
+    certain one), unless an admin released that exact row for each group holding it; what copied the rows held goes
+    (archive.withhold_copies) and their conversations are recomputed; the rollback copies of every row of a group
+    conversation lose their text (hold_updated_copies: rows changed in place, also one later deleted; and
+    hold_deleted_copies), and, with withheld texts in hand (texts: anchor -> text, in memory only), so do the rollback
+    copies anywhere whose older text relates to one of them, each marked so a rollback puts its row back as a hold of
+    its own (importer.rollback_run). Counts only."""
+    from .groups import hold_group, hold_uncertain, recorded
+
+    texts = {k: v for k, v in (texts or {}).items() if k and v is not None}
+    out: dict[str, int] = {}
+    await session.flush()
+    out["uncertain_rows_held"] = await hold_uncertain(session, actor=actor, cause=cause)
+    found = await recorded(session, anchors)
+    all_in_hand = (await admin_anchors(session)) <= set(texts)
+    held: list[ArchiveMessage] = []
+    for anchor in sorted(found):
+        held += await hold_group(session, anchor, found[anchor], texts=texts, all_in_hand=all_in_hand, actor=actor)
+    out["group_rows_held"] = len(held)
+    # Rows the database guard held with their conversation (0008: any code wrote them readable) still owe their copies.
+    guarded = list((await session.execute(select(
+        ArchiveMessage.id, ArchiveMessage.source_key, ArchiveMessage.session_id, ArchiveMessage.position).where(
+        ArchiveMessage.withheld.is_(True), ArchiveMessage.flags["withheld_by_admin"].has_key("pending_copies"),
+        ArchiveMessage.flags["withheld_by_admin"]["guard"].astext == "group").order_by(ArchiveMessage.id))).all())
+    out["guard_rows_finished"] = len(guarded)
+    if held or guarded:
+        done = await withhold_copies(session, messages=[*held, *guarded], actor=actor, cause=cause, ip=ip)
+        out["group_copies_emptied"] = len(done.copies)
+        out["group_answers_scrubbed"] = done.answers_scrubbed
+        if guarded:
+            await session.execute(sql_text(
+                "UPDATE archive_messages SET flags = jsonb_set(flags, '{withheld_by_admin}', "
+                "(flags -> 'withheld_by_admin') - 'pending_copies') WHERE id = ANY(:ids)"),
+                {"ids": [int(r.id) for r in guarded]})
+        for sid in sorted({r.session_id for r in [*held, *guarded]}):
+            await recompute_session(session, sid)
+    sids = list((await session.scalars(select(ArchiveSession.id).join(
+        BrainWithheldSession, BrainWithheldSession.source_session_id == ArchiveSession.source_session_id)
+        .distinct().order_by(ArchiveSession.id))).all())
+    out["updated_copies_blanked"] = await hold_updated_copies(session, sids, texts=texts)
+    out["deleted_copies_blanked"] = await hold_deleted_copies(session, sids, texts=texts)
+    await session.flush()
+    return {k: v for k, v in out.items() if v}
+
+
+async def hold_updated_copies(session: AsyncSession, archive_session_ids: Iterable[int], *,
+                              texts: dict[str, str] | None = None) -> int:
+    """The rollback copies of rows changed in place (an update record's before) keep no text when the row is of a
+    group conversation, also a row an import deleted since (its update copy names a row no longer stored: found
+    through that row's deletion copy, which names its conversation); with withheld texts in hand, also a copy anywhere
+    whose older text relates to one of them (COPY_HOLD, marked for the rollback). How many copies lost their text."""
+    ids = sorted({int(i) for i in archive_session_ids})
+    n = 0
+    if ids:
+        n += (await session.execute(sql_text(
+            "WITH gone AS (SELECT DISTINCT (y.before -> 'deleted_row' ->> 'id') AS id FROM import_records y "
+            "WHERE y.record_type = 'message' AND y.before ? 'deleted_row' "
+            "AND (y.before -> 'deleted_row' ->> 'session_id') = ANY(CAST(:sids AS text[]))) "
+            "UPDATE import_records x SET before = " + _BLANK_COPY + " WHERE " + _COPY_WITH_TEXT
+            + " AND NOT x.before ? 'deleted_row' AND x.target_table = 'archive_messages' AND ("
+            "x.target_id IN (SELECT m.id FROM archive_messages m WHERE m.session_id = ANY(:ids)) "
+            "OR x.target_id::text IN (SELECT id FROM gone))"),
+            {"ids": ids, "sids": [str(i) for i in ids]})).rowcount or 0
+    if texts:
+        n += await _hold_related_copies(session, texts, deleted=False)
+    return n
+
+
+async def hold_deleted_copies(session: AsyncSession, archive_session_ids: Iterable[int], *,
+                              texts: dict[str, str] | None = None) -> int:
+    """The rollback copies of rows an import deleted keep no text when the row was of a group conversation; with
+    withheld texts in hand, also a deleted row's copy anywhere whose text relates to one of them (COPY_HOLD, marked
+    for the rollback). How many copies lost their text."""
+    ids = sorted({int(i) for i in archive_session_ids})
+    n = 0
+    if ids:
+        n += (await session.execute(sql_text(
+            "UPDATE import_records x SET before = " + _BLANK_COPY + " WHERE " + _COPY_WITH_TEXT
+            + " AND x.before ? 'deleted_row' "
+            "AND (x.before -> 'deleted_row' ->> 'session_id') = ANY(CAST(:sids AS text[]))"),
+            {"sids": [str(i) for i in ids]})).rowcount or 0
+    if texts:
+        n += await _hold_related_copies(session, texts, deleted=True)
+    return n
+
+
+async def _hold_related_copies(session: AsyncSession, texts: dict[str, str], *, deleted: bool) -> int:
+    """Rollback copies (of rows changed in place, or of deleted rows) whose older text relates to a withheld text in
+    hand (identity.family_relations, in memory only): blanked, and marked as a hold of that withhold with its
+    evidence, so a rollback puts the row back held on its own (importer.rollback_run), never readable and never an
+    unlisted withheld row. A full scan of the rollback copies that still hold text (accepted cost)."""
+    n = 0
+    shape = "x.before ? 'deleted_row'" if deleted else "NOT x.before ? 'deleted_row'"
+    for rid, before in (await session.execute(sql_text(
+            "SELECT x.id, x.before FROM import_records x WHERE " + _COPY_WITH_TEXT + " AND " + shape
+            + " ORDER BY x.id"))).all():
+        row = dict((before or {}).get("deleted_row") or {}) if deleted else dict(before or {})
+        content = row.get("content") or ""
+        if not content:
+            continue
+        found: tuple[str, tuple[str, ...]] | None = None
+        for anchor, w in sorted(texts.items()):
+            rel = identity.family_relations(content, w) & set(identity.TEXT_RELATIONS)
+            if rel:
+                found = (anchor, tuple(identity.relation_order(rel)))
+                break
+        if found is None:
+            continue
+        blank = blank_before(dict(row))
+        flag = {**dict((row.get("flags") or {}).get("withheld_by_admin") or {}), "note": identity.NOTE,
+                "via": identity.COPY_HOLD, "review": identity.PENDING, "anchor": found[0],
+                "relations": list(found[1])}
+        blank["flags"] = {**dict(row.get("flags") or {}), "withheld_by_admin": flag}
+        new = {**dict(before), "deleted_row": blank} if deleted else blank
+        await session.execute(update(ImportRecord).where(ImportRecord.id == rid).values(before=new))
+        n += 1
+    return n
 
 
 async def hold_message(session: AsyncSession, message: ArchiveMessage, *, anchor: str, actor: str, cause: str,
@@ -645,6 +797,12 @@ async def decision_status(session: AsyncSession) -> dict[str, Any]:
             "later_backup_holds": int(p.get("quarantined_rows") or 0),
             "held_for_review": int(p.get("held_for_review") or 0),
             "frozen_conversations": int(p.get("frozen_sessions") or 0),
+            # option C: the withheld groups' conversations, those an uncertain link holds, their rows held with their
+            # conversation that wait for an admin, and their rows still readable without a release (0 after a sweep)
+            "group_conversations": int(p.get("group_sessions") or 0),
+            "uncertain_conversations": int(p.get("uncertain_sessions") or 0),
+            "group_rows_held": int(p.get("group_rows_held") or 0),
+            "group_rows_readable": int(p.get("group_rows_readable") or 0),
             "legacy_lock": bool(p.get("legacy_lock")),
             "tripwire": {"run": tw.get("run"), "inside_family": int(tw.get("inside_family") or 0),
                          "outside_family": int(tw.get("outside_family") or 0)} if tw else None}

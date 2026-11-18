@@ -32,9 +32,9 @@ here already (hold_uncertain)."""
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Iterable
-from dataclasses import dataclass, field
-from datetime import datetime
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select, text as sql
@@ -46,6 +46,7 @@ from ..models import (
     ArchiveSession,
     BrainHiddenTitle,
     BrainSessionLink,
+    BrainTombstone,
     BrainWithheldSession,
     BrainWithholdExemption,
 )
@@ -75,6 +76,9 @@ PARENT_LINKS = ("parent", "branched_from", "compressed_from", "delegate_from", "
 FAMILY_LINKS = ("parent", "branched_from", "compressed_from", "shared_uid", "copied_rows")
 MARKER_LINKS = {"_branched_from": "branched_from", "_compressed_from": "compressed_from",
                 "_delegate_from": "delegate_from", "_reset_from": "reset_from"}
+# A hold an admin kept that was held only with its conversation (rebuild R2, RECON-16): it says nothing of the withheld
+# message, so it never seeds a group (a seed would make an uncertain conversation a member, and spread as one)
+GROUP_VIAS = frozenset({identity.GROUP_HOLD, identity.UNCERTAIN_HOLD})
 J8_MIN_ROWS = 2  # copied rows that make an unanchored conversation a member (fewer: uncertain; J9 provenance: one)
 UNCERTAIN_HOLD = identity.UNCERTAIN_HOLD
 
@@ -314,7 +318,7 @@ def seeds(ids: identity.Identities) -> dict[str, set[str]]:
     admin's own, its members, a kept hold). A pending hold never seeds a group (its row is only held for review)."""
     out: dict[str, set[str]] = defaultdict(set)
     for st in ids.by_key.values():
-        if st.session and st.certain and st.group in ids.by_key:
+        if st.session and st.certain and st.group in ids.by_key and st.via not in GROUP_VIAS:
             out[st.group].add(st.session[:200])
     return dict(out)
 
@@ -323,7 +327,7 @@ def certain_uids(ids: identity.Identities) -> dict[str, set[str]]:
     """Each withhold's certain uids (a row carrying or absorbing one joins its group: J9 'shared_uid')."""
     out: dict[str, set[str]] = defaultdict(set)
     for st in ids.by_key.values():
-        if st.uid and st.certain and st.group in ids.by_key:
+        if st.uid and st.certain and st.group in ids.by_key and st.via not in GROUP_VIAS:
             out[st.group].add(st.uid[:200])
     return dict(out)
 
@@ -456,6 +460,91 @@ async def hold_uncertain(s: AsyncSession, *, actor: str, cause: str) -> int:
                                   relations=[identity.UNCERTAIN_REL])
         done.add(row.id)
     return len(done)
+
+
+async def hold_group(s: AsyncSession, anchor: str, members: dict[str, Member], *, texts: Mapping[str, str],
+                     all_in_hand: bool, actor: str) -> list[ArchiveMessage]:
+    """The central sweep for one group (option C, rebuild R2): every readable stored row of a conversation the group
+    holds by a certain link is held with its conversation (a pending stone in this group, GROUP_HOLD, and the row
+    without its text), unless an admin's release (or 'left readable') for this group covers that exact row and its
+    content (identity.exempt_covers). A row of two groups stays held until each releases it. Its evidence:
+    identity.group_relations against the group's own withheld text and every other one in hand (texts: anchor -> text,
+    in memory only); 'none' only when every withheld text was in hand (all_in_hand). The conversations an uncertain
+    link holds are hold_uncertain's. The caller empties what copied the rows (review.hold_group_rows). The rows held."""
+    from . import review
+
+    sids = sorted(sid for sid, m in members.items() if not m.uncertain)
+    if not sids:
+        await list_unlisted(s, anchor, members, actor=actor)
+        return []
+    own = await s.get(BrainTombstone, anchor)
+    w_text = texts.get(anchor)
+    others = [t for a, t in sorted(texts.items()) if a != anchor and t is not None]
+    after = await identity.current_after_run(s)
+    at = datetime.now(timezone.utc).isoformat()
+    held: list[ArchiveMessage] = []
+    for row, sid in (await s.execute(
+            select(ArchiveMessage, ArchiveSession.source_session_id)
+            .join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
+            .where(ArchiveSession.source_session_id.in_(sids), ArchiveMessage.withheld.is_(False))
+            .order_by(ArchiveMessage.id).with_for_update(of=ArchiveMessage))).all():
+        if row.withheld or (row.source_key and row.source_key == anchor):
+            continue
+        if await identity.exempt_covers(s, anchor, sid, row):
+            continue  # an admin released (or left readable) this exact row for this group
+        structural: set[str] = set()
+        if own is not None:
+            uid = identity.row_uid(row)
+            if uid and own.message_uid and uid == own.message_uid and own.via not in identity.FOLD_VIAS:
+                structural.add(identity.SAME_UID)
+            if row.tool_call_id and own.tool_call_id and row.tool_call_id == own.tool_call_id:
+                structural.add(identity.SAME_CALL)
+            if own.source_at is not None and row.at == own.source_at and row.role == own.role:
+                structural.add(identity.SAME_TIME_REL)
+        relations = identity.group_relations(row.content, w_text, others, all_in_hand=all_in_hand,
+                                             structural=structural)
+        if row.source_key:
+            await identity.put_stone(s, replace(identity.binding_of(
+                row, sid, anchor=anchor, via=identity.GROUP_HOLD, review=identity.PENDING, after_run=after,
+                decided_on=own.decided_on if own is not None else ""), relations=relations), actor=actor)
+        review._blank(row, {"at": at, "note": identity.NOTE, "via": identity.GROUP_HOLD, "review": identity.PENDING})
+        held.append(row)
+    await s.flush()
+    await list_unlisted(s, anchor, members, actor=actor)
+    return held
+
+
+async def list_unlisted(s: AsyncSession, anchor: str, members: dict[str, Member], *, actor: str) -> int:
+    """A row of a group conversation stored without text and without any stone (a rollback put back a copy the sweep
+    blanked, older code withheld it, a restore of an older dump) is listed as the hold it is: a pending stone in the
+    group ('not in this backup': its text is not here to compare), never an unlisted withheld row an admin cannot
+    review. A row withheld for restricted data in its conversation is not (it stays withheld as it is). How many."""
+    sids = sorted(members)
+    if not sids:
+        return 0
+    n = 0
+    after = await identity.current_after_run(s)
+    for row, sid in (await s.execute(
+            select(ArchiveMessage, ArchiveSession.source_session_id)
+            .join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
+            .where(ArchiveSession.source_session_id.in_(sids), ArchiveMessage.withheld.is_(True),
+                   ArchiveMessage.source_key != "", ArchiveMessage.source_key != anchor,
+                   ArchiveSession.sensitivity != "restricted", ~ArchiveMessage.flags.has_key("withheld"),
+                   ~select(BrainTombstone.source_key).where(
+                       BrainTombstone.source_key == ArchiveMessage.source_key).exists())
+            .order_by(ArchiveMessage.id))).all():
+        uncertain = members[sid].uncertain
+        relations = (identity.UNCERTAIN_REL,) if uncertain else (identity.NOT_IN_BACKUP,)
+        await identity.put_stone(s, replace(identity.binding_of(
+            row, sid, anchor=anchor, via=identity.UNCERTAIN_HOLD if uncertain else identity.GROUP_HOLD,
+            review=identity.PENDING, after_run=after), relations=relations), actor=actor)
+        flag = dict((row.flags or {}).get("withheld_by_admin") or {})
+        flag.update(note=identity.NOTE, via=identity.UNCERTAIN_HOLD if uncertain else identity.GROUP_HOLD,
+                    review=identity.PENDING)
+        row.flags = {**(row.flags or {}), "withheld_by_admin": flag}
+        n += 1
+    await s.flush()
+    return n
 
 
 async def _released(s: AsyncSession, anchor: str, sid: str, row: ArchiveMessage) -> bool:

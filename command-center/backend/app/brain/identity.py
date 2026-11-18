@@ -92,8 +92,14 @@ OTHER_BACKUP_HOLD = "decided on another backup"
 # Option C (O-D1): a row of a conversation an uncertain link puts in a withheld group (app/brain/groups.py): held, never
 # released in one click, and the export waits while one waits
 UNCERTAIN_HOLD = "held with its conversation: an uncertain link to a withheld conversation"
+# Option C (rebuild R2): a row of a conversation of a withheld group, held with its conversation by the central sweep
+# (review.hold_group_rows), an import (importer.Processor._group_holds) or the database guard (0008)
+GROUP_HOLD = "held with its conversation: a withheld conversation group"
+# A rollback copy whose older text relates to a withheld text (review.hold_updated_copies, hold_deleted_copies): a
+# rollback puts its row back as this hold, listed on its own (importer.rollback_run)
+COPY_HOLD = "an earlier version related to the withheld text"
 # What a hold's via may be (a decisions file's hold keeps its own; older vias of 0.6.2 development builds are read).
-HOLD_VIA = (SETTLE_HOLD, LATER_HOLD, MATCHING_HOLD, UID_HOLD, OTHER_BACKUP_HOLD, UNCERTAIN_HOLD,
+HOLD_VIA = (SETTLE_HOLD, LATER_HOLD, MATCHING_HOLD, UID_HOLD, OTHER_BACKUP_HOLD, UNCERTAIN_HOLD, GROUP_HOLD, COPY_HOLD,
             "same message id, different text",
             "same message id, contains the withheld text", "same text", "copied by JARVIS, nothing to compare",
             "same message id, nothing to compare", "restated after a compaction, new message id", "same message id",
@@ -217,9 +223,12 @@ IDENTICAL_REL, CONTAINS, PART_OF, RESTATED_REL = "identical", "contains", "part_
 SAME_UID, SAME_CALL, SAME_TIME_REL, REUSED_ROW = "same_uid", "same_call", "same_time", "reused_row"
 STALE, ORPHAN, NOT_IN_BACKUP, NO_RELATION = "stale", "orphan", "not_in_backup", "none"
 UNCERTAIN_REL = "uncertain"  # option C (O-D1): the row's conversation is in a withheld group by an uncertain link
+# option C (rebuild R2, RECON-14): a group row compared with its own withheld text but not with every other withheld
+# text ('none' needs every withheld text in hand): never 'none', so never released in one click
+OTHER_NOT_COMPARED = "other_not_compared"
 TEXT_RELATIONS = (IDENTICAL_REL, RESTATED_REL, CONTAINS, PART_OF)
 RELATIONS = (*TEXT_RELATIONS, SAME_UID, SAME_CALL, SAME_TIME_REL, REUSED_ROW, STALE, ORPHAN, NOT_IN_BACKUP,
-             UNCERTAIN_REL, NO_RELATION)
+             UNCERTAIN_REL, OTHER_NOT_COMPARED, NO_RELATION)
 # Releasing a hold with one of these needs a typed confirmation (plan 4.6): its text is, holds or quotes the withheld
 # text; or (O-D1) its conversation's link to the withheld one is uncertain: never released in one click.
 CONFIRM_RELATIONS = (IDENTICAL_REL, RESTATED_REL, CONTAINS, PART_OF, UNCERTAIN_REL)
@@ -238,6 +247,7 @@ RELATION_TEXT = {
     ORPHAN: "an orphan row",
     NOT_IN_BACKUP: "the withheld text is not in this backup",
     UNCERTAIN_REL: "its conversation's link to the withheld conversation is uncertain (a parent not found, or two)",
+    OTHER_NOT_COMPARED: "not compared with every other withheld text (not all of them were in hand)",
     NO_RELATION: "no relation to the withheld text was found",
 }
 _DISCORD_NOTE = re.compile(r"\A\[Triggering message id: [^\n]*\]\n\n")
@@ -331,6 +341,27 @@ def family_relations(held: str | None, withheld: str | None) -> set[str]:
     if len(body) >= MIN_RELATED and body != wbody and body in wbody:
         out.add(PART_OF)
     return out
+
+
+def group_relations(held: str | None, own: str | None, others: Iterable[str] = (), *, all_in_hand: bool,
+                    uncertain: bool = False, structural: Iterable[str] = ()) -> tuple[str, ...]:
+    """The evidence of a row held with its conversation group (option C, rebuild R2): its text against the group's own
+    withheld text (family_relations; 'not in this backup' when that text is not in hand) and against every other
+    withheld text in hand (a relation to any of them is shown), the structural relations the caller found, and
+    'uncertain' for a conversation an uncertain link holds. 'none' only when nothing relates and every withheld text
+    was in hand (all_in_hand); otherwise 'other_not_compared' (never released in one click). Compared in memory only."""
+    out: set[str] = set(structural)
+    if own is None:
+        out.add(NOT_IN_BACKUP)
+    else:
+        out |= family_relations(held, own)
+    for w in others:
+        out |= family_relations(held, w) & set(TEXT_RELATIONS)
+    if uncertain:
+        out.add(UNCERTAIN_REL)
+    if not out:
+        out.add(NO_RELATION if all_in_hand else OTHER_NOT_COMPARED)
+    return tuple(relation_order(out))
 
 
 def relation_order(codes: Iterable[str]) -> list[str]:
@@ -1662,12 +1693,18 @@ async def repair(s: AsyncSession, *, actor: str, cause: str, refresh_quotes: boo
     # Option C first: every withhold's conversation group over what this database knows (recorded, never forgotten;
     # its titles hidden by the trigger), and the rows an uncertain link holds; repair_rows() then blanks the rollback
     # copies of the groups' rows (R9).
+    from .review import hold_group_rows
+
     await groups.refresh(s, run_id=None)
     held = await groups.hold_uncertain(s, actor=actor, cause=cause)
     counts = await repair_rows(s, cause=cause)
     py = await finish_repair(s, actor=actor, cause=cause)
     if held:
         py["uncertain_rows_held"] += held
+    # rebuild R2: the central sweep after R9/R10 (no withheld text in hand here): what they left, and the rollback
+    # copies of the groups' deleted rows and of rows changed in place
+    for k, v in (await hold_group_rows(s, actor=actor, cause=cause)).items():
+        py[k] += v
     swept = await archive.sweep_withheld_copies(s, actor=actor, cause=cause)
     py["copies_emptied"] += len(swept)
     py["rollback_copies_blanked"] += await archive.sweep_withheld_records(s)
@@ -1692,7 +1729,8 @@ async def pending(s: AsyncSession) -> dict[str, Any]:
     out["readable_rows_matching_a_withhold"] = (int(out.get("readable_by_key", 0))
                                                 + int(out.get("readable_by_jarvis_row", 0))
                                                 + int(out.get("readable_by_fold", 0))
-                                                + int(out.get("readable_in_restricted_sessions", 0)))
+                                                + int(out.get("readable_in_restricted_sessions", 0))
+                                                + int(out.get("group_rows_readable", 0)))
     out["withheld_copies_with_text_fingerprint"] = int(await s.scalar(sql(
         "SELECT count(*) FROM import_records x WHERE x.record_type = 'message' AND x.before <> '{}'::jsonb "
         "AND coalesce(x.before -> 'deleted_row' ->> 'withheld', x.before ->> 'withheld') = 'true' "

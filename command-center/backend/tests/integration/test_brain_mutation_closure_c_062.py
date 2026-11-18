@@ -9,11 +9,14 @@ import pytest
 from sqlalchemy import select, text
 
 from app.brain import groups, identity, review
+from app.brain import importer as imp
 from app.db import session_scope
-from app.models import ArchiveSession, BrainWithheldSession, ImportRecord
+from app.models import ArchiveMessage, ArchiveSession, BrainTombstone, BrainWithheldSession, ImportRecord
 
 from .. import brain_jarvis as bj
+from ..conftest import ADMIN
 from .test_brain_api import as_, client  # noqa: F401 - client is a fixture
+from .test_brain_later_062 import holds, state
 from .test_brain_withhold_identity import DAY, T, conversation, message_of, run, secret, withhold
 
 pytestmark = pytest.mark.usefixtures("clean_db")
@@ -160,3 +163,99 @@ async def test_the_startup_repair_records_the_groups_again(client, fx):
     assert (await group()) == {"sr_p": ("withheld_here", "member"), "sr_c": ("child", "member")}
     async with session_scope() as s:
         assert await s.scalar(select(ArchiveSession.title).where(ArchiveSession.source_session_id == "sr_c")) == ""
+
+
+# --- rebuild R2: the database guard's branch for group rows, and the rollback of copies a withhold blanked ---------
+
+
+async def _two_groups(fx) -> tuple[list[int], list[ArchiveMessage]]:
+    db = fx["db"]
+    ids = conversation(db, "tr_a", T, [("user", "Plan the garden party."), ("assistant", "Planned.")])
+    await run(fx)
+    await join("tr_a", "jarvis:message:uid:tr-one")
+    await join("tr_a", "jarvis:message:uid:tr-two")
+    return ids, [(await message_of("tr_a", r))[0] for r in ids]
+
+
+async def _write_readable(*row_ids: int) -> None:
+    async with session_scope() as s:  # any code: a plain update of the stored rows
+        await s.execute(text("UPDATE archive_messages SET content = content || ' (edited)' WHERE id = ANY(:ids)"),
+                        {"ids": list(row_ids)})
+        await s.commit()
+
+
+async def test_trig_release_any_group_a_release_under_one_group_never_frees_a_row_of_two(client, fx):
+    """m18:trig_release_any_group: a conversation in two groups; a row an admin released under one group only is held
+    by the guard when any code writes it readable; a row released under both stays readable."""
+    ids, (first, second) = await _two_groups(fx)
+    async with session_scope() as s:
+        for row, anchors in ((first, ["jarvis:message:uid:tr-one"]),
+                             (second, ["jarvis:message:uid:tr-one", "jarvis:message:uid:tr-two"])):
+            for anchor in anchors:
+                await identity.put_exemption(s, identity.exact_of_row(row, "tr_a"), anchor=anchor, reason="test")
+        await s.commit()
+    await _write_readable(first.id, second.id)
+    assert await state("tr_a", ids[0]) == "held" and await state("tr_a", ids[1]) == "readable"
+    async with session_scope() as s:
+        stone = await s.get(BrainTombstone, first.source_key)
+        assert stone.anchor_key == "jarvis:message:uid:tr-two" and stone.review == identity.PENDING
+
+
+async def test_trig_release_not_exact_a_release_never_frees_another_message_at_its_row_id(client, fx):
+    """m18:trig_release_not_exact: a release names a JARVIS row id with its time and uid; another message at that row
+    id (Hermes reused it after a snapshot came back: another time, another uid) written readable is held."""
+    ids, (first, second) = await _two_groups(fx)
+    async with session_scope() as s:
+        for anchor in ("jarvis:message:uid:tr-one", "jarvis:message:uid:tr-two"):
+            await identity.put_exemption(s, identity.Exact("tr_a", first.source_message_id, first.role,
+                                                           first.tool_call_id or "", first.at, "another-uid"),
+                                         anchor=anchor, reason="test")
+            await identity.put_exemption(s, identity.exact_of_row(second, "tr_a"), anchor=anchor, reason="test")
+        await s.commit()
+    await _write_readable(first.id, second.id)
+    assert await state("tr_a", ids[0]) == "held" and await state("tr_a", ids[1]) == "readable"
+
+
+async def test_a_rolled_back_carrier_changed_in_place_comes_back_held_on_its_own(client, fx):
+    """m18:v_f8_rollback_scope: a row outside every group carried the withheld text, and a later import changed it in
+    place (its update copy keeps the older text). The withhold blanks that copy and marks it; a rollback of that
+    import puts the row back as a hold of its own (listed, with its evidence), never readable and never an unlisted
+    withheld row."""
+    db = fx["db"]
+    mark = "zqvf8"
+    w = secret(mark)
+    pa = conversation(db, "vf_p", T, [("user", "What is the deal worth?"), ("assistant", w)])
+    xa = conversation(db, "vf_x", T + 5 * DAY, [("user", "Forwarding this: %s" % w), ("assistant", "Thanks.")])
+    await run(fx)
+    bj.change(db, "UPDATE messages SET content = 'Forwarding this: (removed).' WHERE id = ?", xa[0])
+    changing = await run(fx)
+    await withhold(client, (await message_of("vf_p", pa[1]))[0].id)
+    assert "vf_x" not in await group() and await state("vf_x", xa[0]) == "readable"
+    async with session_scope() as s:
+        assert int(await s.scalar(text("SELECT count(*) FROM import_records WHERE before::text LIKE '%' || :m || '%'"),
+                                  {"m": mark})) == 0
+    await imp.rollback(changing["run_id"], actor=ADMIN[0], confirm=True)
+    assert await state("vf_x", xa[0]) == "held"
+    h = (await holds(client))[(await message_of("vf_x", xa[0]))[0].id]
+    assert identity.CONTAINS in h["relations"] and h["rule"] == identity.COPY_HOLD and h["confirm_required"]
+
+
+async def test_hgr_verify_uncertain_a_left_readable_choice_never_frees_a_row_an_uncertain_link_holds(client, fx):
+    """hgr_verify_uncertain_off: an admin's 'left readable' choice at a withhold counts for a certain link only: a row
+    of a conversation an uncertain link holds is held by the sweep and by the guard all the same."""
+    db = fx["db"]
+    ids = conversation(db, "vu_a", T, [("user", "Plan the garden party."), ("assistant", "Planned.")])
+    await run(fx)
+    await join("vu_a", "jarvis:message:uid:vu-anchor")
+    async with session_scope() as s:
+        await groups.record(s, "jarvis:message:uid:vu-anchor", {"vu_a": groups.Member("child", groups.UNCERTAIN, "x")})
+        row = (await message_of("vu_a", ids[0]))[0]
+        await identity.put_exemption(s, identity.exact_of_row(row, "vu_a"), anchor="jarvis:message:uid:vu-anchor",
+                                     kind="left_readable", reason=identity.LEFT_READABLE)
+        await s.commit()
+    await _write_readable(row.id)
+    assert await state("vu_a", ids[0]) == "held"
+    async with session_scope() as s:
+        await review.hold_group_rows(s, actor="system (test)", cause="test")
+        await s.commit()
+    assert [await state("vu_a", r) for r in ids] == ["held", "held"]

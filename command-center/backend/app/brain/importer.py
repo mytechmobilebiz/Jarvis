@@ -1622,6 +1622,47 @@ class Processor:
         self._links(plans, held, by_key)  # the importer's duplicates of a row held here are held with it
         return held
 
+    def _group_holds(self, ss: src.SourceSession, msgs: list[src.SourceMessage], plans: list[MessagePlan],
+                     rows: dict[str, dict[str, Any]]) -> None:
+        """Option C (rebuild R2): every row of a conversation a withheld group holds that no rule above held is held
+        with its conversation (GROUP_HOLD; UNCERTAIN_HOLD for an uncertain link), in the first group holding the
+        conversation that did not release that exact row (each group must release it: a release under one group never
+        frees a row of two), with its evidence (identity.group_relations against the withheld texts this backup holds,
+        in memory only: 'none' only when every one is here). A row every such group released stays readable. The
+        database guard (0008) holds what any other code writes readable here."""
+        anchors = sorted(self._group_of.get(ss.id[:200], ()))
+        if not anchors:
+            return
+        importing = {p.m.key for p in plans if p.action == "import"}
+        for m in msgs:
+            if m.key in self.held or m.key in self.moved_keys or m.key not in importing:
+                continue
+            for anchor in anchors:
+                if self._released_here(anchor, ss, m, rows.get(m.key)):
+                    continue
+                member = self.groups.get(anchor, {}).get(ss.id[:200])
+                uncertain = member is not None and member.uncertain
+                stone = self.ids.by_key.get(anchor) or identity.Stone(key=anchor)
+                self.held[m.key] = identity.Match(stone, identity.UNCERTAIN_HOLD if uncertain else identity.GROUP_HOLD,
+                                                  identity.PENDING)
+                self.relations[m.key] = self._group_evidence(ss, m, anchor, uncertain=uncertain)
+                self.t.bump("group_rows_held")
+                break
+
+    def _group_evidence(self, ss: src.SourceSession, m: src.SourceMessage, anchor: str, *, uncertain: bool
+                        ) -> tuple[str, ...]:
+        """identity.group_relations of a backup row held with its conversation: against the group's own withheld text
+        and every other one this backup holds (in memory only), with the structural relations to the group's own
+        stone ('none' only when every admin's withheld text is here)."""
+        texts = {g: t for g, t in self.w_texts.items() if t is not None}
+        roots = {st.key for st in self.ids.by_key.values() if st.anchor == "" and st.certain}
+        d = self._decision(anchor) if anchor in self.ids.by_key else None
+        structural = (later.relations(m, identity.exact_of_source(ss.id, m), d) - set(identity.TEXT_RELATIONS)
+                      - {identity.NOT_IN_BACKUP} if d is not None else set())
+        return identity.group_relations(m.content, texts.get(anchor),
+                                        [t for g, t in sorted(texts.items()) if g != anchor],
+                                        all_in_hand=roots <= set(texts), uncertain=uncertain, structural=structural)
+
     def _released_here(self, group: str, ss: src.SourceSession, m: src.SourceMessage, row: dict[str, Any] | None
                        ) -> bool:
         """Whether an admin's release (or 'left readable') for this group covers this exact JARVIS row and the content
@@ -2148,6 +2189,15 @@ class Processor:
                                              else eng.evidence(m.key, o.group, mt.stone.relations)[0])
                 continue
             if mt is not None and mt.review == identity.PENDING and mt.group in groups:
+                if mt.stone.via in brain_groups.GROUP_VIAS:
+                    # option C (rebuild R2): a row held with its conversation stays that hold (it seeds nothing, and
+                    # Settle found no relation of its own: that is a Settle hold), its evidence computed again with
+                    # every withheld text this backup holds ('none' only when every one is here)
+                    held[m.key] = identity.Match(mt.stone, mt.stone.via, identity.PENDING)
+                    self.relations[m.key] = self._group_evidence(
+                        ss, m, mt.group, uncertain=mt.stone.via == identity.UNCERTAIN_HOLD
+                        or identity.UNCERTAIN_REL in mt.stone.relations)
+                    continue
                 rel, _ = eng.evidence(m.key, mt.group, mt.stone.relations)
                 held[m.key] = identity.Match(mt.stone, identity.SETTLE_HOLD, identity.PENDING)
                 self.relations[m.key] = rel
@@ -2674,6 +2724,8 @@ class Processor:
             self.held = self.held_rows(ss, msgs, plans, rows)
             if not self.family_groups(ss.id) and not withheld:
                 self._tripwire_outside(plans, rows)
+        if ss.id[:200] in self._group_of and not withheld:
+            self._group_holds(ss, msgs, plans, rows)  # option C (rebuild R2): the rest of a group conversation
         member_titled = False
         if not title_hidden and not withheld and self._first_user_withheld_titled(msgs):
             # This conversation's first user message is a member of a withhold that hid its conversation's title (a
@@ -3446,15 +3498,19 @@ async def _execute(run_id: int, sources: Sources, selection: Selection, checkpoi
             if proc.tripwire.texts or proc.tripwire.inside or proc.tripwire.outside:
                 # plan 5.5: the newest run's tripwire, for admins (counts and archive ids only)
                 await later.note_tripwire(s, run_id, tally.d["tripwire"])
-            # option C (O-D1): the rows of a conversation an uncertain link puts in a withheld group are held
-            held_uncertain = await brain_groups.hold_uncertain(s, actor=actor, cause="import")
-            if held_uncertain:
-                tally.d["uncertain_rows_held"] = int(tally.d.get("uncertain_rows_held") or 0) + held_uncertain
             if settle is not None:
                 tally.d["settle"] = await proc.finish_settle()
                 await audit.record(s, actor, "brain.decisions_settled", "import_run", run_id, {
                     "run": run_id, "decisions": len(settle.groups), "sessions": len(settle.family),
                     **tally.d["settle"]})
+            # option C (O-D1; rebuild R2): the central sweep, with the withheld texts this backup holds in hand: every
+            # row of a group conversation is held (an uncertain link's too), and the rollback copies of them (or
+            # anywhere whose older text relates to a withheld text) lose the text
+            from . import review
+            swept = await review.hold_group_rows(s, actor=actor, cause="settle" if settle is not None else "import",
+                                                 texts=dict(proc.w_texts))
+            for k, v in swept.items():
+                tally.d[k] = int(tally.d.get(k) or 0) + v
             report = tally.report(selection, work.totals, discovery, await missing_from_source(s, sources))
             counts = {"records": sum(report["by_action"].values()), "by_action": report["by_action"],
                       "by_type": report["by_type"]}
@@ -3995,6 +4051,29 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
             ids.add(hold)
         return mt
 
+    async def copy_hold(values: dict[str, Any], key: str, archive_session: int, uid: str = "") -> bool:
+        """A rollback copy a withhold blanked because its older text relates to the withheld text
+        (review.hold_updated_copies, hold_deleted_copies: COPY_HOLD) puts its row back as a hold of its own (a pending
+        stone with that evidence, listed for an admin), never readable and never an unlisted withheld row (option C,
+        rebuild R2: m18:v_f8_rollback_scope). Whether a hold was written."""
+        flag = (values.get("flags") or {}).get("withheld_by_admin") or {}
+        if (not values.get("withheld") or flag.get("via") != identity.COPY_HOLD or flag.get("review") != identity.PENDING
+                or not flag.get("anchor") or not key or key in ids.by_key):
+            return False
+        if archive_session not in jarvis_sessions:
+            jarvis_sessions[archive_session] = await session.scalar(select(ArchiveSession.source_session_id).where(
+                ArchiveSession.id == archive_session)) or ""
+        hold = identity.Stone(
+            key=key, anchor=str(flag["anchor"])[:400], session=jarvis_sessions[archive_session],
+            row=str(values.get("source_message_id") or "")[:200], role=values.get("role") or "",
+            tool_call_id=values.get("tool_call_id") or "",
+            uid=values.get("source_uid") or uid or identity.parse_key(key).uid, via=identity.COPY_HOLD,
+            review=identity.PENDING, bound=True, at=identity.when(values.get("at")),
+            relations=tuple(str(r) for r in flag.get("relations") or () if r in identity.RELATIONS))
+        await identity.put_stone(session, hold, actor=actor)
+        ids.add(hold)
+        return True
+
     def no_fingerprint(values: dict[str, Any], state: str | None) -> None:
         released = ((values.get("flags") or {}).get("withheld_by_admin") or {}).get("released_at")
         values["source_fp"] = "" if released else "w1:%s" % (values.get("state") or state or "live")
@@ -4007,6 +4086,8 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
                 if withheld_later(await session.scalar(select(ArchiveSession.flags).where(
                         ArchiveSession.id == int(row["session_id"])))):
                     row.update(WITHHELD_ROW)
+                elif await copy_hold(row, row.get("source_key") or "", int(row["session_id"])):
+                    pass  # its copy related to a withheld text: it comes back as a hold of its own
                 elif (mt := await same_message(row)) is not None and not row.get("withheld"):
                     row.update(content="", tool_calls=[], labels=[], withheld=True, truncated=False,
                                flags={**(row.get("flags") or {}), "withheld_by_admin": Processor._held_flag(mt)})
@@ -4043,7 +4124,13 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
                 mt = None
                 if current is not None and not current.withheld:
                     mt = await same_message({**current._asdict(), **values})
-                if current is not None and current.withheld:
+                if (current is not None and not current.withheld and mt is None
+                        and await copy_hold(values, current.source_key or "", current.session_id,
+                                            current.source_uid or "")):
+                    values.update(WITHHELD_ROW, sensitivity=current.sensitivity)
+                    no_fingerprint(values, current.state)
+                    put_back_withheld.append(int(target))
+                elif current is not None and current.withheld:
                     values.update(WITHHELD_ROW, flags=current.flags, sensitivity=current.sensitivity)
                     no_fingerprint(values, current.state)
                 elif current is not None and mt is not None:
@@ -4092,6 +4179,10 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
     session.expire_all()
     # The rows put back without their text: their promoted items, rollback copies and quotes lose it as well.
     await withhold_copies(session, message_ids=put_back_withheld, actor=actor, cause="rollback")
+    # Option C (rebuild R2): the central sweep: every row of a withheld group's conversation the rollback put back is
+    # held (the database guard held any written readable already), and their rollback copies keep no text.
+    from . import review
+    group_holds = await review.hold_group_rows(session, actor=actor, cause="rollback")
     for sid in sorted(touched):
         await recompute_session(session, sid)
     left = {t: int(await session.scalar(sql("SELECT count(*) FROM %s WHERE import_run_id = :r" % t), params) or 0)
@@ -4113,7 +4204,8 @@ async def rollback_run(session: AsyncSession, run_id: int, actor: str, discard_r
               "reverted": reverted, "recomputed_sessions": len(touched), "kept_converted_drafts": kept,
               "discarded_reviewed_items": len(reviewed) if discard_reviewed else 0,
               "promoted_items_marked": promoted, "kept_withheld_copies": kept_copies,
-              "withheld_reinserted": len(put_back_withheld), "rolled_back_at": now().isoformat()}
+              "withheld_reinserted": len(put_back_withheld), "rolled_back_at": now().isoformat(),
+              "group_holds": group_holds}
     report["rollback"] = {k: v for k, v in result.items() if k not in ("run_id", "status")}
     await set_status(session, run_id, expected_status, status="rolled_back", rolled_back_at=now(),
                      rolled_back_by=actor[:200], report=report)
@@ -5051,6 +5143,10 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
             else:
                 releases_listed.setdefault(outcome, []).append(n)
         if apply:
+            # option C (rebuild R2): the groups as this database now knows them (the file's groups were added), and
+            # the central sweep: every row of a group conversation is held, its rollback copies lose the text
+            await brain_groups.refresh(s)
+            swept = await review.hold_group_rows(s, actor=decider.email, cause=via)
             detail: dict[str, Any] = {"run": run_id, "applied": applied,
                                       "not_applied": {k: len(v) for k, v in listed.items()},
                                       "removals": dict(removed),
@@ -5058,6 +5154,8 @@ async def decisions_apply(in_path: str, run_id: int | None, *, actor: str | None
             if releases:
                 detail.update(releases=dict(released),
                               releases_not_applied={k: len(v) for k, v in releases_listed.items()})
+            if swept:
+                detail["group_holds"] = swept
             if removals_only:
                 detail.update(via="restore", purge_fingerprints=dict(carried_fps), purged_items=dict(purged_items),
                               purged_items_not_applied={k: len(v) for k, v in purges_listed.items()},
@@ -5767,7 +5865,7 @@ async def legacy_reset(out_path: str, *, actor: str = DEFAULT_ACTOR, confirm: bo
         bound = await _bind_legacy(s)
         # option C: the groups of the withholds just bound (recorded before the rollbacks, which never forget them)
         await brain_groups.refresh(s)
-        await brain_groups.hold_uncertain(s, actor=actor, cause="legacy-reset")
+        await review.hold_group_rows(s, actor=actor, cause="legacy-reset")  # option C (rebuild R2): the central sweep
         # a purge 0.6.0/0.6.1 made of an incoming version (a plain hash in the item's flags) survives the rollback that
         # deletes the item: as a keyed fingerprint (review 3, readers)
         await identity.legacy_rejected_hashes(s, actor=actor)
