@@ -1603,7 +1603,7 @@ class Processor:
             else:  # an archived generation with other text, a pruned stub, a fold that kept this uid: a hold
                 rel = {identity.SAME_UID}
                 for c in contents:
-                    rel |= identity.family_relations(m.content, c)
+                    rel |= identity.family_relations(identity.source_fields(m), c)
                 if not texts:
                     rel.add(identity.NOT_IN_BACKUP)
                 held[m.key] = identity.Match(st, identity.UID_HOLD, identity.PENDING)
@@ -1660,7 +1660,7 @@ class Processor:
         d = self._decision(anchor) if anchor in self.ids.by_key else None
         structural = (later.relations(m, identity.exact_of_source(ss.id, m), d) - set(identity.TEXT_RELATIONS)
                       - {identity.NOT_IN_BACKUP} if d is not None else set())
-        return identity.group_relations(m.content, texts.get(anchor),
+        return identity.group_relations(identity.source_fields(m), texts.get(anchor),
                                         [t for g, t in sorted(texts.items()) if g != anchor],
                                         all_in_hand=roots <= set(texts), uncertain=uncertain, structural=structural)
 
@@ -2137,11 +2137,11 @@ class Processor:
                 if (row.id in held or row.source_key in eng.by_key
                         or self.src.backup.has_row(sid, row.source_message_id)):
                     continue
-                if not identity.family_relations(row.content, wt) & set(identity.TEXT_RELATIONS):
+                if not identity.family_relations(identity.row_fields(row), wt) & set(identity.TEXT_RELATIONS):
                     continue
                 if await identity.exempt_covers(self.s, group, sid, row):
                     continue  # an admin released it, or left it readable
-                rel = settle_engine.stored_relations(row.content, wt, stale=False)
+                rel = settle_engine.stored_relations(identity.row_fields(row), wt, stale=False)
                 await review.hold_message(self.s, row, anchor=group, actor=self.actor, cause="settle",
                                           rule=identity.SETTLE_HOLD, decided_on=self.backup_sha, relations=rel)
                 held.add(row.id)

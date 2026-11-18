@@ -261,7 +261,7 @@ def relations(m: src.SourceMessage, here: identity.Exact, d: Decision) -> set[st
     text in this backup, and the same uid, tool call or role and time with other text, a reused row number; 'not in
     this backup' when the withheld text is not here. Empty: no relation."""
     own = d.stone
-    rel = identity.family_relations(m.content, d.w_text) if d.w_text is not None else set()
+    rel = identity.family_relations(identity.source_fields(m), d.w_text) if d.w_text is not None else set()
     same_words = bool(rel & {identity.IDENTICAL_REL, identity.RESTATED_REL})
     if here.uid and (here.uid in d.uids or (own.uid and here.uid == own.uid and own.via not in identity.FOLD_VIAS)) \
             and not same_words:

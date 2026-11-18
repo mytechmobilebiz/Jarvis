@@ -255,7 +255,7 @@ class Engine:
         own = self.ids.by_key.get(d.group)
         rel: set[str] = set()
         if d.w_text is not None:
-            rel |= identity.family_relations(r.m.content, d.w_text)
+            rel |= identity.family_relations(identity.source_fields(r.m), d.w_text)
         same_words = bool(rel & {identity.IDENTICAL_REL, identity.RESTATED_REL})
         if r.uid and r.uid in d.uids and not same_words:
             rel.add(identity.SAME_UID)
@@ -339,7 +339,7 @@ class Engine:
         return d.w_text if d is not None else None
 
 
-def stored_relations(text: str | None, w_text: str | None, *, stale: bool) -> tuple[str, ...]:
+def stored_relations(text: Any, w_text: str | None, *, stale: bool) -> tuple[str, ...]:
     """The relations of a stored row the backup no longer holds (a stale row at the withheld row's role and time:
     plan 4.3) to the withheld text, from its stored text while it is readable."""
     rel = identity.family_relations(text, w_text) if w_text is not None else set()

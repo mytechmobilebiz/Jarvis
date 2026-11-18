@@ -594,6 +594,11 @@ async def hold_group_rows(session: AsyncSession, *, actor: str, cause: str, text
     for anchor in sorted(found):
         held += await hold_group(session, anchor, found[anchor], texts=texts, all_in_hand=all_in_hand, actor=actor)
     out["group_rows_held"] = len(held)
+    if texts:
+        # rebuild R3: carriers of a withheld text in hand outside the groups (and rows released for one withheld text
+        # that carry another), titles and memory items, held per row
+        for k, v in (await hold_carriers(session, texts, actor=actor, cause=cause, ip=ip)).items():
+            out[k] = out.get(k, 0) + v
     # Rows the database guard held with their conversation (0008: any code wrote them readable) still owe their copies.
     guarded = list((await session.execute(select(
         ArchiveMessage.id, ArchiveMessage.source_key, ArchiveMessage.session_id, ArchiveMessage.position).where(
@@ -672,12 +677,11 @@ async def _hold_related_copies(session: AsyncSession, texts: dict[str, str], *, 
             "SELECT x.id, x.before FROM import_records x WHERE " + _COPY_WITH_TEXT + " AND " + shape
             + " ORDER BY x.id"))).all():
         row = dict((before or {}).get("deleted_row") or {}) if deleted else dict(before or {})
-        content = row.get("content") or ""
-        if not content:
+        if not identity.row_fields(row):
             continue
         found: tuple[str, tuple[str, ...]] | None = None
         for anchor, w in sorted(texts.items()):
-            rel = identity.family_relations(content, w) & set(identity.TEXT_RELATIONS)
+            rel = identity.family_relations(identity.row_fields(row), w) & set(identity.TEXT_RELATIONS)
             if rel:
                 found = (anchor, tuple(identity.relation_order(rel)))
                 break
@@ -692,6 +696,131 @@ async def _hold_related_copies(session: AsyncSession, texts: dict[str, str], *, 
         await session.execute(update(ImportRecord).where(ImportRecord.id == rid).values(before=new))
         n += 1
     return n
+
+
+# --- Option C (rebuild R3): carriers outside every group, held per row ------------------------------------------------
+
+CARRIER_TITLE_REASON = "carries a withheld text"  # brain_hidden_titles.reason of a title hold_carriers hid
+CARRIER_ITEM_FLAG = "carries_withheld_text"  # the quarantine flag of a memory item hold_carriers held
+SCAN_CHUNK = 2000
+
+
+async def hold_carriers(session: AsyncSession, texts: dict[str, str | None], *, actor: str, cause: str,
+                        ip: str = "") -> dict[str, int]:
+    """Carriers of a withheld text in hand (texts: anchor -> text, in memory only), held per row (option C, rebuild
+    R3): a full scan of every readable stored row (no prefilter by the withheld text's longest words; only the quick
+    filter that never skips a row a reading could relate: identity.quick_related), wherever it is, compared over every
+    field and every reading (identity.carrier_relations: contains, a cut beginning, a reply quote, a whole value,
+    not_checked). Each carrier gets a pending stone of its own in that withhold's group (CARRIER_HOLD, its evidence,
+    decided on the backup its content came from) and loses its text, unless an admin released (or left readable) that
+    exact row and its content for that withhold (identity.exempt_covers): a row released for one withheld text is held
+    for another it carries. What copied it goes (archive.withhold_copies). Conversation titles that carry a withheld
+    text are hidden for good (brain_hidden_titles, and their rollback copies), and imported or promoted memory items
+    that carry one are quarantined (admin only, never in a prompt). Counts only."""
+    texts = {a: w for a, w in (texts or {}).items() if a and w and identity.wform(w) is not None}
+    out = {"carrier_rows_held": 0, "carrier_titles_hidden": 0, "carrier_items_held": 0}
+    if not texts:
+        return out
+    await session.flush()
+    quicks = {a: identity.quick_of(w) for a, w in texts.items()}
+    anchors = sorted(texts)
+
+    def carries(fields: list[str]) -> list[tuple[str, tuple[str, ...]]]:
+        found = []
+        for a in anchors:
+            if fields and identity.quick_related(fields, quicks[a]):
+                rel = identity.carrier_relations(fields, texts[a])
+                if rel:
+                    found.append((a, tuple(identity.relation_order(rel))))
+        return found
+
+    cands: dict[int, list[tuple[str, tuple[str, ...]]]] = {}
+    last = 0
+    while True:  # the full stored-row scan, in chunks by id (rows only, never the text kept)
+        batch = (await session.execute(select(ArchiveMessage.id, ArchiveMessage.content, ArchiveMessage.tool_calls)
+                                       .where(ArchiveMessage.withheld.is_(False), ArchiveMessage.id > last)
+                                       .order_by(ArchiveMessage.id).limit(SCAN_CHUNK))).all()
+        if not batch:
+            break
+        last = int(batch[-1][0])
+        for rid, content, calls in batch:
+            found = carries(identity.row_fields({"content": content, "tool_calls": calls}))
+            if found:
+                cands[int(rid)] = found
+    held: list[ArchiveMessage] = []
+    if cands:
+        after = await identity.current_after_run(session)
+        at = now().isoformat()
+        own = {a: await session.get(BrainTombstone, a) for a in anchors}
+        for row, sid in (await session.execute(
+                select(ArchiveMessage, ArchiveSession.source_session_id)
+                .join(ArchiveSession, ArchiveSession.id == ArchiveMessage.session_id)
+                .where(ArchiveMessage.id.in_(sorted(cands))).order_by(ArchiveMessage.id)
+                .with_for_update(of=ArchiveMessage))).all():
+            if row.withheld:
+                continue
+            for anchor, rel in cands[int(row.id)]:
+                if await identity.exempt_covers(session, anchor, sid, row):
+                    continue  # released (or left readable) for this withheld text: another one may still hold it
+                if row.source_key:
+                    st = own.get(anchor)
+                    sha = await identity.stored_backup(session, row) or (st.decided_on if st is not None else "")
+                    await identity.put_stone(session, replace(identity.binding_of(
+                        row, sid, anchor=anchor if anchor != row.source_key else "", via=identity.CARRIER_HOLD,
+                        review=identity.PENDING, after_run=after, decided_on=sha), relations=rel), actor=actor)
+                _blank(row, {"at": at, "note": identity.NOTE, "via": identity.CARRIER_HOLD, "review": identity.PENDING})
+                held.append(row)
+                break
+        await session.flush()
+    out["carrier_rows_held"] = len(held)
+    if held:
+        await withhold_copies(session, messages=held, actor=actor, cause=cause, ip=ip)
+        for sid_ in sorted({r.session_id for r in held}):
+            await recompute_session(session, sid_)
+    # Titles: a conversation's title that carries a withheld text (Hermes derives it from the first user message) is
+    # hidden for good, as the title trigger hides a group conversation's
+    hidden: list[int] = []
+    for sess in (await session.scalars(select(ArchiveSession).where(ArchiveSession.title != "")
+                                       .order_by(ArchiveSession.id))).all():
+        title = identity.title_base(sess.title)
+        while title.endswith("…"):
+            title = title[:-1].rstrip()
+        for anchor in anchors:
+            w = texts[anchor]
+            wf = identity.wform(w)
+            if wf is None or wf.generic or not title:
+                continue
+            if identity.carrier_relations([title, sess.title or ""], w) or (
+                    identity.title_relations(sess.title, w) - {identity.NOT_IN_BACKUP}):
+                await brain_groups.hide_titles(session, [sess.source_session_id], anchor=anchor,
+                                               reason=CARRIER_TITLE_REASON)
+                sess.title = ""
+                sess.flags = {**(sess.flags or {}), "title_withheld": True}
+                hidden.append(sess.id)
+                break
+    if hidden:
+        await session.flush()
+        await session.execute(update(ImportRecord).where(
+            ImportRecord.target_table == "archive_sessions", ImportRecord.target_id.in_(hidden),
+            ImportRecord.before.has_key("title"), ImportRecord.before["title"].astext != "")
+            .values(before=ImportRecord.before.op("||")(sql_text("'{\"title\": \"\"}'::jsonb"))))
+        await relabel_hidden_titles(session, session_ids=hidden)
+    out["carrier_titles_hidden"] = len(hidden)
+    # Imported (and promoted) memory items that carry a withheld text: quarantined (back to admin review, out of every
+    # agent's reach), never removed automatically
+    n_items = 0
+    for item in (await session.scalars(select(MemoryItem).where(
+            MemoryItem.origin.in_(("import", "promoted")), MemoryItem.deleted_at.is_(None))
+            .order_by(MemoryItem.id))).all():
+        if item.status == "quarantined" and (item.flags or {}).get(CARRIER_ITEM_FLAG):
+            continue
+        if carries([x for x in (item.title or "", item.body or "") if x]):
+            await store.quarantine_item(session, item, actor=actor, flag=CARRIER_ITEM_FLAG,
+                                        note="carries a withheld JARVIS message's text")
+            n_items += 1
+    out["carrier_items_held"] = n_items
+    await session.flush()
+    return out
 
 
 async def hold_message(session: AsyncSession, message: ArchiveMessage, *, anchor: str, actor: str, cause: str,
@@ -754,6 +883,11 @@ async def withhold_preview(session: AsyncSession, message: ArchiveMessage, sess:
             "identical_text_rows": [{**brief(r, rel), "preselected": True} for r, _, rel in matching],
             "rowless_copies": len(group.rowless),
             "items_with_this_text": await identity.items_with_text(session, message, person_items(scope)),
+            # rebuild R3: carriers outside the group (another case, a derived form), each held on its own at the
+            # withhold, and the conversations whose title carries the text (hidden)
+            "carrier_rows": [brief(r, rel) for r, _, rel in await identity.form_rows(
+                session, message, exclude=[g.row.id for g in group.rows] + [r.id for r, _, _ in matching])],
+            "titles_with_this_text": len(await identity.titles_with_text(session, message)),
             "first_user_message": await identity.first_user_message(session, message),
             "decision_backup": decided_on}
 

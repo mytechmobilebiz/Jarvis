@@ -100,8 +100,12 @@ GROUP_HOLD = "held with its conversation: a withheld conversation group"
 # A rollback copy whose older text relates to a withheld text (review.hold_updated_copies, hold_deleted_copies): a
 # rollback puts its row back as this hold, listed on its own (importer.rollback_run)
 COPY_HOLD = "an earlier version related to the withheld text"
+# Option C (rebuild R3): a row outside the withheld groups (or released for another withheld text) that carries a
+# withheld text in a derived form (review.hold_carriers): held on its own, listed, released per row
+CARRIER_HOLD = "carries the withheld text"
 # What a hold's via may be (a decisions file's hold keeps its own; older vias of 0.6.2 development builds are read).
 HOLD_VIA = (SETTLE_HOLD, LATER_HOLD, MATCHING_HOLD, UID_HOLD, OTHER_BACKUP_HOLD, UNCERTAIN_HOLD, GROUP_HOLD, COPY_HOLD,
+            CARRIER_HOLD,
             "same message id, different text",
             "same message id, contains the withheld text", "same text", "copied by JARVIS, nothing to compare",
             "same message id, nothing to compare", "restated after a compaction, new message id", "same message id",
@@ -390,6 +394,13 @@ def generic(piece: str | None, *, whole: bool = False) -> bool:
     f = fflat(piece)
     if not f or (not whole and len(f) < MIN_RELATED):
         return True
+    return generic_phrase(f)
+
+
+def generic_phrase(piece: str | None) -> bool:
+    """generic-v1's list alone (a greeting, a thanks, a short reply, a bare common URL), whatever its length: a reply
+    quote keeps i22's own minimum (16 characters as JARVIS wrote it)."""
+    f = fflat(piece)
     words = " ".join(_WORD.findall(f))
     return not words or words in _GENERIC_PHRASES or bool(_GENERIC_URL.fullmatch(f.strip(" .,;:!?'\"")))
 
@@ -752,7 +763,7 @@ def _tail(text: str, p: int, want: int) -> str:
         size *= 4
 
 
-def _reading_relations(r: Reading, wf: WForm, *, family: bool) -> set[str]:
+def _reading_relations(r: Reading, wf: WForm, *, family: bool, carrier: bool = False) -> set[str]:
     out: set[str] = set()
     f = fflat(r.text)
     if not f:
@@ -777,12 +788,12 @@ def _reading_relations(r: Reading, wf: WForm, *, family: bool) -> set[str]:
     if family and r.unit and len(f) >= MIN_RELATED and f != wf.w and f in wf.w:
         _piece(PART_OF, f, out)
     for q in reply_quotes(r.text) if "[Replying to" in r.text else ():
-        if len(q) >= MIN_RELATED and fflat(q) and fflat(q) in wf.w:
-            _piece(PART_OF, q, out)
+        if len(q) >= MIN_RELATED and fflat(q) and fflat(q) in wf.w and not (carrier and generic_phrase(q)):
+            out.add(PART_OF)
     return out
 
 
-def _field_relations(held: str, withheld: str, wf: WForm, *, family: bool) -> set[str]:
+def _field_relations(held: str, withheld: str, wf: WForm, *, family: bool, carrier: bool = False) -> set[str]:
     """The relations of one field: i22's rules on the field as written (identical, restated, contains, a reply quote;
     in a family the row's own text being part of it), under fold, then every reading of canon()."""
     out: set[str] = set()
@@ -796,16 +807,16 @@ def _field_relations(held: str, withheld: str, wf: WForm, *, family: bool) -> se
     if wf.long and wf.w in fflat(body or held):
         out.add(CONTAINS)
     # a quote of at least MIN_RELATED characters as JARVIS wrote it (integrator, deviation 273)
-    if any(len(q) >= MIN_RELATED and fflat(q) and fflat(q) in wf.w and not generic(q)
+    if any(len(q) >= MIN_RELATED and fflat(q) and fflat(q) in wf.w and not (carrier and generic_phrase(q))
            for q in [*([quote] if quote is not None else []), *reply_quotes(held)]):
         out.add(PART_OF)
-    if family and len(fbody) >= MIN_RELATED and fbody != wf.w and fbody in wf.w and not generic(fbody):
-        out.add(PART_OF)
+    if family and len(fbody) >= MIN_RELATED and fbody != wf.w and fbody in wf.w:
+        out.add(PART_OF)  # i22's rule, under fold
     c = canon(held)
     if c.capped:
         out.add(NOT_CHECKED)
     for r in c.readings:
-        out |= _reading_relations(r, wf, family=family)
+        out |= _reading_relations(r, wf, family=family, carrier=carrier)
     return out
 
 
@@ -860,7 +871,9 @@ def carrier_relations(held: str | Iterable[str] | None, withheld: str | None) ->
     wf = wform(want) if flat(want) else None
     if wf is None:
         return set()
-    out = text_relations(held, want)
+    out: set[str] = set()
+    for h in _fields(held):
+        out |= _field_relations(h, want, wf, family=False, carrier=True)
     if wf.generic:
         out -= {IDENTICAL_REL, CONTAINS, RESTATED_REL}
     return out
@@ -878,8 +891,11 @@ def row_fields(row: Any) -> list[str]:
 
 
 def source_fields(m: Any) -> list[str]:
-    """Every field of a backup row (source.SourceMessage) a comparison reads."""
-    return [x for x in (m.content or "", getattr(m, "tool_calls_raw", "") or "") if x]
+    """Every field of a backup row (source.SourceMessage) a comparison reads: its content and its raw tool calls."""
+    raw = getattr(m, "tool_calls_raw", "") or ""
+    if raw and not isinstance(raw, str):
+        raw = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else json.dumps(raw, ensure_ascii=False)
+    return [x for x in (m.content or "", raw) if x]
 
 
 def row_relations(row: Any, withheld: str | None, *, family: bool = False) -> set[str]:
@@ -1680,7 +1696,7 @@ async def group_rows(s: AsyncSession, message: ArchiveMessage, sess: ArchiveSess
                             nxt.append((other, other_sid))
                     elif not await exempt(other, other_sid):
                         take(other, other_sid, UID_HOLD, PENDING,
-                             {SAME_UID, *text_relations(other.content, message.content)})
+                             {SAME_UID, *text_relations(row_fields(other), message.content)})
             # Rows of it an import deleted, kept only as a rollback copy (review 1 R29): a member by provenance only
             # (its uid and the very text).
             for key_, gone_sid, gone in (await deleted_copies(s, row, uid)) if uid else []:
@@ -1769,15 +1785,13 @@ async def matching_rows(s: AsyncSession, message: ArchiveMessage, sess: ArchiveS
     sessions = dict((await s.execute(select(ArchiveSession.id, ArchiveSession.source_session_id).where(
         ArchiveSession.source_session_id.in_(sorted(sids))))).all()) or {sess.id: sess.source_session_id}
     skip = {int(message.id)} | {int(i) for i in exclude}
-    want = flat(peel(message.content)[0])
     if not flat(message.content):
         return []
-    words = [w for w in want.split(" ") if w]
-    narrow = [ArchiveMessage.content.like("[Replying to%"), ArchiveMessage.content.like("[Triggering message id%")]
-    if words:  # a word survives the normalisation: the database narrows the rows to compare
-        narrow.append(func.strpos(ArchiveMessage.content, max(words, key=len)) > 0)
+    # rebuild R3 (O-CI): no case-sensitive narrowing by the longest word in the database; every readable row of the
+    # family is read, through the quick filter that never skips a row a reading could relate (another case, a form)
+    quick = quick_of(message.content)
     query = select(ArchiveMessage).where(ArchiveMessage.session_id.in_(sorted(sessions)),
-                                         ArchiveMessage.withheld.is_(False), or_(*narrow))
+                                         ArchiveMessage.withheld.is_(False))
     released: list[tuple[str, str, Binding]] = [
         (sid_, rid_, Binding(role_ or "", call_ or "", at_, uid_ or "", on_ or ""))
         for sid_, rid_, role_, call_, at_, uid_, on_ in (await s.execute(select(
@@ -1789,7 +1803,10 @@ async def matching_rows(s: AsyncSession, message: ArchiveMessage, sess: ArchiveS
     for r in (await s.scalars(query.order_by(ArchiveMessage.id))).all():
         if r.id in skip:
             continue
-        rel = text_relations(r.content, message.content)
+        fields = row_fields(r)
+        if not quick_related(fields, quick):
+            continue
+        rel = text_relations(fields, message.content)
         if not rel:
             continue
         sid = sessions.get(r.session_id, "")
@@ -2011,17 +2028,76 @@ async def rewound_originals(s: AsyncSession, row: ArchiveMessage, text: tuple[st
 
 
 async def items_with_text(s: AsyncSession, message: ArchiveMessage, where: Any) -> list[dict[str, Any]]:
-    """Imported memory items (not deleted, within `where`: the admin's scope) whose whitespace-normalised body
-    contains the message's normalised text, when that text is at least MIN_CONTAINED characters: listed in the
-    withhold preview so an admin can purge them; never removed automatically. Ids and titles only."""
+    """Imported and promoted memory items (not deleted, within `where`: the admin's scope) that carry the message's
+    text: whose body contains its normalised text of at least MIN_CONTAINED characters, or any of whose fields carries
+    it in another case or a derived form (carrier_relations, rebuild R3: the withhold then quarantines them,
+    review.hold_carriers). Listed in the withhold preview. Ids and titles only."""
     needle = norm(message.content)
-    if len(needle) < MIN_CONTAINED:
+    if not flat(message.content):
         return []
-    word = max(needle.split(" "), key=len)
-    rows = (await s.execute(select(MemoryItem.id, MemoryItem.title, MemoryItem.body).where(
-        MemoryItem.origin == "import", MemoryItem.deleted_at.is_(None), where,
-        func.strpos(MemoryItem.body, word) > 0).order_by(MemoryItem.id))).all()
-    return [{"id": int(item_id), "title": title} for item_id, title, body in rows if needle in norm(body)]
+    quick = quick_of(message.content)
+    out = []
+    for item_id, title, body in (await s.execute(select(MemoryItem.id, MemoryItem.title, MemoryItem.body).where(
+            MemoryItem.origin.in_(("import", "promoted")), MemoryItem.deleted_at.is_(None), where)
+            .order_by(MemoryItem.id))).all():
+        fields = [x for x in (title or "", body or "") if x]
+        if (len(needle) >= MIN_CONTAINED and fflat(needle) in fflat(body)) or (
+                quick_related(fields, quick) and carrier_relations(fields, message.content)):
+            # a title that itself carries the withheld text is never shown (rebuild R3: ids, never the text)
+            shown = "" if title and carrier_relations([title], message.content) else title
+            out.append({"id": int(item_id), "title": shown})
+    return out
+
+
+async def form_rows(s: AsyncSession, message: ArchiveMessage, *, exclude: Iterable[int] = ()
+                    ) -> list[tuple[ArchiveMessage, str, tuple[str, ...]]]:
+    """The withhold preview's carriers (rebuild R3): every readable stored row anywhere (other than the message and
+    `exclude`) that carries the withheld text in another case or a derived form (carrier_relations over every field),
+    unless an admin released it for this withhold; (row, JARVIS session, relations). The withhold holds each of them on
+    its own (review.hold_carriers). Read-only, compared in memory only."""
+    if not flat(message.content):
+        return []
+    skip = {int(message.id)} | {int(i) for i in exclude}
+    quick = quick_of(message.content)
+    names = dict((await s.execute(select(ArchiveSession.id, ArchiveSession.source_session_id))).all())
+    out = []
+    last = 0
+    while True:
+        batch = (await s.scalars(select(ArchiveMessage).where(ArchiveMessage.withheld.is_(False),
+                                                              ArchiveMessage.id > last)
+                                 .order_by(ArchiveMessage.id).limit(2000))).all()
+        if not batch:
+            break
+        last = int(batch[-1].id)
+        for r in batch:
+            if r.id in skip:
+                continue
+            fields = row_fields(r)
+            if not quick_related(fields, quick):
+                continue
+            rel = carrier_relations(fields, message.content)
+            if not rel:
+                continue
+            sid = names.get(r.session_id, "")
+            if message.source_key and await exempt_covers(s, message.source_key, sid, r):
+                continue
+            out.append((r, sid, tuple(relation_order(rel))))
+    return out
+
+
+async def titles_with_text(s: AsyncSession, message: ArchiveMessage) -> list[int]:
+    """The conversations (archive ids) whose title carries the message's text in any case or form (title_relations and
+    carrier_relations): hidden at the withhold (review.hold_carriers). Read-only."""
+    wf = wform(message.content or "") if flat(message.content) else None
+    if wf is None or wf.generic:
+        return []
+    out = []
+    for sid, title in (await s.execute(select(ArchiveSession.id, ArchiveSession.title).where(
+            ArchiveSession.title != "").order_by(ArchiveSession.id))).all():
+        if carrier_relations([title_base(title)], message.content) or (
+                title_relations(title, message.content) - {NOT_IN_BACKUP}):
+            out.append(int(sid))
+    return out
 
 
 async def lineage(s: AsyncSession, source_session_ids: Iterable[str]) -> dict[str, str]:
