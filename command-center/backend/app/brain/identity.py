@@ -31,11 +31,13 @@ Never imports importer.py: the importer imports the constants from here.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import hmac
 import json
 import re
-from collections import Counter
+import unicodedata
+from collections import Counter, deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -226,12 +228,17 @@ UNCERTAIN_REL = "uncertain"  # option C (O-D1): the row's conversation is in a w
 # option C (rebuild R2, RECON-14): a group row compared with its own withheld text but not with every other withheld
 # text ('none' needs every withheld text in hand): never 'none', so never released in one click
 OTHER_NOT_COMPARED = "other_not_compared"
-TEXT_RELATIONS = (IDENTICAL_REL, RESTATED_REL, CONTAINS, PART_OF)
-RELATIONS = (*TEXT_RELATIONS, SAME_UID, SAME_CALL, SAME_TIME_REL, REUSED_ROW, STALE, ORPHAN, NOT_IN_BACKUP,
-             UNCERTAIN_REL, OTHER_NOT_COMPARED, NO_RELATION)
+# option C (rebuild R3, derived copies): a beginning of the withheld text cut short (Hermes's generic prune line, an
+# f-string summary at its width, a truncated preview, a cut JSON or repr literal); and a text the canonical decode
+# could not read in full (its caps: canon()), held fail-closed whenever a withheld text is in hand
+CUT, NOT_CHECKED = "cut", "not_checked"
+TEXT_RELATIONS = (IDENTICAL_REL, RESTATED_REL, CONTAINS, PART_OF, CUT, NOT_CHECKED)
+RELATIONS = (IDENTICAL_REL, RESTATED_REL, CONTAINS, PART_OF, CUT, SAME_UID, SAME_CALL, SAME_TIME_REL, REUSED_ROW, STALE,
+             ORPHAN, NOT_IN_BACKUP, NOT_CHECKED, UNCERTAIN_REL, OTHER_NOT_COMPARED, NO_RELATION)
 # Releasing a hold with one of these needs a typed confirmation (plan 4.6): its text is, holds or quotes the withheld
-# text; or (O-D1) its conversation's link to the withheld one is uncertain: never released in one click.
-CONFIRM_RELATIONS = (IDENTICAL_REL, RESTATED_REL, CONTAINS, PART_OF, UNCERTAIN_REL)
+# text (or a cut beginning of it, or could not be read in full); or (O-D1) its conversation's link to the withheld one
+# is uncertain: never released in one click.
+CONFIRM_RELATIONS = (IDENTICAL_REL, RESTATED_REL, CONTAINS, PART_OF, CUT, NOT_CHECKED, UNCERTAIN_REL)
 CONFIRM_WORD = "RELEASE"
 # What each relation says, in words an admin reads (never text of either row).
 RELATION_TEXT = {
@@ -239,6 +246,8 @@ RELATION_TEXT = {
     RESTATED_REL: "the withheld text restated after a compaction",
     CONTAINS: "contains the withheld text",
     PART_OF: "part of the withheld text (a reply quote, or in its conversation family the row's own text)",
+    CUT: "the beginning of the withheld text, cut short (a summary, a prune line, a preview or a cut literal)",
+    NOT_CHECKED: "could not be read in full (nested or encoded past the comparison's limits): held to be safe",
     SAME_UID: "the same JARVIS message id, other text",
     SAME_CALL: "the same tool call, other text",
     SAME_TIME_REL: "the same time and role",
@@ -307,49 +316,658 @@ def reply_quotes(text: str | None) -> list[str]:
     return out
 
 
-def text_relations(held: str | None, withheld: str | None) -> set[str]:
-    """The relations of a row's text to a withheld text, computed by comparison after the peel (plan 4.6): identical
-    (the same words, or the same authored text inside Hermes's wrappers); restated (identical after the replay header);
-    contains (the withheld text, at least MIN_RELATED characters, inside the authored text); part_of (a reply pointer
-    quoting at least MIN_RELATED characters of the withheld text: N1; also one that starts a turn a fold merged in). Compared in memory only."""
+# --- Derived copies (option C, rebuild R3): fold, generic-v1, the canonical decode and the relations of every field --
+# Hermes and the tools copy a message into other rows in derived forms: JSON (escaped, ensure_ascii, nested in a
+# session_search read), Python repr (a FAILED suffix's str(dict), execute_code), its f-string summaries of a tool call
+# (agent/context_compressor.py _TOOL_RESULT_SUMMARIZERS: vision_analyze, web_search, search_files, delegate_task), the
+# generic prune line ' k=<str(v)[:40]>' (_summarize_tool_result_unguarded), large-result previews cut at a line
+# (tools/tool_result_storage.py generate_preview, '[Truncated: ...]'), reply quotes and '> ' quote markers. Every
+# comparison reads each field through canon() (the decoded readings) and compares under fold() (O-CI). Compared in
+# memory only; nothing of either text is stored.
+
+# Default_Ignorable_Code_Point (Unicode DerivedCoreProperties: 4,174 code points): invisible formatting removed by fold()
+_IGNORABLE_RANGES = ((0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160), (0x17B4, 0x17B5),
+                     (0x180B, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F), (0x3164, 0x3164),
+                     (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF), (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3),
+                     (0x1D173, 0x1D17A), (0xE0000, 0xE0FFF))
+IGNORABLE = frozenset(c for a, b in _IGNORABLE_RANGES for c in range(a, b + 1))
+_IGNORE_TABLE = dict.fromkeys(IGNORABLE)
+_WORD = re.compile(r"\w+")
+
+
+def fold(text: str | None) -> str:
+    """O-CI: the form every comparison uses: default-ignorable code points removed, NFKC, casefold, and the Turkish
+    dotted and dotless i read as i (İ, ı, i with a combining dot above)."""
+    text = text or ""
+    return _fold_small(text) if len(text) <= 4096 else _fold(text)
+
+
+@functools.lru_cache(maxsize=16384)
+def _fold_small(text: str) -> str:
+    return _fold(text)
+
+
+def _fold(text: str) -> str:
+    t = text.translate(_IGNORE_TABLE)
+    t = unicodedata.normalize("NFKC", t).replace("\u0130", "i").replace("\u0131", "i")
+    t = t.casefold().replace("i\u0307", "i")
+    return unicodedata.normalize("NFKC", t).translate(_IGNORE_TABLE)
+
+
+def fflat(text: str | None) -> str:
+    """fold(), whitespace collapsed."""
+    return " ".join(fold(text).split())
+
+
+def fwords(text: str | None) -> str:
+    """fold(), words only (punctuation and quote markers gone), one space between them."""
+    return " ".join(_WORD.findall(fold(text)))
+
+
+# O-D4, list 'generic-v1': a piece of the withheld text that is one of these (greetings, thanks, short replies, a bare
+# common URL), or shorter than MIN_RELATED characters, is neither demanded nor allowed as a carrier; anything longer is
+# held. The whole withheld text is generic only when it is one of these.
+GENERIC_LIST = "generic-v1"
+_GENERIC_PHRASES = frozenset(" ".join(_WORD.findall(p)) for p in (
+    "hello", "hi", "hey", "hello there", "hi there", "hey there", "good morning", "good afternoon", "good evening",
+    "good night", "thanks", "thank you", "thanks a lot", "thank you very much", "thank you so much", "many thanks",
+    "thanks so much", "thanks very much", "you are welcome", "you're welcome", "no problem", "ok", "okay", "ok thanks",
+    "okay thanks", "ok thank you", "yes", "no", "yes please", "no thanks", "no thank you", "sure", "great", "perfect",
+    "got it", "sounds good", "please", "bye", "goodbye", "see you", "see you later", "have a nice day",
+    "have a great day", "how are you", "how are you doing", "what's up", "can you help me", "please help me",
+    "hallo", "guten morgen", "guten tag", "guten abend", "gute nacht", "danke", "danke schön", "danke sehr",
+    "vielen dank", "bitte", "bitte schön", "ja", "nein", "ja bitte", "nein danke", "tschüss", "wie geht es dir",
+    "merhaba", "teşekkürler", "teşekkür ederim", "çok teşekkür ederim", "günaydın", "iyi akşamlar", "evet", "hayır",
+    "bonjour", "bonsoir", "merci", "merci beaucoup", "oui", "non", "salut", "hola", "gracias", "muchas gracias",
+    "buenos días", "buenas noches", "sí", "ciao", "grazie", "grazie mille"))
+_GENERIC_URL = re.compile(r"(?:(?:https?|ftp)\s*:\s*/\s*/\s*)?(?:www\s*\.\s*)?[a-z0-9-]+(?:\s*\.\s*[a-z0-9-]+)+\s*/?\s*"
+                          r"(?:(?:search\s*\?\s*q\s*=|index\s*\.\s*html?|wiki\s*/|en\s*/)\s*)?")
+
+
+def generic(piece: str | None, *, whole: bool = False) -> bool:
+    """O-D4 (generic-v1): whether a piece of a withheld text says nothing of it. Shorter than MIN_RELATED characters
+    (fflat), or (whole or piece) a greeting, a thanks, a short reply or a bare common URL."""
+    f = fflat(piece)
+    if not f or (not whole and len(f) < MIN_RELATED):
+        return True
+    words = " ".join(_WORD.findall(f))
+    return not words or words in _GENERIC_PHRASES or bool(_GENERIC_URL.fullmatch(f.strip(" .,;:!?'\"")))
+
+
+# The canonical decode: an iterative work list of readings with caps; a text it cannot read in full is held as
+# not_checked (fail-closed). Steps count decode operations (a JSON parse, an unescape, a literal read, an open literal).
+CANON_STEPS = 64
+CANON_DEPTH = 32
+CANON_BUDGET = 4_000_000  # characters of readings (the size budget)
+CANON_MAX_TEXT = 2_000_000  # characters: a longer field is not decoded at all (not_checked)
+CANON_MAX_STRINGS = 20_000  # JSON strings read from one document (the rest: the whole-text unescape still reads them)
+
+
+@dataclass(frozen=True)
+class Reading:
+    """One reading of a field: the text, whether it is a whole value (the field itself, a JSON string, a literal, a
+    quote span, a quoted block, a prune value: compared whole), whether the withheld text would start where it starts
+    (a summary's quoted argument, a prune value, a literal: lead), and whether it was cut at its end without a mark
+    (a summary or prune value at its width, an open literal: cut_end)."""
+    text: str
+    unit: bool = False
+    lead: bool = False
+    cut_end: bool = False
+
+
+@dataclass(frozen=True)
+class Canon:
+    readings: tuple[Reading, ...]
+    capped: bool
+
+
+class _Capped(Exception):
+    pass
+
+
+# Hermes's f-string summaries of a tool call (agent/context_compressor.py), read as quote spans: from the opening quote
+# to the closing one the summary's fixed tail follows, across apostrophes and line breaks inside the argument. (regex,
+# width: the argument's cut at that many characters without a mark, or 0).
+_SPANS = (
+    (re.compile(r"\[vision_analyze\] '(.*?)' \([\d,]+ chars\)", re.S), 50),
+    (re.compile(r"\[web_search\] query='(.*?)' \([\d,]+ chars result\)", re.S), 0),
+    (re.compile(r"\[search_files\] \S+ search for '(.*?)' in .*? -> \S+ matches", re.S), 0),
+    (re.compile(r"\[delegate_task\] '(.*?)' \([\d,]+ chars result\)", re.S), 0),
+    (re.compile(r"\[execute_code\] `(.*?)` \(\d+ lines output\)", re.S), 0),
+    (re.compile(r"\[terminal\] ran `(.*?)` -> exit ", re.S), 0),
+    (re.compile(r"\[clarify\] user responded: (.*)", re.S), 0),
+)
+# The generic prune line: '[<tool>] k=<str(v)[:40]> k2=<str(v)[:40]> (N chars result)' (+ a FAILED suffix)
+_PRUNE_LINE = re.compile(r"\[[\w.:/-]+\]( [A-Za-z_][\w-]*=.*?) \([\d,]+ chars result\)", re.S)
+_PRUNE_KEY = re.compile(r"(?:^| )([A-Za-z_][\w-]*)=")
+PRUNE_WIDTH = 40
+_QUOTE_LINE = re.compile(r"(?m)^[ \t]*(?:>[ \t]?)+")
+# Marks a cut text ends with (Hermes's previews and summaries, common truncation notes)
+_CUT_MARK = re.compile(r"…|\.\.\.|\[(?:output |content |message )?truncated|\((?:output )?truncated|<truncated", re.I)
+_TRUNCATED = re.compile(r"\[truncated|truncated: tool response|</persisted-output>|\n\.\.\.(?:\n|\Z)", re.I)
+# A snapshot or summary of earlier turns (Hermes's compaction summary, its historical snapshot headings): restated
+# user asks in quote shapes; never skipped by the quick filter
+SNAPSHOT_LEAD = re.compile(r"\[context summary\]|context compaction|## historical |summary of (?:the )?earlier",
+                           re.I)
+_JSON_DOC = re.compile(r'\A\s*(?:\{.*\}|\[.*\]|".*")\s*\Z', re.S)
+_VALUE_OPEN = re.compile(r"""(?:\A|[:\[{(,=]\s?)(['"])""")
+
+
+def _unescape(text: str) -> str:
+    """JSON and Python escapes read back, tolerant of a cut text: an escape cut at the end is dropped (the repr or
+    JSON escape cut: a preview cut inside '\\u00df' keeps what came before), a lone surrogate is dropped, an unknown
+    escape keeps its character."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    simple = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f", "a": "\a", "v": "\v", "0": "\0", '"': '"',
+              "'": "'", "\\": "\\", "/": "/"}
+    while i < n:
+        c = text[i]
+        if c != "\\":
+            out.append(c)
+            i += 1
+            continue
+        if i + 1 >= n:
+            break  # a cut escape at the end
+        e = text[i + 1]
+        width = {"u": 4, "x": 2, "U": 8}.get(e)
+        if width:
+            digits = text[i + 2:i + 2 + width]
+            if len(digits) < width or not re.fullmatch(r"[0-9a-fA-F]+", digits):
+                # an escape cut short (at the end, or before the cut mark that follows it): dropped with its digits,
+                # so what came before reads as the cut text it is (the repr / JSON escape cut)
+                part = re.match(r"[0-9a-fA-F]*", digits)
+                i += 2 + (part.end() if part else 0)
+                continue
+            code = int(digits, 16)
+            i += 2 + width
+            if e == "u" and 0xD800 <= code <= 0xDBFF:
+                low = re.match(r"\\u([dD][c-fC-F][0-9a-fA-F]{2})", text[i:i + 6])
+                if low:
+                    code = 0x10000 + ((code - 0xD800) << 10) + (int(low.group(1), 16) - 0xDC00)
+                    i += 6
+                elif re.fullmatch(r"\\(?:u(?:[dD](?:[c-fC-F][0-9a-fA-F]{0,1})?)?)?", text[i:i + 6]) and i + 6 > n:
+                    break  # its low half was cut at the end
+                else:
+                    continue  # a lone high surrogate: dropped
+            if 0xD800 <= code <= 0xDFFF or code > 0x10FFFF:
+                continue
+            out.append(chr(code))
+            continue
+        out.append(simple.get(e, e))
+        i += 2
+    return "".join(out)
+
+
+def _json_strings_of(value: Any) -> list[Reading]:
+    """Every string (values and keys) of a parsed JSON document, as whole values (walked without recursion)."""
+    out: list[Reading] = []
+    stack = [value]
+    while stack and len(out) < CANON_MAX_STRINGS:
+        v = stack.pop()
+        if isinstance(v, str):
+            out.append(Reading(v, unit=True, lead=True))
+        elif isinstance(v, dict):
+            for k, x in v.items():
+                out.append(Reading(str(k), unit=True, lead=True))
+                stack.append(x)
+        elif isinstance(v, list):
+            stack.extend(v)
+    return out
+
+
+def _literals(text: str) -> list[Reading]:
+    """The string literals of a JSON or Python value (a str(dict), a repr in code, a cut JSON text), read back with
+    their escapes, and the literal left open at the end of a cut text (the open-literal reading: cut at its end)."""
+    out: list[Reading] = []
+    i, n = 0, len(text)
+    count = 0
+    while i < n and count < CANON_MAX_STRINGS:
+        found = _VALUE_OPEN.search(text, i)
+        if not found:
+            break
+        q, start = found.group(1), found.end()
+        j = start
+        while j < n and text[j] != q:
+            j += 2 if text[j] == "\\" else 1
+        body = text[start:min(j, n)]
+        if j >= n:  # open at the end: a cut literal
+            out.append(Reading(_unescape(body), unit=True, lead=True, cut_end=True))
+            break
+        if "\\" in body:
+            out.append(Reading(_unescape(body), unit=True, lead=True))
+        count += 1
+        i = j + 1
+    return out
+
+
+def _cheap(text: str) -> list[Reading]:
+    """Readings that need no decode step: the text without '> ' quote markers (and each quoted block whole: fqw), the
+    quote spans of Hermes's f-string summaries, the values of a generic prune line (each at PRUNE_WIDTH)."""
+    out: list[Reading] = []
+    if _QUOTE_LINE.search(text):
+        out.append(Reading(_QUOTE_LINE.sub("", text)))
+        block: list[str] = []
+        for line in text.splitlines() + [""]:
+            if _QUOTE_LINE.match(line):
+                block.append(_QUOTE_LINE.sub("", line, count=1))
+            elif block:
+                out.append(Reading("\n".join(block), unit=True, lead=True))
+                block = []
+    if "] " in text:
+        for rx, width in _SPANS:
+            for m in rx.finditer(text):
+                span = m.group(1)
+                cut = bool(width) and len(span) >= width
+                if span.endswith("..."):
+                    span, cut = span[:-3], True
+                out.append(Reading(span, unit=True, lead=True, cut_end=cut))
+                if "\n" in span:  # each line of a span as well (a summary inside a longer text)
+                    out.extend(Reading(ln, unit=True, lead=i == 0) for i, ln in enumerate(span.split("\n")) if ln)
+        for m in _PRUNE_LINE.finditer(text):
+            args = m.group(1)
+            keys = list(_PRUNE_KEY.finditer(args))
+            for k, key in enumerate(keys):
+                start = key.end()
+                window = args[start:start + PRUNE_WIDTH]
+                out.append(Reading(window, lead=True, cut_end=len(window) >= PRUNE_WIDTH))
+                end = keys[k + 1].start() if k + 1 < len(keys) else len(args)
+                value = args[start:end]
+                out.append(Reading(value, unit=True, lead=True, cut_end=len(value) >= PRUNE_WIDTH))
+    return out
+
+
+def _decodes(text: str) -> list[Callable[[], list[Reading]]]:
+    """The decode steps a reading needs: a JSON document is parsed (its strings; a cut one is read as below instead);
+    otherwise a text with escapes is unescaped as a whole, and its literals (and an open one) are read."""
+    rest: list[Callable[[], list[Reading]]] = []
+    if "\\" in text:
+        rest.append(lambda: [Reading(_unescape(text))])
+    if _VALUE_OPEN.search(text) and ("\\" in text or _open_literal(text)):
+        rest.append(lambda: _literals(text))
+    if _JSON_DOC.match(text) and (text.lstrip()[:1] != '"' or "\\" in text):
+        def parse() -> list[Reading]:
+            try:
+                value = json.loads(text)
+            except RecursionError as exc:
+                raise _Capped from exc
+            except ValueError:
+                return [x for fn in rest for x in fn()]
+            return _json_strings_of(value)
+        return [parse]
+    return rest
+
+
+def _open_literal(text: str) -> bool:
+    """Whether a text ends inside a value's string literal (a cut JSON or repr text)."""
+    i, n = 0, len(text)
+    while i < n:
+        found = _VALUE_OPEN.search(text, i)
+        if not found:
+            return False
+        q, j = found.group(1), found.end()
+        while j < n and text[j] != q:
+            j += 2 if text[j] == "\\" else 1
+        if j >= n:
+            return True
+        i = j + 1
+    return False
+
+
+def canon(text: str | None) -> Canon:
+    """The readings of a field (the field itself first): iterative, with caps (CANON_STEPS decode steps, CANON_DEPTH
+    nested decodes, CANON_BUDGET characters, CANON_MAX_TEXT for the field); capped when a cap stopped it or a JSON
+    parse ran out of nesting (fail-closed: the row is held as not_checked)."""
+    text = text or ""
+    if len(text) <= 20_000:
+        return _canon_cached(text)
+    return _canon(text)
+
+
+@functools.lru_cache(maxsize=4096)
+def _canon_cached(text: str) -> Canon:
+    return _canon(text)
+
+
+def _canon(text: str) -> Canon:
+    if len(text) > CANON_MAX_TEXT:
+        return Canon((Reading(text, unit=True, lead=True),), True)
+    out: list[Reading] = []
+    seen: set[Reading] = set()
+    queue: deque[tuple[Reading, int]] = deque([(Reading(text, unit=True, lead=True), 0)])
+    steps, budget, capped = 0, CANON_BUDGET, False
+    while queue:
+        r, depth = queue.popleft()
+        if r in seen or not r.text:
+            continue
+        seen.add(r)
+        budget -= len(r.text)
+        if budget < 0:
+            capped = True
+            break
+        out.append(r)
+        for x in _cheap(r.text):
+            if x.text != r.text:
+                queue.append((x, depth))
+        decodes = _decodes(r.text)
+        if not decodes:
+            continue
+        if depth >= CANON_DEPTH:
+            capped = True
+            continue
+        for fn in decodes:
+            steps += 1
+            if steps > CANON_STEPS:
+                capped = True
+                break
+            try:
+                found = fn()
+            except (_Capped, RecursionError, MemoryError):
+                capped = True
+                continue
+            queue.extend((x, depth + 1) for x in found if x.text != r.text or x.cut_end != r.cut_end)
+        if steps > CANON_STEPS:
+            break
+    return Canon(tuple(out), capped)
+
+
+def canon_capped(text: str | None) -> bool:
+    return canon(text).capped
+
+
+@dataclass(frozen=True)
+class WForm:
+    """A withheld text as every comparison reads it (in memory only)."""
+    w: str  # fflat of its authored text (Hermes's wrappers peeled)
+    whole: str  # fflat of the whole text
+    words: str  # fwords of its authored text
+    generic: bool  # O-D4: the whole text is generic
+    grams: frozenset[str]  # every QUICK_Q characters of w (a cut point's quick test)
+
+    @property
+    def long(self) -> bool:
+        return len(self.w) >= MIN_RELATED
+
+    @property
+    def short_words(self) -> bool:
+        return len(self.words) < MIN_RELATED
+
+
+@functools.lru_cache(maxsize=1024)
+def wform(withheld: str) -> WForm | None:
+    body = peel(withheld)[0]
+    w = fflat(body) or fflat(withheld)
+    if not w:
+        return None
+    return WForm(w, fflat(withheld), fwords(body) or fwords(withheld), generic(body or withheld, whole=True),
+                 frozenset(w[i:i + QUICK_Q] for i in range(max(len(w) - QUICK_Q + 1, 0))))
+
+
+def _suffix_prefix(tail: str, w: str) -> int:
+    """The length of the longest suffix of tail that is a prefix of w (the prefix function of w + NUL + tail)."""
+    if not tail or not w:
+        return 0
+    tail = tail[-len(w):]
+    s = w + "\0" + tail
+    pi = [0] * len(s)
+    for i in range(1, len(s)):
+        k = pi[i - 1]
+        while k and s[i] != s[k]:
+            k = pi[k - 1]
+        if s[i] == s[k]:
+            k += 1
+        pi[i] = k
+    return pi[-1]
+
+
+def _word_seq(hay: str, needle: str) -> bool:
+    """Whether needle (fwords) appears in hay (fwords) as whole words."""
+    return bool(needle) and f" {needle} " in f" {hay} "
+
+
+def _cut_points(text: str, cut_end: bool) -> list[int]:
+    """Where a reading was cut: before each cut mark, at its end when cut without a mark, and (cut-per-line) at the end
+    of each line of a truncated preview."""
+    points = [m.start() for m in _CUT_MARK.finditer(text)]
+    if cut_end:
+        points.append(len(text))
+    if _TRUNCATED.search(text):
+        points += [m.start() for m in re.finditer(r"\n", text)]
+    return points
+
+
+def _piece(rel: str, piece: str, out: set[str]) -> None:
+    if not generic(piece):
+        out.add(rel)
+
+
+def _tail(text: str, p: int, want: int) -> str:
+    """fflat of the text before p, at least `want` characters of it when the text has them (a window grown from p)."""
+    size = 4 * want + 64
+    while True:
+        start = max(0, p - size)
+        tail = fflat(text[start:p])
+        if start == 0 or len(tail) >= want + 1:
+            return tail
+        size *= 4
+
+
+def _reading_relations(r: Reading, wf: WForm, *, family: bool) -> set[str]:
     out: set[str] = set()
-    whole, want = flat(held), flat(withheld)
-    if not want:
+    f = fflat(r.text)
+    if not f:
         return out
-    body, quote, again = peel(held)
-    wbody = flat(peel(withheld)[0])
-    if whole == want or (wbody and flat(body) == wbody):
+    if r.unit and (f in (wf.w, wf.whole) or (wf.words and fwords(r.text) == wf.words)):
         out.add(IDENTICAL_REL)
-        if whole != want and (again or REPLAY_HEADER in (withheld or "")):
+    if wf.long and wf.w in f:
+        out.add(CONTAINS)
+    if family and wf.short_words and _word_seq(fwords(r.text), wf.words):
+        out.add(CONTAINS)  # a short withheld text's words in another case or wrapping: ambiguous, never 'none'
+    if not wf.long:
+        return out
+    if (r.unit or r.lead) and len(f) < len(wf.w) and wf.w.startswith(f):
+        _piece(CUT, f, out)  # a beginning of the withheld text: a value cut short (with or without a mark)
+    for p in _cut_points(r.text, r.cut_end):
+        tail = _tail(r.text, p, len(wf.w))
+        if len(tail) < MIN_RELATED or tail[-QUICK_Q:] not in wf.grams:
+            continue
+        k = _suffix_prefix(tail, wf.w)
+        if MIN_RELATED <= k < len(wf.w):
+            _piece(CUT, wf.w[:k], out)
+    if family and r.unit and len(f) >= MIN_RELATED and f != wf.w and f in wf.w:
+        _piece(PART_OF, f, out)
+    for q in reply_quotes(r.text) if "[Replying to" in r.text else ():
+        if len(q) >= MIN_RELATED and fflat(q) and fflat(q) in wf.w:
+            _piece(PART_OF, q, out)
+    return out
+
+
+def _field_relations(held: str, withheld: str, wf: WForm, *, family: bool) -> set[str]:
+    """The relations of one field: i22's rules on the field as written (identical, restated, contains, a reply quote;
+    in a family the row's own text being part of it), under fold, then every reading of canon()."""
+    out: set[str] = set()
+    whole = fflat(held)
+    body, quote, again = peel(held)
+    fbody = fflat(body)
+    if whole == wf.whole or (wf.w and fbody == wf.w):
+        out.add(IDENTICAL_REL)
+        if whole != wf.whole and (again or REPLAY_HEADER in withheld):
             out.add(RESTATED_REL)
-    if len(wbody) >= MIN_RELATED and wbody in flat(body or held):
+    if wf.long and wf.w in fflat(body or held):
         out.add(CONTAINS)
     # a quote of at least MIN_RELATED characters as JARVIS wrote it (integrator, deviation 273)
-    if any(len(q) >= MIN_RELATED and flat(q) and flat(q) in wbody
+    if any(len(q) >= MIN_RELATED and fflat(q) and fflat(q) in wf.w and not generic(q)
            for q in [*([quote] if quote is not None else []), *reply_quotes(held)]):
         out.add(PART_OF)
-    return out
-
-
-def family_relations(held: str | None, withheld: str | None) -> set[str]:
-    """text_relations() for a row of a withheld conversation family (Settle, later backups, the interim import):
-    also 'part of' when the row's own text (at least MIN_RELATED characters, after the peel) is a part of the
-    withheld text, e.g. the original of a message JARVIS later folded into the withheld one. Outside every family
-    only a reply quote counts (owner question 8): that path keeps text_relations() (integrator, deviation 274)."""
-    out = text_relations(held, withheld)
-    body, wbody = flat(peel(held)[0]), flat(peel(withheld)[0])
-    if len(body) >= MIN_RELATED and body != wbody and body in wbody:
+    if family and len(fbody) >= MIN_RELATED and fbody != wf.w and fbody in wf.w and not generic(fbody):
         out.add(PART_OF)
+    c = canon(held)
+    if c.capped:
+        out.add(NOT_CHECKED)
+    for r in c.readings:
+        out |= _reading_relations(r, wf, family=family)
     return out
 
 
-def group_relations(held: str | None, own: str | None, others: Iterable[str] = (), *, all_in_hand: bool,
-                    uncertain: bool = False, structural: Iterable[str] = ()) -> tuple[str, ...]:
-    """The evidence of a row held with its conversation group (option C, rebuild R2): its text against the group's own
-    withheld text (family_relations; 'not in this backup' when that text is not in hand) and against every other
-    withheld text in hand (a relation to any of them is shown), the structural relations the caller found, and
-    'uncertain' for a conversation an uncertain link holds. 'none' only when nothing relates and every withheld text
-    was in hand (all_in_hand); otherwise 'other_not_compared' (never released in one click). Compared in memory only."""
+def _fields(held: str | Iterable[str] | None) -> list[str]:
+    if held is None:
+        return []
+    if isinstance(held, str):
+        return [held]
+    return [h for h in held if h]
+
+
+def text_relations(held: str | Iterable[str] | None, withheld: str | None) -> set[str]:
+    """The relations of a row's text (one field, or every field of a row: row_fields()) to a withheld text, computed
+    by comparison under fold() after the peel (plan 4.6) and through every reading of canon() (rebuild R3): identical
+    (the same words, also a whole value: a JSON string, a quote span, a quoted block read without its '> ' markers);
+    restated (identical after the replay header); contains (the withheld text, at least MIN_RELATED characters, in
+    any reading); part_of (a reply pointer quoting at least MIN_RELATED characters of it: N1); cut (a beginning of it
+    of at least MIN_RELATED characters, cut short: a summary, a prune line, a preview, a cut literal); not_checked (a
+    field canon() could not read in full). Pieces on generic-v1 never count (O-D4). Compared in memory only."""
+    want = withheld or ""
+    wf = wform(want) if flat(want) else None
+    if wf is None:
+        return set()
+    out: set[str] = set()
+    for h in _fields(held):
+        out |= _field_relations(h, want, wf, family=False)
+    return out
+
+
+def family_relations(held: str | Iterable[str] | None, withheld: str | None) -> set[str]:
+    """text_relations() for a row of a withheld conversation family or group (Settle, later backups, the interim
+    import, the group sweep): also 'part of' when the row's own text, or a whole value of it, of at least MIN_RELATED
+    characters is a part of the withheld text, e.g. the original of a message JARVIS later folded into the withheld one;
+    and 'contains' for a withheld text of fewer than MIN_RELATED characters of words whose words the row has as a
+    sequence in any case (ambiguous, never 'none'). Outside every family a middle piece counts only as a reply quote
+    (owner question 8; middle pieces N3/R5b are pending)."""
+    want = withheld or ""
+    wf = wform(want) if flat(want) else None
+    if wf is None:
+        return set()
+    out: set[str] = set()
+    for h in _fields(held):
+        out |= _field_relations(h, want, wf, family=True)
+    return out
+
+
+def carrier_relations(held: str | Iterable[str] | None, withheld: str | None) -> set[str]:
+    """The relations that make a row (or a title, or a memory item) outside every withheld group a carrier of the
+    withheld text, held on its own (rebuild R3): text_relations() over every field, without a whole withheld text that
+    is generic (O-D4: neither demanded nor allowed as a carrier)."""
+    want = withheld or ""
+    wf = wform(want) if flat(want) else None
+    if wf is None:
+        return set()
+    out = text_relations(held, want)
+    if wf.generic:
+        out -= {IDENTICAL_REL, CONTAINS, RESTATED_REL}
+    return out
+
+
+def row_fields(row: Any) -> list[str]:
+    """Every field of a stored row (an ArchiveMessage, or a rollback copy's dict) a comparison reads: its content and
+    its tool calls (their arguments, read by canon())."""
+    get = row.get if isinstance(row, Mapping) else (lambda k, d=None: getattr(row, k, d))
+    out = [get("content") or ""]
+    calls = get("tool_calls")
+    if calls:
+        out.append(calls if isinstance(calls, str) else json.dumps(calls, ensure_ascii=False, sort_keys=True))
+    return [x for x in out if x]
+
+
+def source_fields(m: Any) -> list[str]:
+    """Every field of a backup row (source.SourceMessage) a comparison reads."""
+    return [x for x in (m.content or "", getattr(m, "tool_calls_raw", "") or "") if x]
+
+
+def row_relations(row: Any, withheld: str | None, *, family: bool = False) -> set[str]:
+    """The relations of every field of a stored row to a withheld text (family_relations in a family or group, else
+    carrier_relations)."""
+    return (family_relations if family else carrier_relations)(row_fields(row), withheld)
+
+
+# The quick filter of the full stored-row scan (review.hold_carriers): a cheap test that never skips a row a reading
+# could relate (no prefilter by W's longest words: every row is read). A row is compared unless no 8 characters of W's
+# skeleton (fold() without whitespace and combining marks) and no 8 of its word skeleton appear in the row's; a row
+# that needs decoding (escapes, a JSON or repr value), a snapshot of earlier turns (SNAPSHOT_LEAD) or a quote shape (a
+# reply pointer, '> ' markers: a quote of MIN_RELATED characters as written may hold fewer than 8 of the skeleton) is
+# always compared.
+QUICK_Q = 8
+
+
+@functools.cache
+def _skel_table() -> dict[int, None]:
+    return dict.fromkeys(c for c in range(0x20000) if unicodedata.category(chr(c)) in (
+        "Mn", "Me", "Mc", "Zs", "Zl", "Zp", "Cc", "Cf") or chr(c).isspace())
+
+
+def skeleton(text: str | None) -> str:
+    """fold() without any whitespace, control, format or combining character."""
+    return fold(text).translate(_skel_table())
+
+
+def word_skeleton(text: str | None) -> str:
+    return "".join(_WORD.findall(fold(text)))
+
+
+def _grams(text: str, q: int = QUICK_Q) -> set[str]:
+    return {text[i:i + q] for i in range(max(len(text) - q + 1, 0))}
+
+
+@dataclass(frozen=True)
+class Quick:
+    grams: frozenset[str]
+    word_grams: frozenset[str]
+    whole: tuple[str, ...]  # skeletons too short for grams: compared whole
+
+
+def quick_of(withheld: str) -> Quick:
+    """The quick filter's forms of a withheld text: its whole text and its authored text (peeled), as skeletons and
+    word skeletons."""
+    forms = {withheld, peel(withheld)[0]}
+    grams: set[str] = set()
+    word_grams: set[str] = set()
+    whole: set[str] = set()
+    for f in forms:
+        for sk, into in ((skeleton(f), grams), (word_skeleton(f), word_grams)):
+            if len(sk) >= QUICK_Q:
+                into |= _grams(sk)
+            elif sk:
+                whole.add(sk)
+    return Quick(frozenset(grams), frozenset(word_grams), tuple(sorted(whole)))
+
+
+_NEEDS_DECODE = re.compile(r"""\\|\A\s*[\[{"']|["'][:,]\s*["'\[{]|[:\[{(,=]\s?['"]""")
+_QUOTE_SHAPE = re.compile(r"\[Replying to|^[ \t]*>", re.M)
+
+
+def quick_related(fields: Iterable[str], quick: Quick) -> bool:
+    """False only when no reading of these fields can relate to the withheld text (the full scan's quick filter)."""
+    for f in fields:
+        if not f:
+            continue
+        if len(f) > CANON_MAX_TEXT or _NEEDS_DECODE.search(f) or SNAPSHOT_LEAD.search(f) or _QUOTE_SHAPE.search(f):
+            return True
+        sk, wsk = skeleton(f), word_skeleton(f)
+        if any(w in sk or w in wsk for w in quick.whole):
+            return True
+        if quick.grams and not _grams(sk).isdisjoint(quick.grams):
+            return True
+        if quick.word_grams and not _grams(wsk).isdisjoint(quick.word_grams):
+            return True
+    return False
+
+
+def group_relations(held: str | Iterable[str] | None, own: str | None, others: Iterable[str] = (), *,
+                    all_in_hand: bool, uncertain: bool = False, structural: Iterable[str] = ()) -> tuple[str, ...]:
+    """The evidence of a row held with its conversation group (option C, rebuild R2): its text (every field: R3)
+    against the group's own withheld text (family_relations; 'not in this backup' when that text is not in hand) and
+    against every other withheld text in hand (a relation to any of them is shown), the structural relations the
+    caller found, and 'uncertain' for a conversation an uncertain link holds. 'none' only when nothing relates and
+    every withheld text was in hand (all_in_hand); otherwise 'other_not_compared' (never released in one click).
+    Compared in memory only."""
     out: set[str] = set(structural)
     if own is None:
         out.add(NOT_IN_BACKUP)
@@ -380,7 +998,8 @@ def compare_text(codes: Iterable[str]) -> str:
     found = set(codes)
     for code, words in ((IDENTICAL_REL, "identical text"), (RESTATED_REL, "the withheld text restated"),
                         (CONTAINS, "contains the withheld text"),
-                        (PART_OF, "part of the withheld text")):
+                        (PART_OF, "part of the withheld text"), (CUT, "the withheld text, cut short"),
+                        (NOT_CHECKED, "not checked in full")):
         if code in found:
             return words
     return "nothing to compare" if NOT_IN_BACKUP in found else "other text"
