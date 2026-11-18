@@ -228,8 +228,9 @@ async def test_p2_the_startup_repair_blanks_a_copy_of_a_changed_then_deleted_gro
     await run(fx)
     bj.change(db, "UPDATE messages SET content = 'A newer text.' WHERE id = ?", ca[0])
     await run(fx)
-    bj.change(db, "DELETE FROM messages WHERE id = ?", ca[0])
+    bj.change(db, "UPDATE messages SET active = 0 WHERE id = ?", ca[0])  # rewound: the next import deletes it
     await run(fx)
+    assert await message_of("p2_c", ca[0]) == []  # deleted: its update copy names a row no longer stored
     assert await copies_with(mark) >= 1  # the update copy keeps the older text
     await withhold(client, (await message_of("p2_p", pa[1]))[0].id)
     assert (await group())["p2_c"] == ("child", "member")
@@ -238,3 +239,103 @@ async def test_p2_the_startup_repair_blanks_a_copy_of_a_changed_then_deleted_gro
         await s.commit()
     assert counts["group_rollback_copies_blanked"] >= 1
     assert await copies_with(mark) == 0
+
+
+async def test_uncertain_hermes_relinked_a_child_to_another_known_conversation(client, fx):
+    """gd1:link_parents_off: the recorded parent link and the backup name two different parents, both known here: the
+    child is uncertain (the recorded links count as a parent claim)."""
+    db = fx["db"]
+    pa = conversation(db, "rl_p", T, [("user", "What is the deal worth?"), ("assistant", secret("zqrl"))])
+    conversation(db, "rl_o", T + DAY, [("user", "Another topic.")])
+    ca = conversation(db, "rl_c", T + 2 * DAY, [("user", "Draft the follow-up mail.")], parent="rl_p")
+    await run(fx)
+    bj.change(db, "UPDATE sessions SET parent_session_id = 'rl_o' WHERE id = 'rl_c'")
+    await run(fx)
+    await withhold(client, (await message_of("rl_p", pa[1]))[0].id)
+    assert (await group())["rl_c"] == ("child", "uncertain")
+    assert await state("rl_c", ca[0]) == "held"
+
+
+async def test_a_marker_naming_a_withheld_conversation_joins_in_the_import_that_first_sees_it(client, fx):
+    """sk3_graph_marker_edges_off: a later backup brings Q, whose Hermes parent is unrelated and whose _delegate_from
+    names the withheld conversation: the backup's marker links Q to the group in that very import (two parents:
+    uncertain, its rows held), before any link of Q is recorded."""
+    db = fx["db"]
+    pa = conversation(db, "me_p", T, [("user", "What is the deal worth?"), ("assistant", secret("zqme"))])
+    conversation(db, "me_x", T + DAY, [("user", "Unrelated.")])
+    await run(fx)
+    await withhold(client, (await message_of("me_p", pa[1]))[0].id)
+    qa = conversation(db, "me_q", T + 2 * DAY, [("user", "Summarise the call.")], parent="me_x",
+                      model_config={"_delegate_from": "me_p"})
+    await run(fx)
+    assert (await group())["me_q"] == ("delegated", "uncertain")
+    assert await state("me_q", qa[0]) == "held"
+
+
+async def test_the_archive_lineage_links_a_child_whose_link_was_never_recorded(client, fx):
+    """sk3_archive_parent_edge_off: data an earlier importer stored without the new link kinds (no recorded 'child'
+    link): the archive's own parent and lineage still put the markerless child in the group."""
+    db = fx["db"]
+    pa = conversation(db, "al_p", T, [("user", "What is the deal worth?"), ("assistant", secret("zqal"))])
+    conversation(db, "al_c", T + DAY, [("user", "Draft the follow-up mail.")], parent="al_p")
+    await run(fx)
+    async with session_scope() as s:
+        await s.execute(text("TRUNCATE brain_session_links"))
+    await withhold(client, (await message_of("al_p", pa[1]))[0].id)
+    assert (await group())["al_c"] == ("child", "member")
+
+
+async def test_a_withhold_in_a_delegate_never_makes_its_parent_a_withheld_family(client, fx):
+    """O-D1 overreach guard (the parent side is a pending owner decision): option C records the delegate's parent link
+    ('child', 'delegate_from'), but i22's families read only the links that copy rows, so a later backup's new row in
+    the parent stays readable."""
+    db = fx["db"]
+    conversation(db, "dp_p", T, [("user", "Plan the quarter."), ("assistant", "Delegating.")])
+    da = conversation(db, "dp_d", T + DAY, [("user", "Work out the deal value."), ("assistant", secret("zqdp"))],
+                      parent="dp_p", model_config={"_delegate_from": "dp_p"})
+    await decided(client, fx, "dp_d", da[1])
+    assert "dp_p" not in await group()
+    turn = bj.add_row(db, "dp_p", "user", "What about the venue?", T + 5 * DAY)
+    await run(fx)
+    assert await state("dp_p", turn) == "readable"
+
+
+async def test_settle_finishes_a_decision_over_the_whole_group(client, fx):
+    """settle_scope: Settle reads every conversation of the withhold's group, so a delegated sub-agent's row that
+    repeats the withheld text is held when the decision is finished (i22's families left a delegate out)."""
+    db = fx["db"]
+    w = secret("zqsg")
+    pa = conversation(db, "sg_p", T, [("user", "What is the deal worth?"), ("assistant", w)])
+    da = conversation(db, "sg_d", T + DAY, [("user", "Summarise: %s" % w), ("assistant", "Summarised.")],
+                      parent="sg_p", model_config={"_delegate_from": "sg_p"})
+    await run(fx)
+    await withhold(client, (await message_of("sg_p", pa[1]))[0].id)
+    assert await state("sg_d", da[0]) == "readable"  # the withhold dialog compares its own family only
+    await bj.settle(fx, keep=False)
+    assert await state("sg_d", da[0]) == "held"
+    assert identity.CONTAINS in (await holds(client))[(await message_of("sg_d", da[0]))[0].id]["relations"]
+
+
+async def test_the_legacy_reset_records_the_groups_of_the_withholds_it_binds(client, fx, tmp_path):
+    """Legacy data (a 0.6.1 withhold, no group): the reset binds the withhold to its exact JARVIS row and records its
+    group before its rollbacks, and its version 5 file carries the group."""
+    db = fx["db"]
+    pa = conversation(db, "lg_p", T, [("user", "What is the deal worth?"), ("assistant", secret("zqlg"))])
+    conversation(db, "lg_c", T + DAY, [("user", "Draft the follow-up mail.")], parent="lg_p")
+    first = await run(fx)
+    await withhold(client, (await message_of("lg_p", pa[1]))[0].id)
+    async with session_scope() as s:
+        await s.execute(text("UPDATE import_runs SET importer_version = '1.0.4' WHERE id = :r"),
+                        {"r": first["run_id"]})
+        await s.execute(text(
+            "UPDATE brain_tombstones SET source_session_id = '', source_row_id = '', role = '', tool_call_id = '', "
+            "message_uid = '', uid_known = false, decided_on = '', bound = false, source_at = NULL "
+            "WHERE reason = :r AND anchor_key = ''"), {"r": identity.WITHHELD_BY_ADMIN})
+        await s.execute(text("INSERT INTO brain_maintenance (name, detail) VALUES ('legacy_brain_data', "
+                             "'{\"found_by\": \"test\"}'::jsonb)"))
+        await s.execute(text("TRUNCATE brain_withheld_sessions"))  # 0.6.1 kept no group
+    out = tmp_path / "reset.json"
+    await imp.legacy_reset(str(out), actor=ADMIN[0], confirm=True)
+    assert (await group()) == {"lg_p": ("withheld_here", "member"), "lg_c": ("child", "member")}
+    assert {(g["session"], g["how"]) for g in json.loads(out.read_text())["groups"]} == {
+        ("lg_p", "withheld_here"), ("lg_c", "child")}

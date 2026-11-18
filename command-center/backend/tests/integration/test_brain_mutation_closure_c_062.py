@@ -122,3 +122,41 @@ async def test_a_reset_with_copied_looking_rows_never_joins_by_copied_history(cl
     await run(fx)
     await withhold(client, (await message_of("rc_p", pa[1]))[0].id)
     assert (await group())["rc_r"] == ("copied_rows", "uncertain")
+
+
+async def test_a_recorded_group_is_never_forgotten_and_an_uncertain_member_never_becomes_a_member(client):
+    """brain_withheld_sessions keeps every conversation (a delete is refused, whatever code runs it) and an uncertain
+    link stays uncertain (an update to 'member' is turned back); hidden titles are append-only too."""
+    async with session_scope() as s:
+        await groups.record(s, "a", {"x": groups.Member("child", groups.UNCERTAIN, "p")})
+        await groups.hide_titles(s, ["y"], anchor="a", reason="test")
+        await s.commit()
+    async with session_scope() as s:
+        await s.execute(text("UPDATE brain_withheld_sessions SET state = 'member'"))
+        await s.commit()
+        assert await s.scalar(text("SELECT state FROM brain_withheld_sessions")) == "uncertain"
+    for sql in ("DELETE FROM brain_withheld_sessions", "DELETE FROM brain_hidden_titles",
+                "UPDATE brain_hidden_titles SET reason = ''"):
+        async with session_scope() as s:
+            with pytest.raises(Exception, match="forgotten|append-only"):
+                await s.execute(text(sql))
+
+
+async def test_the_startup_repair_records_the_groups_again(client, fx):
+    """A database restored from a dump without the group rows (or without the groups at all): the start-up repair
+    computes each withhold's group again from what the database knows, before anything reads it."""
+    db = fx["db"]
+    pa = conversation(db, "sr_p", T, [("user", "What is the deal worth?"), ("assistant", secret("zqsr"))])
+    conversation(db, "sr_c", T + DAY, [("user", "Draft the follow-up mail.")], parent="sr_p", title="Follow-up")
+    await run(fx)
+    await withhold(client, (await message_of("sr_p", pa[1]))[0].id)
+    async with session_scope() as s:
+        await s.execute(text("TRUNCATE brain_withheld_sessions"))
+        await s.execute(text("UPDATE archive_sessions SET title = 'Follow-up' WHERE source_session_id = 'sr_c'"))
+        await s.commit()
+    async with session_scope() as s:
+        await identity.repair(s, actor="system (startup-check)", cause="startup-check")
+        await s.commit()
+    assert (await group()) == {"sr_p": ("withheld_here", "member"), "sr_c": ("child", "member")}
+    async with session_scope() as s:
+        assert await s.scalar(select(ArchiveSession.title).where(ArchiveSession.source_session_id == "sr_c")) == ""
