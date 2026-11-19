@@ -17,6 +17,7 @@ from sqlalchemy import select, text, update
 
 from app.bootstrap import check_withheld_copies
 from app.brain import identity
+from app.brain import groups as brain_groups
 from app.brain import importer as imp
 from app.db import session_scope
 from app.models import (
@@ -45,7 +46,9 @@ EVIDENCE = {"message", "session", "title", "position", "role", "at", "content_ch
             # rebuild R4 (D-35): whether one click may release it now, a later withhold's mark, the form it was read in
             "one_click", "later_withhold", "form",
             # option C (rebuild R1, D-8): whether an uncertain link holds its conversation (never one-click)
-            "uncertain"}
+            "uncertain",
+            # rebuild R6 (D-41): how its conversation joined its withheld message's group, and in which state (codes)
+            "joined", "joined_state"}
 
 
 @pytest.fixture
@@ -94,6 +97,8 @@ async def test_holds_list_shows_evidence_and_no_text(client, fx):
     assert (hold["rule"], hold["compare"]) == (identity.UID_HOLD, "other text")
     # rebuild R4 (B6, D-35): a 'same message id' tool row is no one-click row: its release needs the typed word
     assert identity.SAME_UID in hold["relations"] and hold["confirm_required"] and not hold["one_click"]
+    # rebuild R6 (D-41): the group view's codes are group link kinds, never text
+    assert hold["joined"] in ("",) + brain_groups.HOWS and hold["joined_state"] in ("", "member", "uncertain")
     # option C (rebuild R1, D-8): the conversation is in the withhold's group: its title is hidden by membership
     assert hold["content_chars"] == len(STUB) and hold["title"] is None
     assert hold["withheld_message"] == {"id": full.id, "position": full.position, "role": "tool",
@@ -494,8 +499,11 @@ async def test_decision_counters_for_admins_and_the_holds_groups(client, fx):
     assert set(status) == {"unsettled_decisions", "unreviewed_settle_holds", "later_backup_holds", "held_for_review",
                            "frozen_conversations", "legacy_lock", "tripwire",
                            # option C (rebuild R2, D-8): the groups' counters
-                           "group_conversations", "uncertain_conversations", "group_rows_held", "group_rows_readable"}
+                           "group_conversations", "uncertain_conversations", "group_rows_held", "group_rows_readable",
+                           # rebuild R6 (D-41): the uncertain rows the decisions export waits on
+                           "uncertain_waiting"}
     assert status["group_conversations"] == 1 and status["group_rows_readable"] == 0
+    assert status["uncertain_waiting"] == 0 and status["uncertain_conversations"] == 0
     assert status["unsettled_decisions"] == 1 and status["held_for_review"] == 1 and status["legacy_lock"] is False
     assert (await client.get("/api/brain/overview")).json()["decisions"] == status
     r = await client.post("/api/brain/sessions/%d/stop-importing" % stub.session_id)

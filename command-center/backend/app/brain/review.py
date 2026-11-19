@@ -895,8 +895,35 @@ async def withhold_preview(session: AsyncSession, message: ArchiveMessage, sess:
             "carrier_rows": [brief(r, rel) for r, _, rel in await identity.form_rows(
                 session, message, exclude=[g.row.id for g in group.rows] + [r.id for r, _, _ in matching])],
             "titles_with_this_text": len(await identity.titles_with_text(session, message)),
+            "group": await _preview_group(session, message, sess, group, scope),
             "first_user_message": await identity.first_user_message(session, message),
             "decision_backup": decided_on}
+
+
+async def _preview_group(session: AsyncSession, message: ArchiveMessage, sess: ArchiveSession,
+                         group: Any, scope: PersonScope) -> dict[str, Any]:
+    """Rebuild R6 (the withhold dialog): the conversation group the withhold would hold (groups.closure_for, read only,
+    seeded as withhold_message seeds it), in counts: the other conversations of the group the admin may open, how
+    each joined, how many of them only an uncertain link holds (held, never one-click, the export waits), and their
+    stored rows held with their conversation. Conversations outside the admin's scope are left out of every count
+    (RECON-48: a count of them would tell that such a conversation is linked). Never ids, titles or text."""
+    member_sids = set((await session.scalars(select(ArchiveSession.source_session_id).where(
+        ArchiveSession.id.in_(sorted({g.row.session_id for g in group.members}))))).all()) if group.members else set()
+    uid = identity.row_uid(message)
+    pre = await brain_groups.closure_for(session, [sess.source_session_id, *member_sids], [u for u in [uid] if u])
+    others = {sid: m for sid, m in pre.items() if sid != sess.source_session_id}
+    visible = dict((await session.execute(select(ArchiveSession.source_session_id, ArchiveSession.id).where(
+        ArchiveSession.source_session_id.in_(sorted(others)), person_sessions(scope)))).all()) if others else {}
+    how: dict[str, int] = {}
+    for sid in visible:
+        how[others[sid].how] = how.get(others[sid].how, 0) + 1
+    rows = int(await session.scalar(select(func.count(ArchiveMessage.id)).where(
+        ArchiveMessage.session_id.in_(sorted(visible.values())), ArchiveMessage.withheld.is_(False),
+        person_messages(scope))) or 0) if visible else 0
+    return {"conversations": len(visible),
+            "uncertain": sum(1 for sid in visible if others[sid].uncertain),
+            "how": dict(sorted(how.items())),
+            "rows": rows}
 
 
 async def _decision_backup_read_only(session: AsyncSession, sess: ArchiveSession) -> dict[str, Any] | None:
@@ -944,6 +971,8 @@ async def decision_status(session: AsyncSession) -> dict[str, Any]:
             "uncertain_conversations": int(p.get("uncertain_sessions") or 0),
             "group_rows_held": int(p.get("group_rows_held") or 0),
             "group_rows_readable": int(p.get("group_rows_readable") or 0),
+            # rebuild R6: rows of uncertain conversations that wait for an admin: the decisions export waits on them
+            "uncertain_waiting": int(p.get("uncertain_waiting") or 0),
             "legacy_lock": bool(p.get("legacy_lock")),
             "tripwire": {"run": tw.get("run"), "inside_family": int(tw.get("inside_family") or 0),
                          "outside_family": int(tw.get("outside_family") or 0)} if tw else None}
@@ -1019,6 +1048,9 @@ async def holds(session: AsyncSession, scope: PersonScope) -> list[dict[str, Any
         copy_position = (sess.lineage in identity.LINEAGE and sess.started_at is not None and row.at is not None
                          and row.at <= sess.started_at)
         w_uid = anchor_stone.message_uid if anchor_stone is not None else ""
+        # rebuild R6 (the holds panel's group view): how this row's conversation joined its withheld message's group
+        # ('' when the group does not hold the conversation: a carrier, a copy or a hold of identity)
+        joined = await session.get(BrainWithheldSession, (anchor, sess.source_session_id))
         w_at = anchor_stone.source_at if anchor_stone is not None else None
         out.append({
             "message": row.id, "session": sess.id, "title": None if hidden else sess.title,
@@ -1049,6 +1081,8 @@ async def holds(session: AsyncSession, scope: PersonScope) -> list[dict[str, Any
             "group": HOLD_GROUPS.get(stone.via, "other"),
             "frozen": sess.source_session_id in frozen,
             "uncertain": sess.source_session_id in uncertain,
+            "joined": joined.how if joined is not None else "",
+            "joined_state": joined.state if joined is not None else "",
             "neighbours": [i for i in (before, after) if i is not None]})
     return out
 
