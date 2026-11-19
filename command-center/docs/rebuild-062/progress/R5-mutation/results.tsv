@@ -1,1 +1,3 @@
 s4:stored_form_any_length	tests/property/oracle.py	CAUGHT	1 failed in 0.35s	tests/property/test_oracle_stored_form_s4.py::test_s4_the_fixture_is_cut_where_the_withheld_text_is
+s4:released_waiting_in_last_too	tests/property/oracle.py	CAUGHT	1 failed in 0.30s	tests/property/test_oracle_released_waiting_s4.py::test_s4_the_same_row_held_by_the_last_backup_is_still_a_difference
+s4:released_waiting_any_text	tests/property/oracle.py	CAUGHT	1 failed in 0.28s	tests/property/test_oracle_released_waiting_s4.py::test_s4_a_plain_text_other_than_the_released_one_is_still_a_difference

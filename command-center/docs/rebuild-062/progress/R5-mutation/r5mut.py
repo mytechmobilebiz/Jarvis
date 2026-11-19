@@ -16,6 +16,7 @@ F3 = P + "test_oracle_family_s3.py"
 F4 = P + "test_oracle_family_part_of_s4.py"
 F5 = P + "test_oracle_fold_piece_s4.py"
 F6 = P + "test_oracle_stored_form_s4.py"
+F7 = P + "test_oracle_released_waiting_s4.py"
 M = [
  ("cr2:oracle_fold_off", [(OR, '    return unicodedata.normalize("NFKC", t).translate(_IGN)\n', '    return text or ""\n')],
   [CA + "::test_oci_the_oracle_demands_a_carrier_in_another_case_or_form"]),
@@ -103,6 +104,12 @@ M = [
   [F5 + "::test_s4_a_whole_copy_of_the_withheld_fold_is_its_text"]),
  ("s4:stored_form_any_length", [(OR, 'CC_STORED = {"tool": 4_000}', 'CC_STORED = {"tool": 1_000}')],
   [F6 + "::test_s4_the_fixture_is_cut_where_the_withheld_text_is"]),
+ ("s4:released_waiting_in_last_too", [(OR, '    if not rid.isdigit() or (ra["sid"], int(rid)) in last.rows:\n        return False\n    texts = run.released.get(ra["source_key"]) or run.released.get("id:%s" % ra["id"]) or []\n    return bool(norm(rb.get("content"))) and any(cc_redacted_of(rb.get("content"), t) for t in texts)\n\n\ndef check_stored_unchanged',
+                                       '    if not rid.isdigit():\n        return False\n    texts = run.released.get(ra["source_key"]) or run.released.get("id:%s" % ra["id"]) or []\n    return bool(norm(rb.get("content"))) and any(cc_redacted_of(rb.get("content"), t) for t in texts)\n\n\ndef check_stored_unchanged')],
+  [F7 + "::test_s4_the_same_row_held_by_the_last_backup_is_still_a_difference"]),
+ ("s4:released_waiting_any_text", [(OR, '    return bool(norm(rb.get("content"))) and any(cc_redacted_of(rb.get("content"), t) for t in texts)\n\n\ndef check_stored_unchanged',
+                                    '    return True\n\n\ndef check_stored_unchanged')],
+  [F7 + "::test_s4_a_plain_text_other_than_the_released_one_is_still_a_difference"]),
 ]
 only = sys.argv[1:]
 db = "r5m"

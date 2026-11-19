@@ -1291,9 +1291,9 @@ REKEYED = True
 
 
 def compare_outside(run: Run, prop: str, mine: dict[str, Any], plain: dict[str, Any], fam: set[str],
-                    where: str) -> None:
+                    where: str, last: hs.Snapshot | None = None) -> None:
     a, b = by_key(mine), by_key(plain)
-    diffs = []
+    diffs, waiting = [], []
     for k in sorted(set(a) | set(b)):
         ra, rb = a.get(k), b.get(k)
         sid = (ra or rb)["sid"]
@@ -1308,11 +1308,35 @@ def compare_outside(run: Run, prop: str, mine: dict[str, Any], plain: dict[str, 
             continue
         sa = (bool(ra.get("withheld")), content_hash(ra.get("content"))) if ra else None
         sb = (bool(rb.get("withheld")), content_hash(rb.get("content"))) if rb else None
+        if sa != sb and released_waiting_outside(run, ra, mine, rb, last):
+            waiting.append(k)
+            continue
         if sa != sb:
             diffs.append("%s (%s) %s vs plain %s" % (k, sid, sa, sb))
+    if waiting:
+        run.notes.append("%s: %s: %d rows outside the family the admin released wait for their text (no backup "
+                         "imported since holds them; S4, D-50): %s" % (prop, where, len(waiting),
+                                                                      "; ".join(waiting[:4])))
     if diffs:
         run.bad(prop, "%s: %d rows outside the family differ from a plain import: %s" % (
             where, len(diffs), "; ".join(diffs[:5])))
+
+
+def released_waiting_outside(run: Run, ra: dict[str, Any] | None, mine: dict[str, Any], rb: dict[str, Any] | None,
+                             last: hs.Snapshot | None) -> bool:
+    """A4 / B4 (stabilisation S4, D-50, as RECON-57's C1 excuse): a row outside the family the admin released (a
+    carrier hold, typed or one click) waits for its text (released_pending: withheld, released, no stone) because the
+    installation's last backup no longer holds that JARVIS row (the next import cannot bring its text back, and the
+    Command Center never kept the text: owner question 6); the plain import shows it readable with exactly the text
+    released for that very row (run.released). Never when the last backup holds the row, when the row is held or not
+    released, or when the plain import shows any other text."""
+    if last is None or ra is None or rb is None or rb.get("withheld") or not released_pending(ra, mine):
+        return False
+    rid = str(ra.get("source_message_id") or "")
+    if not rid.isdigit() or (ra["sid"], int(rid)) in last.rows:
+        return False
+    texts = run.released.get(ra["source_key"]) or run.released.get("id:%s" % ra["id"]) or []
+    return bool(norm(rb.get("content"))) and any(cc_redacted_of(rb.get("content"), t) for t in texts)
 
 
 def check_stored_unchanged(run: Run, prop: str, pre: dict[str, Any], post: dict[str, Any], fam: set[str],

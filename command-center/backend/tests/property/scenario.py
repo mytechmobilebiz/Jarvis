@@ -340,7 +340,7 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
     for snap in tc_seq:
         await cc.import_backup(snap.path, profile, content)
     plain_tc = await state()
-    o.compare_outside(run, "A4", tc, plain_tc, fam_a | group_a, "test copy vs a no-withhold import")
+    o.compare_outside(run, "A4", tc, plain_tc, fam_a | group_a, "test copy vs a no-withhold import", tc_seq[-1])
     await cc.wipe()
     for snap in live_seq[:live_seq.index(decision) + 1]:
         await cc.import_backup(snap.path, profile, content)
@@ -348,7 +348,8 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
     await cc.wipe()
     for snap in live_seq:
         await cc.import_backup(snap.path, profile, content)
-    o.compare_outside(run, "B4", s2, await state(), fam | grp, "live vs a plain import of the same backups")
+    o.compare_outside(run, "B4", s2, await state(), fam | grp, "live vs a plain import of the same backups",
+                      live_seq[-1])
     return run
 
 
