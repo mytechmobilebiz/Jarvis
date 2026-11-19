@@ -1,0 +1,285 @@
+seed runs 559, seeds 286, failing seeds 264, failing runs 474
+A3-nib-second         214 runs  e.g. 13010h0 13010h1 13011h0 13011h1 13034h0 13034h1 13040h0 13040h1
+B5                    124 runs  e.g. 13058h0 13058h1 13075h0 13075h1 13100h0 13100h1 13113h0 13113h1
+A5                     97 runs  e.g. 13002h1 13008h1 13010h0 13010h1 13011h1 13049h1 13058h1 13062h1
+A3-other               55 runs  e.g. 13056h0 13056h1 13062h0 13062h1 13075h0 13075h1 13105h0 13105h1
+B1-disappeared         27 runs  e.g. 13069h0 13069h1 13075h0 13075h1 13084h0 13084h1 13159h0 13159h1
+B7-restore             24 runs  e.g. 13000h0 13000h1 13150h0 13150h1 13250h0 13250h1 13275h0 13275h1
+B6                     17 runs  e.g. 13124h0 13124h1 13293h0 13293h1 13403h0 13403h1 13409h0 13409h1
+B1-changed             14 runs  e.g. 13000h0 13000h1 13113h0 13113h1 13355h0 13355h1 13401h0 13401h1
+B2                     11 runs  e.g. 13075h0 13075h1 13159h0 13159h1 13207h0 13207h1 13324h1 13355h0
+O2-group-readable      11 runs  e.g. 13075h0 13075h1 13098h0 13159h0 13159h1 13315h0 13315h1 13355h0
+A4                     11 runs  e.g. 13091h0 13091h1 13345h0 13345h1 13376h0 13376h1 13805h0 13805h1
+A1                      8 runs  e.g. 13075h0 13075h1 13159h0 13159h1 13324h0 13324h1 13355h0 13355h1
+O8                      8 runs  e.g. 13075h0 13075h1 13159h0 13159h1 13355h0 13355h1 13409h0 13409h1
+O1                      6 runs  e.g. 13075h0 13075h1 13159h0 13159h1 13355h0 13355h1
+O11                     6 runs  e.g. 13075h0 13075h1 13159h0 13159h1 13355h0 13355h1
+B4                      4 runs  e.g. 13517h0 13517h1 13658h0 13658h1
+A3-none                 4 runs  e.g. 13536h0 13536h1 13626h0 13626h1
+A3-nib                  2 runs  e.g. 13300h0 13300h1
+O3                      2 runs  e.g. 13355h0 13355h1
+B1-readable             1 runs  e.g. 13436h0
+13000 {'h0': ['B1-changed', 'B7-restore'], 'h1': ['B1-changed', 'B7-restore']}
+13002 {'h0': [], 'h1': ['A5']}
+13008 {'h0': [], 'h1': ['A5']}
+13010 {'h0': ['A3-nib-second', 'A5'], 'h1': ['A3-nib-second', 'A5']}
+13011 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13034 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13040 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13049 {'h0': [], 'h1': ['A5']}
+13056 {'h0': ['A3-other'], 'h1': ['A3-other']}
+13058 {'h0': ['B5'], 'h1': ['A5', 'B5']}
+13062 {'h0': ['A3-nib-second', 'A3-other'], 'h1': ['A3-nib-second', 'A3-other', 'A5']}
+13068 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13069 {'h0': ['B1-disappeared'], 'h1': ['B1-disappeared']}
+13073 {'h0': [], 'h1': ['A5']}
+13075 {'h0': ['A1', 'A3-other', 'A5', 'B1-disappeared', 'B2', 'B5', 'O1', 'O11', 'O2-group-readable', 'O8'], 'h1': ['A1', 'A3-other', 'A5', 'B1-disappeared', 'B2', 'B5', 'O1', 'O11', 'O2-group-readable', 'O8']}
+13077 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13078 {'h0': [], 'h1': ['A5']}
+13080 {'h0': [], 'h1': ['A5']}
+13084 {'h0': ['B1-disappeared'], 'h1': ['B1-disappeared']}
+13087 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13089 {'h0': [], 'h1': ['A5']}
+13091 {'h0': ['A4'], 'h1': ['A4', 'A5']}
+13093 {'h0': [], 'h1': ['A5']}
+13097 {'h0': [], 'h1': ['A5']}
+13098 {'h0': ['A5', 'O2-group-readable'], 'h1': ['A5']}
+13100 {'h0': ['A3-nib-second', 'B5'], 'h1': ['A3-nib-second', 'B5']}
+13105 {'h0': ['A3-other'], 'h1': ['A3-other']}
+13113 {'h0': ['B1-changed', 'B5'], 'h1': ['B1-changed', 'B5']}
+13117 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13122 {'h0': ['B5'], 'h1': ['B5']}
+13124 {'h0': ['B6'], 'h1': ['B6']}
+13126 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13128 {'h0': [], 'h1': ['A5']}
+13133 {'h0': ['A3-nib-second', 'B5'], 'h1': ['A3-nib-second', 'B5']}
+13141 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13145 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13146 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13147 {'h0': ['A3-other'], 'h1': ['A3-other']}
+13150 {'h0': ['B5', 'B7-restore'], 'h1': ['B5', 'B7-restore']}
+13156 {'h0': [], 'h1': ['A5']}
+13157 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13159 {'h0': ['A1', 'A5', 'B1-disappeared', 'B2', 'B5', 'O1', 'O11', 'O2-group-readable', 'O8'], 'h1': ['A1', 'A5', 'B1-disappeared', 'B2', 'B5', 'O1', 'O11', 'O2-group-readable', 'O8']}
+13160 {'h0': ['A3-nib-second', 'B1-disappeared'], 'h1': ['A3-nib-second', 'B1-disappeared']}
+13162 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13164 {'h0': [], 'h1': ['A5']}
+13166 {'h0': ['B5'], 'h1': ['B5']}
+13168 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13174 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13188 {'h0': ['B5'], 'h1': ['B5']}
+13191 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13201 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13204 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13207 {'h0': ['B2', 'B5'], 'h1': ['B2', 'B5']}
+13208 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13209 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13211 {'h0': ['B5'], 'h1': ['A5']}
+13214 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13215 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13219 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13223 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13226 {'h0': ['A3-other', 'B1-disappeared'], 'h1': ['A3-other', 'B1-disappeared']}
+13227 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13228 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13230 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13233 {'h0': [], 'h1': ['A5']}
+13235 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13237 {'h0': [], 'h1': ['A5']}
+13240 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13242 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13243 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13244 {'h0': [], 'h1': ['A5']}
+13250 {'h0': ['B7-restore'], 'h1': ['A5', 'B7-restore']}
+13251 {'h0': [], 'h1': ['A5']}
+13253 {'h0': ['A3-other'], 'h1': ['A3-other']}
+13256 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13259 {'h0': ['B5'], 'h1': ['A5']}
+13265 {'h0': ['B5'], 'h1': ['B5']}
+13266 {'h0': ['A3-other'], 'h1': ['A3-other']}
+13271 {'h0': ['A3-nib-second', 'B5'], 'h1': ['A3-nib-second', 'B5']}
+13273 {'h0': ['B5'], 'h1': ['B5']}
+13275 {'h0': ['B7-restore'], 'h1': ['A5', 'B7-restore']}
+13278 {'h0': ['B5'], 'h1': ['B5']}
+13282 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13293 {'h0': ['A3-other', 'B6'], 'h1': ['A3-other', 'B6']}
+13295 {'h0': ['B5'], 'h1': ['A5']}
+13296 {'h0': [], 'h1': ['A5']}
+13299 {'h0': [], 'h1': ['A5']}
+13300 {'h0': ['A3-nib', 'A3-other', 'B5'], 'h1': ['A3-nib', 'A3-other', 'B5']}
+13301 {'h0': ['B5'], 'h1': ['B5']}
+13304 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13308 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13310 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13312 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13315 {'h0': ['O2-group-readable'], 'h1': ['O2-group-readable']}
+13316 {'h0': ['B1-disappeared'], 'h1': ['A5']}
+13324 {'h0': ['A1', 'A5'], 'h1': ['A1', 'A5', 'B2']}
+13325 {'h0': ['B7-restore'], 'h1': ['B7-restore']}
+13326 {'h0': ['B5'], 'h1': ['A5']}
+13331 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13332 {'h0': ['A3-other', 'B5'], 'h1': ['A3-other', 'B5']}
+13336 {'h0': ['B5'], 'h1': ['B5']}
+13345 {'h0': ['A4'], 'h1': ['A4', 'A5']}
+13346 {'h0': ['B1-disappeared'], 'h1': ['B1-disappeared']}
+13347 {'h0': ['B5'], 'h1': ['B5']}
+13351 {'h0': ['A3-nib-second', 'A3-other', 'A5'], 'h1': ['A3-nib-second', 'A3-other']}
+13353 {'h0': ['B5'], 'h1': ['B5']}
+13355 {'h0': ['A1', 'A5', 'B1-changed', 'B1-disappeared', 'B2', 'B5', 'O1', 'O11', 'O2-group-readable', 'O3', 'O8'], 'h1': ['A1', 'A5', 'B1-changed', 'B1-disappeared', 'B2', 'B5', 'O1', 'O11', 'O2-group-readable', 'O3', 'O8']}
+13359 {'h0': [], 'h1': ['A5']}
+13363 {'h0': [], 'h1': ['A5']}
+13365 {'h0': [], 'h1': ['A5']}
+13368 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13371 {'h0': ['B5'], 'h1': ['B5']}
+13374 {'h0': ['B5'], 'h1': ['A5']}
+13376 {'h0': ['A4'], 'h1': ['A4']}
+13381 {'h0': [], 'h1': ['A5']}
+13382 {'h0': ['B5'], 'h1': ['B5']}
+13384 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13386 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13390 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13392 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13401 {'h0': ['B1-changed'], 'h1': ['B1-changed']}
+13403 {'h0': ['A3-other', 'B6'], 'h1': ['A3-other', 'B6']}
+13409 {'h0': ['A3-other', 'B2', 'B6', 'O8'], 'h1': ['A3-other', 'B2', 'B6', 'O8']}
+13411 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13413 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13415 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13418 {'h0': ['O2-group-readable'], 'h1': ['O2-group-readable']}
+13426 {'h0': ['A3-nib-second']}
+13429 {'h0': ['B5']}
+13436 {'h0': ['B1-readable']}
+13438 {'h0': ['B5']}
+13439 {'h0': ['B5'], 'h1': ['B5']}
+13444 {'h0': [], 'h1': ['A5']}
+13446 {'h0': ['B5'], 'h1': ['B5']}
+13448 {'h0': [], 'h1': ['A5']}
+13449 {'h0': [], 'h1': ['A5']}
+13450 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13454 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13455 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13456 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13462 {'h0': ['B5'], 'h1': ['A3-other', 'A5', 'B5', 'B6']}
+13463 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13468 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13470 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13485 {'h0': ['A3-other', 'B5'], 'h1': ['A3-other', 'B5']}
+13487 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13489 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13491 {'h0': ['B5'], 'h1': ['B5']}
+13495 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13496 {'h0': ['B5'], 'h1': ['A5', 'B1-disappeared', 'B5']}
+13500 {'h0': ['B7-restore'], 'h1': ['B7-restore']}
+13503 {'h0': ['B5'], 'h1': ['B5']}
+13505 {'h0': ['A3-nib-second', 'B6'], 'h1': ['A3-nib-second', 'B6']}
+13509 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13514 {'h0': [], 'h1': ['A5']}
+13515 {'h0': ['B5'], 'h1': ['B5']}
+13517 {'h0': ['B4', 'B5'], 'h1': ['B4', 'B5']}
+13518 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13522 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13525 {'h0': ['A3-nib-second', 'B7-restore'], 'h1': ['A3-nib-second', 'B7-restore']}
+13530 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13533 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13535 {'h0': [], 'h1': ['A5']}
+13536 {'h0': ['A3-none'], 'h1': ['A3-none']}
+13537 {'h0': ['A3-other'], 'h1': ['A3-other']}
+13538 {'h0': ['B5'], 'h1': ['B5']}
+13539 {'h0': [], 'h1': ['B5']}
+13543 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13547 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13549 {'h0': ['B5'], 'h1': ['B5']}
+13550 {'h0': [], 'h1': ['B7-restore']}
+13556 {'h0': ['A3-other'], 'h1': ['A3-other']}
+13559 {'h0': ['A3-other', 'B5'], 'h1': ['A3-other', 'B5']}
+13568 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13575 {'h0': ['B5'], 'h1': ['B5']}
+13580 {'h0': [], 'h1': ['A5']}
+13584 {'h0': ['B1-changed'], 'h1': ['B1-changed']}
+13587 {'h0': ['A3-nib-second', 'B5'], 'h1': ['A3-nib-second', 'B5']}
+13593 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13599 {'h0': ['B1-disappeared'], 'h1': ['A5']}
+13606 {'h0': ['B5'], 'h1': ['B5']}
+13618 {'h0': [], 'h1': ['A5']}
+13619 {'h0': [], 'h1': ['A5']}
+13622 {'h0': ['A3-nib-second', 'B5'], 'h1': ['A3-nib-second']}
+13626 {'h0': ['A3-none', 'A5'], 'h1': ['A3-none']}
+13633 {'h0': [], 'h1': ['A5']}
+13637 {'h0': [], 'h1': ['A5', 'B1-disappeared']}
+13638 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13639 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13641 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13645 {'h0': ['A3-nib-second', 'B5'], 'h1': ['A3-nib-second', 'B5']}
+13647 {'h0': [], 'h1': ['A5']}
+13648 {'h0': ['B5'], 'h1': ['B5']}
+13651 {'h0': ['B6'], 'h1': ['B6']}
+13652 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13658 {'h0': ['A3-other', 'B4', 'B5'], 'h1': ['A3-other', 'B4', 'B5']}
+13659 {'h0': [], 'h1': ['A5']}
+13670 {'h0': ['B5'], 'h1': ['A5']}
+13677 {'h0': [], 'h1': ['A5']}
+13679 {'h0': ['B5'], 'h1': ['B5']}
+13682 {'h0': ['A3-nib-second', 'A3-other'], 'h1': ['A3-nib-second', 'A3-other']}
+13687 {'h0': ['A5'], 'h1': []}
+13688 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13689 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13696 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13700 {'h0': ['A3-other'], 'h1': ['A3-other']}
+13706 {'h0': [], 'h1': ['A5']}
+13708 {'h0': ['A3-other'], 'h1': ['A3-other']}
+13713 {'h0': ['B1-changed', 'B5'], 'h1': ['B1-changed', 'B5']}
+13724 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13725 {'h0': ['B7-restore'], 'h1': ['B7-restore']}
+13730 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13733 {'h0': ['B1-disappeared'], 'h1': ['A5']}
+13737 {'h0': ['B6'], 'h1': ['B6']}
+13738 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13740 {'h0': ['B1-changed'], 'h1': ['B1-changed']}
+13742 {'h0': ['B1-disappeared', 'B5'], 'h1': ['A5']}
+13743 {'h0': ['B5'], 'h1': ['B5']}
+13744 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13745 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13746 {'h0': [], 'h1': ['A5']}
+13750 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13752 {'h0': ['B5'], 'h1': ['B5']}
+13759 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13761 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13762 {'h0': ['A3-other'], 'h1': ['A3-other']}
+13773 {'h0': ['A5'], 'h1': []}
+13774 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13775 {'h0': ['B1-disappeared', 'B7-restore'], 'h1': ['A5', 'B1-disappeared', 'B5']}
+13776 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13777 {'h0': ['A3-other', 'B6'], 'h1': ['A3-other', 'B6']}
+13783 {'h0': [], 'h1': ['A5']}
+13785 {'h0': ['B5'], 'h1': ['A5', 'B5']}
+13796 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13800 {'h0': ['B7-restore'], 'h1': ['B7-restore']}
+13803 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13804 {'h0': [], 'h1': ['A5']}
+13805 {'h0': ['A3-nib-second', 'A4'], 'h1': ['A3-nib-second', 'A4']}
+13810 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13811 {'h0': ['A3-other'], 'h1': ['A3-other']}
+13815 {'h0': ['A3-nib-second', 'A5'], 'h1': ['A3-nib-second']}
+13817 {'h0': ['B5'], 'h1': ['B5']}
+13822 {'h0': ['B5'], 'h1': ['B5']}
+13825 {'h0': ['B7-restore'], 'h1': ['B7-restore']}
+13826 {'h0': ['B5'], 'h1': ['B5']}
+13833 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13834 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13841 {'h0': ['A3-nib-second', 'B5'], 'h1': ['A3-nib-second', 'B5']}
+13842 {'h0': ['B1-disappeared', 'B5'], 'h1': ['B1-disappeared', 'B5']}
+13847 {'h0': ['B1-disappeared'], 'h1': ['A5']}
+13850 {'h0': ['A3-nib-second', 'B5'], 'h1': ['A3-nib-second', 'B5']}
+13853 {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second']}
+13857 {'h0': ['A3-other'], 'h1': ['A3-other']}
+13859 {'h0': [], 'h1': ['A5']}
+13865 {'h0': [], 'h1': ['A5']}
+13875 {'h0': ['B7-restore'], 'h1': ['A5', 'B7-restore']}
+13879 {'h0': ['B5'], 'h1': ['B5']}
+13880 {'h0': ['A3-nib-second', 'A3-other'], 'h1': ['A3-nib-second', 'A3-other']}
+13885 {'h0': ['A4', 'B5'], 'h1': ['A4']}
+13887 {'h0': ['A4']}
+13888 {'h0': ['B5']}
+13889 {'h0': ['B5']}
+13894 {'h0': ['B5']}
+13898 {'h0': ['A3-nib-second']}
