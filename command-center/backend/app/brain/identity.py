@@ -2002,29 +2002,57 @@ async def matches_withheld(s: AsyncSession, message: ArchiveMessage, sess: Archi
 ALREADY_IMPORTED = "already imported"  # the importer's record of a stored row found unchanged (same source row)
 
 
+async def _content_runs(s: AsyncSession, row: Any) -> tuple[int | None, list[int]]:
+    """The import run that stored or rewrote this row last (else the run that created it), and the later runs that
+    found it 'already imported' from the very same source row while it is readable (stabilisation S1, RECON-51)."""
+    run_id = await s.scalar(select(func.max(ImportRecord.run_id)).where(
+        ImportRecord.target_table == "archive_messages", ImportRecord.target_id == row.id,
+        ImportRecord.action.in_(("imported", "updated", "withheld")))) or row.import_run_id
+    withheld = getattr(row, "withheld", None)
+    if withheld is None and isinstance(row, Mapping):
+        withheld = row.get("withheld")
+    if withheld is not False:
+        return run_id, []
+    seen = list((await s.scalars(select(ImportRecord.run_id).where(
+        ImportRecord.target_table == "archive_messages", ImportRecord.target_id == row.id,
+        ImportRecord.action == "duplicate", ImportRecord.reason == ALREADY_IMPORTED,
+        ImportRecord.run_id > (run_id or 0)).order_by(ImportRecord.run_id))).all())
+    return run_id, seen
+
+
+async def _run_shas(s: AsyncSession, run_ids: Iterable[int | None]) -> list[str]:
+    ids = sorted({int(r) for r in run_ids if r})
+    if not ids:
+        return []
+    found = {int(i): run_sha256(src_) for i, src_ in (await s.execute(select(ImportRun.id, ImportRun.source).where(
+        ImportRun.id.in_(ids)))).all()}
+    return [found.get(i) or "" for i in ids]
+
+
 async def stored_backup(s: AsyncSession, row: Any, cache: dict[int, str] | None = None) -> str:
     """The JARVIS backup (SHA-256) a stored row's content came from: the newest import run that stored or rewrote it
     (its import records), else the run that created it ('' unknown).
 
-    Stabilisation S1 (RECON-51): for a readable row, also the newest run that found it 'already imported' from the
-    very same source row (its fingerprint equal: the importer's unchanged path), since that backup holds the very
-    content stored. A hold of such a row is then decided on the newest backup that holds its content, and a release
-    decided on that backup covers it (a release decided on an earlier backup whose content a later one repeats).
+    Stabilisation S1 (RECON-51): for a readable row, the newest run since then that found it 'already imported' from
+    the very same source row (its fingerprint equal: the importer's unchanged path) when there is one, since that
+    backup holds the very content stored: a hold of the row is decided on the newest backup that holds its content.
     Never for a withheld row: a withheld row is 'already imported' whatever its source row's text became."""
     if cache is not None and row.id in cache:
         return cache[row.id]
-    withheld = getattr(row, "withheld", None)
-    if withheld is None and isinstance(row, Mapping):
-        withheld = row.get("withheld")
-    same_text = (and_(ImportRecord.action == "duplicate", ImportRecord.reason == ALREADY_IMPORTED)
-                 if withheld is False else literal(False))
-    run_id = await s.scalar(select(func.max(ImportRecord.run_id)).where(
-        ImportRecord.target_table == "archive_messages", ImportRecord.target_id == row.id,
-        or_(ImportRecord.action.in_(("imported", "updated", "withheld")), same_text))) or row.import_run_id
-    sha = run_sha256(await s.scalar(select(ImportRun.source).where(ImportRun.id == run_id))) if run_id else ""
+    run_id, seen = await _content_runs(s, row)
+    newest = seen[-1] if seen else run_id
+    sha = run_sha256(await s.scalar(select(ImportRun.source).where(ImportRun.id == newest))) if newest else ""
     if cache is not None:
         cache[row.id] = sha
     return sha
+
+
+async def content_backups(s: AsyncSession, row: Any) -> set[str]:
+    """Every JARVIS backup known to hold the stored row's very content (stabilisation S1, RECON-51): the backup of the
+    run that stored or rewrote it last and, for a readable row, of every later run that found it 'already imported'
+    from the very same source row. A release decided on any of them covers the stored content."""
+    run_id, seen = await _content_runs(s, row)
+    return {sha for sha in await _run_shas(s, [run_id, *seen]) if sha}
 
 
 async def release_covers_stored(s: AsyncSession, bindings: Iterable[Binding], row: Any,
@@ -2039,8 +2067,8 @@ async def release_covers_stored(s: AsyncSession, bindings: Iterable[Binding], ro
         return True
     if not found:
         return False
-    sha = await stored_backup(s, row, cache)
-    return bool(sha) and any(b.decided_on == sha for b in found)
+    shas = await content_backups(s, row)
+    return any(b.decided_on in shas for b in found)
 
 
 async def releases_covering_stored(s: AsyncSession, bindings: Iterable[Binding], row: Any,
@@ -2054,8 +2082,8 @@ async def releases_covering_stored(s: AsyncSession, bindings: Iterable[Binding],
     undecided = [b for b in found if not b.decided_on]
     if len(undecided) == len(found):
         return undecided
-    sha = await stored_backup(s, row, cache)
-    return undecided + [b for b in found if b.decided_on and sha and b.decided_on == sha]
+    shas = await content_backups(s, row)  # RECON-51: any backup known to hold the stored content
+    return undecided + [b for b in found if b.decided_on and b.decided_on in shas]
 
 
 async def _row_exemptions(s: AsyncSession, group: str, here: Exact) -> list[Binding]:

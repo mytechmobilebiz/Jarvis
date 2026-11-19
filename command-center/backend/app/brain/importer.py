@@ -742,6 +742,7 @@ class Processor:
         # The identity of every withheld message (its stones, identity.py), and per session the rows that are the same
         # message as a withheld one (key -> Match: stored without text) and the keys JARVIS gave to another row.
         self.ids = identity.Identities()
+        self._backup_times: dict[str, datetime | None] = {}  # RECON-54 (load)
         self.held: dict[str, identity.Match] = {}
         self.moved_keys: set[str] = set()
         # replay_rows(): holds an admin released on this very backup (key, stone, reason), dropped by apply_releases().
@@ -833,6 +834,16 @@ class Processor:
         rows = (await self.s.execute(select(BrainTombstone.source_key, BrainTombstone.reason))).all()
         self.tombstones = {key for key, reason in rows if reason != WITHHELD_BY_ADMIN}
         self.ids = await identity.Identities.load(self.s)
+        # RECON-54: each known JARVIS backup's newest message time (Hermes's clock), to tell a hold decided on a newer
+        # backup's content than this one's (_newer_hold)
+        self._backup_times.clear()
+        for source in (await self.s.scalars(select(ImportRun.source))).all():
+            db = (source or {}).get("db") or {}
+            if db.get("sha256") and db.get("newest_at"):
+                self._backup_times.setdefault(str(db["sha256"]), identity.when(db["newest_at"]))
+        for sha, at in (await self.s.execute(select(BrainDecisionBackup.sha256, BrainDecisionBackup.newest_at))).all():
+            if sha and at is not None:
+                self._backup_times.setdefault(sha, at)
         try:
             self.purge = await identity.PurgeIndex.load(self.s)
         except identity.PurgeKeyMismatch as exc:
@@ -988,8 +999,8 @@ class Processor:
                 if found and (mt is None or found[0].certain):
                     mt = identity.Match(found[0], "same JARVIS row",
                                         identity.PENDING if found[0].review == identity.PENDING else identity.CERTAIN)
-            if mt is not None and mt.review == identity.PENDING and self.ids.released(mt.group, here,
-                                                                                      backup=self.backup_sha):
+            if (mt is not None and mt.review == identity.PENDING and not self._newer_hold(mt.stone)
+                    and self.ids.released(mt.group, here, backup=self.backup_sha)):
                 # an admin released this exact row, decided on this very backup: a hold left on it (another backup's
                 # import held it again) goes, and its text comes back (apply_releases)
                 self.auto_release.append((m.key, mt.stone, "released by an admin (the same message)"))
@@ -1618,7 +1629,7 @@ class Processor:
         for k, mt in pend.items():
             if k in held:
                 continue
-            if self._released_here(mt.group, ss, by_key[k], rows.get(k)):
+            if not self._newer_hold(mt.stone) and self._released_here(mt.group, ss, by_key[k], rows.get(k)):
                 # an admin released this exact row: the hold left on it goes, and its text comes back
                 self.auto_release.append((k, mt.stone, "released by an admin (the same message)"))
                 continue
@@ -1681,6 +1692,20 @@ class Processor:
         return identity.group_relations(identity.source_fields(m), texts.get(anchor),
                                         [t for g, t in sorted(texts.items()) if g != anchor],
                                         all_in_hand=roots <= set(texts), uncertain=uncertain, structural=structural)
+
+    def _newer_hold(self, stone: identity.Stone) -> bool:
+        """Stabilisation S1 (RECON-54): a pending hold decided on a newer backup's content than this backup's (an
+        import of a later backup held the row again for its own content: RECON-20, the later-backup classifier) is not
+        the hold a release decided on this backup left: an import of the older backup the release covers never ends
+        it (the admin reviews the content it holds). Newer: by the backups' newest message time; a backup not known
+        here counts as newer (fail-closed). A hold with no decision backup (a sweep's listing, the repair's), one
+        decided on this very backup and one decided on an older backup are ended as before."""
+        if not stone.decided_on or stone.decided_on == self.backup_sha:
+            return False
+        theirs, mine = self._backup_times.get(stone.decided_on), self.src.backup.newest_at
+        if theirs is None or mine is None:
+            return True  # its backup is not known here (a restore's file named it): fail-closed, the hold stays
+        return theirs > mine
 
     def _released_here(self, group: str, ss: src.SourceSession, m: src.SourceMessage, row: dict[str, Any] | None
                        ) -> bool:
@@ -1828,7 +1853,7 @@ class Processor:
             elif isinstance(mt, identity.Match):
                 held[m.key] = mt
         for k, mt in pend.items():
-            if self._released_here(mt.group, ss, by_key[k], rows.get(k)):
+            if not self._newer_hold(mt.stone) and self._released_here(mt.group, ss, by_key[k], rows.get(k)):
                 # an admin released this exact row, decided on this backup: the hold left on it goes (apply_releases)
                 self.auto_release.append((k, mt.stone, "released by an admin (the same message)"))
                 continue

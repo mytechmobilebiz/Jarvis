@@ -175,3 +175,35 @@ async def test_s1_a_complete_review_of_an_uncertain_conversation_lets_the_export
     [kept] = await message_of("s1_u", ua[2])
     assert kept.withheld and kept.content == "" and (await stone_of("s1_u", ua[2])).review == identity.KEPT
     assert await bj.nowhere(mark) == []
+
+
+async def test_s1_an_import_of_an_older_backup_never_ends_a_newer_backup_s_hold(client, fx, tmp_path):
+    """RECON-54 (13150, 13275, 13825, 13000: B7-restore; the same without any restore): the admin releases a row held
+    with its conversation, decided on backup B1; before its text came back, a later backup B2 holds the row with
+    other text (JARVIS rewrote it in place), and the import lists it again with its evidence on B2 (RECON-20). An
+    import of the older B1 again (a restore's re-import, or an operator's) never ends that newer hold: the row stays
+    held, without its text, for the admin to review B2's content (before: the release decided on B1 ended it and the
+    row showed B1's text, the pending hold gone). An import of B2 (or later) still finds it held."""
+    db = fx["db"]
+    mark = "zqs1nh54"
+    ids = conversation(db, "s1_n", T, [("user", secret(mark)), ("assistant", "Noted."),
+                                       ("user", "Anything else to plan for the week?")])
+    await run(fx)
+    await withhold(client, await row_id("s1_n", ids[0]))
+    held = await row_id("s1_n", ids[2])
+    await release(client, held)
+    b1 = bj.copy(fx, tmp_path / "b1")  # B1, the backup the release covers
+    bj.change(db, "UPDATE messages SET content = ? WHERE id = ?", "Plan the week and %s too." % mark, ids[2])
+    conversation(db, "s1_m", T + DAY, [("user", "Book the train."), ("assistant", "Booked.")])
+    await run(fx)  # B2: the row's other text, held again on B2's content
+    st = await stone_of("s1_n", ids[2])
+    assert st is not None and st.review == identity.PENDING and st.decided_on == src.sha256_file(db)
+    await imp.run(bj.paths(b1), ALL)  # the older backup again
+    [still] = await message_of("s1_n", ids[2])
+    assert still.withheld and still.content == ""
+    st = await stone_of("s1_n", ids[2])
+    assert st is not None and st.review == identity.PENDING
+    assert held in await holds(client)
+    await run(fx)
+    assert await state("s1_n", ids[2]) == "held"
+    assert await bj.nowhere(mark) == []
