@@ -1,0 +1,46 @@
+cr2:ci_casefold_off CAUGHT 5 failed, 3 passed in 0.15s
+cr2:ci_turkish_off CAUGHT 3 failed, 5 passed in 0.12s
+cr2:ci_nfkc_off CAUGHT 2 failed, 6 passed in 0.13s
+cr2:ci_wordseq_off CAUGHT 1 failed in 0.11s
+r3:ignorable_off CAUGHT 6 failed in 0.14s
+cr2:generic_off CAUGHT 1 failed in 0.10s
+cr2:generic_overbroad CAUGHT 8 failed in 0.15s
+cr2:prune_off CAUGHT 4 failed, 2 passed in 0.13s
+cr2:scan_longest64 CAUGHT 1 failed, 1 passed in 5.16s
+cr2:titles_longest64 CAUGHT 1 failed in 3.51s
+cr2:items_longest64 CAUGHT 1 failed in 4.09s
+cr2:quick_forms_one CAUGHT 1 failed in 0.13s
+cr2:quick_keep_gt CAUGHT 1 failed in 0.14s
+cr2:quick_keep_marks CAUGHT 1 failed in 0.11s
+cr2:quick_q8 CAUGHT 1 failed in 0.14s
+cr2:quick_no_decode CAUGHT 1 failed in 0.16s
+cr2:quick_no_snapshot CAUGHT 1 failed in 0.13s
+cr2:quick_no_quote_bypass SURVIVED 1 passed in 0.10s
+cr2:preview_narrow CAUGHT 1 failed in 3.61s
+cr2:preview_items_case CAUGHT 1 failed in 3.44s
+cr2:preview_title_case CAUGHT 1 failed in 3.38s
+m18:dec_json_off CAUGHT 1 failed, 3 passed in 0.11s
+m18:dec_escape_off CAUGHT 1 failed in 0.08s
+m18:dec_repr_off CAUGHT 1 failed, 2 passed in 0.09s
+c3:recursion_open CAUGHT 1 failed in 0.16s
+c3:spans_per_line_off CAUGHT 1 failed in 0.07s
+sk3:unrepr_cut_keep CAUGHT 6 failed, 2 passed in 0.14s
+sk3:open_literal_off CAUGHT 3 failed, 1 passed in 0.11s
+sk3:cut_per_line_off SURVIVED 1 passed in 0.07s
+r3:not_checked_off CAUGHT 2 failed in 3.47s
+r3:steps_cap_off CAUGHT 1 failed in 0.10s
+r3:fields_off CAUGHT 1 failed in 3.33s
+r3:cut_off CAUGHT 5 failed in 0.13s
+r3:lead_cut_off CAUGHT 1 failed in 0.11s
+r3:spans_off CAUGHT 2 failed in 0.13s
+r3:fqw_off CAUGHT 2 failed in 3.38s
+r3:carriers_off CAUGHT 1 failed, 1 passed in 4.94s
+r3:carrier_exempt_off CAUGHT 1 failed in 4.02s
+r3:titles_off CAUGHT 1 failed in 3.39s
+r3:items_off CAUGHT 1 failed in 3.39s
+r3:copies_fields_off CAUGHT 1 failed in 3.41s
+r3:group_fields_off CAUGHT 1 failed in 3.53s
+r3:release_on_evidence_carrier_off SURVIVED 1 passed in 4.00s
+r3:preview_item_title_shown CAUGHT 1 failed in 3.41s
+cr2:quick_no_quote_bypass+cr2:quick_no_decode CAUGHT 1 failed in 0.13s
+sk3:cut_per_line_off+r3:truncated_mark_off CAUGHT 1 failed in 0.10s

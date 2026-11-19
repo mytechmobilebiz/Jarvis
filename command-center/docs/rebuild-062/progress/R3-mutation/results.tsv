@@ -54,3 +54,49 @@ r3:group_fields_off	app/brain/identity.py	CAUGHT	1 failed in 3.65s	tests/integra
 cr2:quick_no_quote_bypass+cr2:quick_no_decode	app/brain/identity.py	CAUGHT	1 failed in 0.12s	tests/unit/test_brain_carriers_r2_062.py::test_p2_a_reply_quote_of_sixteen_characters_as_written_is_never_skipped_by_the_quick_filter
 sk3:cut_per_line_off+r3:truncated_mark_off	app/brain/identity.py	CAUGHT	1 failed in 0.10s	tests/unit/test_brain_derived3_062.py::test_m1_inline_truncation_fallback_cut_at_a_line_is_a_cut
 cr2:quick_forms_one	app/brain/identity.py	CAUGHT	1 failed in 0.13s	tests/unit/test_brain_carriers_r2_062.py::test_p2_the_quick_filter_compares_every_form_of_the_withheld_text
+cr2:ci_casefold_off	app/brain/identity.py	CAUGHT	5 failed, 3 passed in 0.15s	tests/unit/test_brain_carriers_r2_062.py::test_oci_every_relation_ignores_case_and_normalisation
+cr2:ci_turkish_off	app/brain/identity.py	CAUGHT	3 failed, 5 passed in 0.12s	tests/unit/test_brain_carriers_r2_062.py::test_oci_every_relation_ignores_case_and_normalisation
+cr2:ci_nfkc_off	app/brain/identity.py	CAUGHT	2 failed, 6 passed in 0.13s	tests/unit/test_brain_carriers_r2_062.py::test_oci_every_relation_ignores_case_and_normalisation
+cr2:ci_wordseq_off	app/brain/identity.py	CAUGHT	1 failed in 0.11s	tests/unit/test_brain_carriers_r2_062.py::test_oci_a_short_withheld_text_in_another_case_is_ambiguous_not_none
+r3:ignorable_off	app/brain/identity.py	CAUGHT	6 failed in 0.14s	tests/unit/test_brain_derived3_062.py::test_n5_fold_removes_the_default_ignorable_code_points tests/unit/test_brain_derived3_062.py::test_n5_invisible_formatting_never_hides_w
+cr2:generic_off	app/brain/identity.py	CAUGHT	1 failed in 0.10s	tests/unit/test_brain_carriers_r2_062.py::test_skc_a_common_url_value_in_an_unrelated_search_result_is_no_carrier
+cr2:generic_overbroad	app/brain/identity.py	CAUGHT	8 failed in 0.15s	tests/unit/test_brain_carriers_r2_062.py::test_od4_greeting_and_url_cases_hold_nothing_and_anything_more_is_held
+cr2:prune_off	app/brain/identity.py	CAUGHT	4 failed, 2 passed in 0.13s	tests/unit/test_brain_carriers_r2_062.py::test_p1_hermes_generic_prune_line_keeping_ws_first_40_characters_is_a_cut
+cr2:scan_longest64	app/brain/review.py	CAUGHT	1 failed, 1 passed in 5.16s	tests/integration/test_brain_carriers_r2_062.py::test_skc_a_native_partial_reply_quote_of_a_long_w_is_held_wherever_it_is_found
+cr2:titles_longest64	app/brain/review.py	CAUGHT	1 failed in 3.51s	tests/integration/test_brain_carriers_r2_062.py::test_p2_a_title_and_an_imported_memory_item_of_short_words_are_carriers_too
+cr2:items_longest64	app/brain/review.py	CAUGHT	1 failed in 4.09s	tests/integration/test_brain_carriers_r2_062.py::test_p2_a_title_and_an_imported_memory_item_of_short_words_are_carriers_too
+cr2:quick_forms_one	app/brain/identity.py	CAUGHT	1 failed in 0.13s	tests/unit/test_brain_carriers_r2_062.py::test_p2_the_quick_filter_compares_every_form_of_the_withheld_text
+cr2:quick_keep_gt	app/brain/identity.py	CAUGHT	1 failed in 0.14s	tests/unit/test_brain_carriers_r2_062.py::test_p2_the_skeleton_drops_every_whitespace_and_combining_character
+cr2:quick_keep_marks	app/brain/identity.py	CAUGHT	1 failed in 0.11s	tests/unit/test_brain_carriers_r2_062.py::test_p2_the_skeleton_drops_every_whitespace_and_combining_character
+cr2:quick_q8	app/brain/identity.py	CAUGHT	1 failed in 0.14s	tests/unit/test_brain_carriers_r2_062.py::test_p2_the_quick_filter_keeps_a_cut_of_sixteen_characters_with_fewer_than_sixteen_of_skeleton
+cr2:quick_no_decode	app/brain/identity.py	CAUGHT	1 failed in 0.16s	tests/unit/test_brain_carriers_r2_062.py::test_p2_a_row_only_its_decode_reads_is_never_skipped
+cr2:quick_no_snapshot	app/brain/identity.py	CAUGHT	1 failed in 0.13s	tests/unit/test_brain_carriers_r2_062.py::test_p2_a_snapshot_of_earlier_turns_is_never_skipped_by_the_quick_filter
+cr2:quick_no_quote_bypass	app/brain/identity.py	SURVIVED	1 passed in 0.10s	tests/unit/test_brain_carriers_r2_062.py::test_p2_a_reply_quote_of_sixteen_characters_as_written_is_never_skipped_by_the_quick_filter
+cr2:preview_narrow	app/brain/identity.py	CAUGHT	1 failed in 3.61s	tests/integration/test_brain_carriers_r2_062.py::test_oci_the_withhold_preview_reads_another_case
+cr2:preview_items_case	app/brain/identity.py	CAUGHT	1 failed in 3.44s	tests/integration/test_brain_carriers_r2_062.py::test_oci_the_withhold_preview_reads_another_case
+cr2:preview_title_case	app/brain/identity.py	CAUGHT	1 failed in 3.38s	tests/integration/test_brain_carriers_r2_062.py::test_oci_the_withhold_preview_reads_another_case
+m18:dec_json_off	app/brain/identity.py	CAUGHT	1 failed, 3 passed in 0.11s	tests/unit/test_brain_carriers_r2_062.py::test_skc_a_json_value_only_json_loads_reads_back_is_a_carrier_and_evidence tests/unit/test_brain_mutation_closure_c_062.py::test_dec_json_a_short_w_as_a_whole_value_of_pretty_printed_ascii_json_is_identical
+m18:dec_escape_off	app/brain/identity.py	CAUGHT	1 failed in 0.08s	tests/unit/test_brain_mutation_closure_c_062.py::test_dec_escape_a_cut_json_text_carries_w_through_its_escapes_only
+m18:dec_repr_off	app/brain/identity.py	CAUGHT	1 failed, 2 passed in 0.09s	tests/unit/test_brain_mutation_closure_c_062.py::test_dec_repr_a_repr_literal_only_unrepr_reads_back_carries_w
+c3:recursion_open	app/brain/identity.py	CAUGHT	1 failed in 0.16s	tests/unit/test_brain_mutation_closure_c3_062.py::test_c3_json_nested_past_the_parser_is_capped_and_fails_closed
+c3:spans_per_line_off	app/brain/identity.py	CAUGHT	1 failed in 0.07s	tests/unit/test_brain_mutation_closure_c3_062.py::test_c3_a_piece_of_w_quoted_on_one_line_of_several_is_read_on_its_line
+sk3:unrepr_cut_keep	app/brain/identity.py	CAUGHT	6 failed, 2 passed in 0.14s	tests/unit/test_brain_derived3_062.py::test_m1_prev_a_preview_cut_inside_ws_escape_is_a_cut tests/unit/test_brain_derived3_062.py::test_n4_a_repr_literal_cut_inside_an_escape_reads_what_came_before
+sk3:open_literal_off	app/brain/identity.py	CAUGHT	3 failed, 1 passed in 0.11s	tests/unit/test_brain_derived3_062.py::test_n4_execute_code_summary_cutting_a_repr_escape_in_half_is_a_cut tests/unit/test_brain_derived3_062.py::test_n4_a_repr_literal_cut_inside_an_escape_reads_what_came_before
+sk3:cut_per_line_off	app/brain/identity.py	SURVIVED	1 passed in 0.07s	tests/unit/test_brain_derived3_062.py::test_m1_inline_truncation_fallback_cut_at_a_line_is_a_cut
+r3:not_checked_off	app/brain/identity.py	CAUGHT	2 failed in 3.47s	tests/unit/test_brain_derived3_062.py::test_n2_json_nested_past_the_parser_is_capped tests/integration/test_brain_derived3_062.py::test_derived3_a_row_the_decode_cannot_read_in_full_is_held_as_not_checked
+r3:steps_cap_off	app/brain/identity.py	CAUGHT	1 failed in 0.10s	tests/unit/test_brain_derived3_062.py::test_n2_more_decode_steps_than_the_cap_is_not_checked
+r3:fields_off	app/brain/identity.py	CAUGHT	1 failed in 3.33s	tests/integration/test_brain_derived3_062.py::test_derived3_every_field_of_a_row_is_read_tool_call_arguments_too
+r3:cut_off	app/brain/identity.py	CAUGHT	5 failed in 0.13s	tests/unit/test_brain_derived3_062.py::test_m1_prev_a_preview_cut_inside_ws_escape_is_a_cut
+r3:lead_cut_off	app/brain/identity.py	CAUGHT	1 failed in 0.11s	tests/unit/test_brain_carriers_r2_062.py::test_p1_a_whole_value_that_is_a_beginning_of_w_is_a_cut
+r3:spans_off	app/brain/identity.py	CAUGHT	2 failed in 0.13s	tests/unit/test_brain_derived3_062.py::test_n1_vision_analyze_summary_with_an_apostrophe_and_a_line_break_is_a_cut tests/unit/test_brain_mutation_closure_c3_062.py::test_c3_a_piece_of_w_quoted_on_one_line_of_several_is_read_on_its_line
+r3:fqw_off	app/brain/identity.py	CAUGHT	2 failed in 3.38s	tests/unit/test_brain_derived3_062.py::test_13546_a_short_w_quoted_with_markers_in_a_session_search_result_is_identical tests/integration/test_brain_derived3_062.py::test_derived3_13546_a_short_w_quoted_with_markers_stays_held_after_a_rollback
+r3:carriers_off	app/brain/review.py	CAUGHT	1 failed, 1 passed in 4.94s	tests/integration/test_brain_carriers_r2_062.py::test_skc_a_native_partial_reply_quote_of_a_long_w_is_held_wherever_it_is_found
+r3:carrier_exempt_off	app/brain/review.py	CAUGHT	1 failed in 4.02s	tests/integration/test_brain_derived3_062.py::test_derived3_a_nested_session_search_read_is_held_outside_every_group_until_released
+r3:titles_off	app/brain/review.py	CAUGHT	1 failed in 3.39s	tests/integration/test_brain_carriers_r2_062.py::test_p2_a_title_and_an_imported_memory_item_of_short_words_are_carriers_too
+r3:items_off	app/brain/review.py	CAUGHT	1 failed in 3.39s	tests/integration/test_brain_carriers_r2_062.py::test_p2_a_title_and_an_imported_memory_item_of_short_words_are_carriers_too
+r3:copies_fields_off	app/brain/review.py	CAUGHT	1 failed in 3.41s	tests/integration/test_brain_derived3_062.py::test_derived3_a_rollback_copy_whose_older_text_carries_w_in_a_derived_form_loses_it
+r3:group_fields_off	app/brain/identity.py	CAUGHT	1 failed in 3.53s	tests/integration/test_brain_derived3_062.py::test_derived3_a_group_row_cut_in_a_prune_line_is_never_none
+r3:release_on_evidence_carrier_off	app/brain/groups.py	SURVIVED	1 passed in 4.00s	tests/integration/test_brain_derived3_062.py::test_derived3_a_nested_session_search_read_is_held_outside_every_group_until_released
+r3:preview_item_title_shown	app/brain/identity.py	CAUGHT	1 failed in 3.41s	tests/integration/test_brain_carriers_r2_062.py::test_oci_the_withhold_preview_reads_another_case
+cr2:quick_no_quote_bypass+cr2:quick_no_decode	app/brain/identity.py	CAUGHT	1 failed in 0.13s	tests/unit/test_brain_carriers_r2_062.py::test_p2_a_reply_quote_of_sixteen_characters_as_written_is_never_skipped_by_the_quick_filter
+sk3:cut_per_line_off+r3:truncated_mark_off	app/brain/identity.py	CAUGHT	1 failed in 0.10s	tests/unit/test_brain_derived3_062.py::test_m1_inline_truncation_fallback_cut_at_a_line_is_a_cut
