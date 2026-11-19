@@ -1095,9 +1095,10 @@ def check_evidence(run: Run, prop: str, holds: list[dict[str, Any]], st: dict[st
                     ok = False
                     why.append("'none' but %s to the withheld %r" % (sorted(related), (wt or "")[:60]))
         if not ok:
-            run.bad(prop, "%s: hold %s (%s:%s %s) evidence %s %r does not match the recomputation (%s)" % (
+            run.bad(prop, "%s: hold %s (%s:%s %s) evidence %s %r does not match the recomputation (%s) [anchor %s, "
+                          "via %r, own %s]" % (
                 where, rid, r["sid"], r.get("source_message_id"), r.get("role"), sorted(rep), raw[:3],
-                "; ".join(why)))
+                "; ".join(why), anchor, stone.get("via"), ["%s:%s" % (w.sid, w.row) for w in own]))
 
 
 def fam_ws_sids(run: Run, ws: list[Withhold]) -> set[str]:
@@ -1504,6 +1505,9 @@ def check_c(run: Run, where: str, st: dict[str, Any], gs: dict[str, Any], snap: 
                     break
     if holds is not None:
         check_one_click(run, where, holds, st, snap, gs)
+    run.notes.append("check_c %s: group %d, recorded %d (uncertain %d), carrier holds %d" % (
+        where, len(group), len(gs["members"]), len(gs["uncertain"]),
+        sum(1 for x in st["stones"] if x.get("via") == CARRIER_VIA)))
     return group
 
 
