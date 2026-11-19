@@ -1083,7 +1083,14 @@ class Sim:
         for sid, s in sessions.items():
             cfg = json.loads(s["model_config"] or "{}")
             if s["parent_session_id"]:
-                edges.add((sid, s["parent_session_id"], "reset" if "_reset_from" in cfg else "parent"))
+                # a delegated sub-agent and a markerless child copy no rows: their parent link is not a copy link (O-D1:
+                # from the parent down only; the parent side is pending, groups-paths B and D; round 2 relabelled the
+                # markerless-child edge the same way; rebuild R5, RECON-46)
+                truth = self.links.get(sid)
+                how = "reset" if "_reset_from" in cfg else (
+                    {"delegated": "delegate", "child": "child"}.get(truth[1], "parent")
+                    if truth is not None and truth[0] == s["parent_session_id"] else "parent")
+                edges.add((sid, s["parent_session_id"], how))
             for k, how in (("_branched_from", "branched_from"), ("_compressed_from", "compressed_from"),
                            ("_reset_from", "reset"), ("_delegate_from", "delegate")):
                 if cfg.get(k):
