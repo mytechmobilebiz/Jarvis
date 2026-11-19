@@ -49,6 +49,7 @@ from ..models import (
     BrainTombstone,
     BrainWithheldSession,
     BrainWithholdExemption,
+    ImportRun,
 )
 from . import identity
 from . import source as src
@@ -570,13 +571,14 @@ async def list_unlisted(s: AsyncSession, anchor: str, members: dict[str, Member]
                    ~select(BrainTombstone.source_key).where(
                        BrainTombstone.source_key == ArchiveMessage.source_key).exists())
             .order_by(ArchiveMessage.id))).all():
-        if await _release_waits(s, anchor, sid, row):
+        waits, seen_on = await _release_waits(s, anchor, sid, row)
+        if waits:
             continue  # an admin released this exact row for this group: it waits for its text (RECON-52)
         uncertain = members[sid].uncertain
         relations = (identity.UNCERTAIN_REL,) if uncertain else (identity.NOT_IN_BACKUP,)
         await identity.put_stone(s, replace(identity.binding_of(
             row, sid, anchor=anchor, via=identity.UNCERTAIN_HOLD if uncertain else identity.GROUP_HOLD,
-            review=identity.PENDING, after_run=after), relations=relations), actor=actor)
+            review=identity.PENDING, after_run=after, decided_on=seen_on), relations=relations), actor=actor)
         flag = dict((row.flags or {}).get("withheld_by_admin") or {})
         flag.update(note=identity.NOTE, via=identity.UNCERTAIN_HOLD if uncertain else identity.GROUP_HOLD,
                     review=identity.PENDING)
@@ -586,25 +588,39 @@ async def list_unlisted(s: AsyncSession, anchor: str, members: dict[str, Member]
     return n
 
 
-async def _release_waits(s: AsyncSession, anchor: str, sid: str, row: ArchiveMessage) -> bool:
+async def _release_waits(s: AsyncSession, anchor: str, sid: str, row: ArchiveMessage) -> tuple[bool, str]:
     """Stabilisation S1 (RECON-52): a withheld row an admin released for this group (its flag says so, and a trusted
     release of this exact JARVIS row for this group exists) is not an unlisted row: the admin decided it, and it
     stays without its text until an import of a backup that holds the content the release covers brings it back
     (the release branch; the sweep after that import compares it with every withheld text in hand, N-B). It is
-    never listed again as a hold of its own ('not in this backup', which asked the admin again and kept the export
-    and the one-click release waiting)."""
+    not listed again as a hold of its own ('not in this backup', which asked the admin again and kept the export
+    and the one-click release waiting) until an import run after the release left it without its text (that backup
+    held other content than the release covers, or not the row: listed again, decided on the newest such run's
+    backup, so an import of an older backup never ends it: RECON-54). (waits, that backup or '')."""
     flag = (row.flags or {}).get("withheld_by_admin") or {}
     if not row.withheld or not flag.get("released_at"):
-        return False
+        return False, ""
+    seen_on = ""
     here = identity.exact_of_row(row, sid)
     for e in (await s.scalars(select(BrainWithholdExemption).where(
             BrainWithholdExemption.anchor_key == anchor, BrainWithholdExemption.source_session_id == here.session,
             BrainWithholdExemption.source_row_id == here.row, BrainWithholdExemption.kind == "release"))).all():
         b = identity.Binding(e.role or "", e.tool_call_id or "", e.source_at, e.source_uid or "", e.decided_on or "",
                              bool(e.trusted))
-        if b.covers(here) and b.trusted:
-            return True
-    return False
+        if not (b.covers(here) and b.trusted):
+            continue
+        # still waiting only until the next import run: one that did not bring its text back held other content than
+        # the release covers, or not the row (RECON-20), and the row is listed again for the admin
+        since = e.decided_at or identity.when(flag.get("released_at"))
+        if since is None:
+            continue  # when it was released is not known: listed again (as before)
+        seen = await s.scalar(select(ImportRun.source).where(ImportRun.status != "rolled_back",
+                                                             ImportRun.started_at > since)
+                              .order_by(ImportRun.id.desc()).limit(1))
+        if seen is None:
+            return True, ""
+        seen_on = seen_on or identity.run_sha256(seen)
+    return False, seen_on
 
 
 async def _released(s: AsyncSession, anchor: str, sid: str, row: ArchiveMessage) -> bool:
