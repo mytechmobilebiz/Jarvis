@@ -495,7 +495,30 @@ async def hold_group(s: AsyncSession, anchor: str, members: dict[str, Member], *
         if row.withheld or (row.source_key and row.source_key == anchor):
             continue
         if await identity.exempt_covers(s, anchor, sid, row):
-            continue  # an admin released (or left readable) this exact row for this group
+            # an admin released (or left readable) this exact row for this group; N-B (rebuild R4): it is compared
+            # with every other withheld text in hand, and held for the first one it carries (that group's release)
+            fields = identity.row_fields(row)
+            hit: tuple[str, tuple[str, ...]] | None = None
+            for other, t in sorted(texts.items()):
+                if other == anchor or t is None:
+                    continue
+                rel = identity.carrier_relations(fields, t) | (
+                    identity.family_relations(fields, t) & set(identity.TEXT_RELATIONS))
+                if rel and not await identity.exempt_covers(s, other, sid, row):
+                    hit = (other, tuple(identity.relation_order(rel)))
+                    break
+            if hit is None:
+                continue
+            if row.source_key:
+                await identity.put_stone(s, replace(identity.binding_of(
+                    row, sid, anchor=hit[0] if hit[0] != row.source_key else "", via=identity.CARRIER_HOLD,
+                    review=identity.PENDING, after_run=after,
+                    decided_on=await identity.stored_backup(s, row)), relations=hit[1]), actor=actor)
+            review._blank(row, {"at": at, "note": identity.NOTE, "via": identity.CARRIER_HOLD,
+                                "review": identity.PENDING})
+            held.append(row)
+            continue
+        unchecked = await identity.unchecked_covers(s, anchor, sid, row)
         structural: set[str] = set()
         if own is not None:
             uid = identity.row_uid(row)
@@ -507,6 +530,13 @@ async def hold_group(s: AsyncSession, anchor: str, members: dict[str, Member], *
                 structural.add(identity.SAME_TIME_REL)
         relations = identity.group_relations(identity.row_fields(row), w_text, others, all_in_hand=all_in_hand,
                                              structural=structural)
+        if unchecked and all_in_hand and list(relations) == [identity.NO_RELATION]:
+            # rebuild R4 (B6, 6725): an untrusted release of this exact row (an older file's) is checked here, every
+            # withheld text in hand: only the release decided on the backup this content came from is marked
+            if await identity.mark_exemptions(s, anchor, identity.exact_of_row(row, sid),
+                                              decided_on=await identity.stored_backup(s, row),
+                                              kinds={b.kind for b in unchecked}):
+                continue
         if row.source_key:
             # decided on the backup the compared content came from (RECON-20): a release of this hold covers that
             # content only, never a later backup's other text for this row (a fold JARVIS made in place)
@@ -560,8 +590,11 @@ async def _released(s: AsyncSession, anchor: str, sid: str, row: ArchiveMessage)
     for e in (await s.scalars(select(BrainWithholdExemption).where(
             BrainWithholdExemption.anchor_key == anchor, BrainWithholdExemption.source_session_id == here.session,
             BrainWithholdExemption.source_row_id == here.row, BrainWithholdExemption.kind == "release"))).all():
-        if identity.Binding(e.role or "", e.tool_call_id or "", e.source_at, e.source_uid or "",
-                            e.decided_on or "").covers(here):
+        b = identity.Binding(e.role or "", e.tool_call_id or "", e.source_at, e.source_uid or "", e.decided_on or "",
+                             bool(e.trusted))
+        # rebuild R4 (F1): a trusted release that covers the stored content (an uncertain row is released per row
+        # with the typed word)
+        if b.covers(here) and b.trusted and await identity.releases_covering_stored(s, [b], row):
             return True
     return False
 

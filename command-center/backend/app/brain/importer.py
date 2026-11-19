@@ -71,7 +71,7 @@ import re
 import urllib.parse
 from collections import Counter
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -794,6 +794,8 @@ class Processor:
         # counts and locations (kept in the tally, so a resumed run reports the whole run), and this session's rows
         # it found (key -> inside a family or not; their locations are known once they are stored).
         self.w_texts: dict[str, str] = {}
+        self.all_in_hand = False  # rebuild R4: every admin's withheld text in hand (prepare_identity)
+        self._marks: list[tuple[str, identity.Exact, set[str]]] = []  # untrusted releases this import checked
         self._w_absorbed: dict[str, set[str]] = {}
         self.tripwire = later.Tripwire.from_tally(tally.d.get("tripwire"))
         self._tripwire_keys: dict[str, bool] = {}
@@ -915,6 +917,10 @@ class Processor:
                 if st.decided_on != self.backup_sha:
                     self._later_texts[group] = text
         self.tripwire.texts = max(self.tripwire.texts, len(self.w_texts))
+        # rebuild R4 (D3): every admin's withheld text in hand ('none' needs them all; a later withhold's mark stays
+        # until then)
+        self.all_in_hand = {st.key for st in self.ids.by_key.values() if st.anchor == "" and st.certain} <= set(
+            k for k, v in self.w_texts.items() if v is not None)
         if self.settle_scope is not None:
             from . import settle as settle_engine
 
@@ -1642,6 +1648,18 @@ class Processor:
                     continue
                 member = self.groups.get(anchor, {}).get(ss.id[:200])
                 uncertain = member is not None and member.uncertain
+                here = identity.exact_of_source(ss.id, m)
+                unchecked = self.ids.unchecked(anchor, here, backup=self.backup_sha) if self.backup_sha else []
+                if unchecked and not uncertain and self.all_in_hand and self._group_evidence(
+                        ss, m, anchor, uncertain=False) == (identity.NO_RELATION,):
+                    # rebuild R4 (B6, 6725): an untrusted release of this exact row decided on this very backup,
+                    # checked now with every withheld text in hand: marked trusted (only that backup's release)
+                    self._marks.append((anchor, here, {b.kind for b in unchecked}))
+                    for b in unchecked:
+                        self.ids.bindings[(anchor, here.session, here.row)] = [
+                            replace(x, trusted=True) if x is b else x
+                            for x in self.ids.bindings.get((anchor, here.session, here.row), [])]
+                    continue
                 stone = self.ids.by_key.get(anchor) or identity.Stone(key=anchor)
                 self.held[m.key] = identity.Match(stone, identity.UNCERTAIN_HOLD if uncertain else identity.GROUP_HOLD,
                                                   identity.PENDING)
@@ -1720,9 +1738,12 @@ class Processor:
         own = self.ids.by_key.get(group)
         if own is None:
             return None
-        same_text = ("key", "same JARVIS row", "same message id", "duplicate", "copied by JARVIS",
-                     "the original JARVIS copied", "same tool call")
+        # rebuild R4 (13582/13590): a member by the same message id is never taken as the withheld text: its row may
+        # hold only a piece of it now (W is then not in hand: 'not in this backup', never 'none')
+        same_text = ("key", "same JARVIS row", "duplicate", "copied by JARVIS", "the original JARVIS copied",
+                     "same tool call")
         cands = [own] + sorted((x for x in self.ids.groups.get(group, ()) if x is not own and x.certain
+                                and x.via != "same message id"
                                 and (x.via in same_text or identity.IDENTICAL_REL in x.relations)),
                                key=lambda x: (x.via not in same_text, x.key))
         for st in cands:
@@ -2333,6 +2354,10 @@ class Processor:
         review), except the importer's own duplicate of a held row. A hold Settle computed again keeps its stone with
         the new evidence (identity.update_hold)."""
         by_key = {m.key: m for m in msgs}
+        if self._marks and self.write:  # rebuild R4: the releases this import checked (imp_mark)
+            for anchor, here, kinds in self._marks:
+                await identity.mark_exemptions(self.s, anchor, here, decided_on=self.backup_sha, kinds=kinds)
+        self._marks = []
         stored_plan = {p.m.key for p in plans if p.action == "import"}
         # the importer's own duplicates (a carried-on copy, an adjacent repeat) of a held row keep a stone as that row
         # does (verify: duplicates_of_withheld_rows_without_a_stone), though they have no row of their own
@@ -2355,6 +2380,17 @@ class Processor:
                 rel = (later.relations(m, identity.exact_of_source(ss.id, m), d) if d is not None
                        else {identity.NOT_IN_BACKUP})
                 relations = tuple(identity.relation_order(rel or {identity.NO_RELATION}))
+            form = identity.text_form(m.content, m.tool_calls_raw)
+            if mt.review == identity.PENDING and (relations or key in self.relations):
+                # rebuild R4 (D3, eligible_now): the evidence against every withheld text in hand, 'none' only when
+                # every one is here (none_every), a later withhold's mark kept until then (keep_later)
+                extra: set[str] = set()
+                for g, t in sorted(self.w_texts.items()):
+                    if t is not None and g != group:
+                        extra |= identity.family_relations(identity.source_fields(m), t) & set(identity.TEXT_RELATIONS)
+                relations = identity.settled_relations(
+                    {*relations, *extra}, existing.relations if existing is not None else (),
+                    all_in_hand=self.all_in_hand)
             if existing is None or (existing.review == identity.PENDING and mt.review == identity.CERTAIN) or (
                     not existing.bound):
                 here = identity.exact_of_source(ss.id, m)
@@ -2362,19 +2398,21 @@ class Processor:
                     key=key, anchor="" if key == group else group, session=here.session, row=here.row,
                     role=here.role, tool_call_id=here.tool_call_id, uid=here.uid, uid_known=False,
                     via=mt.via, review=mt.review, bound=True, after_run=mt.stone.after_run, at=m.at,
-                    decided_on=self.backup_sha, relations=relations if mt.review == identity.PENDING else ())
+                    decided_on=self.backup_sha, relations=relations if mt.review == identity.PENDING else (),
+                    form=form)
                 if self.write:
                     await identity.put_stone(self.s, binding, actor=self.actor)
                 self.ids.add(binding)
                 if existing is None:
                     self.t.bump("stones_added")
             elif (existing.review == identity.PENDING and mt.review == identity.PENDING and key in self.relations
-                  and (existing.via, existing.relations) != (mt.via, tuple(identity.relation_order(relations)))):
+                  and (existing.via, existing.relations, existing.form) != (
+                      mt.via, tuple(identity.relation_order(relations)), form)):
                 if self.write:
                     await identity.update_hold(self.s, key, via=mt.via, relations=relations,
-                                               decided_on=self.backup_sha)
+                                               decided_on=self.backup_sha, form=form)
                 updated = identity.Stone(**{**existing.__dict__, "via": mt.via,
-                                            "relations": tuple(identity.relation_order(relations))})
+                                            "relations": tuple(identity.relation_order(relations)), "form": form})
                 self.ids._unindex(existing)
                 self.ids._index(updated)
             if mt.review == identity.CERTAIN:
@@ -4772,11 +4810,11 @@ RESTORE_NOTE = "decision applied again after a restore"
 # review is 'kept'; S23, rv3-dur-6).
 WITHHOLD_FIELDS = ("source_key", "reason", "anchor", "session", "row", "role", "tool_call_id", "uid", "uid_known",
                    "via", "review", "title_hidden", "by", "at", "at_row", "decided_on", "kept_by", "kept_at",
-                   "relations")
+                   "relations", "compared", "form")
 # What a release (or identical text left readable) carries: its group and exact JARVIS row, the backup it was decided
 # on, its kind, and who decided it, when and why.
 RELEASE_FIELDS = ("anchor", "session", "row", "role", "tool_call_id", "at_row", "uid", "kind", "decided_on", "reason",
-                  "by", "at")
+                  "by", "at", "trusted")
 PURGE_FIELDS = ("source_key", "reason", "by", "at")
 # Said in every decisions file (review 2, S17): what in it is derived from text, and how to keep it.
 DECISIONS_HANDLING = ("Keys and ids only, never text. A purged memory entry's key (#entry-...) carries a 64-bit digest "
@@ -4831,7 +4869,9 @@ async def _decisions_content(s: AsyncSession, *, removals_only: bool) -> tuple[d
                          "uid_known": bool(t.uid_known), "via": t.via or "", "review": t.review or "",
                          "title_hidden": bool(t.title_hidden), "at_row": _iso(t.source_at),
                          "decided_on": t.decided_on or "", "kept_by": "", "kept_at": "",
-                         "relations": identity.relation_order(t.relations or []), **who})
+                         "relations": identity.relation_order(t.relations or []),
+                         # rebuild R4: what a hold's 'none' was compared with, and the form its text was read in
+                         "compared": sorted(t.compared or []), "form": t.form or "", **who})
         if t.review == identity.KEPT:
             # who kept the hold, and when: the stone says it (rv3-dur-6); a keep written before that, the row's flag
             flag: Any = {}
@@ -4859,7 +4899,8 @@ async def _decisions_content(s: AsyncSession, *, removals_only: bool) -> tuple[d
     releases = [{"anchor": e.anchor_key, "session": e.source_session_id, "row": e.source_row_id,
                  "role": e.role or "", "tool_call_id": e.tool_call_id or "", "at_row": _iso(e.source_at),
                  "uid": e.source_uid or "", "kind": e.kind or "release", "decided_on": e.decided_on or "",
-                 "reason": e.reason or "", "by": e.decided_by or "", "at": _iso(e.decided_at)}
+                 "reason": e.reason or "", "by": e.decided_by or "", "at": _iso(e.decided_at),
+                 "trusted": bool(e.trusted)}
                 for e in (await s.scalars(select(BrainWithholdExemption).order_by(
                     BrainWithholdExemption.anchor_key, BrainWithholdExemption.source_session_id,
                     BrainWithholdExemption.source_row_id, BrainWithholdExemption.id))).all()]
@@ -5253,9 +5294,15 @@ async def decisions_before_import(s: AsyncSession, data: dict[str, Any], decider
                       "anchor_key": st.anchor, "via": st.via, "review": st.review, "bound": bool(st.row or st.uid),
                       "after_run": after, "title_hidden": st.title_hidden, "source_at": st.at,
                       "decided_on": st.decided_on, "kept_by": st.kept_by, "kept_at": st.kept_at,
-                      "relations": list(st.relations)}
+                      "relations": list(st.relations), "compared": list(st.compared or ()), "form": st.form}
             if (await s.execute(pg_insert(BrainTombstone).values(**values).on_conflict_do_nothing())).rowcount:
                 out["withholds"] += 1
+                if not st.anchor and st.review != identity.PENDING:
+                    # rebuild R4 (N-A, RECON): an admin's withhold this database did not have: the holds other
+                    # withholds computed 'none' for were never compared with it (later_withhold; finished again)
+                    for sha in await identity.mark_later_withhold(s, st.key):
+                        await identity.reopen_decision_backup(s, sha)
+                        out["decisions to finish again"] += 1
             else:  # a stone of that key is here: a hold the file decided on becomes what the file says
                 await identity.put_stone(s, st, actor=str(r.get("by") or decider.email))
                 out["withholds already here"] += 1
@@ -5456,7 +5503,14 @@ async def _put_release(s: AsyncSession, r: dict[str, Any], decider: str, removal
     decided_on = r.get("decided_on") if isinstance(r.get("decided_on"), str) else ""
     return await identity.put_exemption(s, _release_exact(r), anchor=r["anchor"], kind=_release_kind(r),
                                         decided_on=decided_on, reason=who["reason"], decided_by=who["decided_by"],
-                                        decided_at=who.get("decided_at"))
+                                        decided_at=who.get("decided_at"), trusted=_release_trusted(r))
+
+
+def _release_trusted(r: dict[str, Any]) -> bool:
+    """A file's release is trusted when the file says the test copy checked it (typed, or 'none' against every text)
+    or it is an admin's 'left readable' choice (design C); a release of an older file is not: it never keeps a row
+    readable here until a check of its content marks it (rebuild R4, B6, 6725)."""
+    return r.get("trusted") is True or _release_kind(r) == "left_readable"
 
 
 async def _carry_tables(s: AsyncSession, data: dict[str, Any]) -> Counter[str]:
@@ -5540,6 +5594,9 @@ def _carried_stone(r: dict[str, Any], *, via: str, after: int) -> identity.Stone
     review = {identity.KEPT: identity.KEPT, identity.PENDING: identity.PENDING}.get(r.get("review"), identity.CERTAIN)
     if review == identity.PENDING:  # a hold keeps its evidence (the holds list compares by its rule)
         via = text("via") if text("via") in identity.HOLD_VIA else "same message id"
+    elif review == identity.KEPT and text("via") in identity.HOLD_VIA:
+        # carried_via (12150; rebuild R4): a hold an admin kept keeps the rule that held it (a restore, a file)
+        via = text("via")
     return identity.Stone(key=key, anchor=text("anchor") if text("anchor") != key else "", session=session, row=row,
                           role=text("role", 40), tool_call_id=text("tool_call_id"), uid=uid, uid_known=uid_known,
                           via=via, review=review, bound=bool(row or uid), after_run=after,
@@ -5549,7 +5606,11 @@ def _carried_stone(r: dict[str, Any], *, via: str, after: int) -> identity.Stone
                           kept_at=_when(r.get("kept_at")) if review == identity.KEPT else None,
                           relations=tuple(identity.relation_order(
                               x for x in (r.get("relations") if isinstance(r.get("relations"), list) else [])
-                              if isinstance(x, str))))
+                              if isinstance(x, str))),
+                          # rebuild R4: as the file says (a file without them: never released in one click here)
+                          compared=tuple(x[:400] for x in (r.get("compared") if isinstance(r.get("compared"), list)
+                                                          else []) if isinstance(x, str) and x),
+                          form=text("form", 20) if text("form", 20) in identity.FORMS else "")
 
 
 async def _apply_removal(s: AsyncSession, r: Any, user: Any, review: Any, *, via: str, after: int,
@@ -5575,6 +5636,11 @@ async def _apply_removal(s: AsyncSession, r: Any, user: Any, review: Any, *, via
             async with s.begin_nested():
                 existed = await s.get(BrainTombstone, key) is not None
                 await identity.put_stone(s, binding, actor=user.email)
+                if not existed and not binding.anchor and binding.review != identity.PENDING:
+                    # rebuild R4 (N-A, RECON): a withhold this database did not have (a restore's removals-only file,
+                    # decisions-apply): the 'none' holds of other withholds are stale at once (later_withhold)
+                    for sha in await identity.mark_later_withhold(s, key):
+                        await identity.reopen_decision_backup(s, sha)
             async with s.begin_nested():
                 certain = await identity.exact_rows(s, binding)
                 if binding.review == identity.PENDING:
@@ -5736,9 +5802,11 @@ async def _apply_release(s: AsyncSession, r: Any, user: Any, review: Any, *, via
                 continue  # another version of the row (other content): the release does not cover it
             try:
                 async with s.begin_nested():
+                    if not _release_trusted(r):
+                        continue  # rebuild R4 (B6): an unchecked release frees no hold; a check here may mark it
                     stone = await review.release_hold(s, message, sess, actor=user.email, confirmed=True,
                                                       decided_by=who["decided_by"], decided_at=who.get("decided_at"),
-                                                      reason=who["reason"])
+                                                      reason=who["reason"], trusted=True)
             except store.BrainError:
                 continue  # the same message as a withheld one: it stays withheld
             await audit.record(s, user.email, "archive.hold_released", "archive_message", message.id, {

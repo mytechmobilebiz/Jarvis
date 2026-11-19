@@ -418,6 +418,12 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
     st0 = await session.get(BrainTombstone, message.source_key) if message.source_key else None
     root = (st0.anchor_key if st0 is not None and st0.reason == WITHHELD_BY_ADMIN and st0.anchor_key
             and st0.anchor_key != message.source_key else message.source_key)
+    if root == message.source_key and root:
+        # rebuild R4 (N-A, D3): a new withheld text was never compared with the holds other withholds computed 'none'
+        # for: they say 'later_withhold' at once (never one click; a per-row release needs the typed word), and the
+        # decisions they belong to need finishing again (Settle with every text in hand; the export waits)
+        for sha in await identity.mark_later_withhold(session, root):
+            await identity.reopen_decision_backup(session, sha)
     chosen: list[identity.GroupRow] = []
     out = Withheld(None, bool(written))
     for r, sid, rel in matching:
@@ -427,7 +433,8 @@ async def withhold_message(session: AsyncSession, message: ArchiveMessage, *, ac
             # The admin left this row readable (unticked, or every matching row): a decision that outlives the
             # stored rows (review 2, S21), an exemption of the group bound to its exact JARVIS row and the backup.
             await identity.put_exemption(session, identity.exact_of_row(r, sid), anchor=root, kind="left_readable",
-                                         decided_on=decided_on, reason=LEFT_READABLE, decided_by=actor)
+                                         decided_on=decided_on, reason=LEFT_READABLE, decided_by=actor,
+                                         trusted=True)  # the admin saw this row's evidence and chose (B6)
             out.left_readable += 1
     at = now().isoformat()
     blanked: list[ArchiveMessage] = []
@@ -984,6 +991,7 @@ async def holds(session: AsyncSession, scope: PersonScope) -> list[dict[str, Any
                   ArchiveMessage.id))).all()
     frozen = set((await session.scalars(select(BrainFrozenSession.source_session_id))).all())
     uncertain = await brain_groups.uncertain_sessions(session)  # O-D1: shown, never one-click
+    anchors = await identity.admin_anchor_keys(session)
     out = []
     for row, sess, stone in found:
         anchor = stone.anchor_key or stone.source_key
@@ -1025,7 +1033,15 @@ async def holds(session: AsyncSession, scope: PersonScope) -> list[dict[str, Any
             "relations": relations,
             "compare": identity.compare_text(relations),
             "evidence": identity.evidence_text(relations) if relations else "the text could not be compared",
-            "confirm_required": identity.needs_confirmation(relations),
+            # rebuild R4 (D3, B6): whether one click may release it now, and whether a release needs the typed word
+            "one_click": eligible_now(relations, role=row.role or "", form=stone.form or "",
+                                      uncertain=sess.source_session_id in uncertain, compared=stone.compared or [],
+                                      anchors=anchors),
+            "later_withhold": identity.LATER_WITHHOLD in relations,
+            "form": stone.form or "",
+            "confirm_required": identity.needs_confirmation(relations) or not eligible_now(
+                relations, role=row.role or "", form=stone.form or "", uncertain=sess.source_session_id in uncertain,
+                compared=stone.compared or [], anchors=anchors),
             "preselected": bool(own_uid) and own_uid != w_uid and (w_at is None or row.at != w_at)
                            and not copy_position and sess.source_session_id not in uncertain,
             "decided_on": (stone.decided_on or "")[:12],
@@ -1059,10 +1075,56 @@ async def keep_hold(session: AsyncSession, message: ArchiveMessage, *, actor: st
     return stone
 
 
+# --- Option C (rebuild R4): which holds a release may free, and how (D3, B6) -------------------------------------------
+
+ONE_CLICK_ROLES = ("user", "assistant")
+
+
+def one_click_eligible(relations: Iterable[str], *, role: str, form: str, uncertain: bool) -> bool:
+    """Whether a hold may be released in one click (D3): only exactly 'none' (no relation to any withheld text, each
+    in hand when it was computed), only a user or assistant row, only a text read in its plain form (never a tool row,
+    a Hermes summary, a wrapped or encoded text, nor a row whose text was never read here), never an uncertain link
+    (O-D1). Anything else is released per row, with the typed word (B6)."""
+    found = identity.relation_order(relations)
+    if uncertain or identity.UNCERTAIN_REL in found:
+        return False  # O-D1
+    if form != identity.PLAIN_FORM:
+        return False  # a tool row, a summary, a wrapped or encoded text, or a form never read
+    if role not in ONE_CLICK_ROLES:
+        return False
+    return found == [identity.NO_RELATION]
+
+
+def eligible_now(relations: Iterable[str], *, role: str, form: str, uncertain: bool, compared: Iterable[str],
+                 anchors: Iterable[str]) -> bool:
+    """one_click_eligible() now: its 'none' was compared with every withheld text there is now (every admin's
+    withhold is among the anchors it was computed against: a withhold that came later, from this page, a decisions
+    file or a restore, makes it stale at once)."""
+    if not one_click_eligible(relations, role=role, form=form, uncertain=uncertain):
+        return False
+    return set(anchors) <= set(compared)
+
+
+async def _eligible_now(session: AsyncSession, stone: BrainTombstone, message: ArchiveMessage, sess: ArchiveSession,
+                        *, anchors: Iterable[str] | None = None, uncertain: bool | None = None) -> bool:
+    if uncertain is None:
+        uncertain = await brain_groups.in_uncertain(session, sess.id)
+    return eligible_now(hold_relations(stone), role=message.role or "", form=stone.form or "", uncertain=uncertain,
+                        compared=stone.compared or [],
+                        anchors=await identity.admin_anchor_keys(session) if anchors is None else anchors)
+
+
+TYPED_NEEDED = ("Releasing this row needs a typed confirmation: it is not a row that could be released in one click "
+                "(its evidence is not exactly 'no relation' against every withheld text, it is not a plain user or "
+                "assistant text read here, or its link is uncertain). To release it, send '%s' in the field "
+                "'confirm'." % identity.CONFIRM_WORD)
+
+
 async def release_hold(session: AsyncSession, message: ArchiveMessage, sess: ArchiveSession, *,
                        actor: str, decided_by: str | None = None, decided_at: datetime | None = None,
                        reason: str = "released by an admin", kind: str = "release",
-                       confirm: str | None = None, confirmed: bool = False) -> BrainTombstone:
+                       confirm: str | None = None, confirmed: bool = False, trusted: bool | None = None
+                       ) -> BrainTombstone:
     """An admin releases a held row: its pending stone goes and an exemption names its JARVIS row for that group, so
     the hold rules (the same uid with other text, the same text, the upgrade heuristics) skip it; the next import of
     a backup holding that row brings its text back (importer release branch). Refused for a row a certain rule
@@ -1070,12 +1132,17 @@ async def release_hold(session: AsyncSession, message: ArchiveMessage, sess: Arc
     emptied while it was held stay empty."""
     stone = await _hold(session, message)
     relations = hold_relations(stone)
-    if identity.UNCERTAIN_REL not in relations and await brain_groups.in_uncertain(session, sess.id):
+    uncertain = await brain_groups.in_uncertain(session, sess.id)
+    if identity.UNCERTAIN_REL not in relations and uncertain:
         relations = [*relations, identity.UNCERTAIN_REL]  # O-D1: its conversation's link is uncertain
-    if (identity.needs_confirmation(relations) and not confirmed
-            and (confirm or "").strip() != identity.CONFIRM_WORD):
+    typed = (confirm or "").strip() == identity.CONFIRM_WORD  # the server's check of the word, never a client flag
+    if identity.needs_confirmation(relations) and not confirmed and not typed:
         # plan 4.6: a hold whose text is, holds or quotes the withheld text is released only on a typed confirmation
         raise BrainError(CONFIRM_NEEDED)
+    checked = await _eligible_now(session, stone, message, sess, uncertain=uncertain)
+    if not (confirmed or typed or checked):
+        # B6 (rebuild R4): a per-row release of anything one click could not release needs the typed word
+        raise BrainError(TYPED_NEEDED)
     here = identity.exact_of_row(message, sess.source_session_id)
     stones = [identity._stone(r) for r in (await session.scalars(select(BrainTombstone).where(
         BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.source_session_id == here.session,
@@ -1102,10 +1169,13 @@ async def release_hold(session: AsyncSession, message: ArchiveMessage, sess: Arc
         # backup its hold names; the release covers that content only (a later backup's other text for this row,
         # e.g. a fold JARVIS made in place, is held again with its own evidence)
         newest = stone.decided_on
+    # rebuild R4 (B6, 6725): its trust is the server's own: the typed word, or a check ('none' against every withheld
+    # text there is); decisions-apply passes the file's (confirmed)
     await identity.put_exemption(session, here, anchor=anchor, kind=kind,
                                  decided_on=newest or stone.decided_on or await identity.decision_backup(
                                      session, [sess.source_session_id]),
-                                 reason=reason, decided_by=by, decided_at=when)
+                                 reason=reason, decided_by=by, decided_at=when,
+                                 trusted=(typed or checked) if trusted is None else bool(trusted))
     flag = dict((message.flags or {}).get("withheld_by_admin") or {})
     flag.update(released_at=when.isoformat(), released_by=by)
     message.flags = {**(message.flags or {}), "withheld_by_admin": flag}
@@ -1142,9 +1212,12 @@ async def release_unrelated(session: AsyncSession, sess: ArchiveSession, scope: 
     if await brain_groups.in_uncertain(session, sess.id):
         # O-D1: a conversation an uncertain link puts in a withheld group is never released in one click
         raise BrainError(UNCERTAIN_ONE_CLICK)
+    anchors = await identity.admin_anchor_keys(session)
     out = []
     for message, stone in found:
-        if hold_relations(stone) != [identity.NO_RELATION]:
+        # rebuild R4 (D3): exactly 'none' against every withheld text there is now, a plain user or assistant text
+        if not eligible_now(hold_relations(stone), role=message.role or "", form=stone.form or "", uncertain=False,
+                            compared=stone.compared or [], anchors=anchors):
             continue
         await release_hold(session, message, sess, actor=actor,
                            reason="released by an admin (no relation to the withheld text)")

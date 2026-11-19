@@ -613,6 +613,10 @@ class BrainTombstone(Base):
     kept_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # 0008 (0.6.2 plan 4.6): a hold's computed evidence, relation codes only (app/brain/identity.RELATIONS)
     relations: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    # 0008 (option C, rebuild R4): the withhold anchors a hold's 'none' was computed against, and the form its text was
+    # read in ('' never read): the one-click release (review.one_click_eligible, eligible_now). Never text.
+    compared: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    form: Mapped[str] = mapped_column(Text, default="")
 
 
 class BrainWithholdExemption(Base):
@@ -631,6 +635,8 @@ class BrainWithholdExemption(Base):
     source_uid: Mapped[str] = mapped_column(Text, default="")
     kind: Mapped[str] = mapped_column(Text, default="release")  # release, left_readable, quarantine_release
     decided_on: Mapped[str] = mapped_column(Text, default="")
+    # 0008 (option C, rebuild R4): typed, checked or left readable (identity.exempt_covers trusts only these)
+    trusted: Mapped[bool] = mapped_column(Boolean, default=False)
     reason: Mapped[str] = mapped_column(Text, default="released by an admin")
     decided_by: Mapped[str] = mapped_column(Text, default="")
     decided_at: Mapped[datetime] = _now_col()

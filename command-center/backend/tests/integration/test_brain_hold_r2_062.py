@@ -122,7 +122,9 @@ async def test_hgr_a_release_under_one_group_never_frees_a_row_of_two(client, fx
         stone = await s.get(BrainTombstone, (await s.get(ArchiveMessage, first)).source_key)
         assert stone.review == identity.PENDING
         anchor = stone.anchor_key
-    assert (await client.post("/api/brain/holds/%d/release" % first)).status_code == 200
+    # rebuild R4 (B6, D-34): a hold one click could not release ('not in this backup') needs the typed word
+    assert (await client.post("/api/brain/holds/%d/release" % first)).status_code == 400
+    assert (await client.post("/api/brain/holds/%d/release" % first, json={"confirm": "RELEASE"})).status_code == 200
     out = await run(fx)
     # released under one group: the next import holds it under the other one (the import itself: the guard is quiet)
     assert await state("tg_c", ca[0]) == "held"

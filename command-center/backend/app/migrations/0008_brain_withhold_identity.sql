@@ -110,6 +110,12 @@ ALTER TABLE brain_tombstones ADD COLUMN IF NOT EXISTS kept_at           TIMESTAM
 -- a hold's computed evidence (0.6.2 plan 4.6): relation codes (identical, contains, part_of, restated, same_uid,
 -- same_call, same_time, reused_row, stale, orphan, not_in_backup, none), never text and never a fingerprint of it
 ALTER TABLE brain_tombstones ADD COLUMN IF NOT EXISTS relations         TEXT[]  NOT NULL DEFAULT '{}';
+-- option C (rebuild R4, D3): the withheld texts (their anchors) a hold's 'none' was computed against: the one-click
+-- release frees a 'none' hold only while every admin's withhold is among them (review.eligible_now); and the form its
+-- text was read in when its evidence was computed (plain, summary, wrapped, encoded, tool; '' never read): only a
+-- plain read form is released in one click (review.one_click_eligible). Anchors and a word only, never text.
+ALTER TABLE brain_tombstones ADD COLUMN IF NOT EXISTS compared          TEXT[]  NOT NULL DEFAULT '{}';
+ALTER TABLE brain_tombstones ADD COLUMN IF NOT EXISTS form              TEXT    NOT NULL DEFAULT '';
 -- an import never learns a stone's uid any more (review 2 S9's learning time goes with it; rv3-dur-4 is moot)
 ALTER TABLE brain_tombstones DROP COLUMN IF EXISTS uid_learned_at;
 DO $$
@@ -162,6 +168,11 @@ ALTER TABLE brain_withhold_exemptions ADD COLUMN IF NOT EXISTS source_at    TIME
 ALTER TABLE brain_withhold_exemptions ADD COLUMN IF NOT EXISTS source_uid   TEXT NOT NULL DEFAULT '';
 ALTER TABLE brain_withhold_exemptions ADD COLUMN IF NOT EXISTS kind         TEXT NOT NULL DEFAULT 'release';
 ALTER TABLE brain_withhold_exemptions ADD COLUMN IF NOT EXISTS decided_on   TEXT NOT NULL DEFAULT '';
+-- option C (rebuild R4, B6 / 6725 / F1): a release's trust: typed (the admin typed the word), checked ('none' against
+-- every withheld text in hand, the one-click release or a check of the content it was decided on: mark_exemptions) or
+-- an admin's 'left readable' choice. An untrusted release (an older file's, never checked here) never keeps a row
+-- readable on its own: identity.exempt_covers takes trust only from the releases that cover the stored content.
+ALTER TABLE brain_withhold_exemptions ADD COLUMN IF NOT EXISTS trusted      BOOLEAN NOT NULL DEFAULT FALSE;
 -- no digest and no length of any text: the exact binding replaces them
 ALTER TABLE brain_withhold_exemptions DROP COLUMN IF EXISTS content_chars;
 ALTER TABLE brain_withhold_exemptions DROP COLUMN IF EXISTS content_fp;

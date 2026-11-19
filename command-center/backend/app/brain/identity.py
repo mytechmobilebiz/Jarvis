@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
-from sqlalchemy import String, and_, func, literal_column, or_, select, update
+from sqlalchemy import String, and_, any_, func, literal, literal_column, or_, select, update
 from sqlalchemy import text as sql
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -232,13 +232,18 @@ UNCERTAIN_REL = "uncertain"  # option C (O-D1): the row's conversation is in a w
 # option C (rebuild R2, RECON-14): a group row compared with its own withheld text but not with every other withheld
 # text ('none' needs every withheld text in hand): never 'none', so never released in one click
 OTHER_NOT_COMPARED = "other_not_compared"
+# option C (rebuild R4, D3, N-A): a hold whose 'none' was computed before a later withhold (its withheld text was never
+# compared with it): stale at once (mark_later_withhold), never 'none' again until every withheld text was in hand
+LATER_WITHHOLD = "later_withhold"
 # option C (rebuild R3, derived copies): a beginning of the withheld text cut short (Hermes's generic prune line, an
 # f-string summary at its width, a truncated preview, a cut JSON or repr literal); and a text the canonical decode
 # could not read in full (its caps: canon()), held fail-closed whenever a withheld text is in hand
 CUT, NOT_CHECKED = "cut", "not_checked"
 TEXT_RELATIONS = (IDENTICAL_REL, RESTATED_REL, CONTAINS, PART_OF, CUT, NOT_CHECKED)
 RELATIONS = (IDENTICAL_REL, RESTATED_REL, CONTAINS, PART_OF, CUT, SAME_UID, SAME_CALL, SAME_TIME_REL, REUSED_ROW, STALE,
-             ORPHAN, NOT_IN_BACKUP, NOT_CHECKED, UNCERTAIN_REL, OTHER_NOT_COMPARED, NO_RELATION)
+             ORPHAN, NOT_IN_BACKUP, NOT_CHECKED, UNCERTAIN_REL, LATER_WITHHOLD, OTHER_NOT_COMPARED, NO_RELATION)
+# The relations that say a hold's text was not compared with every withheld text (D3): never 'none', never one click.
+NOT_COMPARED = (NOT_IN_BACKUP, LATER_WITHHOLD, OTHER_NOT_COMPARED, NOT_CHECKED)
 # Releasing a hold with one of these needs a typed confirmation (plan 4.6): its text is, holds or quotes the withheld
 # text (or a cut beginning of it, or could not be read in full); or (O-D1) its conversation's link to the withheld one
 # is uncertain: never released in one click.
@@ -260,6 +265,7 @@ RELATION_TEXT = {
     ORPHAN: "an orphan row",
     NOT_IN_BACKUP: "the withheld text is not in this backup",
     UNCERTAIN_REL: "its conversation's link to the withheld conversation is uncertain (a parent not found, or two)",
+    LATER_WITHHOLD: "a later withhold: not compared with its withheld text yet (Settle with every text in hand)",
     OTHER_NOT_COMPARED: "not compared with every other withheld text (not all of them were in hand)",
     NO_RELATION: "no relation to the withheld text was found",
 }
@@ -1025,6 +1031,63 @@ def needs_confirmation(codes: Iterable[str]) -> bool:
     return bool(set(codes) & set(CONFIRM_RELATIONS))
 
 
+# --- Option C (rebuild R4): D3 states, the form a hold's text was read in, and 'none' against every text -----------
+
+# The form a hold's text was read in when its evidence was computed (brain_tombstones.form): only 'plain' (authored
+# words read as they are) is ever released in one click; a tool row, a Hermes summary, a wrapped or encoded text, or a
+# row whose text was never read here ('') needs a per-row release with the typed word (B6).
+PLAIN_FORM, SUMMARY_FORM, WRAPPED_FORM, ENCODED_FORM, TOOL_FORM = "plain", "summary", "wrapped", "encoded", "tool"
+FORMS = (PLAIN_FORM, SUMMARY_FORM, WRAPPED_FORM, ENCODED_FORM, TOOL_FORM)
+
+
+def text_form(content: Any, tool_calls: Any = None) -> str:
+    """The form of a row's text as the comparison read it (never the text): 'tool' (tool calls), 'summary' (a Hermes
+    summary, snapshot, prune line or restated request), 'wrapped' (a reply pointer, a quote, a triggering note around
+    the authored words), 'encoded' (JSON, escapes, literals: read only through the canonical decode, or capped),
+    'plain' (authored words read as they are); '' when there is nothing to read (a blank row, a placeholder)."""
+    if tool_calls:
+        return TOOL_FORM
+    text = content if isinstance(content, str) else ""
+    if not text.strip() or is_placeholder(text):
+        return ""
+    if (SNAPSHOT_LEAD.search(text) or REPLAY_HEADER in text or _PRUNE_LINE.search(text)
+            or any(rx.search(text) for rx, _ in _SPANS)):
+        return SUMMARY_FORM
+    body, quote, again = peel(text)
+    if (quote is not None or again or body != text.strip() or _REPLY_POINTER_ANY.search(text)
+            or _QUOTE_LINE.search(text)):
+        return WRAPPED_FORM
+    c = canon(text)
+    if c.capped or any(r.text != text for r in c.readings):
+        return ENCODED_FORM
+    return PLAIN_FORM
+
+
+def row_form(row: Any) -> str:
+    """text_form() of a stored row (a mapping or a model) while it still holds its text; '' once withheld."""
+    get = row.get if isinstance(row, Mapping) else (lambda k, d=None: getattr(row, k, d))
+    if get("withheld", False):
+        return ""
+    return text_form(get("content", ""), get("tool_calls", None))
+
+
+def settled_relations(new: Iterable[str], old: Iterable[str] = (), *, all_in_hand: bool) -> tuple[str, ...]:
+    """A hold's evidence computed again (an import, Settle, a sweep): 'none' needs every withheld text in hand (D3:
+    none_every, else 'other_not_compared'), and a later withhold's mark stays until every text was in hand
+    (keep_later: Settle without the later text keeps the evidence stale)."""
+    out = set(new)
+    if LATER_WITHHOLD in set(old) and not all_in_hand:
+        out.add(LATER_WITHHOLD)  # keep_later
+    if NO_RELATION in out and not all_in_hand:
+        out.discard(NO_RELATION)  # none_every
+        out.add(OTHER_NOT_COMPARED)
+    if len(out) > 1:
+        out.discard(NO_RELATION)
+    if not out:
+        out.add(NO_RELATION if all_in_hand else OTHER_NOT_COMPARED)
+    return tuple(relation_order(out))
+
+
 # --- Exact identity (0.6.2 plan 3.1) ---------------------------------------------------------------------------------
 # The identity of a JARVIS row: (session, row id, role, tool_call_id, time), plus its uid when both sides have one.
 # Every match against a stored decision (a stone, a release) and every 'same JARVIS row' rule uses it, here, in the
@@ -1094,6 +1157,8 @@ class Binding:
     at: datetime | None = None
     uid: str = ""
     decided_on: str = ""  # the JARVIS backup the release was decided on: the content it covers is that backup's
+    trusted: bool = True  # rebuild R4 (B6, 6725, F1): typed, checked or left readable; an unchecked release is not
+    kind: str = "release"
 
     def covers(self, row: Exact) -> bool:
         return binding_matches(self.role, self.tool_call_id, self.at, self.uid, row.role, row.tool_call_id, row.at,
@@ -1170,6 +1235,10 @@ class Stone:
     kept_by: str = ""  # who kept a hold, and when (review 'kept')
     kept_at: datetime | None = None
     relations: tuple[str, ...] = ()  # a hold's computed evidence (relation codes: plan 4.6); never text
+    # rebuild R4: the withhold anchors a 'none' was computed against (None: every admin's withhold now, the caller
+    # computed it with every text in hand) and the form its text was read in ('' never read)
+    compared: tuple[str, ...] | None = None
+    form: str = ""
 
     @property
     def group(self) -> str:
@@ -1205,7 +1274,8 @@ def _stone(r: Any) -> Stone:
                  uid=r.message_uid or "", uid_known=bool(r.uid_known), via=r.via or "", review=r.review or "",
                  bound=bool(r.bound), after_run=int(r.after_run or 0), title_hidden=bool(r.title_hidden),
                  at=r.source_at, decided_on=r.decided_on or "", kept_by=r.kept_by or "", kept_at=r.kept_at,
-                 relations=tuple(getattr(r, "relations", None) or ()))
+                 relations=tuple(getattr(r, "relations", None) or ()),
+                 compared=tuple(getattr(r, "compared", None) or ()), form=getattr(r, "form", "") or "")
 
 
 class Identities:
@@ -1233,12 +1303,13 @@ class Identities:
         rows = (await s.execute(select(
             BrainWithholdExemption.anchor_key, BrainWithholdExemption.source_session_id,
             BrainWithholdExemption.source_row_id, BrainWithholdExemption.role, BrainWithholdExemption.tool_call_id,
-            BrainWithholdExemption.source_at, BrainWithholdExemption.source_uid, BrainWithholdExemption.decided_on)
+            BrainWithholdExemption.source_at, BrainWithholdExemption.source_uid, BrainWithholdExemption.decided_on,
+            BrainWithholdExemption.trusted, BrainWithholdExemption.kind)
             .order_by(BrainWithholdExemption.id))).all()
         bindings: dict[tuple[str, str, str], list[Binding]] = {}
         for r in rows:
             bindings.setdefault((r[0], r[1], r[2]), []).append(
-                Binding(r[3] or "", r[4] or "", r[5], r[6] or "", r[7] or ""))
+                Binding(r[3] or "", r[4] or "", r[5], r[6] or "", r[7] or "", bool(r[8]), r[9] or "release"))
         return cls(stones, [(r[0], r[1], r[2]) for r in rows], bindings)
 
     def released(self, group: str, row: Exact, *, backup: str | None = None, same_content: bool = False) -> bool:
@@ -1248,16 +1319,25 @@ class Identities:
         was decided on: only a release decided on that very backup, unless the stored row already shows that very
         content (same_content: readable, from the same source row). Hermes rewrites a row in place (a prune keeps its
         id, uid, role, call and time) and an older backup holds its earlier text: never covered by a release of
-        another version (review 2 S27's case without a digest; rules062-confirm c0, x8)."""
+        another version (review 2 S27's case without a digest; rules062-confirm c0, x8). Option C (rebuild R4, 6725 /
+        F1): the trust comes from that very covering release (typed, checked or left readable): an unchecked release
+        never stands on another backup's typed one."""
         ident = (group, row.session, row.row)
         if ident not in self.exempt:
             return False
         found = self.bindings.get(ident)
         if found is None:
             return backup is None or same_content
-        return any(b.covers(row) and (backup is None or same_content or (bool(b.decided_on)
-                                                                         and b.decided_on == backup))
-                   for b in found)
+        return any(b.covers(row) and b.trusted and (backup is None or same_content or (
+            bool(b.decided_on) and b.decided_on == backup)) for b in found)
+
+    def unchecked(self, group: str, row: Exact, *, backup: str | None = None, same_content: bool = False
+                  ) -> list[Binding]:
+        """The untrusted releases for this group that cover this exact row and its content (released() without the
+        trust): a check of that content with every withheld text in hand may mark them (mark_exemptions)."""
+        found = self.bindings.get((group, row.session, row.row)) or []
+        return [b for b in found if b.covers(row) and not b.trusted and (
+            backup is None or same_content or (bool(b.decided_on) and b.decided_on == backup))]
 
     def row_stones(self, row: Exact) -> list[Stone]:
         """The stones bound to this exact JARVIS row (identity.exact), certain first, then the admin's own, by key."""
@@ -1387,13 +1467,16 @@ async def put_stone(s: AsyncSession, binding: Stone, *, actor: str) -> bool:
               "review": binding.review, "bound": bool(binding.row or binding.uid), "after_run": binding.after_run,
               "title_hidden": binding.title_hidden, "source_at": binding.at, "decided_on": binding.decided_on[:64],
               "kept_by": binding.kept_by[:200], "kept_at": binding.kept_at,
-              "relations": list(relation_order(binding.relations))}
+              "relations": list(relation_order(binding.relations)),
+              "compared": await _compared(s, binding.relations, binding.compared),
+              "form": binding.form if binding.form in FORMS else ""}
     stmt = pg_insert(BrainTombstone).values(**values)
     stmt = stmt.on_conflict_do_update(
         index_elements=[BrainTombstone.source_key],
         set_={"review": stmt.excluded.review, "via": stmt.excluded.via, "anchor_key": stmt.excluded.anchor_key,
               "kept_by": stmt.excluded.kept_by, "kept_at": stmt.excluded.kept_at,
-              "relations": stmt.excluded.relations},
+              "relations": stmt.excluded.relations, "compared": stmt.excluded.compared,
+              "form": stmt.excluded.form},
         where=and_(BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.review == PENDING,
                    stmt.excluded.review != PENDING))
     changed = bool((await s.execute(stmt)).rowcount)
@@ -1425,10 +1508,16 @@ async def put_stone(s: AsyncSession, binding: Stone, *, actor: str) -> bool:
     return changed
 
 
-async def update_hold(s: AsyncSession, key: str, *, via: str, relations: Iterable[str], decided_on: str = "") -> bool:
+async def update_hold(s: AsyncSession, key: str, *, via: str, relations: Iterable[str], decided_on: str = "",
+                      form: str | None = None, compared: Iterable[str] | None = None) -> bool:
     """A hold's evidence as Settle computed it again (plan 4.3, 4.6): its via and relations (and the backup it was
-    decided on, once known). Only a pending stone; never a member. Whether it changed."""
-    values: dict[str, Any] = {"via": via[:200], "relations": relation_order(relations)}
+    decided on, once known; rebuild R4: the withheld texts a 'none' was computed against, and the form the text was
+    read in). Only a pending stone; never a member. Whether it changed."""
+    relations = relation_order(relations)
+    values: dict[str, Any] = {"via": via[:200], "relations": relations,
+                              "compared": await _compared(s, relations, None if compared is None else tuple(compared))}
+    if form is not None:
+        values["form"] = form if form in FORMS else ""
     done = await s.execute(update(BrainTombstone).where(
         BrainTombstone.source_key == key, BrainTombstone.reason == WITHHELD_BY_ADMIN,
         BrainTombstone.review == PENDING).values(**values))
@@ -1437,6 +1526,44 @@ async def update_hold(s: AsyncSession, key: str, *, via: str, relations: Iterabl
             BrainTombstone.source_key == key, BrainTombstone.reason == WITHHELD_BY_ADMIN,
             BrainTombstone.decided_on == "").values(decided_on=decided_on[:64]))
     return bool(done.rowcount)
+
+
+async def admin_anchor_keys(s: AsyncSession) -> list[str]:
+    """Every admin's own withhold (its key, the anchor of its group): what 'none' must have been compared with."""
+    return sorted((await s.scalars(select(BrainTombstone.source_key).where(
+        BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.anchor_key == "",
+        BrainTombstone.review != PENDING))).all())
+
+
+async def _compared(s: AsyncSession, relations: Iterable[str], compared: tuple[str, ...] | None) -> list[str]:
+    """The anchors a hold's 'none' was computed against: given (a decisions file carries them), or, for a 'none' the
+    caller computed with every withheld text in hand (D3: none_every), every admin's withhold now; [] otherwise."""
+    if compared is not None:
+        return sorted({a[:400] for a in compared if isinstance(a, str) and a})
+    if NO_RELATION not in set(relations):
+        return []
+    return await admin_anchor_keys(s)
+
+
+async def mark_later_withhold(s: AsyncSession, anchor: str) -> list[str]:
+    """N-A (rebuild R4, D3): a new admin's withhold (its anchor) was never compared with the holds other withholds
+    computed 'none' for: each of them says 'later_withhold' at once (never released in one click, a per-row release
+    needs the typed word). The decision backups of those withholds (theirs and the holds'), to finish again: Settle
+    with every withheld text in hand computes the evidence again, and the export waits until then."""
+    rows = (await s.execute(select(BrainTombstone.source_key, BrainTombstone.decided_on, BrainTombstone.anchor_key)
+                            .where(BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.review == PENDING,
+                                   func.coalesce(func.nullif(BrainTombstone.anchor_key, ""),
+                                                 BrainTombstone.source_key) != anchor,
+                                   literal(NO_RELATION) == any_(BrainTombstone.relations)))).all()
+    if not rows:
+        return []
+    await s.execute(update(BrainTombstone).where(BrainTombstone.source_key.in_(sorted(r[0] for r in rows)))
+                    .values(relations=func.array_replace(BrainTombstone.relations, NO_RELATION, LATER_WITHHOLD),
+                            compared=[]))
+    groups = sorted({r[2] or r[0] for r in rows})
+    own = set((await s.scalars(select(BrainTombstone.decided_on).where(
+        BrainTombstone.source_key.in_(groups), BrainTombstone.decided_on != ""))).all())
+    return sorted(own | {r[1] for r in rows if r[1]})
 
 
 # --- Decision backups (0.6.2 plan 1.3, 3.2, 4.4) -----------------------------------------------------------------------
@@ -1524,7 +1651,8 @@ def binding_of(row: Any, source_session_id: str, *, anchor: str = "", via: str =
     uid), and the backup the decision was taken on."""
     return Stone(key=row.source_key, anchor=anchor, session=source_session_id or "", row=row.source_message_id or "",
                  role=row.role or "", tool_call_id=row.tool_call_id or "", uid=row_uid(row), uid_known=uid_known,
-                 via=via, review=review, bound=True, after_run=after_run, at=row.at, decided_on=decided_on)
+                 via=via, review=review, bound=True, after_run=after_run, at=row.at, decided_on=decided_on,
+                 form=row_form(row))
 
 
 @dataclass
@@ -1631,12 +1759,14 @@ async def group_rows(s: AsyncSession, message: ArchiveMessage, sess: ArchiveSess
     uid_records: set[tuple[str, str]] = set()
     frontier: list[tuple[ArchiveMessage, str]] = [(message, sess.source_session_id)]
     released: dict[tuple[str, str], list[Binding]] = {}
-    for sid_, rid_, role_, call_, at_, uid_, on_ in (await s.execute(select(
+    for sid_, rid_, role_, call_, at_, uid_, on_, tr_, kind_ in (await s.execute(select(
             BrainWithholdExemption.source_session_id, BrainWithholdExemption.source_row_id,
             BrainWithholdExemption.role, BrainWithholdExemption.tool_call_id, BrainWithholdExemption.source_at,
-            BrainWithholdExemption.source_uid, BrainWithholdExemption.decided_on).where(
+            BrainWithholdExemption.source_uid, BrainWithholdExemption.decided_on, BrainWithholdExemption.trusted,
+            BrainWithholdExemption.kind).where(
             BrainWithholdExemption.anchor_key == message.source_key))).all() if message.source_key else ():
-        released.setdefault((sid_, rid_), []).append(Binding(role_ or "", call_ or "", at_, uid_ or "", on_ or ""))
+        released.setdefault((sid_, rid_), []).append(Binding(role_ or "", call_ or "", at_, uid_ or "", on_ or "",
+                                                             bool(tr_), kind_ or "release"))
 
     def locked(q: Any) -> Any:
         return q.with_for_update(of=ArchiveMessage) if lock else q
@@ -1646,7 +1776,8 @@ async def group_rows(s: AsyncSession, message: ArchiveMessage, sess: ArchiveSess
     async def exempt(row: ArchiveMessage, sid: str) -> bool:
         here = exact_of_row(row, sid)
         found_ = [b for b in released.get((here.session, here.row), ()) if b.covers(here)]
-        return bool(found_) and await release_covers_stored(s, found_, row, stored_shas)
+        # rebuild R4 (F1): the trust of the very release that covers the stored content
+        return any(b.trusted for b in await releases_covering_stored(s, found_, row, stored_shas))
 
     def take(row: ArchiveMessage, sid: str, rule: str, review: str, relations: Iterable[str] = ()) -> bool:
         if row.id == message.id:
@@ -1793,11 +1924,12 @@ async def matching_rows(s: AsyncSession, message: ArchiveMessage, sess: ArchiveS
     query = select(ArchiveMessage).where(ArchiveMessage.session_id.in_(sorted(sessions)),
                                          ArchiveMessage.withheld.is_(False))
     released: list[tuple[str, str, Binding]] = [
-        (sid_, rid_, Binding(role_ or "", call_ or "", at_, uid_ or "", on_ or ""))
-        for sid_, rid_, role_, call_, at_, uid_, on_ in (await s.execute(select(
+        (sid_, rid_, Binding(role_ or "", call_ or "", at_, uid_ or "", on_ or "", bool(tr_)))
+        for sid_, rid_, role_, call_, at_, uid_, on_, tr_ in (await s.execute(select(
             BrainWithholdExemption.source_session_id, BrainWithholdExemption.source_row_id,
             BrainWithholdExemption.role, BrainWithholdExemption.tool_call_id, BrainWithholdExemption.source_at,
-            BrainWithholdExemption.source_uid, BrainWithholdExemption.decided_on).where(
+            BrainWithholdExemption.source_uid, BrainWithholdExemption.decided_on,
+            BrainWithholdExemption.trusted).where(
             BrainWithholdExemption.anchor_key == message.source_key))).all()] if message.source_key else []
     out = []
     for r in (await s.scalars(query.order_by(ArchiveMessage.id))).all():
@@ -1815,7 +1947,7 @@ async def matching_rows(s: AsyncSession, message: ArchiveMessage, sess: ArchiveS
         sid = sessions.get(r.session_id, "")
         here = exact_of_row(r, sid)
         covering = [b for rsid, rrow, b in released if (rsid, rrow) == (here.session, here.row) and b.covers(here)]
-        if covering and await release_covers_stored(s, covering, r):
+        if covering and any(b.trusted for b in await releases_covering_stored(s, covering, r)):
             continue
         out.append((r, sid, tuple(relation_order(rel))))
     return out
@@ -1897,26 +2029,83 @@ async def release_covers_stored(s: AsyncSession, bindings: Iterable[Binding], ro
     return bool(sha) and any(b.decided_on == sha for b in found)
 
 
+async def releases_covering_stored(s: AsyncSession, bindings: Iterable[Binding], row: Any,
+                                   cache: dict[int, str] | None = None) -> list[Binding]:
+    """The releases (each already matching the row's exact identity) that cover the stored row's content: decided on
+    the backup the row's content came from (stored_backup), or with no decision backup (a version 4 file's). The
+    trust of a release is read from these only (rebuild R4, 6725 / F1: never from another backup's release)."""
+    found = list(bindings)
+    if not found:
+        return []
+    undecided = [b for b in found if not b.decided_on]
+    if len(undecided) == len(found):
+        return undecided
+    sha = await stored_backup(s, row, cache)
+    return undecided + [b for b in found if b.decided_on and sha and b.decided_on == sha]
+
+
+async def _row_exemptions(s: AsyncSession, group: str, here: Exact) -> list[Binding]:
+    return [b for b in (Binding(role or "", call or "", at, uid or "", on or "", bool(tr), kind or "release")
+                        for role, call, at, uid, on, tr, kind in (await s.execute(select(
+                            BrainWithholdExemption.role, BrainWithholdExemption.tool_call_id,
+                            BrainWithholdExemption.source_at, BrainWithholdExemption.source_uid,
+                            BrainWithholdExemption.decided_on, BrainWithholdExemption.trusted,
+                            BrainWithholdExemption.kind).where(
+                            BrainWithholdExemption.anchor_key == group,
+                            BrainWithholdExemption.source_session_id == here.session,
+                            BrainWithholdExemption.source_row_id == here.row))).all()) if b.covers(here)]
+
+
 async def exempt_covers(s: AsyncSession, group: str, session_id: str, row: ArchiveMessage) -> bool:
     """Whether an admin's release (or 'left readable') for this group covers this exact stored row (identity.exact:
     the release names its JARVIS row, and its role, tool_call_id, time and uid match) and its content (the release was
-    decided on the backup the row's content came from: release_covers_stored)."""
-    here = exact_of_row(row, session_id or "")
-    found = [b for b in (Binding(role or "", call or "", at, uid or "", on or "") for role, call, at, uid, on in (
-        await s.execute(select(
-            BrainWithholdExemption.role, BrainWithholdExemption.tool_call_id, BrainWithholdExemption.source_at,
-            BrainWithholdExemption.source_uid, BrainWithholdExemption.decided_on).where(
-            BrainWithholdExemption.anchor_key == group, BrainWithholdExemption.source_session_id == here.session,
-            BrainWithholdExemption.source_row_id == here.row))).all()) if b.covers(here)]
-    return bool(found) and await release_covers_stored(s, found, row)
+    decided on the backup the row's content came from: release_covers_stored), and is trusted (rebuild R4, B6: typed,
+    checked or left readable), the trust read only from a release that covers the stored content (6725 / F1)."""
+    found = await releases_covering_stored(s, await _row_exemptions(s, group, exact_of_row(row, session_id or "")),
+                                           row)
+    return any(b.trusted for b in found)
+
+
+async def unchecked_covers(s: AsyncSession, group: str, session_id: str, row: ArchiveMessage) -> list[Binding]:
+    """The untrusted releases for this group that cover this stored row and its content (exempt_covers without the
+    trust): a check of that content with every withheld text in hand marks them (mark_exemptions)."""
+    found = await releases_covering_stored(s, await _row_exemptions(s, group, exact_of_row(row, session_id or "")),
+                                           row)
+    return [b for b in found if not b.trusted]
+
+
+async def mark_exemptions(s: AsyncSession, group: str, row: Exact, *, decided_on: str, kinds: Iterable[str]) -> int:
+    """A check of one backup's content of this exact row found no relation to any withheld text, every one in hand:
+    the untrusted releases for this group of that exact row, decided on that very backup and of these kinds, become
+    trusted (rebuild R4, 6725: a check marks only the release of the content it checked, never another backup's).
+    How many."""
+    kinds = sorted(set(kinds))
+    if not decided_on or not kinds:
+        return 0
+    n = 0
+    for e in (await s.scalars(select(BrainWithholdExemption).where(
+            BrainWithholdExemption.anchor_key == group, BrainWithholdExemption.source_session_id == row.session,
+            BrainWithholdExemption.source_row_id == row.row, BrainWithholdExemption.trusted.is_(False),
+            BrainWithholdExemption.decided_on == decided_on[:64],
+            BrainWithholdExemption.kind.in_(kinds)))).all():
+        if Binding(e.role or "", e.tool_call_id or "", e.source_at, e.source_uid or "", e.decided_on or "").covers(
+                row):
+            e.trusted = True
+            n += 1
+    if n:
+        await s.flush()
+    return n
 
 
 def exemption_values(row: Exact, *, anchor: str, kind: str = "release", decided_on: str = "", reason: str = "",
-                     decided_by: str = "", decided_at: datetime | None = None) -> dict[str, Any]:
-    """The values of a brain_withhold_exemptions row for this exact JARVIS row (0.6.2 plan 1.2)."""
+                     decided_by: str = "", decided_at: datetime | None = None, trusted: bool = False
+                     ) -> dict[str, Any]:
+    """The values of a brain_withhold_exemptions row for this exact JARVIS row (0.6.2 plan 1.2; rebuild R4: its
+    trust, never a client's flag: the server's typed word, a check, or an admin's 'left readable')."""
     out: dict[str, Any] = {"anchor_key": anchor, "source_session_id": row.session, "source_row_id": row.row,
                            "role": row.role, "tool_call_id": row.tool_call_id, "source_at": row.at,
                            "source_uid": row.uid, "kind": kind, "decided_on": (decided_on or "")[:64],
+                           "trusted": bool(trusted),
                            "reason": (reason or "released by an admin")[:200], "decided_by": (decided_by or "")[:200]}
     if decided_at is not None:
         out["decided_at"] = decided_at
@@ -1925,9 +2114,23 @@ def exemption_values(row: Exact, *, anchor: str, kind: str = "release", decided_
 
 async def put_exemption(s: AsyncSession, row: Exact, **kw: Any) -> bool:
     """Records a release (or 'left readable') of this exact JARVIS row for a withhold; one per exact row and group
-    (the first decision stays). Whether it was added."""
-    return bool((await s.execute(pg_insert(BrainWithholdExemption).values(**exemption_values(row, **kw))
-                                 .on_conflict_do_nothing())).rowcount)
+    (the first decision stays; a trusted decision of the same row, group and backup makes it trusted, never the other
+    way). Whether it was added."""
+    values = exemption_values(row, **kw)
+    added = bool((await s.execute(pg_insert(BrainWithholdExemption).values(**values)
+                                  .on_conflict_do_nothing())).rowcount)
+    if not added and values["trusted"]:
+        await s.execute(update(BrainWithholdExemption).where(
+            BrainWithholdExemption.anchor_key == values["anchor_key"],
+            BrainWithholdExemption.source_session_id == values["source_session_id"],
+            BrainWithholdExemption.source_row_id == values["source_row_id"],
+            BrainWithholdExemption.role == values["role"], BrainWithholdExemption.tool_call_id == values["tool_call_id"],
+            BrainWithholdExemption.source_uid == values["source_uid"],
+            func.coalesce(BrainWithholdExemption.source_at, literal_column("'-infinity'::timestamptz"))
+            == func.coalesce(values["source_at"], literal_column("'-infinity'::timestamptz")),
+            BrainWithholdExemption.decided_on == values["decided_on"], BrainWithholdExemption.trusted.is_(False))
+            .values(trusted=True))
+    return added
 
 
 async def exact_rows(s: AsyncSession, binding: Stone) -> list[ArchiveMessage]:
