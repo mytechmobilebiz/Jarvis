@@ -1,0 +1,10 @@
+runs 216 failing runs before/after 216 40 A3-nib-second runs before/after 216 0
+A3-nib-second        before 216 after   0
+A3-other             before   8 after   8
+A4                   before   2 after   2
+A5                   before  22 after  13
+B1-disappeared       before   2 after   2
+B5                   before  15 after  16
+B6                   before   2 after   2
+B7-restore           before   2 after   0
+seeds failing after (any arm): 25 of 108

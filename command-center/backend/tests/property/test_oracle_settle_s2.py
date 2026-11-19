@@ -82,3 +82,44 @@ async def test_settle_decisions_also_settles_a_decision_left_waiting_by_a_finish
     monkeypatch.setattr(cc, "settle", finish)
     assert await sc.settle_decisions(run, decision) is decision
     assert calls == [decision.path, older.path]
+
+
+# --- C1 (A5) for a released row the decision backup no longer holds (RECON-57) ---------------------------------------
+
+TEXT = "Search results for the pricing table: the first entries match the request closely."
+
+
+def _c1(tmp, *, live_text: str = TEXT, released: bool = True, stone: bool = False, in_decision: bool = False,
+        recorded: bool = True):
+    import dataclasses
+
+    from . import oracle as o
+    w = k.world(tmp)
+    a = w.session()
+    w.row(a, "tool", TEXT)
+    older = w.sim.backup("tc1")
+    decision = older if in_decision else dataclasses.replace(older, rows={}, sha256="d" * 64)
+    run = k.run_of(w, decision, older, decision)
+    live = k.cc_rows(older, content={next(iter(older.rows)): live_text})
+    tc = [dict(live[0], content="", withheld=True,
+               flags={"withheld_by_admin": dict({"via": "carries the withheld text", "review": "pending"},
+                                                **({"released_at": "2026-11-19T11:24:17+00:00"} if released
+                                                   else {}))})]
+    stones = [k.stone(tc[0], via="carries the withheld text")] if stone else []
+    if recorded:
+        run.released[tc[0]["source_key"]] = [TEXT]
+    o.compare_c1(run, "A5", k.state(tc, stones), k.state(live), k.state(live), k.state(live), decision)
+    return [p for p in run.problems if p.startswith("A5")]
+
+
+def test_c1_a_released_row_waiting_for_a_text_the_decision_backup_lacks_equals_live_showing_the_released_text(
+        tmp_path):
+    assert _c1(tmp_path) == []
+
+
+def test_c1_still_reports_another_text_a_held_or_unreleased_row_a_row_the_decision_backup_holds(tmp_path):
+    assert _c1(tmp_path / "a", live_text="Search results for the pricing table: something else entirely here.")
+    assert _c1(tmp_path / "b", stone=True)  # still a pending hold on the test copy
+    assert _c1(tmp_path / "c", released=False)  # withheld, never released
+    assert _c1(tmp_path / "d", in_decision=True)  # the test copy's next import must have brought its text back
+    assert _c1(tmp_path / "e", recorded=False)  # no release of this row the review recorded

@@ -887,12 +887,35 @@ def compare_c1(run: Run, prop: str, tc: dict[str, Any], live: dict[str, Any], pl
                                                     or bool(ra.get("withheld"))))
             or (ra is not None and rb is not None and not ra.get("withheld") and not rb.get("withheld")
                 and plain(ra) == plain(pa.get(k)) and plain(rb) == plain(pb.get(k))))
+        if not same_as_plain and released_waiting_shown(run, ra, tc, rb, decision):
+            excused.append("%s: released on the test copy, waiting for a text the decision backup no longer holds; "
+                           "live shows the released text (S2, RECON-57)" % k)
+            continue
         (excused if same_as_plain else diffs).append("%s: %s -> %s" % (k, sa, sb))
     if excused:
         run.notes.append("%s: %d rows differ exactly as the plain imports do (no decision involved): %s" % (
             prop, len(excused), "; ".join(excused[:4])))
     if diffs:
         run.bad(prop, "test copy vs live: %d rows differ: %s" % (len(diffs), "; ".join(diffs[:6])))
+
+
+def released_waiting_shown(run: Run, ra: dict[str, Any] | None, tc: dict[str, Any], rb: dict[str, Any] | None,
+                           decision: hs.Snapshot) -> bool:
+    """C1 for a released row (stabilisation S2, RECON-57): the admin released this exact row on the test copy, and it
+    waits there for its text (released_pending: withheld, released, no stone) because the decision backup no longer
+    holds the row (the test copy's next import of it cannot bring the text back: a stale stored row); live, which
+    stored the row from an earlier backup, shows it readable with exactly the text released for that very test-copy
+    row (its key or id: run.released, the content of the backup the hold was decided on). Both say 'released'. Never
+    when the decision backup holds the row (the test copy must have its text back), when the test copy's row is held
+    or not released, or when live shows any other text."""
+    if ra is None or rb is None or rb.get("withheld") or not released_pending(ra, tc):
+        return False
+    rid = str(ra.get("source_message_id") or "")
+    if not rid.isdigit() or (ra["sid"], int(rid)) in decision.rows or rb.get("sid") != ra.get("sid") \
+            or str(rb.get("source_message_id") or "") != rid:
+        return False
+    texts = run.released.get(ra["source_key"]) or run.released.get("id:%s" % ra["id"]) or []
+    return bool(norm(rb.get("content"))) and any(cc_redacted_of(rb.get("content"), t) for t in texts)
 
 
 def check_no_readable_leak(run: Run, prop: str, st: dict[str, Any], fam: set[str], snap: hs.Snapshot,
