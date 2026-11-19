@@ -1214,14 +1214,18 @@ def compare_outside(run: Run, prop: str, mine: dict[str, Any], plain: dict[str, 
 
 
 def check_stored_unchanged(run: Run, prop: str, pre: dict[str, Any], post: dict[str, Any], fam: set[str],
-                           where: str, snap: hs.Snapshot | None = None) -> None:
+                           where: str, snap: hs.Snapshot | None = None, group: set[str] = frozenset()) -> None:
+    """B1 over i22's family; option C (rebuild R5) adds the group's conversations for every check but the
+    disappearance of a row (Hermes rewinds rows of any conversation; i22 promised to keep only the family's)."""
     a, b = by_key(pre), by_key(post)
     for k, ra in a.items():
-        if ra["sid"] not in fam:
+        if ra["sid"] not in fam and ra["sid"] not in group:
             continue
         rb = b.get(k)
         if rb is None and REKEYED:
             rb = rekeyed(ra, post, snap)  # round 3 (13560): the same archive row under its uid key
+        if rb is None and ra["sid"] not in fam:
+            continue
         if rb is None:
             run.bad(prop, "%s: stored family row %s (%s) disappeared" % (where, k, ra["sid"]))
             continue

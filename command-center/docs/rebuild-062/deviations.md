@@ -174,7 +174,7 @@ Entries: `RECON-<n>` for reconstruction choices, `D-<n>` for deviations from the
 
 **D-38 (compare_outside, A4/B4).** Excused besides i22's family and reply-quote holds: the ground-truth group's conversations (held by contract), a carrier hold outside every group that an admitted reading relates to a withheld text (is_carrier_hold), and kept_carrier (round 3). Self-tests in test_oracle_derived3.py; mutants r5:carrier_hold_any, r5:kept_carrier_any_row, r5:kept_carrier_pending_too (CAUGHT).
 
-**D-39 (check_stored_unchanged, B1).** rekeyed (round 3, 13560): the same archive row under the uid key the backup gives that JARVIS row is not 'disappeared'; the scope gains the group's conversations (more). Self-tests test_oracle_seeds_r3.py; mutant c3:oracle_rekeyed_any (CAUGHT).
+**D-39 (check_stored_unchanged, B1).** rekeyed (round 3, 13560): the same archive row under the uid key the backup gives that JARVIS row is not 'disappeared'; the group's conversations are checked too (more), except for a row that disappears (i22 kept only the family's rows; Hermes rewinds rows anywhere). Self-tests test_oracle_seeds_r3.py; mutant c3:oracle_rekeyed_any (CAUGHT).
 
 **D-40 (scenario).** Live may import the history first (arm); A5's plain live import is the same sequence; the restore re-import list starts after the decisions import; the second-withhold arm may pick a short text. No check was removed.
 

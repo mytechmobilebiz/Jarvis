@@ -214,7 +214,7 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
             post = await state()
             fam = o.family(run, snap, post["rows"], post["stones"])
             grp = await check_c(run, "later backup %s" % snap.n, snap)
-            o.check_stored_unchanged(run, "B1", pre, post, fam | grp, "later backup %s" % snap.n, snap)
+            o.check_stored_unchanged(run, "B1", pre, post, fam, "later backup %s" % snap.n, snap, grp)
             o.check_no_readable_leak(run, "B2", post, fam, snap, "later backup %s" % snap.n)
     later = sim.backup("later")
     pre = await state()
@@ -225,7 +225,7 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
     listed = {h.get("message") for h in holds}
     fam = o.family(run, later, post["rows"], post["stones"])
     grp = await check_c(run, "later backup X", later, holds=holds)
-    o.check_stored_unchanged(run, "B1", pre, post, fam | grp, "later backup X", later)
+    o.check_stored_unchanged(run, "B1", pre, post, fam, "later backup X", later, grp)
     o.check_no_readable_leak(run, "B2", post, fam, later, "later backup X")
     o.check_new_certain(run, "B3", pre, post, listed, fam, "later backup X")
     o.check_safe_copies(run, "B5", pre, post, fam, "later backup X")
