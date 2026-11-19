@@ -1577,11 +1577,26 @@ async def groups_state() -> dict[str, Any]:
 
 def released_ok(run: Run, r: dict[str, Any]) -> bool:
     """O7: an admin released this exact row, and it holds the text released (with only the Command Center's own marks
-    in place of spans: cc_redacted_of)."""
+    in place of spans: cc_redacted_of), or (D-52, rebuild S7) the Command Center's stored cut of it (stored_cut_of)."""
     texts = run.released.get(r["source_key"]) or run.released.get("id:%s" % r["id"])
     if not texts:
         return False
-    return any(cc_redacted_of(r.get("content"), t) for t in texts)
+    return any(cc_redacted_of(r.get("content"), t) or stored_cut_of(r.get("content"), t, r.get("role") or "")
+               for t in texts)
+
+
+def stored_cut_of(stored: str | None, released: str | None, role: str) -> bool:
+    """D-52 (rebuild S7, 13315 / 13418): a stored row that is the Command Center's cut of the released text (the spec
+    stores a tool result longer than 4,000 characters, a user or assistant row longer than 50,000, cut near the limit
+    with the cut note; D-49's stored_form): a beginning of the released text as written, ending at most 400 characters
+    before the limit, then the cut note. It holds nothing the release did not cover. Any other text, a beginning
+    without the note, or the note on a text the contract does not cut is not."""
+    s, r = stored or "", released or ""
+    limit = CC_STORED.get(role, 50_000)
+    if not s.endswith(CC_CUT_NOTE) or len(r) <= limit:
+        return False
+    head = s[:-len(CC_CUT_NOTE)]
+    return bool(head) and len(head) <= limit and len(head) >= limit - len(CC_CUT_NOTE) - 400 and r.startswith(head)
 
 
 def demanded_for(run: Run, fields: list[str], w: "Withhold", snap: hs.Snapshot, st: dict[str, Any], *,

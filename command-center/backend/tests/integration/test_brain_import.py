@@ -146,7 +146,8 @@ async def test_the_full_import_of_the_planted_fixture(built, tmp_path):
     # No planted value anywhere in the brain tables; none at all in the report, the error or the audit log.
     stored = await bj.stored_text()
     for table, dump in stored.items():
-        assert bj.planted_in(dump, bj.never_stored()) == [], table
+        # S7: a failure names the row, field and context where the value was found (the value shown as its name)
+        assert bj.planted_in(dump, bj.never_stored()) == [], (table, await bj.planted_where(table, bj.never_stored()))
     row = await run_row(run_id)
     assert row.error == "" and row.status == "completed"
     assert bj.planted_in(json.dumps(row.report) + row.error + row.label, bj.never_shown()) == []

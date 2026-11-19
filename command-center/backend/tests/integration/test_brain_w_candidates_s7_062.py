@@ -228,6 +228,65 @@ async def test_s7_a_moved_copy_of_w_is_read_by_its_copy_identity(client, fx):
     assert await readable_with(mark) == 0
 
 
+async def test_s7_a_json_read_identical_by_one_of_its_values_never_stands_in(client, fx):
+    """RECON-62's protection kept (13409's shape): a kept hold 'identical' because one of its values (a session_search
+    read's message) is the second withheld text is a JSON read, not W1: it never stands in for W1's text. With W1's row
+    gone, a new row with W1's very words says 'not in this backup' (never 'none', never relations to the JSON read),
+    and the read's own copies are still compared for carriers."""
+    db = fx["db"]
+    mark = "zqs7js08"
+    w2 = "Please rewrite the keyword sweep for the team meeting."
+    read = search_read("s7_j2", w2)
+    rows = conversation(db, "s7_j", T, [("user", "Please compare the vendor review and keep it short."),
+                                        ("assistant", secret(mark))])
+    call = bj.add_row(db, "s7_j", "tool", read, T + 10, tool_call_id="call_s7js", tool_name="session_search")
+    other = conversation(db, "s7_j2", T - DAY, [("user", w2), ("assistant", "Rewritten.")])
+    await run(fx)
+    await withhold(client, (await message_of("s7_j", rows[1]))[0].id)
+    await withhold(client, (await message_of("s7_j2", other[0]))[0].id)
+    await bj.settle(fx, keep=False)
+    j = (await message_of("s7_j", call))[0]
+    for m in await message_of("s7_j", rows[0]) + [j]:
+        if await state("s7_j", int(m.source_message_id)) == "held":
+            await keep(m.id)
+    bj.change(db, "DELETE FROM messages WHERE id = ?", rows[1])
+    new = bj.add_row(db, "s7_j", "assistant", secret(mark), T + 7200)
+    await run(fx)
+    h = (await holds(client)).get((await message_of("s7_j", new))[-1].id) or {}
+    assert h and "none" not in (h.get("relations") or []) and not h.get("one_click"), h
+    assert identity.NOT_IN_BACKUP in (h.get("relations") or []), h
+    assert await readable_with(mark) == 0
+
+
+async def test_s7_a_json_read_holding_w_as_a_value_never_stands_in_for_w(client, fx):
+    """The same with one withhold: a kept session_search read 'identical' because one of its values is W itself is
+    still a JSON read, not W's text (not plain words): never a stand-in. W's row gone, a new row with W's words says
+    'not in this backup' (no relation computed against the read), and a carrier of the read's text is held."""
+    db = fx["db"]
+    mark = "zqs7jw09"
+    rows = conversation(db, "s7_q", T, [("user", "Please compare the vendor review and keep it short."),
+                                        ("assistant", secret(mark))])
+    call = bj.add_row(db, "s7_q", "tool", search_read("s7_q", secret(mark)), T + 10, tool_call_id="call_s7jw",
+                      tool_name="session_search")
+    await run(fx)
+    await withhold(client, (await message_of("s7_q", rows[1]))[0].id)
+    j = (await message_of("s7_q", call))[0]
+    async with session_scope() as s:
+        from app.models import BrainTombstone
+        st = await s.get(BrainTombstone, j.source_key)
+        assert st is not None and identity.IDENTICAL_REL in (st.relations or []), (st and st.relations)
+    for m in await message_of("s7_q", rows[0]) + [j]:
+        if await state("s7_q", int(m.source_message_id)) == "held":
+            await keep(m.id)
+    bj.change(db, "DELETE FROM messages WHERE id = ?", rows[1])
+    new = bj.add_row(db, "s7_q", "assistant", secret(mark), T + 7200)
+    await run(fx)
+    h = (await holds(client)).get((await message_of("s7_q", new))[-1].id) or {}
+    assert h and "none" not in (h.get("relations") or []) and not h.get("one_click"), h
+    assert identity.NOT_IN_BACKUP in (h.get("relations") or []), h
+    assert await readable_with(mark) == 0
+
+
 async def test_s7_without_a_withheld_text_or_candidate_a_new_conversation_stays_readable_control(client, fx):
     """Control: W's conversation gone, no member holding its words; a new conversation's read of unrelated words stays
     readable (the change holds carriers of candidate texts only)."""

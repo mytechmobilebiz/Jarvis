@@ -316,6 +316,38 @@ def planted_in(text: str, values: dict[str, str]) -> list[str]:
     return sorted(k for k, v in values.items() if v in text or json.dumps(v)[1:-1] in text)
 
 
+async def planted_where(table: str, values: dict[str, str], width: int = 40) -> list[str]:
+    """Stabilisation S7 (the planted-PIN failure under load): where a planted value is found in a table, for the
+    failure message: 'table id=<id> <json path>: <context>' with the value itself shown as <name> (synthetic fixture
+    values only; the context is the text around it)."""
+    from sqlalchemy import text
+
+    from app.db import session_scope
+
+    out: list[str] = []
+
+    def walk(rid: Any, path: str, value: Any) -> None:
+        if isinstance(value, dict):
+            for k, v in value.items():
+                walk(rid, "%s.%s" % (path, k), v)
+        elif isinstance(value, list):
+            for i, v in enumerate(value):
+                walk(rid, "%s[%d]" % (path, i), v)
+        elif value is not None:
+            sv = value if isinstance(value, str) else json.dumps(value)
+            for name, v in values.items():
+                for form in {v, json.dumps(v)[1:-1]}:
+                    at = sv.find(form)
+                    if at >= 0:
+                        ctx = sv[max(0, at - width):at + len(form) + width].replace(form, "<%s>" % name)
+                        out.append("%s id=%s %s: %r" % (table, rid, path, ctx))
+
+    async with session_scope() as s:
+        for (row,) in (await s.execute(text("SELECT (to_jsonb(x) - 'search') FROM %s x ORDER BY 1" % table))).all():
+            walk((row or {}).get("id"), "", row)
+    return out
+
+
 def snapshot(root: str) -> dict[str, tuple[Any, ...]]:
     """Every file and link under root: size, modification time and SHA-256 (links: their target)."""
     state: dict[str, tuple[Any, ...]] = {}
