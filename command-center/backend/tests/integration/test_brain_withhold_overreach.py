@@ -406,7 +406,8 @@ async def test_o14_released_hold_text_returns_at_next_import(client, fx):
     [held] = await message_of("o14", tool)
     assert held.withheld
     await as_(client, "admin")
-    assert (await client.post("/api/brain/holds/%d/release" % held.id)).status_code == 200
+    # rebuild R4 (B6, D-36): no one-click row: a per-row release with the typed word
+    assert (await client.post("/api/brain/holds/%d/release" % held.id, json={"confirm": identity.CONFIRM_WORD})).status_code == 200
     await run(fx)
     await check_withheld_copies()
     await run(fx)

@@ -250,7 +250,8 @@ async def test_r2_release_kept_after_hermes_event(client, tmp_path, event):
     [stub] = await message_of("p2_s", tool)
     show("stub after withhold+import", {"withheld": stub.withheld, "stone": (await stones())[stub.source_key].review})
     await as_(client, "admin")
-    r = await client.post("/api/brain/holds/%d/release" % stub.id)
+    # rebuild R4 (B6, D-36): a tool-row stub is no one-click row: the typed word
+    r = await client.post("/api/brain/holds/%d/release" % stub.id, json={"confirm": identity.CONFIRM_WORD})
     show("release", r.status_code)
     await run(fx)
     [stub] = await message_of("p2_s", tool)
@@ -270,7 +271,8 @@ async def test_r2_release_kept_after_hermes_event(client, tmp_path, event):
                                    "brain_withhold_exemptions"))).all()
     show("exemptions", [tuple(e) for e in ex])
     await as_(client, "admin")
-    r = await client.post("/api/brain/holds/%d/release" % stub.id)
+    # rebuild R4 (B6, D-36): a tool-row stub is no one-click row: the typed word
+    r = await client.post("/api/brain/holds/%d/release" % stub.id, json={"confirm": identity.CONFIRM_WORD})
     show("second release", [r.status_code, r.text[:120]])
     assert not stub.withheld, "the admin's release was lost"
     await run(fx)
@@ -654,7 +656,8 @@ async def _held_stub(client, fx, mark):
 async def test_o2_released_stub_archived_by_the_next_compaction(client, fx):
     ids, stub = await _held_stub(client, fx, "zqcov2a62")
     await as_(client, "admin")
-    assert (await client.post("/api/brain/holds/%d/release" % stub.id)).status_code == 200
+    # rebuild R4 (B6, D-36): no one-click row: a per-row release with the typed word
+    assert (await client.post("/api/brain/holds/%d/release" % stub.id, json={"confirm": identity.CONFIRM_WORD})).status_code == 200
     await run(fx)
     [back] = await message_of("c2", ids[2])
     assert (back.withheld, back.content) == (False, STUB)
@@ -699,7 +702,8 @@ async def test_o2_unreviewed_hold_archived_by_the_next_compaction(client, fx):
 async def test_o4_released_stub_copied_into_the_protected_tail(client, fx):
     ids, stub = await _held_stub(client, fx, "zqcov4rel62")
     await as_(client, "admin")
-    assert (await client.post("/api/brain/holds/%d/release" % stub.id)).status_code == 200
+    # rebuild R4 (B6, D-36): no one-click row: a per-row release with the typed word
+    assert (await client.post("/api/brain/holds/%d/release" % stub.id, json={"confirm": identity.CONFIRM_WORD})).status_code == 200
     await run(fx)
     assert (await message_of("c2", ids[2]))[0].content == STUB
     bj.add_row(fx["db"], "c2", "user", "Thanks.", T + DAY)
@@ -820,7 +824,8 @@ async def test_o2_release_carried_to_live_after_compaction(client, tmp_path):
     fx = bj.mini(tmp_path / "fx")
     ids, stub = await _held_stub(client, fx, mark)
     await as_(client, "admin")
-    assert (await client.post("/api/brain/holds/%d/release" % stub.id)).status_code == 200
+    # rebuild R4 (B6, D-36): no one-click row: a per-row release with the typed word
+    assert (await client.post("/api/brain/holds/%d/release" % stub.id, json={"confirm": identity.CONFIRM_WORD})).status_code == 200
     await run(fx)
     bj.add_row(fx["db"], "c2", "user", "Thanks.", T + DAY)
     bj.hermes_compact(fx["db"], "c2", head_n=0, tail_n=4, ts=T + 2 * DAY)
@@ -832,7 +837,9 @@ async def test_o2_release_carried_to_live_after_compaction(client, tmp_path):
     await bj.settle(fx, keep=False)
     for hold in await _holds_full(client):
         assert identity.IDENTICAL_REL not in hold["relations"], hold
-        assert (await client.post("/api/brain/holds/%d/release" % hold["message"])).status_code == 200
+        # rebuild R4 (B6, D-36): the typed word for a hold one click could not release
+        assert (await client.post("/api/brain/holds/%d/release" % hold["message"], json=(
+            {} if hold["one_click"] else {"confirm": identity.CONFIRM_WORD}))).status_code == 200
     out = tmp_path / "decisions.json"
     await imp.decisions_export(str(out))
     await _fresh_production()
@@ -884,7 +891,8 @@ async def test_o2_a_shared_uid_outside_the_conversation_family_is_held_not_withh
     assert row.withheld and st.review == identity.PENDING
     assert row.id in [m for m, _ in await holds_listed(client)]
     await as_(client, "admin")
-    assert (await client.post("/api/brain/holds/%d/release" % row.id)).status_code == 200
+    # rebuild R4 (B6, D-36): no one-click row: a per-row release with the typed word
+    assert (await client.post("/api/brain/holds/%d/release" % row.id, json={"confirm": identity.CONFIRM_WORD})).status_code == 200
     await run(fx)
     [row] = await message_of("k_other", other)
     assert (row.withheld, row.content) == (False, "An unrelated archived answer.")
@@ -941,7 +949,8 @@ async def test_r_branch_copy_of_a_held_row_is_held_until_released(client, fx):
     assert identity.SAME_CALL in (st.relations or [])
     assert copy.id in [m for m, _ in await holds_listed(client)]
     await as_(client, "admin")
-    assert (await client.post("/api/brain/holds/%d/release" % copy.id)).status_code == 200
+    # rebuild R4 (B6, D-36): no one-click row: a per-row release with the typed word
+    assert (await client.post("/api/brain/holds/%d/release" % copy.id, json={"confirm": identity.CONFIRM_WORD})).status_code == 200
     await run(fx)
     [copy] = await message_of("c2_branch", copies[0]["id"])
     assert (copy.withheld, copy.content) == (False, STUB)

@@ -289,7 +289,8 @@ async def test_a_new_message_at_a_reused_row_id_is_never_withheld_by_the_old_wit
     # D-15: the conversation's other rows are held with the withheld group too; this test follows the reused row's
     [hold] = [h for h in (await client.get("/api/brain/holds")).json()["holds"] if h["message"] == new.id]
     assert hold["message"] == new.id and identity.REUSED_ROW in hold["relations"], hold
-    assert (await client.post("/api/brain/holds/%d/release" % new.id)).status_code == 200
+    # rebuild R4 (B6, D-36): no one-click row: a per-row release with the typed word
+    assert (await client.post("/api/brain/holds/%d/release" % new.id, json={"confirm": identity.CONFIRM_WORD})).status_code == 200
     await run(fx)
     assert {(m.withheld, m.content) for m in await message_of("ov0", ids[2])} == {(True, ""), (False, other)}
     assert await bj.nowhere(mark) == []

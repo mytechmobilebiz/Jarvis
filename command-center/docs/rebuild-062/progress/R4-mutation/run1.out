@@ -1,0 +1,27 @@
+rel3:mark_off CAUGHT 1 failed in 4.71s
+rel3:reopen_off CAUGHT 1 failed in 4.62s
+rel3:keep_later_off CAUGHT 2 failed in 6.84s
+rel3:none_every_off CAUGHT 1 failed in 0.26s
+rel3:imp_none_every_off CAUGHT 1 failed in 4.13s
+rel3:all_in_hand_true CAUGHT 1 failed in 5.16s
+rel3:all_in_hand_false CAUGHT 1 failed in 4.48s
+rel3:eligible_own_only CAUGHT 1 failed in 0.25s
+m18:oc_role CAUGHT 3 failed, 2 passed in 0.17s
+m18:oc_none_in CAUGHT 1 failed, 6 passed in 0.14s
+m18:oc_plain CAUGHT 7 failed in 4.11s
+m18:oc_tool_row CAUGHT 3 failed in 6.01s
+gd1:one_click_uncertain_off CAUGHT 1 failed in 0.25s
+r4:b6_typed_off CAUGHT 10 failed, 1 passed in 18.69s
+r4:b6_client_trust SURVIVED 1 passed in 4.05s
+rel3:mark_any_backup CAUGHT 1 failed in 4.28s
+r4:f1_exempt_trust_off CAUGHT 3 failed in 6.92s
+r4:f1_covering_any CAUGHT 1 failed in 4.02s
+r4:f1_released_trust_off CAUGHT 1 failed in 0.27s
+r4:file_trust_off SURVIVED 1 passed in 4.35s
+r4:file_mark_off CAUGHT 1 failed in 4.14s
+r4:w_text_same_uid CAUGHT 1 failed in 4.01s
+m18:carried_via CAUGHT 1 failed in 3.79s
+r4:form_sweep_off CAUGHT 3 failed in 5.97s
+rel3:hgr_foreign_off SURVIVED 1 passed in 4.28s
+rel3:hgr_foreign_off+hc_carriers_off CAUGHT 1 failed in 4.01s
+r4:file_trust_off+f1_released_trust_off CAUGHT 1 failed in 4.03s

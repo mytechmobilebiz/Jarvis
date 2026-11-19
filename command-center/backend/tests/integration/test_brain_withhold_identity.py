@@ -652,7 +652,8 @@ async def test_decisions_v4_file_holds_no_text_and_no_fingerprint(client, fx, tm
         await withhold(client, full.id)
         [stub] = await message_of(sid, row_id)
         assert (await stones())[stub.source_key].review == identity.PENDING
-        r = await client.post("/api/brain/holds/%d/%s" % (stub.id, how))
+        # rebuild R4 (B6, D-36): no one-click row: a per-row release with the typed word
+        r = await client.post("/api/brain/holds/%d/%s" % (stub.id, how), json={"confirm": identity.CONFIRM_WORD})
         assert r.status_code == 200, r.text
     async with session_scope() as s:
         item = await s.scalar(select(MemoryItem).where(MemoryItem.source_key.like("%vendors.md")))

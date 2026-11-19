@@ -636,7 +636,8 @@ async def test_s5_released_stub_stays_released_after_a_gateway_retry(client, fx,
     [stub] = await stored_at(sid, tool)
     assert [h["message"] for h in non_group(await holds_of(client))] == [stub.id]  # D-25
     await as_(client, "admin")
-    assert (await client.post("/api/brain/holds/%d/release" % stub.id)).status_code == 200
+    # rebuild R4 (B6, D-36): no one-click row: a per-row release with the typed word
+    assert (await client.post("/api/brain/holds/%d/release" % stub.id, json={"confirm": identity.CONFIRM_WORD})).status_code == 200
     await run(fx)
     moved = hermes_gateway_retry(fx["db"], sid, ts=T + 100) if event == "gateway_retry" else {}
     await run(fx)

@@ -1,0 +1,27 @@
+rel3:mark_off	app/brain/review.py	CAUGHT	1 failed in 4.71s	tests/integration/test_brain_releases_r2_062.py::test_rel3_a_later_withhold_makes_none_stale_at_once_and_the_export_waits
+rel3:reopen_off	app/brain/review.py	CAUGHT	1 failed in 4.62s	tests/integration/test_brain_releases_r2_062.py::test_rel3_a_later_withhold_makes_none_stale_at_once_and_the_export_waits
+rel3:keep_later_off	app/brain/identity.py	CAUGHT	2 failed in 6.84s	tests/unit/test_brain_releases_r2_062.py::test_keep_later_keeps_the_mark_until_every_text_was_in_hand tests/integration/test_brain_releases_r2_062.py::test_rel3_a_settle_without_the_later_text_keeps_the_evidence_stale
+rel3:none_every_off	app/brain/identity.py	CAUGHT	1 failed in 0.26s	tests/unit/test_brain_releases_r2_062.py::test_none_every_none_needs_every_withheld_text_in_hand
+rel3:imp_none_every_off	app/brain/importer.py	CAUGHT	1 failed in 4.13s	tests/integration/test_brain_releases_r2_062.py::test_rel3_13465_a_later_row_identical_to_a_withheld_text_not_in_hand_is_never_none
+rel3:all_in_hand_true	app/brain/importer.py	CAUGHT	1 failed in 5.16s	tests/integration/test_brain_releases_r2_062.py::test_rel3_a_settle_without_the_later_text_keeps_the_evidence_stale
+rel3:all_in_hand_false	app/brain/importer.py	CAUGHT	1 failed in 4.48s	tests/integration/test_brain_releases_r2_062.py::test_rel3_settle_with_every_text_in_hand_computes_it_again
+rel3:eligible_own_only	app/brain/review.py	CAUGHT	1 failed in 0.25s	tests/unit/test_brain_releases_r2_062.py::test_eligible_now_compares_every_withheld_text_in_hand
+m18:oc_role	app/brain/review.py	CAUGHT	3 failed, 2 passed in 0.17s	tests/unit/test_brain_mutation_closure_c_062.py::test_oc_role_only_user_and_assistant_rows_are_one_click_eligible
+m18:oc_none_in	app/brain/review.py	CAUGHT	1 failed, 6 passed in 0.14s	tests/unit/test_brain_mutation_closure_c_062.py::test_oc_none_in_only_exactly_none_is_one_click_eligible
+m18:oc_plain	app/brain/review.py	CAUGHT	7 failed in 4.11s	tests/unit/test_brain_mutation_closure_c_062.py::test_oc_plain_and_tool_row_only_a_plain_read_form_is_one_click_eligible tests/integration/test_brain_later_062.py::test_the_one_click_release_skips_a_row_whose_form_was_never_read
+m18:oc_tool_row	app/brain/identity.py	CAUGHT	3 failed in 6.01s	tests/integration/test_brain_later_062.py::test_the_one_click_release_skips_a_hermes_summary_or_wrapped_text_and_releases_the_plain_row
+gd1:one_click_uncertain_off	app/brain/review.py	CAUGHT	1 failed in 0.25s	tests/unit/test_brain_releases_r2_062.py::test_uncertain_is_never_one_click_eligible_and_never_eligible_now
+r4:b6_typed_off	app/brain/review.py	CAUGHT	10 failed, 1 passed in 18.69s	tests/integration/test_brain_releases_r2_062.py::test_b6_every_untyped_body_gets_400_or_422_and_the_row_stays_held
+r4:b6_client_trust	app/brain/review.py	SURVIVED	1 passed in 4.05s	tests/integration/test_brain_releases_r2_062.py::test_rel3_6725_a_check_of_one_backups_content_marks_only_that_backups_release
+rel3:mark_any_backup	app/brain/identity.py	CAUGHT	1 failed in 4.28s	tests/integration/test_brain_releases_r2_062.py::test_rel3_6725_a_check_of_one_backups_content_marks_only_that_backups_release
+r4:f1_exempt_trust_off	app/brain/identity.py	CAUGHT	3 failed in 6.92s	tests/integration/test_brain_releases_r2_062.py::test_skc2_exempt_covers_never_takes_trust_from_another_backups_release tests/integration/test_brain_releases_r2_062.py::test_skc2_an_unchecked_release_never_stands_on_another_backups_typed_release
+r4:f1_covering_any	app/brain/identity.py	CAUGHT	1 failed in 4.02s	tests/integration/test_brain_releases_r2_062.py::test_skc2_exempt_covers_never_takes_trust_from_another_backups_release
+r4:f1_released_trust_off	app/brain/identity.py	CAUGHT	1 failed in 0.27s	tests/unit/test_brain_releases_r2_062.py::test_identities_released_takes_trust_from_the_covering_release_only
+r4:file_trust_off	app/brain/importer.py	SURVIVED	1 passed in 4.35s	tests/integration/test_brain_releases_r2_062.py::test_rel3_an_unchecked_file_release_frees_no_hold_and_a_trusted_one_does
+r4:file_mark_off	app/brain/importer.py	CAUGHT	1 failed in 4.14s	tests/integration/test_brain_releases_r2_062.py::test_rel3_a_decisions_file_bringing_a_withhold_this_database_lacks_makes_none_stale
+r4:w_text_same_uid	app/brain/importer.py	CAUGHT	1 failed in 4.01s	tests/integration/test_brain_releases_r2_062.py::test_seeds_r3_a_same_message_id_member_is_never_taken_as_the_withheld_text
+m18:carried_via	app/brain/importer.py	CAUGHT	1 failed in 3.79s	tests/integration/test_brain_releases_r2_062.py::test_a_kept_hold_keeps_the_rule_that_held_it_through_a_restore
+r4:form_sweep_off	app/brain/identity.py	CAUGHT	3 failed in 5.97s	tests/integration/test_brain_later_062.py::test_the_one_click_release_skips_a_hermes_summary_or_wrapped_text_and_releases_the_plain_row
+rel3:hgr_foreign_off	app/brain/groups.py	SURVIVED	1 passed in 4.28s	tests/integration/test_brain_releases_r2_062.py::test_skC_a_row_released_for_w1_that_carries_w2_is_held_when_w2_is_withheld
+rel3:hgr_foreign_off+hc_carriers_off	app/brain/groups.py,app/brain/review.py	CAUGHT	1 failed in 4.01s	tests/integration/test_brain_releases_r2_062.py::test_skC_a_row_released_for_w1_that_carries_w2_is_held_when_w2_is_withheld
+r4:file_trust_off+f1_released_trust_off	app/brain/identity.py,app/brain/importer.py	CAUGHT	1 failed in 4.03s	tests/integration/test_brain_releases_r2_062.py::test_rel3_an_unchecked_file_release_frees_no_hold_and_a_trusted_one_does

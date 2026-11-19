@@ -73,6 +73,10 @@ M = [
   [IR + "::test_a_kept_hold_keeps_the_rule_that_held_it_through_a_restore"]),
  ("r4:form_sweep_off", [(ID, "                 form=row_form(row))", "                 form=PLAIN_FORM)")],
   [IL + "::test_the_one_click_release_skips_a_hermes_summary_or_wrapped_text_and_releases_the_plain_row"]),
+ ("r4:file_trust_off+f1_released_trust_off", [
+     (IM, "                    if not _release_trusted(r):\n                        continue  # rebuild R4", "                    if False:\n                        continue  # rebuild R4"),
+     (ID, "        return any(b.covers(row) and b.trusted and (backup is None", "        return any(b.covers(row) and (backup is None")],
+  [IR + "::test_rel3_an_unchecked_file_release_frees_no_hold_and_a_trusted_one_does"]),
  ("rel3:hgr_foreign_off", [FOREIGN_OFF], [IR + "::test_skC_a_row_released_for_w1_that_carries_w2_is_held_when_w2_is_withheld"]),
  ("rel3:hgr_foreign_off+hc_carriers_off", [FOREIGN_OFF, CARRIERS_OFF],
   [IR + "::test_skC_a_row_released_for_w1_that_carries_w2_is_held_when_w2_is_withheld"]),

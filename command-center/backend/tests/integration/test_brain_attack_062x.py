@@ -304,7 +304,8 @@ async def test_x12_release_then_gateway_branch_then_compaction_of_the_branch(cli
     from .test_brain_rules_062r import _held_stub
     ids, stub = await _held_stub(client, fx, mark)
     await as_(client, "admin")
-    assert (await client.post("/api/brain/holds/%d/release" % stub.id)).status_code == 200
+    # rebuild R4 (B6, D-36): no one-click row: a per-row release with the typed word
+    assert (await client.post("/api/brain/holds/%d/release" % stub.id, json={"confirm": identity.CONFIRM_WORD})).status_code == 200
     await run(fx)
     bj.gateway_branch(fx["db"], "c2", "c2_gw", T + DAY)
     bj.add_row(fx["db"], "c2_gw", "user", "And then?", T + DAY + 10)

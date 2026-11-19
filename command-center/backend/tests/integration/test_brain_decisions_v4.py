@@ -91,7 +91,8 @@ async def _hold_decision(client, sid: str, stub_row: int, twin_row: int, how: st
     await withhold(client, full.id)
     [stub] = await message_of(sid, stub_row)
     assert (await stones())[stub.source_key].review == identity.PENDING
-    r = await client.post("/api/brain/holds/%d/%s" % (stub.id, how))
+    # rebuild R4 (B6, D-36): no one-click row: a per-row release with the typed word
+    r = await client.post("/api/brain/holds/%d/%s" % (stub.id, how), json={"confirm": identity.CONFIRM_WORD})
     assert r.status_code == 200, r.text
 
 
