@@ -720,24 +720,25 @@ class MessagePlan:
     twin_of: str = ""  # the key of an earlier rewound row with the same text (an identity link only)
 
 
-W_COPY_VIAS = ("key", "same JARVIS row", "duplicate", "copied by JARVIS", "the original JARVIS copied")
+W_SAME_TEXT_VIAS = ("same tool call",)
 
 
 def _of_w(own: identity.Stone, cands: list[identity.Stone]) -> list[identity.Stone]:
     """The members whose row may hold the withheld text (Processor._w_text): the admin's own stone, a member that is
-    the same text by its own rule ('same tool call', a kept hold whose evidence was 'identical'), and a member by a
-    copy rule ('the same JARVIS row', a key, a duplicate, a JARVIS copy or its original) only when it is a copy of one
-    of those: the same role, the same time and no other uid (rebuild S4, RECON-62). Option C makes every kept group
-    row a certain member and a JARVIS copy of it a certain 'copied by JARVIS' member: such a copy holds that row's
-    text, not the withheld one (13537: W's own row gone, a copy of a kept group row was taken as W's text, rows
-    with that other text were shown 'identical' and rows with W's text could read 'none')."""
-    base = [own] + [x for x in cands if x is not own and x.via not in W_COPY_VIAS]
+    W's tool result by its own rule ('same tool call'), and any other member (by a copy rule: 'the same JARVIS row',
+    a key, a duplicate, a JARVIS copy or its original; or a kept hold whose evidence was 'identical') only when it is
+    a copy of one of those: the same role, the same time and no other uid (rebuild S4, RECON-62). Option C makes every
+    kept group row a certain member and a JARVIS copy of it a certain 'copied by JARVIS' member: such a copy holds
+    that row's text, not the withheld one (13537); and 'identical' is also the evidence of a row with W as one of its
+    values (a session_search read, a quote: R3's readings), whose text is not W either (13409). Taken as W's text,
+    either made a new row with W's very words read 'none' (one click)."""
+    base = [own] + [x for x in cands if x is not own and x.via in W_SAME_TEXT_VIAS]
 
     def copy_of(x: identity.Stone, b: identity.Stone) -> bool:
         return (x.role == b.role and (x.at is None or b.at is None or x.at == b.at)
                 and not (x.uid and b.uid and x.uid != b.uid))
 
-    return [x for x in cands if x is own or x.via not in W_COPY_VIAS or any(copy_of(x, b) for b in base)]
+    return [x for x in cands if x is own or x.via in W_SAME_TEXT_VIAS or any(copy_of(x, b) for b in base)]
 
 
 class Processor:

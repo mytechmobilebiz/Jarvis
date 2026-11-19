@@ -21,7 +21,7 @@ from app.models import ArchiveMessage, BrainTombstone
 from .. import brain_jarvis as bj
 from .test_brain_api import as_, client  # noqa: F401 - client is a fixture
 from .test_brain_later_062 import holds, state
-from .test_brain_withhold_identity import T, conversation, message_of, run, secret, withhold
+from .test_brain_withhold_identity import DAY, T, conversation, message_of, run, secret, withhold
 
 pytestmark = pytest.mark.usefixtures("clean_db")
 
@@ -150,3 +150,35 @@ async def test_s4_w_text_without_kept_rows_control(client, fx):
     'not in this backup' as well."""
     h, _ = await w_text_scenario(client, fx, keep_rows=False)
     assert h and "none" not in (h.get("relations") or []) and not h.get("one_click"), h
+
+
+async def test_s4_w_text_is_never_a_kept_row_identical_by_one_of_its_values(client, fx):
+    """RECON-62 (13409): a kept hold whose evidence says 'identical' because one of its values (a session_search read's
+    message) is a withheld text, here the second one, holds a JSON read, not W1. With W1's row gone, a new row with
+    W1's very words is held 'not in this backup', never 'none' (one click) against the JSON read taken as W1's text."""
+    db = fx["db"]
+    mark = "zqs4wj62"
+    w2 = "Please rewrite the keyword sweep for the team meeting."
+    read = ('{"success": true, "mode": "read", "session_id": "s4_wj2", "messages": [{"id": 1, "role": "user", '
+            '"content": "%s"}]}' % w2)
+    rows = conversation(db, "s4_wj", T, [("user", "Please compare the vendor review and keep it short."),
+                                         ("assistant", secret(mark))])
+    call = bj.add_row(db, "s4_wj", "tool", read, T + 10, tool_call_id="call_s4wj", tool_name="session_search")
+    other = conversation(db, "s4_wj2", T - DAY, [("user", w2), ("assistant", "Rewritten.")])
+    await run(fx)
+    await withhold(client, (await message_of("s4_wj", rows[1]))[0].id)
+    await withhold(client, (await message_of("s4_wj2", other[0]))[0].id)
+    await bj.settle(fx, keep=False)
+    j = (await message_of("s4_wj", call))[0]
+    async with session_scope() as s:
+        st = await s.get(BrainTombstone, j.source_key)
+        assert st is not None and identity.IDENTICAL_REL in (st.relations or []), (st and st.relations)
+    for m in await message_of("s4_wj", rows[0]) + [j]:
+        if await state("s4_wj", int(m.source_message_id)) == "held":
+            await keep(m.id)
+    bj.change(db, "DELETE FROM messages WHERE id = ?", rows[1])
+    new = bj.add_row(db, "s4_wj", "assistant", secret(mark), T + 7200)
+    await run(fx)
+    h = (await holds(client)).get((await message_of("s4_wj", new))[-1].id) or {}
+    assert h, "the new row with W1's words is held"
+    assert "none" not in (h.get("relations") or []) and not h.get("one_click"), h
