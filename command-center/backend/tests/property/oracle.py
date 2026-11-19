@@ -1640,6 +1640,7 @@ def check_c(run: Run, where: str, st: dict[str, Any], gs: dict[str, Any], snap: 
             run.bad(prop, "%s: readable row %s (%s:%s %s) carries the withheld %s:%s (%s): %r" % (
                 where, r["id"], r["sid"], r.get("source_message_id"), r.get("role"), w.sid, w.row, sorted(rel),
                 (r.get("content") or "")[:70]))
+    check_rollback_copies(run, where, st.get("copies"), group | gs["uncertain"], st["rows"])
     # O11: titles
     seen: set[str] = set()
     for r in st["rows"]:
@@ -1664,6 +1665,37 @@ def check_c(run: Run, where: str, st: dict[str, Any], gs: dict[str, Any], snap: 
         where, len(group), len(gs["members"]), len(gs["uncertain"]),
         sum(1 for x in st["stones"] if x.get("via") == CARRIER_VIA)))
     return group
+
+
+def check_rollback_copies(run: Run, where: str, copies: list[dict[str, Any]] | None, group: set[str],
+                          rows: list[dict[str, Any]]) -> None:
+    """O2 at rest (rebuild S5; round-1 groups-paths P2 case D, the round-3 oracle's reading of import_records,
+    gd1:oracle_rollback_records_off): a rollback copy (import_records.before) of a row of a group conversation, or of
+    one recorded uncertain, keeps no text, also the copy of a row an import changed and then deleted (its conversation
+    named through the deletion copy: cc.rollback_copies). Only a copy holding exactly what an admin released for that
+    row (as O2's released_ok) is admitted. A copy whose conversation no stored conversation names is placed by its
+    source key among the stored rows; failing that it is noted (never silently)."""
+    if copies is None:
+        return
+    keys = {r["source_key"]: r["sid"] for r in rows}
+    unnamed = 0
+    for c in copies:
+        fields = row_fields(c)
+        if not fields or (norm(c.get("content")) == norm(hs.STUB) and len(fields) == 1):
+            continue
+        sid = c.get("sid") or keys.get(c.get("source_key"))
+        if sid is None:
+            unnamed += 1
+            continue
+        if sid not in group:
+            continue
+        if released_ok(run, {"source_key": c.get("source_key"), "id": c.get("row_id"), "content": c.get("content")}):
+            continue
+        run.bad("O2", "%s: a rollback copy (record %s, %s row %s) of group conversation %s keeps its text: %r" % (
+            where, c["id"], "deleted" if c.get("deleted") else "changed", c.get("row_id"), sid,
+            (c.get("content") or json.dumps(c.get("tool_calls"), default=str))[:60]))
+    if unnamed:
+        run.notes.append("%s: %d rollback copies with text name no stored conversation" % (where, unnamed))
 
 
 ONE_CLICK_ROLES = ("user", "assistant")

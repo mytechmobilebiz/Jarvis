@@ -402,3 +402,62 @@ async def test_skc_a_markerless_legacy_gateway_reset_joins_the_group_and_is_held
     assert "lgr_u" not in found and {await state("lgr_u", r) for r in ua} == {"readable"}
     await run(fx)  # the next import keeps them held
     assert {await state("lgr_c", r) for r in ca} == {"held"}
+
+
+async def test_p2_the_oracle_names_the_conversation_of_a_copy_whose_row_was_deleted(client, fx):
+    """gd1:oracle_rollback_records_off (rebuild S5; the round-3 oracle read import_records, cc_adapter.py:439): a row
+    of a conversation changed by one import and deleted by the next keeps its older text in its update copy (whose
+    stored row is gone) and its newer text in its deletion copy. The oracle names the conversation of both copies (the
+    update copy through the deletion copy) and reports each as group text at rest while the group is recorded
+    without the sweep; once the startup repair blanked them it reports nothing. A copy of another conversation is
+    never reported."""
+    import random
+
+    from ..property import cc_adapter as cc
+    from ..property import oracle as o
+
+    db = fx["db"]
+    mark = "zqorc"
+    pa = conversation(db, "orc_p", T, [("user", "What is the deal worth?"), ("assistant", secret("zqorcw"))])
+    ca = conversation(db, "orc_c", T + DAY, [("user", "The older text %s here." % mark), ("assistant", "Noted.")],
+                      parent="orc_p")
+    ua = conversation(db, "orc_u", T + DAY, [("user", "Another older text %s here." % (mark + "u")),
+                                              ("assistant", "Fine.")])
+    await run(fx)
+    bj.change(db, "UPDATE messages SET content = 'A newer text, %s too.' WHERE id = ?" % (mark + "n"), ca[0])
+    bj.change(db, "UPDATE messages SET content = 'Another newer text.' WHERE id = ?", ua[0])
+    await run(fx)
+    bj.change(db, "UPDATE messages SET active = 0 WHERE id = ?", ca[0])  # rewound: the next import deletes it
+    await run(fx)
+    assert await message_of("orc_c", ca[0]) == []
+
+    def mine(copies: list[dict], m: str) -> list[dict]:
+        return [c for c in copies if m in (c.get("content") or "")]
+
+    copies = await cc.rollback_copies()
+    older = mine(copies, "The older text %s" % mark)
+    newer = mine(copies, mark + "n")
+    assert [c["deleted"] for c in older] == [False] and [c["deleted"] for c in newer] == [True]
+    assert {c["sid"] for c in older + newer} == {"orc_c"}  # the update copy named through the deletion copy
+    assert {c["sid"] for c in mine(copies, mark + "u")} == {"orc_u"}
+
+    def report(copies: list[dict]) -> list[str]:
+        r = o.Run(seed=0, sim=None, profile="", content="", api=None, rng=random.Random(0))
+        o.check_rollback_copies(r, "selftest", copies, {"orc_p", "orc_c"}, [])
+        return r.problems
+
+    found = report(copies)
+    assert len(found) == 2 and all(p.startswith("O2 ") and "orc_c" in p for p in found), found
+    # The group recorded without the sweep (as restore's removals-only file or older code records it): still reported.
+    async with session_scope() as s:
+        anchor = (await message_of("orc_p", pa[1]))[0].source_key
+        await brain_groups.record(s, anchor, {"orc_p": brain_groups.Member("withheld_here"),
+                                              "orc_c": brain_groups.Member("child", brain_groups.MEMBER, "orc_p")})
+        await s.commit()
+    assert len(report(await cc.rollback_copies())) == 2
+    async with session_scope() as s:
+        await identity.repair(s, actor="system (startup-check)", cause="startup-check")
+        await s.commit()
+    after = await cc.rollback_copies()
+    assert report(after) == []
+    assert mine(after, mark + "u")  # another conversation's copy keeps its text, and is not reported

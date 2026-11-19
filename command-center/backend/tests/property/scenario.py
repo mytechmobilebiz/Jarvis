@@ -23,8 +23,10 @@ def arm(name: str, rng: random.Random, p: float) -> bool:
 
 
 async def check_c(run: Run, where: str, snap: hs.Snapshot, *, holds: list | None = None) -> set[str]:
-    """Option C's checks O1-O3, O6, O8, O9, O11 on the current state (oracle.check_c). Returns the ground-truth group."""
+    """Option C's checks O1-O3 (O2 also on the rollback copies at rest), O6, O8, O9, O11 on the current state
+    (oracle.check_c). Returns the ground-truth group."""
     st = await state()
+    st["copies"] = await cc.rollback_copies()  # O2 at rest (rebuild S5)
     gs = await o.groups_state()
     return o.check_c(run, where, st, gs, snap, holds if holds is not None else await run.api.holds())
 

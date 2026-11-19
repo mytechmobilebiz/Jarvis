@@ -1,0 +1,97 @@
+"""S5 mutation check (rebuild S5: the R7 gaps): each guard (or a pair, for a compensated one) switched off on its own
+copy of the worktree's backend; its killing test must FAIL with an assertion (never an error or a collection problem).
+Usage: python s5mut.py [names...]; results appended to results.tsv. Names follow the sources' matrix where it names
+the guard (gd1:*, rel3:*, cr2:*, c2:*, m18:*) and r3:* for the rebuild's own (R3)."""
+import os, shutil, subprocess, sys
+WT = "/home/user/Jarvis/.worktrees/brain-062C/command-center"
+S = os.path.dirname(os.path.abspath(__file__))
+PY = "/home/user/rebuild/venv/bin/python"
+ID, RV, GR, IM = "app/brain/identity.py", "app/brain/review.py", "app/brain/groups.py", "app/brain/importer.py"
+CA = "tests/property/cc_adapter.py"
+OR = "tests/property/oracle.py"
+SQL = "app/migrations/0008_brain_withhold_identity.sql"
+I5 = "tests/integration/test_brain_mutation_closure_s5_062.py"
+IR = "tests/integration/test_brain_releases_r2_062.py"
+ID1 = "tests/integration/test_brain_groups_d1_062.py"
+U5 = "tests/unit/test_brain_mutation_closure_s5_062.py"
+UC = "tests/unit/test_brain_carriers_r2_062.py"
+P5 = "tests/property/test_oracle_rollback_copies_s5.py"
+# the import's carrier pass (review.hold_carriers, run by every import's sweep with the backup's withheld texts in hand)
+# skips the rows of conversations a group records, as if the group sweep alone had them (round-3 importer.py:1922)
+GROUP_SKIP = (RV, "            if row.withheld:\n                continue\n            for anchor, rel in cands[int(row.id)]:",
+              "            if row.withheld or await session.scalar(select(BrainWithheldSession.source_session_id).where(\n"
+              "                    BrainWithheldSession.source_session_id == sid).limit(1)):\n                continue\n"
+              "            for anchor, rel in cands[int(row.id)]:")
+FOREIGN_OFF = (GR, "                if rel and not await identity.exempt_covers(s, other, sid, row):", "                if False:")
+M = [
+ ("r3:release_on_evidence_carrier_off", [(GR, "RELEASE_ON_EVIDENCE = frozenset({identity.GROUP_HOLD, identity.UNCERTAIN_HOLD, identity.COPY_HOLD,\n                                 identity.CARRIER_HOLD})", "RELEASE_ON_EVIDENCE = frozenset({identity.GROUP_HOLD, identity.UNCERTAIN_HOLD, identity.COPY_HOLD})")],
+  [I5 + "::test_s5_a_release_of_a_carrier_hold_covers_the_content_it_was_compared_on"]),
+ ("rel3:imp_carriers_group_skip", [GROUP_SKIP],
+  [I5 + "::test_s5_a_typed_release_of_an_uncertain_row_after_a_later_withhold_is_held_again_by_the_next_import"]),
+ ("rel3:imp_carriers_group_skip(member test)", [GROUP_SKIP],
+  [IR + "::test_rel3_typed_release_after_a_later_withhold_is_held_again_by_the_next_import"]),
+ ("rel3:imp_carriers_group_skip+rel3:hgr_foreign_off", [GROUP_SKIP, FOREIGN_OFF],
+  [IR + "::test_rel3_typed_release_after_a_later_withhold_is_held_again_by_the_next_import"]),
+ ("rel3:flip_any_anchor", [(ID, "                            BrainWithholdExemption.anchor_key == group,\n                            BrainWithholdExemption.source_session_id == here.session,",
+                            "                            BrainWithholdExemption.source_session_id == here.session,")],
+  [IR + "::test_rel3_typed_release_after_a_later_withhold_is_held_again_by_the_next_import"]),
+ ("gd1:p2_both_off", [(SQL, "                OR (x.before -> 'deleted_row' ->> 'session_id') IN (SELECT id::text FROM g)\n                OR (x.target_table = 'archive_messages' AND x.target_id::text IN (SELECT id FROM gone)))", "                )"),
+                       (RV, "            \"OR x.target_id::text IN (SELECT id FROM gone))\"),", "            \")\"),")],
+  [ID1 + "::test_skc_d_the_older_text_of_a_group_row_changed_then_deleted_keeps_no_text_in_any_rollback_copy",
+   ID1 + "::test_p2_the_startup_repair_blanks_a_copy_of_a_changed_then_deleted_group_row"]),
+ ("gd1:oracle_rollback_records_off", [(CA, "ROLLBACK_RECORDS = True", "ROLLBACK_RECORDS = False")],
+  [ID1 + "::test_p2_the_oracle_names_the_conversation_of_a_copy_whose_row_was_deleted"]),
+ ("s5:oracle_copies_check_off", [(OR, '    check_rollback_copies(run, where, st.get("copies"), group | gs["uncertain"], st["rows"])\n', "")],
+  [P5 + "::test_s5_a_rollback_copy_of_a_group_row_with_text_is_reported"]),
+ ("s5:oracle_copies_uncertain_off", [(OR, '    check_rollback_copies(run, where, st.get("copies"), group | gs["uncertain"], st["rows"])\n',
+                                      '    check_rollback_copies(run, where, st.get("copies"), group, st["rows"])\n')],
+  [P5 + "::test_s5_a_rollback_copy_in_an_uncertain_conversation_is_reported"]),
+ ("s5:oracle_copy_released_any", [(OR, '        if released_ok(run, {"source_key": c.get("source_key"), "id": c.get("row_id"), "content": c.get("content")}):',
+                                   '        if run.released.get(c.get("source_key")):')],
+  [P5 + "::test_s5_a_released_rows_copy_is_admitted_only_with_exactly_the_released_text"]),
+ ("s5:oracle_copy_key_place_off", [(OR, '        sid = c.get("sid") or keys.get(c.get("source_key"))', '        sid = c.get("sid")')],
+  [P5 + "::test_s5_a_copy_its_source_key_places_in_the_group_is_reported_and_an_unplaced_one_is_noted"]),
+ ("s5:oracle_copy_gone_name_off", [(CA, '"coalesce(sd.source_session_id, st.source_session_id, sg.source_session_id) "',
+                                    '"coalesce(sd.source_session_id, st.source_session_id) "')],
+  [ID1 + "::test_p2_the_oracle_names_the_conversation_of_a_copy_whose_row_was_deleted"]),
+]
+only = sys.argv[1:]
+db = os.environ.get("S5M_DB", "s5m")
+env = dict(os.environ, TEST_DATABASE_URL="postgresql+asyncpg://cc:cc@127.0.0.1:55432/%s" % db,
+           TEST_CREDIT_REPAIR_DATABASE_URL="postgresql+asyncpg://cc:cc@127.0.0.1:55432/%s_cr" % db)
+out = open(os.path.join(S, "results.tsv"), "a")
+root = "/tmp/claude-0/-home-user-Jarvis/1ab9c1cb-df4c-59f4-ae56-b5ac930a43fd/scratchpad/s5/mutcopy-%s" % db
+for name, edits, tests in M:
+    if only and name not in only:
+        continue
+    shutil.rmtree(root, ignore_errors=True)
+    os.makedirs(root)
+    shutil.copytree(os.path.join(WT, "backend"), os.path.join(root, "backend"),
+                    ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+    if os.path.isdir(os.path.join(WT, "migration")):
+        shutil.copytree(os.path.join(WT, "migration"), os.path.join(root, "migration"),
+                        ignore=shutil.ignore_patterns("__pycache__"))
+    bad = False
+    for f, old, new in edits:
+        path = os.path.join(root, "backend", f)
+        text = open(path).read()
+        n = text.count(old)
+        if n != 1:
+            print(name, "INVALID (%d matches in %s)" % (n, f), flush=True)
+            out.write("%s\t%s\tINVALID %d\n" % (name, f, n)); out.flush()
+            bad = True
+            break
+        open(path, "w").write(text.replace(old, new))
+    if bad:
+        continue
+    r = subprocess.run([PY, "-m", "pytest", "-p", "no:randomly", "-q", "-rA", *tests], cwd=os.path.join(root, "backend"),
+                       env=env, capture_output=True, text=True, timeout=3600)
+    last = [l for l in r.stdout.splitlines() if " passed" in l or " failed" in l or " error" in l][-1:] or [r.stdout[-200:]]
+    verdict = "CAUGHT" if (r.returncode == 1 and " failed" in last[0] and " error" not in last[0]) else (
+        "SURVIVED" if r.returncode == 0 else "ERROR")
+    print(name, verdict, last[0], flush=True)
+    if verdict != "SURVIVED":
+        fails = [l for l in r.stdout.splitlines() if l.startswith("FAILED") or l.startswith("ERROR") or l.startswith("E  ")]
+        print("\n".join(fails[:12]), flush=True)
+    out.write("%s\t%s\t%s\t%s\t%s\n" % (name, ",".join(sorted({e[0] for e in edits})), verdict, last[0], " ".join(tests))); out.flush()
+shutil.rmtree(root, ignore_errors=True)

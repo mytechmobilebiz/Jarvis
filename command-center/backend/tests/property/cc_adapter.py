@@ -275,6 +275,45 @@ async def hidden_titles() -> set[str]:
         return set((await s.execute(text("SELECT source_session_id FROM brain_hidden_titles"))).scalars())
 
 
+async def rollback_copies() -> list[dict[str, Any]]:
+    """Every rollback copy at rest (import_records.before of a message: a row an import changed in place, or deleted),
+    with the conversation it is of (rebuild S5, the round-3 oracle's reading of import_records, gd1:oracle_rollback_
+    records_off): an update copy by its stored row's conversation, or, when that row is gone, by the deletion copy that
+    names it; a deletion copy by the conversation its deleted row names. 'sid' is None when no stored conversation
+    is named (the oracle notes it). The copy's fields as the row had them (content, tool_calls, withheld, flags)."""
+    if not ROLLBACK_RECORDS:
+        return []
+    async with session_scope() as s:
+        found = (await s.execute(text(
+            "SELECT x.id, x.run_id, x.target_id, x.source_key, x.before, "
+            "coalesce(sd.source_session_id, st.source_session_id, sg.source_session_id) "
+            "FROM import_records x "
+            "LEFT JOIN archive_sessions sd ON x.before ? 'deleted_row' "
+            "  AND sd.id::text = x.before -> 'deleted_row' ->> 'session_id' "
+            "LEFT JOIN archive_messages tm ON NOT x.before ? 'deleted_row' AND x.target_table = 'archive_messages' "
+            "  AND tm.id = x.target_id "
+            "LEFT JOIN archive_sessions st ON st.id = tm.session_id "
+            "LEFT JOIN LATERAL (SELECT y.before -> 'deleted_row' ->> 'session_id' AS sess FROM import_records y "
+            "  WHERE tm.id IS NULL AND NOT x.before ? 'deleted_row' AND y.record_type = 'message' "
+            "  AND y.before ? 'deleted_row' AND y.before -> 'deleted_row' ->> 'id' = x.target_id::text "
+            "  ORDER BY y.id LIMIT 1) g ON TRUE "
+            "LEFT JOIN archive_sessions sg ON sg.id::text = g.sess "
+            "WHERE x.record_type = 'message' AND x.before <> '{}'::jsonb ORDER BY x.id"))).all()
+    out = []
+    for rid, run_id, target, key, before, sid in found:
+        before = dict(before or {})
+        deleted = "deleted_row" in before
+        row = dict(before.get("deleted_row") or {}) if deleted else before
+        out.append({"id": rid, "run_id": run_id, "target_id": target, "deleted": deleted, "sid": sid,
+                    "source_key": row.get("source_key") or key, "row_id": row.get("id", target),
+                    "content": row.get("content"), "tool_calls": row.get("tool_calls"),
+                    "withheld": row.get("withheld"), "flags": row.get("flags") or {}})
+    return out
+
+
+ROLLBACK_RECORDS = True  # the oracle reads the rollback copies at rest (mutant gd1:oracle_rollback_records_off)
+
+
 async def table_exists(name: str) -> bool:
     async with session_scope() as s:
         return bool(await s.scalar(text("SELECT to_regclass(:t) IS NOT NULL"), {"t": "public." + name}))
