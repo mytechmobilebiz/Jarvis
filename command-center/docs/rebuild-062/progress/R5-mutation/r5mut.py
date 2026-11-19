@@ -15,6 +15,7 @@ CA, RE, DE, SE, SP, RC, GC = (P + f for f in ("test_oracle_carriers_r2.py", "tes
 F3 = P + "test_oracle_family_s3.py"
 F4 = P + "test_oracle_family_part_of_s4.py"
 F5 = P + "test_oracle_fold_piece_s4.py"
+F6 = P + "test_oracle_stored_form_s4.py"
 M = [
  ("cr2:oracle_fold_off", [(OR, '    return unicodedata.normalize("NFKC", t).translate(_IGN)\n', '    return text or ""\n')],
   [CA + "::test_oci_the_oracle_demands_a_carrier_in_another_case_or_form"]),
@@ -100,6 +101,8 @@ M = [
  ("s4:w_text_piece_first", [(OR, "                    piece = piece if piece is not None else v.content\n                    continue",
                               "                    return v.content")],
   [F5 + "::test_s4_a_whole_copy_of_the_withheld_fold_is_its_text"]),
+ ("s4:stored_form_any_length", [(OR, 'CC_STORED = {"tool": 4_000}', 'CC_STORED = {"tool": 1_000}')],
+  [F6 + "::test_s4_the_fixture_is_cut_where_the_withheld_text_is"]),
 ]
 only = sys.argv[1:]
 db = "r5m"

@@ -1,4 +1,5 @@
-"""D-46 (rebuild S4, RECON-63): A3 / C3-evidence admits 'part_of' on a hold of a row of the decision's family (i22's
+"""D-46 (rebuild S4, RECON-63): A3 / C3-evidence admits 'part_of' (and a short withheld text's word sequence as
+'contains', 13880) on a hold of a row of the decision's family (i22's
 family: its stones bind the conversation) outside the ground-truth group, held by the family's own rules (Settle, a
 later backup), where a value of the row is part of the withheld text: the product computes those holds with i22's
 family rule (seeds 13062, 13147, 13226, 13266: a session_search read whose title value is the withheld request cut
@@ -62,3 +63,31 @@ def test_s4_family_part_of_is_never_demanded():
     held = [json.dumps({"title": PIECE})]
     dem, _ = o.relations_c(held, W, group=False, carrier=True)
     assert "part_of" not in dem
+
+
+SHORT = "Sounds good."
+
+
+def _short(tmp, shown: list[str], *, in_family: bool = True) -> list[str]:
+    """13880: W is a short reply restated after Hermes's replay header; a family row elsewhere says it again."""
+    w = k.world(tmp)
+    a, c = w.session(), w.session()
+    r1, _ = w.row(a, "user", SHORT)
+    x, _ = w.row(c, "assistant", SHORT + " I will send it on Monday.")
+    snap = w.sim.backup("d")
+    rows = k.cc_rows(snap, withheld={(a, r1), (c, x)})
+    run = k.run_of(w, snap)
+    wh = k.withhold(run, rows, a, r1)
+    rx = next(r for r in rows if r["source_message_id"] == str(x))
+    anchor = wh.key if in_family else "jarvis:message:elsewhere:1"
+    st = k.state(rows, [k.stone(rx, via="found when finishing decisions", anchor=anchor, relations=shown)])
+    o.check_evidence(run, "A3", [k.hold(rx, shown)], st, snap, "self-test")
+    return run.problems
+
+
+def test_s4_family_row_short_w_words_contains_is_admitted(tmp_path):
+    assert not _short(tmp_path, ["contains"])
+
+
+def test_s4_short_w_words_contains_outside_the_family_is_still_a_violation(tmp_path):
+    assert _short(tmp_path, ["contains"], in_family=False)

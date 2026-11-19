@@ -23,6 +23,7 @@ never comes from the row's text."""
 from __future__ import annotations
 
 import copy
+import dataclasses
 import functools
 import hashlib
 import json
@@ -1092,6 +1093,7 @@ def check_evidence(run: Run, prop: str, holds: list[dict[str, Any]], st: dict[st
         vs = backup_versions(run, r, snap)
         if not vs:
             continue
+        vs = vs + [x for x in (stored_form(v) for v in vs) if x is not None]  # D-49
         stone = st["stone_by_key"].get(r["source_key"]) or {}
         decided = stone.get("decided_on") or ""
         if decided and snap.sha256 and decided != snap.sha256:
@@ -1118,7 +1120,7 @@ def check_evidence(run: Run, prop: str, holds: list[dict[str, Any]], st: dict[st
                     computed |= dem
                     allowed |= alw
                     if not in_group and family_part_of(r, w, comps, stone):
-                        allowed |= relations_c(version_fields(v), view, group=True)[1] & {"part_of"}
+                        allowed |= relations_c(version_fields(v), view, group=True)[1] & {"part_of", "contains"}
                 allowed |= computed
                 allowed_all |= allowed
                 done.append((view, computed))
@@ -1167,14 +1169,37 @@ def check_evidence(run: Run, prop: str, holds: list[dict[str, Any]], st: dict[st
                 "; ".join(why), anchor, stone.get("via"), ["%s:%s" % (w.sid, w.row) for w in own]))
 
 
+CC_CUT_NOTE = "\n[\u2026 cut: the full text is in the JARVIS backup]"
+CC_STORED = {"tool": 4_000}  # spec: tool results are stored cut to 4,000 characters (user/assistant: 50,000)
+
+
+def stored_form(v: hs.Version) -> hs.Version | None:
+    """D-49 (rebuild S4, 13658): the text the Command Center stores for a backup row the contract cuts (a tool result
+    longer than 4,000 characters, user and assistant rows longer than 50,000; at a space near the limit, with the
+    cut note): a hold's evidence computed on the stored row is the evidence of that text. None when nothing is cut.
+    Used as one more version of the row in check_evidence: a relation of the stored text is admitted and meets the
+    demand; a hold that shows no relation ('none') while the full text has one is still reported."""
+    limit = CC_STORED.get(v.role, 50_000)
+    text = v.content or ""
+    if len(text) <= limit:
+        return None
+    room = max(0, limit - len(CC_CUT_NOTE))
+    head = text[:room]
+    space = max(head.rfind(" "), head.rfind("\n"))
+    if space > room - 400:
+        head = head[:space]
+    return dataclasses.replace(v, content=head.rstrip() + CC_CUT_NOTE)
+
+
 def family_part_of(row: dict[str, Any], w: Withhold, comps: dict[str, set[str]], stone: dict[str, Any]) -> bool:
     """D-46 (rebuild S4, RECON-63): a hold of a row of this decision's family (plan 5.1, i22's family: the sessions
     its stones bind and their copy links) outside the ground-truth group, held by the family's own rules (Settle's
     'found when finishing decisions', a later backup's 'new in a later backup'; never a per-row carrier hold), may show
-    'part_of' where a value of it is part of the withheld text: the product computes those holds with i22's family
-    rule (identity.family_relations, as i22's oracle admitted for every family hold: deviation 274), now read per
-    value. Admitted only (never demanded); a carrier hold, a row outside the family and a 'part_of' no value gives
-    are still reported (test_oracle_family_part_of_s4.py)."""
+    'part_of' where a value of it is part of the withheld text, and 'contains' where a withheld text of fewer than 16
+    characters of words appears as a word sequence in it (13880): the product computes those holds with i22's family
+    rules (identity.family_relations, as i22's oracle admitted for every family hold: deviation 274), now read per
+    value. Admitted only (never demanded); a carrier hold, a row outside the family and a relation no value gives are
+    still reported (test_oracle_family_part_of_s4.py)."""
     return row.get("sid") in comps.get(w.key, set()) and (stone.get("via") or "") != CARRIER_VIA
 
 
