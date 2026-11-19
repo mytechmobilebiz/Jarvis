@@ -23,9 +23,12 @@ never comes from the row's text."""
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
+import json
 import random
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -35,7 +38,12 @@ from . import hermes_sim as hs
 
 # --- evidence (plan 4.6) -----------------------------------------------------------------------------------------
 
-TEXT_RELATIONS = ("identical", "restated", "contains", "part_of")
+TEXT_RELATIONS = ("identical", "restated", "contains", "part_of", "cut", "not_checked")
+# option C codes (D3): exact relation codes when the hold lists them (rebuild R5)
+EXACT_CODES = frozenset(TEXT_RELATIONS) | {"same_uid", "same_call", "same_time", "reused_row", "stale", "orphan",
+                                           "not_in_backup", "uncertain", "later_withhold", "other_not_compared",
+                                           "none", "differs"}
+NOT_COMPARED_C = frozenset({"not_in_backup", "later_withhold", "other_not_compared"})
 _DISCORD = re.compile(r"^\[Triggering message id: `[^`]*` — use as `message_id` for reply/react/pin via the discord "
                       r"tools\.\]\n\n")
 _REPLY = re.compile(r'^\[Replying to(?: your previous message)?: "(.*?)"\]\n\n', re.S)
@@ -115,6 +123,460 @@ def text_relations(h: str, w: str) -> set[str]:
     return out
 
 
+# --- option C readings (rebuild R5, RECON-39..): O-CI fold, O-D4 generic-v1, the derived copies -----------------------
+# Written from the contract (owner decisions O-CI, O-D4; the round-3 derived readings as the deviation log states them),
+# not from the product code. The demanded side (CORE readings) is what a hold must show and a carrier must be held for;
+# quote spans of Hermes's f-string summaries, the cut-per-line of a truncated preview and the short-withheld-text word
+# sequence are admitted only on the side of what a hold MAY show (span_relations / allowed): they are never demanded.
+
+# Default_Ignorable_Code_Point (Unicode DerivedCoreProperties): 4,174 code points
+IGNORABLE_RANGES = ((0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160), (0x17B4, 0x17B5),
+                    (0x180B, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F), (0x3164, 0x3164),
+                    (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF), (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3),
+                    (0x1D173, 0x1D17A), (0xE0000, 0xE0FFF))
+_IGN = dict.fromkeys(c for a, b in IGNORABLE_RANGES for c in range(a, b + 1))
+_WORDS = re.compile(r"\w+")
+MIN_REL = 16  # characters (fflat): contains, a cut beginning, a part
+
+
+def fold(text: str | None) -> str:
+    """O-CI: default-ignorable code points removed, NFKC, casefold, Turkish dotted/dotless i read as i."""
+    t = (text or "").translate(_IGN)
+    t = unicodedata.normalize("NFKC", t).replace("İ", "i").replace("ı", "i")
+    t = t.casefold().replace("i̇", "i")
+    return unicodedata.normalize("NFKC", t).translate(_IGN)
+
+
+def fflat(text: str | None) -> str:
+    return " ".join(fold(text).split())
+
+
+def fwords(text: str | None) -> str:
+    """fold(), words only (punctuation and '> ' quote markers gone)."""
+    return " ".join(_WORDS.findall(fold(text)))
+
+
+# O-D4, list generic-v1 (the contract's list; test_oracle_c.py checks it equals the product's)
+GENERIC_V1 = frozenset(" ".join(_WORDS.findall(p)) for p in (
+    "hello", "hi", "hey", "hello there", "hi there", "hey there", "good morning", "good afternoon", "good evening",
+    "good night", "thanks", "thank you", "thanks a lot", "thank you very much", "thank you so much", "many thanks",
+    "thanks so much", "thanks very much", "you are welcome", "you're welcome", "no problem", "ok", "okay", "ok thanks",
+    "okay thanks", "ok thank you", "yes", "no", "yes please", "no thanks", "no thank you", "sure", "great", "perfect",
+    "got it", "sounds good", "please", "bye", "goodbye", "see you", "see you later", "have a nice day",
+    "have a great day", "how are you", "how are you doing", "what's up", "can you help me", "please help me",
+    "hallo", "guten morgen", "guten tag", "guten abend", "gute nacht", "danke", "danke schön", "danke sehr",
+    "vielen dank", "bitte", "bitte schön", "ja", "nein", "ja bitte", "nein danke", "tschüss", "wie geht es dir",
+    "merhaba", "teşekkürler", "teşekkür ederim", "çok teşekkür ederim", "günaydın", "iyi akşamlar", "evet", "hayır",
+    "bonjour", "bonsoir", "merci", "merci beaucoup", "oui", "non", "salut", "hola", "gracias", "muchas gracias",
+    "buenos días", "buenas noches", "sí", "ciao", "grazie", "grazie mille"))
+_GENERIC_URL = re.compile(r"(?:(?:https?|ftp)\s*:\s*/\s*/\s*)?(?:www\s*\.\s*)?[a-z0-9-]+(?:\s*\.\s*[a-z0-9-]+)+\s*/?\s*"
+                          r"(?:(?:search\s*\?\s*q\s*=|index\s*\.\s*html?|wiki\s*/|en\s*/)\s*)?")
+
+
+def generic(piece: str | None, *, whole: bool = False) -> bool:
+    """O-D4: a piece shorter than 16 characters (unless the whole withheld text), or one on generic-v1."""
+    f = fflat(piece)
+    if not f or (not whole and len(f) < MIN_REL):
+        return True
+    words = " ".join(_WORDS.findall(f))
+    return not words or words in GENERIC_V1 or bool(_GENERIC_URL.fullmatch(f.strip(" .,;:!?'\"")))
+
+
+# The decode cap: the same caps as the product's canonical decode (owner rule 'at the cap fail closed, the same in the
+# oracle'; test_oracle_c.py checks the constants and the capped verdict on the same inputs)
+CAP_STEPS, CAP_DEPTH, CAP_BUDGET, CAP_TEXT, CAP_STRINGS = 64, 32, 4_000_000, 2_000_000, 20_000
+DECODE_CAP = True  # a mutant that turns the cap off must be killed (test_oracle_c.py)
+
+
+@dataclass(frozen=True)
+class Rd:
+    """One reading of a field: unit (compared whole), lead (W would start there), cut_end (cut at its end without a
+    mark), span (a quote span of a Hermes f-string summary: admitted only on the may-show side)."""
+    text: str
+    unit: bool = False
+    lead: bool = False
+    cut_end: bool = False
+    span: bool = False
+
+
+_QUOTE_LINE = re.compile(r"(?m)^[ \t]*(?:>[ \t]?)+")
+_PRUNE = re.compile(r"\[[\w.:/-]+\]( [A-Za-z_][\w-]*=.*?) \([\d,]+ chars result\)", re.S)
+_PRUNE_K = re.compile(r"(?:^| )([A-Za-z_][\w-]*)=")
+PRUNE_WIDTH = 40  # str(v)[:40] (context_compressor._summarize_tool_result_unguarded)
+_CUT_MARK = re.compile(r"…|\.\.\.|\[(?:output |content |message )?truncated|\((?:output )?truncated|<truncated", re.I)
+_TRUNC = re.compile(r"\[truncated|truncated: tool response|</persisted-output>|\n\.\.\.(?:\n|\Z)", re.I)
+_OPEN = re.compile(r"""(?:\A|[:\[{(,=]\s?)(['"])""")
+_DOC = re.compile(r'\A\s*(?:\{.*\}|\[.*\]|".*")\s*\Z', re.S)
+
+
+def quote_spans(text: str) -> list[Rd]:
+    """The quote spans of Hermes's f-string tool summaries (written from the spec text: the argument between the
+    summary's opening quote and the closing one its fixed tail follows, across apostrophes and line breaks;
+    vision_analyze cut at 50 characters, delegate_task at 57 + '...'), each line of a span as well. Admitted only on
+    the side of what a hold may show (round 3, consolidation oracle change 1)."""
+    out: list[Rd] = []
+    if "] " not in text:
+        return out
+    for rx, width in ((r"\[vision_analyze\] '(.*?)' \([\d,]+ chars\)", 50),
+                      (r"\[web_search\] query='(.*?)' \([\d,]+ chars result\)", 0),
+                      (r"\[search_files\] \S+ search for '(.*?)' in .*? -> \S+ matches", 0),
+                      (r"\[delegate_task\] '(.*?)' \([\d,]+ chars result\)", 0),
+                      (r"\[execute_code\] `(.*?)` \(\d+ lines output\)", 0),
+                      (r"\[terminal\] ran `(.*?)` -> exit ", 0),
+                      (r"\[clarify\] user responded: (.*)", 0)):
+        for m in re.finditer(rx, text, re.S):
+            span = m.group(1)
+            cut = bool(width) and len(span) >= width
+            if span.endswith("..."):
+                span, cut = span[:-3], True
+            out.append(Rd(span, unit=True, lead=True, cut_end=cut, span=True))
+            if "\n" in span:
+                out.extend(Rd(ln, unit=True, lead=i == 0, span=True) for i, ln in enumerate(span.split("\n")) if ln)
+    return out
+
+
+def _cheap_readings(text: str) -> list[Rd]:
+    out: list[Rd] = []
+    if _QUOTE_LINE.search(text):  # fqw: the text without '> ' markers, and each quoted block whole
+        out.append(Rd(_QUOTE_LINE.sub("", text)))
+        block: list[str] = []
+        for line in text.splitlines() + [""]:
+            if _QUOTE_LINE.match(line):
+                block.append(_QUOTE_LINE.sub("", line, count=1))
+            elif block:
+                out.append(Rd("\n".join(block), unit=True, lead=True))
+                block = []
+    out += quote_spans(text)
+    for m in _PRUNE.finditer(text):  # the generic prune line: each value at 40 characters
+        args = m.group(1)
+        keys = list(_PRUNE_K.finditer(args))
+        for k, key in enumerate(keys):
+            end = keys[k + 1].start() if k + 1 < len(keys) else len(args)
+            win = args[key.end():key.end() + PRUNE_WIDTH]
+            out.append(Rd(win, lead=True, cut_end=len(win) >= PRUNE_WIDTH))
+            val = args[key.end():end]
+            out.append(Rd(val, unit=True, lead=True, cut_end=len(val) >= PRUNE_WIDTH))
+    return out
+
+
+def unescape(text: str) -> str:
+    """JSON and Python escapes read back, tolerant of a cut text (a cut escape and a lone surrogate dropped)."""
+    out, i, n = [], 0, len(text)
+    simple = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f", "a": "\a", "v": "\v", "0": "\0", '"': '"',
+              "'": "'", "\\": "\\", "/": "/"}
+    while i < n:
+        c = text[i]
+        if c != "\\":
+            out.append(c)
+            i += 1
+            continue
+        if i + 1 >= n:
+            break
+        e = text[i + 1]
+        width = {"u": 4, "x": 2, "U": 8}.get(e)
+        if not width:
+            out.append(simple.get(e, e))
+            i += 2
+            continue
+        digits = text[i + 2:i + 2 + width]
+        if len(digits) < width or not re.fullmatch(r"[0-9a-fA-F]+", digits):
+            part = re.match(r"[0-9a-fA-F]*", digits)
+            i += 2 + (part.end() if part else 0)
+            continue
+        code, i = int(digits, 16), i + 2 + width
+        if e == "u" and 0xD800 <= code <= 0xDBFF:
+            low = re.match(r"\\u([dD][c-fC-F][0-9a-fA-F]{2})", text[i:i + 6])
+            if not low:
+                continue
+            code, i = 0x10000 + ((code - 0xD800) << 10) + (int(low.group(1), 16) - 0xDC00), i + 6
+        if 0xD800 <= code <= 0xDFFF or code > 0x10FFFF:
+            continue
+        out.append(chr(code))
+    return "".join(out)
+
+
+def _literals(text: str) -> list[Rd]:
+    out: list[Rd] = []
+    i, n, count = 0, len(text), 0
+    while i < n and count < CAP_STRINGS:
+        found = _OPEN.search(text, i)
+        if not found:
+            break
+        q, j = found.group(1), found.end()
+        start = j
+        while j < n and text[j] != q:
+            j += 2 if text[j] == "\\" else 1
+        body = text[start:min(j, n)]
+        if j >= n:
+            out.append(Rd(unescape(body), unit=True, lead=True, cut_end=True))
+            break
+        if "\\" in body:
+            out.append(Rd(unescape(body), unit=True, lead=True))
+        count += 1
+        i = j + 1
+    return out
+
+
+def _open_literal(text: str) -> bool:
+    i, n = 0, len(text)
+    while i < n:
+        found = _OPEN.search(text, i)
+        if not found:
+            return False
+        q, j = found.group(1), found.end()
+        while j < n and text[j] != q:
+            j += 2 if text[j] == "\\" else 1
+        if j >= n:
+            return True
+        i = j + 1
+    return False
+
+
+class _CapHit(Exception):
+    pass
+
+
+def _strings(value: Any) -> list[Rd]:
+    out: list[Rd] = []
+    stack = [value]
+    while stack and len(out) < CAP_STRINGS:
+        v = stack.pop()
+        if isinstance(v, str):
+            out.append(Rd(v, unit=True, lead=True))
+        elif isinstance(v, dict):
+            for k, x in v.items():
+                out.append(Rd(str(k), unit=True, lead=True))
+                stack.append(x)
+        elif isinstance(v, list):
+            stack.extend(v)
+    return out
+
+
+def _decode_steps(text: str) -> list[Any]:
+    rest: list[Any] = []
+    if "\\" in text:
+        rest.append(lambda: [Rd(unescape(text))])
+    if _OPEN.search(text) and ("\\" in text or _open_literal(text)):
+        rest.append(lambda: _literals(text))
+    if _DOC.match(text) and (text.lstrip()[:1] != '"' or "\\" in text):
+        def parse() -> list[Rd]:
+            try:
+                value = json.loads(text)
+            except RecursionError as exc:
+                raise _CapHit from exc
+            except ValueError:
+                return [x for fn in rest for x in fn()]
+            return _strings(value)
+        return [parse]
+    return rest
+
+
+def readings(text: str | None) -> tuple[list[Rd], bool]:
+    rds, capped = _readings_cached(text or "") if len(text or "") <= 50_000 else _readings(text or "")
+    return list(rds), capped
+
+
+@functools.lru_cache(maxsize=8192)
+def _readings_cached(text: str) -> tuple[tuple[Rd, ...], bool]:
+    rds, capped = _readings(text)
+    return tuple(rds), capped
+
+
+def _readings(text: str | None) -> tuple[list[Rd], bool]:
+    """Every reading of a field (the field first) and whether a cap stopped the decode (fail-closed: not_checked).
+    Iterative, with the product's caps: CAP_STEPS decode steps, CAP_DEPTH nested decodes, CAP_BUDGET characters of
+    readings, CAP_TEXT for the field."""
+    text = text or ""
+    if DECODE_CAP and len(text) > CAP_TEXT:
+        return [Rd(text, unit=True, lead=True)], True
+    out: list[Rd] = []
+    seen: set[Rd] = set()
+    queue: list[tuple[Rd, int]] = [(Rd(text, unit=True, lead=True), 0)]
+    steps, budget, capped = 0, CAP_BUDGET, False
+    while queue:
+        r, depth = queue.pop(0)
+        if r in seen or not r.text:
+            continue
+        seen.add(r)
+        budget -= len(r.text)
+        if DECODE_CAP and budget < 0:
+            capped = True
+            break
+        out.append(r)
+        queue.extend((x, depth) for x in _cheap_readings(r.text) if x.text != r.text)
+        steps_here = _decode_steps(r.text)
+        if not steps_here:
+            continue
+        if DECODE_CAP and depth >= CAP_DEPTH:
+            capped = True
+            continue
+        for fn in steps_here:
+            steps += 1
+            if DECODE_CAP and steps > CAP_STEPS:
+                capped = True
+                break
+            try:
+                found = fn()
+            except (_CapHit, RecursionError, MemoryError):
+                capped = True
+                continue
+            queue.extend((x, depth + 1) for x in found if x.text != r.text or x.cut_end != r.cut_end)
+        if DECODE_CAP and steps > CAP_STEPS:
+            break
+    return out, capped
+
+
+def _suffix_prefix(tail: str, w: str) -> int:
+    """The longest suffix of tail that is a prefix of w."""
+    tail = tail[-len(w):] if w else ""
+    for k in range(min(len(tail), len(w)), 0, -1):
+        if tail.endswith(w[:k]):
+            return k
+    return 0
+
+
+def _peeled(text: str) -> str:
+    return peel(text)[0] or text
+
+
+@dataclass(frozen=True)
+class WC:
+    w: str  # fflat of W's authored text
+    whole: str  # fflat of W as written
+    words: str  # fwords of W's authored text
+    generic: bool  # O-D4: W itself on generic-v1
+
+
+def wc(withheld: str) -> WC | None:
+    body = _peeled(withheld)
+    w = fflat(body) or fflat(withheld)
+    if not w:
+        return None
+    return WC(w, fflat(withheld), fwords(body) or fwords(withheld), generic(body or withheld, whole=True))
+
+
+CUT_PER_LINE = True  # admitted (may show) only; a mutant that demands it is a loosening of nothing (see self-tests)
+
+
+def _rd_relations(r: Rd, wf: WC, *, group: bool, carrier: bool, allowed: bool) -> set[str]:
+    out: set[str] = set()
+    f = fflat(r.text)
+    if not f:
+        return out
+    if r.unit and (f in (wf.w, wf.whole) or (wf.words and fwords(r.text) == wf.words)):
+        out.add("identical")
+    if len(wf.w) >= MIN_REL and wf.w in f:
+        out.add("contains")
+    if allowed and group and len(wf.words) < MIN_REL and wf.words and f" {wf.words} " in f" {fwords(r.text)} ":
+        out.add("contains")  # a short W's words as a sequence inside a group: ambiguous (may show, never demanded)
+    if len(wf.w) < MIN_REL:
+        return out
+    if (r.unit or r.lead) and len(f) < len(wf.w) and wf.w.startswith(f) and not generic(f):
+        out.add("cut")
+    points = [m.start() for m in _CUT_MARK.finditer(r.text)] + ([len(r.text)] if r.cut_end else [])
+    if allowed and CUT_PER_LINE and _TRUNC.search(r.text):
+        points += [m.start() for m in re.finditer(r"\n", r.text)]
+    for p in points:
+        k = _suffix_prefix(fflat(r.text[:p]), wf.w)
+        if MIN_REL <= k < len(wf.w) and not generic(wf.w[:k]):
+            out.add("cut")
+    if group and r.unit and len(f) >= MIN_REL and f != wf.w and f in wf.w and not generic(f):
+        out.add("part_of")
+    if "[Replying to" in r.text:
+        for q in reply_quotes(r.text):
+            if len(q) >= MIN_REL and fflat(q) and fflat(q) in wf.w and not (carrier and generic(q, whole=True)):
+                out.add("part_of")
+    return out
+
+
+def field_relations(held: str, w: str, *, group: bool, carrier: bool = False, allowed: bool = False) -> set[str]:
+    """The relations of one field of a held row to a withheld text under fold and every reading: CORE readings only
+    (demanded), or with the spans and the may-show readings too (allowed=True)."""
+    wf = wc(w)
+    if wf is None or not norm(held):
+        return set()
+    out: set[str] = set()
+    body, quote, again = peel(held)
+    whole = fflat(held)
+    if whole == wf.whole or (wf.w and fflat(body) == wf.w):
+        out.add("identical")
+        if whole != wf.whole and (again or hs.REPLAY_HEADER in w):
+            out.add("restated")
+    rds, capped = readings(held)
+    if capped:
+        out.add("not_checked")
+    for r in rds:
+        if r.span and not allowed:
+            continue
+        out |= _rd_relations(r, wf, group=group, carrier=carrier, allowed=allowed)
+    if quote is not None and len(quote) >= MIN_REL and fflat(quote) in wf.w:
+        out.add("part_of")
+    if group and len(fflat(body)) >= MIN_REL and fflat(body) != wf.w and fflat(body) in wf.w:
+        out.add("part_of")
+    if carrier and wf.generic:
+        out -= {"identical", "contains", "restated"}  # O-D4: a generic W is no carrier
+    return out
+
+
+def relations_c(fields: list[str], w: str, *, group: bool, carrier: bool = False) -> tuple[set[str], set[str]]:
+    """(demanded, allowed) over every field of a row: demanded from the core readings; allowed adds the spans and the
+    may-show readings (span_relations)."""
+    dem, alw = set(), set()
+    for f in fields:
+        if not f:
+            continue
+        dem |= field_relations(f, w, group=group, carrier=carrier)
+        alw |= field_relations(f, w, group=group, carrier=carrier, allowed=True)
+    return dem, alw | dem
+
+
+def span_relations(fields: list[str], w: str, *, group: bool) -> set[str]:
+    """What the quote spans alone relate (round 3 consolidation oracle change 1: admitted, never demanded)."""
+    wf = wc(w)
+    out: set[str] = set()
+    if wf is None:
+        return out
+    for f in fields:
+        for r in quote_spans(f or ""):
+            out |= _rd_relations(r, wf, group=group, carrier=False, allowed=True)
+    return out
+
+
+def version_fields(v: hs.Version) -> list[str]:
+    return [x for x in (v.content, v.calls) if x]
+
+
+def row_fields(r: dict[str, Any]) -> list[str]:
+    calls = r.get("tool_calls")
+    if calls and not isinstance(calls, str):
+        calls = json.dumps(calls, ensure_ascii=False, sort_keys=True)
+    return [x for x in (r.get("content") or "", calls or "") if x]
+
+
+_CC_MARK = re.compile(r"\[REDACTED:[A-Za-z0-9_ -]+\]|\[email\]|\[phone\]")
+
+
+def cc_redacted_of(stored: str | None, released: str | None) -> bool:
+    """A stored released row that equals the released text with only the Command Center's own marks
+    ([REDACTED:<kind>], [email], [phone]) in place of spans: the readable pieces between the marks appear, in order,
+    in the released text, and the first and last pieces anchor at its ends (round 3 consolidation oracle change 2)."""
+    s, r = stored or "", released or ""
+    if norm(s) == norm(r):
+        return True
+    if not _CC_MARK.search(s):
+        return False
+    pieces = _CC_MARK.split(s)
+    pos = 0
+    for i, piece in enumerate(pieces):
+        if not piece:
+            continue
+        at = r.find(piece, pos)
+        if at < 0 or (i == 0 and at != 0):
+            return False
+        pos = at + len(piece)
+    return not pieces[-1] or r.endswith(pieces[-1])
+
+
 _CODES = (("not_in_backup", r"not in (this|the) backup|not_in_backup|not in backup"),
           ("identical", r"identical|same text|same words"),
           ("restated", r"restat"),
@@ -132,6 +594,12 @@ _CODES = (("not_in_backup", r"not in (this|the) backup|not_in_backup|not in back
 
 def reported_relations(hold: dict[str, Any]) -> tuple[set[str], list[str]]:
     texts: list[str] = []
+    rel = hold.get("relations")
+    if isinstance(rel, list) and rel and all(isinstance(x, str) and x in EXACT_CODES for x in rel):
+        # option C: the hold lists its exact codes (D3); the words shown are read as before as well (rebuild R5)
+        exact = set(rel)
+    else:
+        exact = set()
 
     def walk(x: Any) -> None:
         if isinstance(x, str):
@@ -145,7 +613,7 @@ def reported_relations(hold: dict[str, Any]) -> tuple[set[str], list[str]]:
     for key in ("relation", "relations", "relation_codes", "codes", "evidence", "compare"):
         if key in hold:
             walk(hold[key])
-    out: set[str] = set()
+    out: set[str] = set(exact)
     for t in texts:
         tl = t.lower().strip()
         for code, pat in _CODES:
@@ -241,6 +709,10 @@ class Run:
     withholds: list[Withhold] = field(default_factory=list)
     imported: list[hs.Snapshot] = field(default_factory=list)  # every backup this installation imported
     runs: list[int] = field(default_factory=list)
+    # option C (rebuild R5): the texts each released row may hold (source key or 'id:<archive id>' -> texts), and the
+    # rows stored when each withhold was made (its text was in hand then: the full scan compared them)
+    released: dict[str, list[str]] = field(default_factory=dict)
+    at_withhold: dict[str, set[str]] = field(default_factory=dict)
 
     def bad(self, prop: str, msg: str) -> None:
         self.problems.append("%s seed %d: %s" % (prop, self.seed, msg))
@@ -529,10 +1001,21 @@ def w_text_present(run: Run, w: Withhold, snap: hs.Snapshot, st: dict[str, Any] 
 
 
 
+NA_EVERY_TEXT = True  # O5 (N-A): 'none' against every withheld text (a mutant 'own only' must be killed)
+LATER_UNDECIDED = True  # O9: 'later_withhold' is undecided (a mutant reading it as decided must be killed)
+
+
 def check_evidence(run: Run, prop: str, holds: list[dict[str, Any]], st: dict[str, Any], snap: hs.Snapshot,
                    where: str) -> None:
+    """A3 / C3-evidence / O4: every hold's evidence matches a recomputation. Option C (rebuild R5): a hold shows its
+    relations to every withheld text in hand (group_relations), read under fold and every demanded reading; what it
+    shows must be admitted (computed, or a quote span or other may-show reading of SOME withheld text), and it must
+    show a demanded relation to its own withheld text when there is one. 'none' needs every withheld text in hand and
+    no relation to any (O5, N-A); 'later_withhold' is undecided (O9); 'other_not_compared' and 'not_in_backup' say
+    what was not compared."""
     rows = {r["id"]: r for r in st["rows"]}
     comps = {w.key: decision_family(run, w, snap, st) for w in run.withholds}
+    group = truth_group(run, snap, st) if run.withholds else set()
     for h in holds:
         rid = h.get("message")
         r = rows.get(rid)
@@ -552,48 +1035,62 @@ def check_evidence(run: Run, prop: str, holds: list[dict[str, Any]], st: dict[st
             # evidence computed on that backup (plan 4.4, 4.6; deviation 248): recomputed there, not here
             continue
         anchor = stone.get("anchor_key") or ""
-        # the hold is listed under one decision; its relations are computed against every decision of the family
-        # (core-3 deviation 201): honest when it matches the recomputation against any of them (deviation 248)
         own = [w for w in run.withholds if w.key == anchor] or run.withholds
-        # only the decisions of this row's own family (plan section 2 correction 4: 'every withheld text of that
-        # family'): a decision in an unlinked conversation is not this hold's (integrator, deviation 253)
         fam_ws = [w for w in run.withholds if r["sid"] in comps[w.key]]
-        ws = own + [w for w in fam_ws if w not in own]
-        ok = False
-        why = []
+        in_group = r["sid"] in group or r["sid"] in fam_ws_sids(run, fam_ws)
+        ws = own + [w for w in run.withholds if w not in own]
+        rep_text = rep & set(TEXT_RELATIONS)
+        allowed_all: set[str] = set()
+        per_w: list[tuple[Withhold, str | None, list[tuple[str, set[str]]]]] = []
         for w in ws:
             wt = w_text_in(run, w, snap, st)
-            rep_text = rep & set(TEXT_RELATIONS)
-            # the withheld text as the backup holds it, and as the admin withheld it: a relation computed earlier
-            # with the withheld text in memory (the withhold dialog, an earlier Settle) stays on a hold when this
-            # backup no longer holds the text (settle.evidence), and a prune JARVIS made in place changes what the
-            # backup holds (deviation 245)
             views = [w.text] if wt is None else [wt] + ([w.text] if norm(wt) != norm(w.text) else [])
+            done = []
             for view in views:
-                computed = set()
+                computed, allowed = set(), set()
                 for v in vs:
                     computed |= text_relations(v.content, view)
-                if w not in own:  # another decision of the family: only a text relation it really has
-                    honest = bool(rep_text) and rep_text <= computed and not rep & {"differs", "none"}
+                    dem, alw = relations_c(version_fields(v), view, group=in_group, carrier=not in_group)
+                    computed |= dem
+                    allowed |= alw
+                allowed |= computed
+                allowed_all |= allowed
+                done.append((view, computed))
+            per_w.append((w, wt, done))
+        ok = False
+        why = []
+        undecided = LATER_UNDECIDED and "later_withhold" in rep
+        for w, wt, done in per_w:
+            if w not in own:
+                continue
+            for view, computed in done:
+                if rep & {"differs", "none"} and (computed or undecided):
+                    honest = False
+                elif undecided or "other_not_compared" in rep:
+                    honest = rep_text <= allowed_all and (undecided or not computed or bool(rep_text & computed))
                 elif wt is None:
-                    honest = ("not_in_backup" in rep and not rep_text) or (not rep_text and not computed) or (
-                        bool(rep_text) and rep_text <= computed and not rep & {"differs", "none"})
+                    honest = ("not_in_backup" in rep and rep_text <= allowed_all) or (not rep_text and not computed) \
+                        or (bool(rep_text) and rep_text <= allowed_all)
                 else:
-                    honest = rep_text <= computed and (not computed or bool(rep_text & computed)) and not (
-                        computed and rep & {"differs", "none"}) and "not_in_backup" not in rep
+                    honest = rep_text <= allowed_all and (not computed or bool(rep_text & computed)) \
+                        and "not_in_backup" not in rep
                 if honest:
                     ok = True
                 why.append("%scomputed %s; held %r vs withheld %r" % ("W absent, " if wt is None else "",
                                                                       sorted(computed), vs[-1].content[:90],
                                                                       view[:90]))
         if ok and "none" in rep:
-            # 'none' gates the one-click release (plan section 2 correction 4; core-3 deviation 201): no withheld text
-            # of the family that this backup holds relates to the row (deviation 251)
-            for w in own + [w for w in fam_ws if w not in own]:
-                wt = w_text_in(run, w, snap, st)
+            # O5 (N-A): 'none' gates the one-click release: every withheld text in hand, none related
+            for w, wt, done in per_w:
+                if not NA_EVERY_TEXT and w not in own:
+                    continue
+                if wt is None:
+                    ok = False
+                    why.append("'none' while the withheld %s:%s is not in this backup" % (w.sid, w.row))
+                    continue
                 related = set()
-                for v in vs:
-                    related |= text_relations(v.content, wt) if wt is not None else set()
+                for view, computed in done:
+                    related |= computed
                 if related:
                     ok = False
                     why.append("'none' but %s to the withheld %r" % (sorted(related), (wt or "")[:60]))
@@ -601,6 +1098,10 @@ def check_evidence(run: Run, prop: str, holds: list[dict[str, Any]], st: dict[st
             run.bad(prop, "%s: hold %s (%s:%s %s) evidence %s %r does not match the recomputation (%s)" % (
                 where, rid, r["sid"], r.get("source_message_id"), r.get("role"), sorted(rep), raw[:3],
                 "; ".join(why)))
+
+
+def fam_ws_sids(run: Run, ws: list[Withhold]) -> set[str]:
+    return {w.sid for w in ws}
 
 
 async def scripted_review(run: Run, holds: list[dict[str, Any]], st: dict[str, Any], where: str) -> list[int]:
@@ -615,11 +1116,24 @@ async def scripted_review(run: Run, holds: list[dict[str, Any]], st: dict[str, A
         vs = versions_for(run.sim, r)
         if vs and not run.derives(vs):
             resp = await run.api.release(rid)
+            untyped = getattr(run.api, "untyped", None)
+            if untyped is not None and untyped.status_code < 400 and h.get("confirm_required"):
+                # O6 (B6): a hold one click could not release is released per row only with the typed word
+                run.bad("O6", "%s: hold %s (confirm required, relations %s) was released without the typed word" % (
+                    where, rid, h.get("relations")))
             if resp.status_code >= 400:
                 run.bad("review", "%s: release of independent hold %s refused: %s %s" % (
                     where, rid, resp.status_code, resp.text[:200]))
             else:
                 released.append(rid)
+                # the content the release covers (C3: the exact row and its content): its version in the backup the
+                # hold was decided on (else the newest imported one)
+                stone = st["stone_by_key"].get(r["source_key"]) or {}
+                by_sha = {snap.sha256: snap for snap in run.imported}
+                decided = by_sha.get(stone.get("decided_on") or "") or (run.imported[-1] if run.imported else None)
+                texts = [v.content for v in backup_versions(run, r, decided)] if decided is not None else []
+                for key in (r["source_key"], "id:%s" % r["id"]):
+                    run.released.setdefault(key, []).extend(t for t in texts if t not in run.released[key])
         else:
             resp = await run.api.keep(rid)
             if resp.status_code >= 400:
@@ -668,6 +1182,11 @@ def is_reply_quote_hold(row: dict[str, Any], st: dict[str, Any], run: Run) -> bo
     return False
 
 
+CARRIER_EXCUSE = True  # narrowings (rebuild R5): each has a self-test with a mutant that loosens it
+KEPT_CARRIER_EXCUSE = True
+REKEYED = True
+
+
 def compare_outside(run: Run, prop: str, mine: dict[str, Any], plain: dict[str, Any], fam: set[str],
                     where: str) -> None:
     a, b = by_key(mine), by_key(plain)
@@ -679,6 +1198,11 @@ def compare_outside(run: Run, prop: str, mine: dict[str, Any], plain: dict[str, 
             continue
         if ra is not None and is_reply_quote_hold(ra, mine, run):
             continue
+        # option C (rebuild R5): a carrier outside every group held on its own (an admitted reading relates it to a
+        # withheld text), and a kept carrier whose own row once carried a withheld text (round 3 'kept_carrier')
+        if ra is not None and (CARRIER_EXCUSE and is_carrier_hold(ra, mine, run)
+                               or KEPT_CARRIER_EXCUSE and kept_carrier(ra, mine, run)):
+            continue
         sa = (bool(ra.get("withheld")), content_hash(ra.get("content"))) if ra else None
         sb = (bool(rb.get("withheld")), content_hash(rb.get("content"))) if rb else None
         if sa != sb:
@@ -689,12 +1213,14 @@ def compare_outside(run: Run, prop: str, mine: dict[str, Any], plain: dict[str, 
 
 
 def check_stored_unchanged(run: Run, prop: str, pre: dict[str, Any], post: dict[str, Any], fam: set[str],
-                           where: str) -> None:
+                           where: str, snap: hs.Snapshot | None = None) -> None:
     a, b = by_key(pre), by_key(post)
     for k, ra in a.items():
         if ra["sid"] not in fam:
             continue
         rb = b.get(k)
+        if rb is None and REKEYED:
+            rb = rekeyed(ra, post, snap)  # round 3 (13560): the same archive row under its uid key
         if rb is None:
             run.bad(prop, "%s: stored family row %s (%s) disappeared" % (where, k, ra["sid"]))
             continue
@@ -776,3 +1302,275 @@ def check_safe_copies(run: Run, prop: str, pre: dict[str, Any], post: dict[str, 
             run.bad(prop, "%s: new family row %s (%s:%s %s) is readable but equals no readable stored row of the "
                           "family: %r" % (where, r["id"], r["sid"], r.get("source_message_id"), r.get("role"),
                                          (r.get("content") or "")[:60]))
+
+
+# --- option C: the group ground truth and the checks O1-O11 (rebuild R5, RECON-39) --------------------------------
+# O1  every conversation of a withheld message's group (the ground truth of the links any imported backup showed:
+#     continuation, branch and reset both ways; a delegated sub-agent and a markerless child from the parent down only,
+#     O-D1; a row carrying or absorbing a certain stone's uid; copied history for a conversation no backup gave a
+#     parent) is recorded as a member or uncertain
+# O2  every stored row of such a conversation is held, unless the admin released that exact row and it still holds the
+#     released text (released_ok, cc_redacted_of)
+# O3  (B9) no readable row outside the groups carries a withheld text the Command Center had in hand by a demanded
+#     reading (fold, generic-v1, prune line, fwords, decode cap: not_checked)
+# O4  (A3, C3-evidence) every hold's evidence is honest: what it shows is admitted (spans only on the may-show side)
+#     and it shows a demanded relation when there is one
+# O5  (N-A) 'none' only with every withheld text in hand and none related
+# O6  (B6, D3) one click only for exactly 'none', a user or assistant row, the plain form, no uncertain link, no later
+#     withhold; an untyped per-row release of anything else is refused
+# O7  a released row holds no text until the next import, then exactly the released text (released_ok)
+# O8  (N-B) a released row that carries another withheld text is held again
+# O9  'later_withhold' is undecided: never 'none', never one click
+# O10 (B1, B7) imports, re-imports, rollbacks and restores never make a held row readable (rekeyed: the same archive
+#     row under the uid the backup gives it is the same row)
+# O11 a group conversation's title is hidden; a title outside the groups that carries a withheld text is hidden
+
+GROUP_VIAS_C = ("held with its conversation: a withheld conversation group",
+                "held with its conversation: an uncertain link to a withheld conversation")
+CARRIER_VIA = "carries the withheld text"
+DOWN_ONLY = frozenset({"delegated", "child"})  # O-D1: from the parent down only (the parent side is pending: B, D)
+
+
+def visible_links(run: Run, current: hs.Snapshot) -> set[tuple[str, str, str]]:
+    """(child, parent, kind) of every link an imported backup (or the one in hand) showed (its parent_session_id or a
+    marker naming the parent)."""
+    out: set[tuple[str, str, str]] = set()
+    for snap in run.imported + [current]:
+        for child, (parent, kind) in snap.links.items():
+            out.add((child, parent, kind))
+    return out
+
+
+def group_seeds(run: Run, st: dict[str, Any]) -> tuple[set[str], set[str]]:
+    """The conversations and uids certain stones bind (the withheld rows, their certain members, a kept hold; never
+    a pending hold nor a hold kept only with its conversation)."""
+    sids = {w.sid for w in run.withholds}
+    uids = {w.uid for w in run.withholds if w.uid}
+    keys = {w.key for w in run.withholds}
+    for s in st["stones"]:
+        if s.get("review") == "pending" or s.get("via") in GROUP_VIAS_C:
+            continue
+        if s.get("anchor_key") not in keys and s.get("source_key") not in keys:
+            continue
+        if s.get("source_session_id"):
+            sids.add(s["source_session_id"])
+        if s.get("message_uid"):
+            uids.add(s["message_uid"])
+    return sids, uids
+
+
+def truth_group(run: Run, current: hs.Snapshot, st: dict[str, Any]) -> set[str]:
+    """O1's demand: the conversations every withheld message's group must hold (ground truth over the visible links,
+    O-D1 directions, shared uids, copied history of a conversation no imported backup gave a parent)."""
+    links = visible_links(run, current)
+    seeds, uids = group_seeds(run, st)
+    parented = {c for c, _, _ in links} | {sid for snap in run.imported + [current]
+                                          for sid, s in snap.sessions.items() if s.get("parent_session_id")}
+    out = set(seeds)
+    snaps = run.imported + [current]
+    while True:
+        before = set(out)
+        for child, parent, kind in links:
+            if parent in out:
+                out.add(child)
+            elif child in out and kind not in DOWN_ONLY:
+                out.add(parent)
+        for snap in snaps:
+            for (sid, _), v in snap.rows.items():
+                if sid not in out and ((v.uid and v.uid in uids) or set(v.absorbed) & uids):
+                    out.add(sid)
+        keys = set()
+        for snap in snaps:
+            for (sid, _), v in snap.rows.items():
+                if sid in out and v.ts is not None:
+                    keys.add((v.role, v.call or "", tkey(v.ts)))
+        for snap in snaps:
+            for sid, sess in snap.sessions.items():
+                if sid in out or sid in parented:
+                    continue
+                start = sess.get("started_at") or 0
+                if any(rsid == sid and v.ts <= start + 1e-6 and (v.role, v.call or "", tkey(v.ts)) in keys
+                       for (rsid, _), v in snap.rows.items()):
+                    out.add(sid)
+        if out == before:
+            return out
+
+
+def uncertain_doubt(run: Run, current: hs.Snapshot, sid: str) -> bool:
+    """The contract's uncertain state is justified for this conversation: a parent that no imported backup holds, two
+    parents, or a link only by copied-looking rows (O-D1, RECON-3)."""
+    known = {x for snap in run.imported + [current] for x in snap.sessions}
+    claims = set()
+    for snap in run.imported + [current]:
+        s = snap.sessions.get(sid)
+        if s is None:
+            continue
+        if s.get("parent_session_id"):
+            claims.add(s["parent_session_id"])
+        cfg = json.loads(s.get("model_config") or "{}") or {}
+        claims |= {v for k, v in cfg.items() if k.startswith("_") and k.endswith("_from") and isinstance(v, str)}
+    return bool(claims - known) or len(claims) > 1 or not claims
+
+
+async def groups_state() -> dict[str, Any]:
+    recorded = await cc.withheld_sessions()
+    return {"members": {r["source_session_id"] for r in recorded},
+            "uncertain": {r["source_session_id"] for r in recorded if r.get("state") == "uncertain"},
+            "hidden_titles": await cc.hidden_titles()}
+
+
+def released_ok(run: Run, r: dict[str, Any]) -> bool:
+    """O7: an admin released this exact row, and it holds the text released (with only the Command Center's own marks
+    in place of spans: cc_redacted_of)."""
+    texts = run.released.get(r["source_key"]) or run.released.get("id:%s" % r["id"])
+    if not texts:
+        return False
+    return any(cc_redacted_of(r.get("content"), t) for t in texts)
+
+
+def demanded_for(run: Run, fields: list[str], w: "Withhold", snap: hs.Snapshot, st: dict[str, Any], *,
+                 group: bool) -> set[str]:
+    """The relations a row's fields have with a withheld text by the demanded readings (as withheld, and as the
+    backup holds it)."""
+    out: set[str] = set()
+    views = {w.text}
+    wt = w_text_in(run, w, snap, st)
+    if wt is not None:
+        views.add(wt)
+    for view in views:
+        out |= relations_c(fields, view, group=group, carrier=not group)[0]
+    return out
+
+
+def check_c(run: Run, where: str, st: dict[str, Any], gs: dict[str, Any], snap: hs.Snapshot,
+            holds: list[dict[str, Any]] | None = None) -> set[str]:
+    """O1, O2, O3, O6, O8, O9, O11 on one state. Returns the ground-truth group."""
+    group = truth_group(run, snap, st)
+    if not run.withholds:
+        return group
+    stored_sids = {r["sid"] for r in st["rows"]}
+    for sid in sorted(group & stored_sids):
+        if sid not in gs["members"]:
+            run.bad("O1", "%s: conversation %s of a withheld message's group is not recorded (member or uncertain)"
+                    % (where, sid))
+    for r in st["rows"]:
+        fields = row_fields(r)
+        if r.get("withheld") or not fields:
+            continue
+        if norm(r.get("content")) == norm(hs.STUB) and len(fields) == 1:
+            continue  # Hermes's prune placeholder carries nothing
+        vs = versions_for(run.sim, r)
+        if r["sid"] in group or r["sid"] in gs["uncertain"]:
+            if not released_ok(run, r):
+                run.bad("O2", "%s: row %s (%s:%s %s) of group conversation %s is readable and was never released "
+                              "as it is: %r" % (where, r["id"], r["sid"], r.get("source_message_id"), r.get("role"),
+                                                r["sid"], (r.get("content") or "")[:60]))
+                continue
+        hit = []
+        for w in run.withholds:
+            if not any(run.sim.leaks(v.tag, w.lms) for v in vs):
+                continue
+            in_hand = (w_text_in(run, w, snap, st) is not None or r["source_key"] in run.at_withhold.get(w.key, ()))
+            rel = demanded_for(run, fields, w, snap, st, group=r["sid"] in group) - {"none"}
+            if rel and in_hand:
+                hit.append((w, rel))
+            elif rel:
+                run.notes.append("%s: row %s carries %s:%s by %s while its text was never in hand here (13639 "
+                                 "shape)" % (where, r["id"], w.sid, w.row, sorted(rel)))
+        for w, rel in hit:
+            if not NB_CHECK and released_ok(run, r):
+                continue
+            prop = "O8" if released_ok(run, r) else ("O3" if r["sid"] not in group else "O2")
+            run.bad(prop, "%s: readable row %s (%s:%s %s) carries the withheld %s:%s (%s): %r" % (
+                where, r["id"], r["sid"], r.get("source_message_id"), r.get("role"), w.sid, w.row, sorted(rel),
+                (r.get("content") or "")[:70]))
+    # O11: titles
+    seen: set[str] = set()
+    for r in st["rows"]:
+        sid = r["sid"]
+        title = norm(r.get("session_title"))
+        if sid in seen or not title:
+            continue
+        seen.add(sid)
+        if sid in group:
+            run.bad("O11", "%s: group conversation %s shows its title %r" % (where, sid, title[:40]))
+            continue
+        tag = snap.title_tags.get(sid)
+        if tag is not None and run.sim.lineage(tag) & run.wlms:
+            for w in run.withholds:
+                if run.sim.lineage(tag) & w.lms and relations_c([title], w.text, group=False, carrier=True)[0]:
+                    run.bad("O11", "%s: title of %s carries the withheld %s:%s: %r" % (where, sid, w.sid, w.row,
+                                                                                         title[:40]))
+                    break
+    if holds is not None:
+        check_one_click(run, where, holds, st, snap, gs)
+    return group
+
+
+ONE_CLICK_ROLES = ("user", "assistant")
+NB_CHECK = True  # O8 (N-B): a released row is compared with every other withheld text (mutant rel3:oracle_nb_off)
+
+
+def check_one_click(run: Run, where: str, holds: list[dict[str, Any]], st: dict[str, Any], snap: hs.Snapshot,
+                    gs: dict[str, Any]) -> None:
+    """O6, O9: a hold offered for one click is exactly 'none', a user or assistant row, the plain form, no uncertain
+    link, no later withhold; and its 'none' holds against every withheld text (O5)."""
+    rows = {r["id"]: r for r in st["rows"]}
+    for h in holds:
+        if not h.get("one_click"):
+            continue
+        r = rows.get(h.get("message"))
+        rel = h.get("relations") if isinstance(h.get("relations"), list) else None
+        why = []
+        if rel is not None and list(rel) != ["none"]:
+            why.append("relations %s" % rel)
+        if (h.get("role") or (r or {}).get("role")) not in ONE_CLICK_ROLES:
+            why.append("role %s" % h.get("role"))
+        if h.get("form") != "plain":
+            why.append("form %r" % h.get("form"))
+        if h.get("uncertain") or (r is not None and r["sid"] in gs["uncertain"]):
+            why.append("uncertain link")
+        if h.get("later_withhold"):
+            why.append("a later withhold")
+        if why:
+            run.bad("O6", "%s: hold %s is offered for one click: %s" % (where, h.get("message"), "; ".join(why)))
+
+
+def is_carrier_hold(row: dict[str, Any], st: dict[str, Any], run: Run) -> bool:
+    """Option C (RECON-27): a carrier outside every group held on its own: a pending or kept CARRIER_HOLD whose row
+    (some version of it) relates to a withheld text by an admitted reading, or could not be read in full."""
+    stone = st["stone_by_key"].get(row.get("source_key"))
+    if not (row.get("withheld") and stone and stone.get("via") == CARRIER_VIA):
+        return False
+    for v in versions_for(run.sim, row):
+        for w in run.withholds:
+            if relations_c(version_fields(v), w.text, group=False, carrier=True)[1]:
+                return True
+    return False
+
+
+def kept_carrier(row: dict[str, Any], st: dict[str, Any], run: Run) -> bool:
+    """Round 3 (step 2) excuse for A4/B4: the row's own key has a kept carrier hold, and one of that exact row's own
+    versions carried a withheld text (Hermes later rewrote it; live keeps holding it while a plain import shows it)."""
+    stone = st["stone_by_key"].get(row.get("source_key"))
+    if not (stone and stone.get("via") == CARRIER_VIA and stone.get("review") == "kept"):
+        return False
+    rid = str(row.get("source_message_id") or "")
+    if not rid.isdigit():
+        return False
+    return any(run.leaks([v]) for v in run.sim.versions_of(row["sid"], int(rid)))
+
+
+def rekeyed(row: dict[str, Any], post: dict[str, Any], snap: hs.Snapshot | None) -> dict[str, Any] | None:
+    """Round 3 (step 3, 13560): a stored row whose key moved to the uid key the backup gives that very JARVIS row
+    (the same archive row id; the backup's row at that session and row id has that uid). None otherwise."""
+    if snap is None:
+        return None
+    for rb in post["rows"]:
+        if rb["id"] != row["id"] or rb["source_key"] == row["source_key"]:
+            continue
+        rid = str(row.get("source_message_id") or "")
+        v = snap.rows.get((row["sid"], int(rid))) if rid.isdigit() else None
+        if v is not None and v.uid and rb["source_key"] == "jarvis:message:uid:" + v.uid:
+            return rb
+    return None

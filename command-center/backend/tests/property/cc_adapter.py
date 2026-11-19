@@ -176,6 +176,7 @@ class Api:
         """A release, with the typed confirmation the answer asks for when the hold's relation needs one (4.6)."""
         url = "/api/brain/holds/%d/release" % message_id
         r = await self.call("POST", url)
+        self.untyped = r  # B6 (rebuild R5): the scripted review checks what the untyped request got
         if r.status_code < 400:
             return r
         tried = [r]
@@ -260,6 +261,18 @@ async def stones() -> list[dict[str, Any]]:
         found = (await s.execute(text("SELECT to_jsonb(t) FROM brain_tombstones t WHERE reason = :r ORDER BY 1"),
                                  {"r": WITHHELD_BY_ADMIN})).scalars()
         return [dict(r) for r in found]
+
+
+async def withheld_sessions() -> list[dict[str, Any]]:
+    """Option C's recorded groups (brain_withheld_sessions: anchor, conversation, how, member or uncertain)."""
+    async with session_scope() as s:
+        found = (await s.execute(text("SELECT to_jsonb(x) FROM brain_withheld_sessions x ORDER BY 1"))).scalars()
+        return [dict(r) for r in found]
+
+
+async def hidden_titles() -> set[str]:
+    async with session_scope() as s:
+        return set((await s.execute(text("SELECT source_session_id FROM brain_hidden_titles"))).scalars())
 
 
 async def table_exists(name: str) -> bool:

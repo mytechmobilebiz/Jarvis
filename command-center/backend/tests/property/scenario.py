@@ -14,6 +14,20 @@ from .oracle import Run, Withhold, norm, state, versions_for
 RESTORE_EVERY = int(os.environ.get("ORACLE_RESTORE_EVERY", "25"))  # a docker restore round trip every N seeds
 
 
+def arm(name: str, rng: random.Random, p: float) -> bool:
+    """An arm of the harness (rebuild R5): forced by its environment variable ('0' or '1'), else drawn per seed."""
+    v = os.environ.get(name, "")
+    drawn = rng.random() < p  # always drawn, so a forced arm leaves the seed's other draws unchanged
+    return drawn if v not in ("0", "1") else v == "1"
+
+
+async def check_c(run: Run, where: str, snap: hs.Snapshot, *, holds: list | None = None) -> set[str]:
+    """Option C's checks O1-O3, O6, O8, O9, O11 on the current state (oracle.check_c). Returns the ground-truth group."""
+    st = await state()
+    gs = await o.groups_state()
+    return o.check_c(run, where, st, gs, snap, holds if holds is not None else await run.api.holds())
+
+
 async def _step(run: Run, label: str, coro: Any) -> Any:
     """A Command Center entry point; a missing one fails the seed (BINDING), or is noted under ORACLE_LENIENT=1."""
     try:
@@ -35,12 +49,16 @@ def _sync_step(run: Run, label: str, fn: Any, *args: Any) -> Any:
         raise
 
 
-async def withhold_some(run: Run, snap: hs.Snapshot) -> None:
+async def withhold_some(run: Run, snap: hs.Snapshot, *, short_ok: bool = False, once: bool = False) -> int:
+    """Withhold one or two readable rows the ground truth gives a single version. short_ok: a text of fewer than 16
+    characters may be chosen too (13546's shape; the second-withhold arm). once: exactly one. Returns how many."""
     st = await state()
     cands = []
+    n_before = len(run.withholds)
     for r in st["rows"]:
         text = r.get("content") or ""
-        if r.get("withheld") or len(norm(text)) < 16 or text.startswith("[CONTEXT") or text == hs.STUB:
+        if r.get("withheld") or (len(norm(text)) < 16 and not short_ok) or not norm(text) \
+                or text.startswith("[CONTEXT") or text == hs.STUB:
             continue
         vs = versions_for(run.sim, r)
         if len(vs) != 1 or not vs[0].tag.carries:
@@ -49,7 +67,7 @@ async def withhold_some(run: Run, snap: hs.Snapshot) -> None:
         cands.append((r, vs[0], in_d))
     if not cands:
         run.notes.append("no row to withhold")
-        return
+        return 0
     in_backup = [c for c in cands if c[2]]
     pool = in_backup if (in_backup and run.rng.random() < 0.9) else cands
     # pressure: most of the time withhold a message that already has copies (another row of the same logical
@@ -58,10 +76,11 @@ async def withhold_some(run: Run, snap: hs.Snapshot) -> None:
                                      or c[1].tag.origin in v.tag.carries) > 1]
     if copied and run.rng.random() < 0.7:
         pool = copied
-    for _ in range(1 if run.rng.random() < 0.75 else 2):
+    for _ in range(1 if (once or run.rng.random() < 0.75) else 2):
         r, v, _ = run.rng.choice(pool)
         if any(w.cc_id == r["id"] for w in run.withholds):
             continue
+        stored = {x["source_key"] for x in (await state())["rows"]}
         resp = await run.api.withhold(r["id"], **o.hide_title_choice(run, r, snap, set(v.tag.carries)))
         if resp.status_code != 200:
             run.notes.append("withhold of %s refused: %s %s" % (r["id"], resp.status_code, resp.text[:160]))
@@ -70,9 +89,11 @@ async def withhold_some(run: Run, snap: hs.Snapshot) -> None:
                                       r.get("content") or "", o.message_lms(run.sim, v.tag), v.tag.origin,
                                       r.get("role") or "", o.epoch(r.get("at")), r.get("source_uid") or "",
                                       tuple(v.absorbed)))
+        run.at_withhold[r["source_key"]] = stored  # the full scan compared every stored row with this text
         run.sim.log.append("WITHHOLD cc %s = %s:%s %r" % (r["id"], r["sid"], r["source_message_id"],
                                                           (r.get("content") or "")[:50]))
         run.sim.hot |= set(v.tag.carries)
+    return len(run.withholds) - n_before
 
 
 async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run:
@@ -84,6 +105,12 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
     run = Run(seed, sim, profile, content, cc.Api(client), rng)
     steps = rng.randint(16, 40)
     a_steps = rng.randint(steps // 3, (2 * steps) // 3)
+    # the arms (rebuild R5): live with the test copy's history before the decisions file, and a second withhold on
+    # the test copy after its review (one final decisions file carries both)
+    arm_rng = random.Random(seed * 131 + 7)
+    live_history = arm("ORACLE_LIVE_HISTORY", arm_rng, 0.5)
+    second = arm("ORACLE_SECOND_WITHHOLD", arm_rng, 0.5)
+    run.notes.append("arms: live_history=%d second_withhold=%d" % (live_history, second))
 
     # --- Oracle A: the test copy ----------------------------------------------------------------------------------
     tc_seq: list[hs.Snapshot] = []
@@ -106,6 +133,7 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
     fam_a = o.family(run, decision, st["rows"], st["stones"])
     o.check_certain_derive(run, "A2", st, listed, fam_a, "test copy after Settle")
     o.check_evidence(run, "A3", holds, st, decision, "test copy after Settle")
+    await check_c(run, "test copy after Settle", decision, holds=holds)
     await o.scripted_review(run, holds, st, "test copy")
     o.check_released_blank(run, "A1", await state(), "test copy after the review")
     # the documented next import (DEPLOY_WINDOWS, RELEASE_NOTES section 4: a released row's text comes back at the
@@ -116,6 +144,26 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
     o.check_no_readable_leak(run, "A1", tc, fam_a, decision, "test copy after the review")
     o.check_certain_derive(run, "A2", tc, {h.get("message") for h in await run.api.holds()}, fam_a,
                            "test copy after the review")
+    group_a = await check_c(run, "test copy after the review", decision)
+    if second:
+        # the second-withhold arm: another message withheld on the test copy after the review (a text of fewer than
+        # 16 characters may be chosen), Settle, checks, review and the next import again
+        if await withhold_some(run, decision, short_ok=rng.random() < 0.3, once=True):
+            await _step(run, "settle", _async(cc.settle, decision.path, profile, content))
+            st = await state()
+            holds = await run.api.holds()
+            fam_a = o.family(run, decision, st["rows"], st["stones"])
+            o.check_certain_derive(run, "A2", st, {h.get("message") for h in holds}, fam_a,
+                                   "test copy after the second withhold")
+            o.check_evidence(run, "A3", holds, st, decision, "test copy after the second withhold")
+            await check_c(run, "test copy after the second withhold", decision, holds=holds)
+            await o.scripted_review(run, holds, st, "test copy, second withhold")
+            o.check_released_blank(run, "A1", await state(), "test copy after the second review")
+            await run.import_(decision)
+            tc_seq.append(decision)
+            tc = await state()
+            o.check_no_readable_leak(run, "A1", tc, fam_a, decision, "test copy after the second review")
+            group_a = await check_c(run, "test copy after the second review", decision)
     out = str(tmp / "decisions.json")
     try:
         await cc.export_decisions(out)
@@ -125,8 +173,14 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
         exported = False
 
     # --- Oracle A: live ---------------------------------------------------------------------------------------------
-    live_seq: list[hs.Snapshot] = [decision]
+    live_seq: list[hs.Snapshot] = []
     await cc.wipe()
+    if live_history:
+        # live already imported this JARVIS's earlier backups (plain, before any decision existed)
+        for snap in [x for x in tc_seq if x is not decision]:
+            await cc.import_backup(snap.path, profile, content)
+            live_seq.append(snap)
+    live_seq.append(decision)
     if exported:
         await cc.watch_start()
         try:
@@ -143,6 +197,7 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
     # A5 (C1) is compared at the end, against the same imports with no decision (deviation 250)
     o.check_no_readable_leak(run, "A1", live, o.family(run, decision, live["rows"], live["stones"]), decision,
                              "live after the decisions import")
+    await check_c(run, "live after the decisions import", decision)
 
     # --- Oracle B: later backups on live -------------------------------------------------------------------------
     sim.focus |= o.family(run, decision, live["rows"], live["stones"])
@@ -158,7 +213,8 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
             live_seq.append(snap)
             post = await state()
             fam = o.family(run, snap, post["rows"], post["stones"])
-            o.check_stored_unchanged(run, "B1", pre, post, fam, "later backup %s" % snap.n)
+            grp = await check_c(run, "later backup %s" % snap.n, snap)
+            o.check_stored_unchanged(run, "B1", pre, post, fam | grp, "later backup %s" % snap.n, snap)
             o.check_no_readable_leak(run, "B2", post, fam, snap, "later backup %s" % snap.n)
     later = sim.backup("later")
     pre = await state()
@@ -168,7 +224,8 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
     holds = await run.api.holds()
     listed = {h.get("message") for h in holds}
     fam = o.family(run, later, post["rows"], post["stones"])
-    o.check_stored_unchanged(run, "B1", pre, post, fam, "later backup X")
+    grp = await check_c(run, "later backup X", later, holds=holds)
+    o.check_stored_unchanged(run, "B1", pre, post, fam | grp, "later backup X", later)
     o.check_no_readable_leak(run, "B2", post, fam, later, "later backup X")
     o.check_new_certain(run, "B3", pre, post, listed, fam, "later backup X")
     o.check_safe_copies(run, "B5", pre, post, fam, "later backup X")
@@ -183,6 +240,7 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
     live_seq.append(later)
     s2 = await state()
     o.check_no_readable_leak(run, "B2", s2, fam, later, "later backup X after the review and the next import")
+    grp = await check_c(run, "later backup X after the review and the next import", later)
 
     # B7: a rollback with a re-import, a re-import, a restore with a re-import change nothing
     if x_run and x_run.get("run_id"):
@@ -202,24 +260,27 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
         await cc.apply_removals_only(removals)
         # re-import every backup this installation imported since the restore point, in order (the point was taken
         # before the intermediate later backups; importing X alone cannot bring back rows only they held; 244)
-        since = [snap for i, snap in enumerate(live_seq[1:]) if i == 0 or snap is not live_seq[i]]
-        for snap in since:
+        since = [snap for i, snap in enumerate(live_seq[live_seq.index(decision) + 1:])]
+        dedup = [snap for i, snap in enumerate(since) if i == 0 or snap is not since[i - 1]]
+        for snap in dedup:
             await run.import_(snap)
         o.compare_states(run, "B7", "restore of a backup taken before X, removals, re-import", s2, await state())
+    await check_c(run, "live at the end", later)
 
     # --- A4 and B4: the same imports with no decision ------------------------------------------------------------
     await cc.wipe()
     for snap in tc_seq:
         await cc.import_backup(snap.path, profile, content)
     plain_tc = await state()
-    o.compare_outside(run, "A4", tc, plain_tc, fam_a, "test copy vs a no-withhold import")
+    o.compare_outside(run, "A4", tc, plain_tc, fam_a | group_a, "test copy vs a no-withhold import")
     await cc.wipe()
-    await cc.import_backup(decision.path, profile, content)
+    for snap in live_seq[:live_seq.index(decision) + 1]:
+        await cc.import_backup(snap.path, profile, content)
     o.compare_c1(run, "A5", tc, live, plain_tc, await state(), decision)
     await cc.wipe()
     for snap in live_seq:
         await cc.import_backup(snap.path, profile, content)
-    o.compare_outside(run, "B4", s2, await state(), fam, "live vs a plain import of the same backups")
+    o.compare_outside(run, "B4", s2, await state(), fam | grp, "live vs a plain import of the same backups")
     return run
 
 
@@ -254,6 +315,8 @@ async def b6_release_unrelated(run: Run, post: dict[str, Any], holds: list[dict[
             # must carry no word of W and, unless it is only Hermes's prune placeholder, not derive from W
             # (integrator, deviation 266)
             xv = o.backup_versions(run, r, later)
+            for key in (r["source_key"], "id:%s" % r["id"]):  # O7: the texts this release covers (rebuild R5)
+                run.released.setdefault(key, []).extend(v.content for v in xv)
             if run.leaks(xv) or any(o.norm(v.content) != o.norm(hs.STUB) and run.derives([v]) for v in xv):
                 run.bad("B6", "'release rows with no relation' in %s released row %s (%s:%s) derived from a withheld "
                               "message" % (sid, r["id"], r["sid"], r.get("source_message_id")))
