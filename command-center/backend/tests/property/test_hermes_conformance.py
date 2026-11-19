@@ -255,3 +255,59 @@ def test_text_wrappers_reply_pointer_discord_note_replay_header(real):
     assert w["fresh_copy_keeps_uid"]["message_uid"] == "u1"  # the restatement keeps the in-flight row's uid
     assert "timestamp" in w["branch_copy_keys"] and "message_uid" not in w["branch_copy_keys"]
     assert "message_uid" not in w["gateway_branch_row"] and w["gateway_branch_row"]["timestamp"] is not None
+
+
+# --- rebuild R5: the simulator's carriers outside every group, the delegate child, the markerless child ------------
+
+
+@pytest.mark.parametrize("which", ["long", "short"])
+def test_session_search_read_is_hermes_json(real, which):
+    """session_search's read mode (the simulator's carrier outside every group): the same JSON as Hermes's
+    _read_session, field for field (content cut at _READ_MAX_CONTENT, head + tail with the scroll pointer)."""
+    s = scenario(real, "session_search_read")
+    assert s["max_content"] == hs.READ_MAX_CONTENT
+    rows = [r for r in s[which + "_dump"]["rows"] if r["role"] != "system" and r["session_id"] == s[which + "_meta"]["id"]]
+    want = json.loads(s[which])
+    got = json.loads(hs.read_session_json(s[which + "_meta"], rows))
+    assert got == want
+
+
+def test_tool_result_summaries_are_hermes_lines(real):
+    """The compressor's pass-2 summary lines the simulator writes: the generic prune line (str(v)[:40] of the first
+    two arguments) and delegate_task's quote span (57 characters and '...')."""
+    s = scenario(real, "tool_summaries")
+    assert s["prune_min_chars"] == hs.PRUNE_MIN_CHARS
+    for name, args, content, line in s["cases"]:
+        assert hs.summarize_tool_result(name, args, content) == line, (name, args)
+
+
+def test_delegate_child_session_row(real, tmp_path):
+    """delegate_task's child session (gateway/session_worker_child): source 'subagent', parent_session_id and
+    model_config._delegate_from naming the parent; the simulator writes the same session row."""
+    src = scenario(real, "delegate_child")["source"]
+    assert "'subagent'" in src and "model_config={'_delegate_from': session_id}" in src
+    assert "parent_session_id=session_id" in src
+    sim = hs.Sim(str(tmp_path / "sim"), 3)
+    p = sim.new_session(source="cli")
+    sim.append(p)
+    child = sim.delegate(p)
+    c = sim.con()
+    try:
+        row = sim.session(c, child)
+    finally:
+        c.close()
+    assert row["source"] == "subagent" and row["parent_session_id"] == p
+    assert json.loads(row["model_config"]) == {"_delegate_from": p}
+    assert sim.links[child] == (p, "delegated")
+
+
+def test_markerless_child_ground_truth(tmp_path):
+    """An older gateway's reset (no _reset_from marker): parent_session_id only; the ground truth labels the edge a
+    markerless child (O-D1: it joins from the parent down only)."""
+    sim = hs.Sim(str(tmp_path / "sim"), 4)
+    p = sim.new_session(source="telegram")
+    sim.append(p)
+    child = sim.legacy_reset(p)
+    snap = sim.backup("b")
+    assert snap.links[child] == (p, "child")
+    assert json.loads(snap.sessions[child]["model_config"] or "{}") == {}

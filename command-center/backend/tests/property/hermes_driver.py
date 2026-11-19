@@ -425,5 +425,58 @@ def _wrappers() -> dict:
     }
 
 
+# --- rebuild R5: the carriers outside every group (session_search reads, pass-2 summaries) and the delegate child --
+
+
+@scenario("session_search_read")
+def _session_search_read() -> dict:
+    from tools import session_search_tool as sst
+    db, path = fresh()
+    db.create_session("q1", "telegram", model="m")
+    raw(path, "UPDATE sessions SET title = ? WHERE id = ?", "Vendor review notes", "q1")
+    long = "Please finish the vendor review before the weekly call. " * 40  # longer than _READ_MAX_CONTENT
+    db.append_message("q1", "user", "Please finish the vendor review before the weekly call.", timestamp=T + 1)
+    db.append_message("q1", "assistant", "", timestamp=T + 2, tool_calls=[
+        {"id": "call_q1", "type": "function", "function": {"name": "web_fetch", "arguments": "{}"}}])
+    db.append_message("q1", "tool", "Fetched page for the vendor review: headings.", timestamp=T + 3,
+                      tool_call_id="call_q1", tool_name="web_fetch")
+    db.append_message("q1", "assistant", long, timestamp=T + 4)
+    for i in range(16):  # more than head + tail messages: the scroll pointer
+        db.append_message("q1", "user", "Please rewrite the pricing table, part %d." % i, timestamp=T + 10 + 2 * i)
+        db.append_message("q1", "assistant", "Done, part %d is ready." % i, timestamp=T + 11 + 2 * i)
+    short_db, short_path = fresh()
+    short_db.create_session("q2", "cli", model="m")
+    short_db.append_message("q2", "user", "Bitte die Liste \u201eneu\u201c pr\u00fcfen.", timestamp=T + 1)
+    meta = {k: v for k, v in (db.get_session("q1") or {}).items() if k in ("id", "source", "model", "title",
+                                                                           "started_at")}
+    meta2 = {k: v for k, v in (short_db.get_session("q2") or {}).items() if k in ("id", "source", "model", "title",
+                                                                                  "started_at")}
+    return {"long": sst._read_session(db, "q1"), "long_dump": dump(path), "long_meta": meta,
+            "short": sst._read_session(short_db, "q2"), "short_dump": dump(short_path), "short_meta": meta2,
+            "max_content": sst._READ_MAX_CONTENT}
+
+
+@scenario("tool_summaries")
+def _tool_summaries() -> dict:
+    content = "x" * 450
+    cases = [("session_search", '{"session_id": "20261101_000007_abc"}'),
+             ("session_search", '{"query": "Please finish the vendor review before the weekly call and keep it '
+                                'short.", "session_id": "20261101_000007_abc"}'),
+             ("delegate_task", '{"goal": "Please finish the vendor review before the weekly call."}'),
+             ("delegate_task", '{"goal": "Please finish the vendor review before the weekly call and flag '
+                               'anything odd in it."}'),
+             ("web_fetch", "{}")]
+    return {"cases": [[n, a, content, cc._summarize_tool_result(n, a, content)] for n, a in cases],
+            "prune_min_chars": cc._PRUNE_MIN_CHARS}
+
+
+@scenario("delegate_child")
+def _delegate_child() -> dict:
+    import inspect
+
+    from gateway import session_worker_child as swc
+    return {"source": inspect.getsource(swc.reserve_child_execution)}
+
+
 with open(OUT, "w") as f:
     json.dump(RESULTS, f, default=str)

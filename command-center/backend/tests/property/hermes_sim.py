@@ -19,7 +19,7 @@ import random
 import re
 import shutil
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 # --- Hermes constants (vendored text, checked by the conformance tests) -------------------------------------------
@@ -30,6 +30,74 @@ MICRO_MARKER = "[CONTEXT COMPACTION] Micro summary of the tool exchange."
 # agent/context_compressor.py _INFLIGHT_TASK_REPLAY_HEADER
 REPLAY_HEADER = ("[STILL IN PROGRESS — this is the active request, restated after the compaction boundary because it "
                  "was not finished yet. Continue it; do not start over.]")
+
+
+# tools/session_search_tool.py (read mode) and agent/context_compressor.py (pass-2 summaries): vendored behaviour,
+# checked by test_hermes_conformance.py against the real functions (rebuild R5)
+READ_HEAD, READ_TAIL, READ_MAX_CONTENT = 20, 10, 2000  # _read_session(head=20, tail=10), _READ_MAX_CONTENT
+PRUNE_MIN_CHARS = 200  # _PRUNE_MIN_CHARS: a result this short is never summarised
+SESSION_PROFILE = "default"  # the active profile name _session_link writes (a fresh HERMES_HOME)
+
+
+def format_timestamp(ts: Any) -> str:
+    """session_search_tool._format_timestamp."""
+    from datetime import datetime
+    if ts is None:
+        return "unknown"
+    return datetime.fromtimestamp(float(ts)).strftime("%B %d, %Y at %I:%M %p")
+
+
+def _shape_message(m: dict[str, Any], max_content_len: int) -> dict[str, Any]:
+    content = m.get("content")
+    entry: dict[str, Any] = {"id": m.get("id"), "role": m.get("role"), "content": content,
+                             "timestamp": m.get("timestamp")}
+    for k in ("tool_name", "tool_calls", "tool_call_id"):
+        v = m.get(k)
+        if k == "tool_calls" and isinstance(v, str) and v:
+            try:
+                v = json.loads(v)
+            except ValueError:
+                pass
+        if v:
+            entry[k] = v
+    if max_content_len and content and len(content) > max_content_len:
+        entry.update(content=content[:max_content_len] + "\u2026", content_truncated=True,
+                     original_content_chars=len(content))
+    return {k: v for k, v in entry.items() if v is not None or k == "content"}
+
+
+def read_session_json(meta: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    """session_search_tool._read_session(db, session_id) for a conversation's active rows (in id order)."""
+    sid = meta["id"]
+    shaped = [_shape_message(m, READ_MAX_CONTENT) for m in rows]
+    total, truncated = len(shaped), len(shaped) > READ_HEAD + READ_TAIL
+    payload: dict[str, Any] = {
+        "success": True, "mode": "read", "session_id": sid, "link": "@session:%s/%s" % (SESSION_PROFILE, sid),
+        "session_meta": {"when": format_timestamp(meta.get("started_at")), "source": meta.get("source"),
+                         "model": meta.get("model"), "title": meta.get("title")},
+        "message_count": total, "truncated": truncated,
+        "messages": shaped[:READ_HEAD] + shaped[-READ_TAIL:] if truncated else shaped}
+    if truncated:
+        payload["message"] = ("Session has %d messages; showing first %d + last %d. Pass around_message_id (any id "
+                              "above) to scroll the middle." % (total, READ_HEAD, READ_TAIL))
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def summarize_tool_result(name: str, args: str, content: str) -> str:
+    """context_compressor._summarize_tool_result for the tools the simulator calls: delegate_task's quote span, and
+    the generic prune line (the first two arguments, each str(v)[:40]) for every other tool."""
+    try:
+        a = json.loads(args) if args else {}
+    except ValueError:
+        a = {}
+    a = a if isinstance(a, dict) else {}
+    n = len(content or "")
+    if name == "delegate_task":
+        goal = a.get("goal") if isinstance(a.get("goal"), str) else ""
+        goal = goal if len(goal) <= 60 else goal[:57] + "..."
+        return "[delegate_task] '%s' (%s chars result)" % (goal, format(n, ","))
+    first = "".join(" %s=%s" % (k, str(v)[:40]) for k, v in list(a.items())[:2])
+    return "[%s]%s (%s chars result)" % (name, first, format(n, ","))
 
 
 def reply_pointer(quote: str, text: str, own: bool = False) -> str:
@@ -139,6 +207,7 @@ class Version:
     active: int
     compacted: int
     absorbed: tuple[str, ...]
+    calls: str = ""  # the raw tool_calls column (option C reads every field: rebuild R5)
 
 
 @dataclass
@@ -150,6 +219,10 @@ class Snapshot:
     sessions: dict[str, dict[str, Any]]
     edges: set[tuple[str, str, str]]  # (child, parent, how) visible in this backup
     title_tags: dict[str, int | None]
+    # ground truth (rebuild R5): child -> (parent, kind) for every link this backup shows (its parent_session_id or a
+    # marker naming the parent); kind is how Hermes made the child: continuation, branch, reset, delegated or child
+    # (a markerless child: O-D1, parent down only)
+    links: dict[str, tuple[str, str]] = field(default_factory=dict)
 
 
 class Sim:
@@ -183,6 +256,8 @@ class Sim:
         self.ncall = 0
         self.checkpoints: list[tuple[str, dict, dict, int]] = []
         self._saved: dict[tuple[str, int], Tag] = {}
+        # ground truth of every conversation link Hermes made (rebuild R5): child -> (parent, kind)
+        self.links: dict[str, tuple[str, str]] = {}
         # Where the harness wants pressure (the withheld conversations, once there is a decision): operations pick
         # these sessions three times out of four, and an independent repeat reuses these words half the time.
         self.focus: set[str] = set()
@@ -503,6 +578,7 @@ class Sim:
             return None
         child = self.new_session(source=parent["source"], parent=sid,
                                  model_config={"_compressed_from": sid} if marker else None, title=None, sid=child)
+        self.links[child] = (sid, "continuation")
 
         def run(c: sqlite3.Connection) -> list[int]:
             h = min(head_n, len(rows) - 1)
@@ -627,6 +703,7 @@ class Sim:
         parent_titled = bool(p["title"])
         child = self.new_session(source=p["source"] if how == "gateway" else "cli", parent=sid,
                                  model_config={"_branched_from": sid}, title=None, sid=child_id)
+        self.links[child] = (sid, "branch")
 
         def run(c: sqlite3.Connection) -> None:
             if how == "cli":
@@ -779,8 +856,162 @@ class Sim:
         finally:
             c.close()
         child = self.new_session(source=src, parent=sid, model_config={"_reset_from": sid}, sid=child)
+        self.links[child] = (sid, "reset")
         self.log.append("reset %s -> %s" % (sid, child))
         return child
+
+    def legacy_reset(self, sid: str, child: str | None = None) -> str:
+        """An older gateway's reset: a new session with parent_session_id only (no _reset_from marker, no row
+        copied): a markerless child, which joins its parent's group from the parent down only (O-D1; the round-2
+        test name 'a markerless legacy gateway reset'; rebuild R5, RECON-40)."""
+        c = self.con()
+        try:
+            src = self.session(c, sid)["source"]
+        finally:
+            c.close()
+        child = self.new_session(source=src, parent=sid, model_config=None, sid=child)
+        self.links[child] = (sid, "child")
+        self.log.append("legacy_reset %s -> %s" % (sid, child))
+        return child
+
+    def delegate(self, sid: str, child: str | None = None) -> str | None:
+        """delegate_task (gateway/session_worker_child.reserve_child_execution): a 'subagent' session with
+        parent_session_id and model_config._delegate_from naming the parent; the model's goal is the sub-agent's first
+        user turn (half the time it restates the parent's last user message), the sub-agent answers, and the parent
+        gets the delegate_task call and its tool result (the sub-agent's answer). The sub-agent joins its parent's group
+        from the parent down only (O-D1); the parent's tool result is a carrier of the sub-agent's words."""
+        c = self.con()
+        try:
+            users = [r for r in self.active(c, sid) if r["role"] == "user" and r["content"]]
+        finally:
+            c.close()
+        last = users[-1] if users else None
+        child = self.new_session(source="subagent", parent=sid, model_config={"_delegate_from": sid}, sid=child)
+        self.links[child] = (sid, "delegated")
+        if last is not None and self.rng.random() < 0.5:
+            ltag = self.tags[(sid, last["id"])]
+            goal_text = last["content"]
+            goal = self.lm("user", goal_text, parents=ltag.carries | {ltag.origin}, kind="restate")
+            goal_tag = Tag(goal, frozenset({goal}) | ltag.carries)
+        else:
+            goal_text = self.request_text()
+            goal = self.lm("user", goal_text)
+            goal_tag = Tag(goal, frozenset({goal}))
+        out: dict[str, int] = {}
+
+        def run(c: sqlite3.Connection) -> None:
+            t = self.tick()
+            self.ncall += 1
+            call = "call_%s" % _hex(self.rng, 12)
+            a = self.lm("assistant", "", kind="answer")
+            args = json.dumps({"goal": goal_text}, ensure_ascii=False)
+            out["call"] = self.insert(c, sid, "assistant", "", t, self.new_uid(), Tag(a, goal_tag.carries),
+                                      tool_calls=json.dumps([{"id": call, "type": "function", "function": {
+                                          "name": "delegate_task", "arguments": args}}]))
+            out["goal"] = self.insert(c, child, "user", goal_text, t + 0.5, self.new_uid(), goal_tag)
+            words = self.answer_text()
+            al = self.lm("assistant", words, kind="answer")
+            out["answer"] = self.insert(c, child, "assistant", words, t + 1.5, self.new_uid(),
+                                        Tag(al, frozenset({al})))
+            res = self.lm("tool", words, parents={al}, kind="tool")
+            out["result"] = self.insert(c, sid, "tool", words, t + 2.0, self.new_uid(), Tag(res, frozenset({res, al})),
+                                        call=call)
+            self.clock = max(self.clock, t + 2.0)
+        self.write(run)
+        self.log.append("delegate %s -> %s %s" % (sid, child, out))
+        return child
+
+    def session_search(self, sid: str, target: str) -> dict[str, int] | None:
+        """session_search in read mode (tools/session_search_tool._read_session): the model of `sid` reads the
+        conversation `target`; the tool row is Hermes's JSON (ensure_ascii False): session meta, the messages
+        (content cut at _READ_MAX_CONTENT with an ellipsis, the first 20 and the last 10 when longer), so it carries
+        every word those messages carry. Half the time the answer quotes the target's first user message with '> '
+        markers. Neither conversation links to the other: the result is a carrier outside every group."""
+        c = self.con()
+        try:
+            meta = self.session(c, target)
+            rows = c.execute("SELECT * FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                             (target,)).fetchall()
+        finally:
+            c.close()
+        if meta is None or not rows or sid == target:
+            return None
+        content = read_session_json(dict(meta), [dict(r) for r in rows])
+        carries: set[int] = set()
+        shown = rows if len(rows) <= READ_HEAD + READ_TAIL else rows[:READ_HEAD] + rows[-READ_TAIL:]
+        for r in shown:
+            carries |= set(self.tags[(target, r["id"])].carries)
+        c = self.con()
+        try:
+            mine = [r for r in self.active(c, sid) if r["role"] == "user" and r["content"]]
+        finally:
+            c.close()
+        args: dict[str, Any] = {"session_id": target}
+        call_tag: frozenset[int] = frozenset()
+        if mine and self.rng.random() < 0.4:  # the model's query is the reader's own last request, as written
+            args = {"query": mine[-1]["content"], "session_id": target}
+            call_tag = frozenset(self.tags[(sid, mine[-1]["id"])].carries)
+        quoted = next((r for r in rows if r["role"] == "user" and len(r["content"] or "") >= 16
+                       and not (r["content"] or "").startswith("[")), None)
+        out: dict[str, int] = {}
+
+        def run(c: sqlite3.Connection) -> None:
+            t = self.tick()
+            self.ncall += 1
+            call = "call_%s" % _hex(self.rng, 12)
+            a = self.lm("assistant", "", kind="answer")
+            out["call"] = self.insert(c, sid, "assistant", "", t, self.new_uid(), Tag(a, call_tag),
+                                      tool_calls=json.dumps([{"id": call, "type": "function", "function": {
+                                          "name": "session_search", "arguments": json.dumps(args)}}]))
+            tl = self.lm("tool", content, parents=carries, kind="tool")
+            out["tool"] = self.insert(c, sid, "tool", content, t + 0.5, self.new_uid(),
+                                      Tag(tl, frozenset({tl} | carries)), call=call)
+            if quoted is not None and self.rng.random() < 0.5:
+                qtag = self.tags[(target, quoted["id"])]
+                words = "In that conversation you wrote:\n" + "\n".join("> " + ln for ln in quoted["content"].split("\n"))
+                al = self.lm("assistant", words, parents=qtag.carries, kind="quote")
+                out["answer"] = self.insert(c, sid, "assistant", words, t + 1.5, self.new_uid(),
+                                            Tag(al, frozenset({al}) | qtag.carries))
+            else:
+                words = self.answer_text()
+                al = self.lm("assistant", words, kind="answer")
+                out["answer"] = self.insert(c, sid, "assistant", words, t + 1.5, self.new_uid(),
+                                            Tag(al, frozenset({al})))
+            self.clock = max(self.clock, t + 1.5)
+        self.write(run)
+        self.log.append("session_search %s reads %s %s" % (sid, target, out))
+        return out
+
+    def summarize(self, sid: str, row: int) -> bool:
+        """The compressor's pass-2 summary of an old tool result persisted in place (_prune_old_tool_results ->
+        _summarize_tool_result, written back like rewrite_pruned_rows: an archived twin keeps the original): the
+        generic prune line '[tool] k=<str(v)[:40]> (N chars result)' of its call's arguments, or delegate_task's
+        quote-span line. The row then carries what its call's arguments carry."""
+        c = self.con()
+        try:
+            r = c.execute("SELECT * FROM messages WHERE id = ? AND session_id = ? AND active = 1 AND role = 'tool'",
+                          (row, sid)).fetchone()
+            call = c.execute("SELECT * FROM messages WHERE session_id = ? AND tool_calls IS NOT NULL AND tool_calls "
+                             "LIKE ?", (sid, "%" + (r["tool_call_id"] if r is not None else "-") + "%")).fetchone() \
+                if r is not None and r["tool_call_id"] else None
+        finally:
+            c.close()
+        if r is None or call is None or r["content"] in ("", STUB) or len(r["content"] or "") <= PRUNE_MIN_CHARS:
+            return False
+        fn = json.loads(call["tool_calls"])[0]["function"]
+        line = summarize_tool_result(fn["name"], fn.get("arguments") or "", r["content"])
+        tag = self.tags[(sid, row)]
+        ctag = self.tags[(sid, call["id"])]
+
+        def run(c: sqlite3.Connection) -> None:
+            self.insert(c, sid, r["role"], r["content"], r["timestamp"], r["message_uid"], tag,
+                        call=r["tool_call_id"], tool_calls=r["tool_calls"], active=0, compacted=1,
+                        absorbed=json.loads(r["absorbed_message_uids"] or "[]"))
+            c.execute("UPDATE messages SET content = ? WHERE id = ?", (line, row))
+        self.write(run)
+        self.tags[(sid, row)] = Tag(tag.origin, frozenset(ctag.carries))
+        self.log.append("summarize %s %s -> %r" % (sid, row, line[:80]))
+        return True
 
     def upgrade(self) -> None:
         """This JARVIS updates to a Hermes with message_uid: new rows get uids, old ones wait for the backfill."""
@@ -839,7 +1070,7 @@ class Sim:
                 key = (r["session_id"], r["id"])
                 v = Version(r["session_id"], r["id"], r["role"], r["timestamp"], r["message_uid"], r["tool_call_id"],
                             r["content"] or "", self.tags[key], r["active"], r["compacted"],
-                            tuple(json.loads(r["absorbed_message_uids"] or "[]")))
+                            tuple(json.loads(r["absorbed_message_uids"] or "[]")), r["tool_calls"] or "")
                 rows[key] = v
                 hist = self.history.setdefault(key, [])
                 if not hist or (hist[-1].content, hist[-1].uid, hist[-1].ts, hist[-1].tag) != (v.content, v.uid,
@@ -857,7 +1088,15 @@ class Sim:
                            ("_reset_from", "reset"), ("_delegate_from", "delegate")):
                 if cfg.get(k):
                     edges.add((sid, cfg[k], how))
-        snap = Snapshot(path, len(self.snapshots), sha, rows, sessions, edges, dict(self.title_tags))
+        links = {}
+        for sid, s in sessions.items():
+            truth = self.links.get(sid)
+            if truth is None:
+                continue
+            cfg = json.loads(s["model_config"] or "{}")
+            if s["parent_session_id"] == truth[0] or truth[0] in cfg.values():
+                links[sid] = truth
+        snap = Snapshot(path, len(self.snapshots), sha, rows, sessions, edges, dict(self.title_tags), links)
         self.snapshots.append(snap)
         self.log.append("backup %d %s sha %s rows %d" % (snap.n, label, sha[:12], len(rows)))
         return snap
@@ -1034,6 +1273,40 @@ class Sim:
         self.append(sid, quote=(q, self.rng.random() < 0.5))
         return True
 
+    def _op_delegate(self) -> bool:
+        sid = self._pick()
+        return sid is not None and self.delegate(sid) is not None
+
+    def _op_legacy_reset(self) -> bool:
+        sid = self._pick()
+        if sid is None:
+            return False
+        child = self.legacy_reset(sid)
+        self.append(child)
+        return True
+
+    def _op_session_search(self) -> bool:
+        """A conversation reads another one (focus: the withheld conversations are read from elsewhere)."""
+        ss = self.open_sessions()
+        if len(ss) < 2:
+            return False
+        targets = [x for x in self.sessions() if x in self.focus] or self.sessions()
+        target = self.rng.choice(targets)
+        readers = [x for x in ss if x != target]
+        return bool(readers) and self.session_search(self.rng.choice(readers), target) is not None
+
+    def _op_summarize(self) -> bool:
+        sid = self._pick(open_only=False)
+        if sid is None:
+            return False
+        c = self.con()
+        try:
+            cands = [r["id"] for r in self.active(c, sid) if r["role"] == "tool" and r["tool_call_id"]
+                     and len(r["content"] or "") > PRUNE_MIN_CHARS]
+        finally:
+            c.close()
+        return bool(cands) and self.summarize(sid, self.rng.choice(cands))
+
     def _op_checkpoint(self) -> bool:
         self.checkpoint()
         return True
@@ -1057,7 +1330,7 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "append": 6, "new_session": 1.2, "compact": 2.5, "rotate": 1.5, "prune": 1.5, "fold": 0.8, "cli_branch": 1,
     "gateway_branch": 1.2, "cli_retry": 0.8, "gateway_retry": 0.8, "undo": 0.5, "replace": 0.7, "delete": 0.5,
     "backfill": 0.8, "upgrade": 0.4, "reset": 0.4, "repeat": 1.2, "reply_quote": 0.8, "checkpoint": 0.3,
-    "restore": 0.2,
+    "restore": 0.2, "delegate": 0.6, "legacy_reset": 0.3, "session_search": 1.0, "summarize": 0.6,
 }
 
 
