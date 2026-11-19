@@ -1,5 +1,8 @@
 # JARVIS Brain: developer specification (0.6.0; withhold identity 0.6.2)
 
+> **0.6.2 is NO-GO.** Its option C (conversation-level holding, section 2.10) was rebuilt after the original code was
+> lost; the rebuild is unreviewed work in progress on `wip/brain-062-optionC`, not a release.
+
 This is the contract the JARVIS Brain is built against. The owner-facing explanation
 is `docs/JARVIS_MIGRATION_DESIGN.md`. Paths are relative to `command-center/`.
 
@@ -854,6 +857,109 @@ independent repeat first seen compacted, a released hold. The full tables, with 
 per case, are `tests/integration/test_brain_withhold_identity.py` and
 `test_brain_withhold_overreach.py`.
 
+### 2.10 Option C: conversation-level holding (0.6.2, rebuilt; UNREVIEWED, NO-GO)
+
+**Status.** The option C code of rounds 1 to 3 was lost with the cloud container on 2026-11-18. What this section
+describes is a reconstruction of its behaviour on top of snapshot i22, made in steps R1 to R6 on the branch
+`wip/brain-062-optionC` (`docs/rebuild-062/`: plan, progress per step, and the deviation log with every `RECON-<n>`
+reading the sources did not settle and every `D-<n>` test adaptation). It has not been reviewed, verified or released:
+**0.6.2 is NO-GO.** The tests below show the listed properties on the scenarios tested; they do not show that no leak
+remains.
+
+**Groups (`app/brain/groups.py`, 0008 section 3b).** A withheld message is held with its whole conversation group. The
+closure (J1 to J9) starts from the message's conversation and the conversations of its certain stones, and follows:
+- lineage both ways: a compression continuation (`_compressed_from`, or a parent that ended `compression`), a branch,
+  a reset, a rotation;
+- from the parent down only: a delegated sub-agent (`_delegate_from`) and a markerless child (a parent set by Hermes,
+  no marker) (O-D1); the parent side of these links is a pending owner decision (groups-paths B, D, N3);
+- copied history (J8, J9): a conversation with no anchoring parent that holds at least two copy-position rows at the
+  very role, call and time of a group row, or that carries a certain uid (`shared_uid`, `copied_rows`, `provenance`).
+
+A fork marker (`_branched_from`, `_delegate_from`, `_reset_from`) counts only when it names the session's own parent
+(round-3 A; `source.FORK_MARKERS`, `_markers()`); with a NULL parent any marker counts, as in Hermes; a copied fork
+marker after the parent was reopened reads as a continuation; a marker naming another conversation keeps its kind. An
+orphan whose only parent reading is a delegate marker (including Hermes v16's `'__orphaned__'` tag) is unanchored, so
+copied-history matching runs for it (RECON-5).
+
+**Uncertain (O-D1).** A parent that does not resolve, or two conflicting parents, give the state `uncertain`; it
+spreads to the uncertain conversation's own relatives. Uncertain rows are held (via `held with its conversation: an
+uncertain link to a withheld conversation`, relation `uncertain`), never released in one click (a per-row release
+needs the typed word), never move the decision to another backup, and the decisions export waits while one of them
+waits (`brain_withhold_pending().uncertain_waiting`, importer `_refuse_unsettled`).
+
+**Recorded for good.** `brain_withheld_sessions (anchor_key, source_session_id, how, state, via_session)` is never
+deleted, and an uncertain conversation never becomes a member again; `brain_hidden_titles` keeps the titles a withhold
+hid outside its group; the title trigger hides the title of every group conversation by membership alone (a rollback,
+a restore or a re-import hides it again); decisions files (version 5) carry `groups` and `hidden_titles`, and restore's
+removals-only file carries them too; the links between conversations are append-only (`brain_session_links`, kinds
+`delegate_from`, `reset_from`, `child` added).
+
+**Holding (rebuild R2).** The central sweep (`review.hold_group_rows`, `groups.hold_group`) holds every readable row of
+every group conversation (a pending stone `held with its conversation: a withheld conversation group`), unless an exact
+release of that row for that group covers it. It runs at the withhold, at every import (the importer holds group rows
+itself), Settle, a decisions-file import, a rollback, a restore, the legacy reset and the start-up repair (R8, R10). The
+database guard's group branch keeps every group row withheld unless an exact release of that row for that group names
+it (the guard does not read a release's trust: open since R4).
+Rollback copies of group rows (changed in place, deleted, or changed then deleted) lose their text at each sweep; with a
+withheld text in hand, every rollback copy anywhere whose older text relates to it loses its text and comes back from a
+rollback as a hold of its own (`an earlier version related to the withheld text`).
+
+**Derived copies (rebuild R3).** With a withheld text in hand (a withhold, an import, Settle), every stored row is read
+(a full scan, no prefilter that could skip a related row), over every field, and compared after:
+- `fold`: NFKC, casefold, Turkish dotted and dotless i, and removal of the 4,174 default-ignorable code points (O-CI);
+- the canonical iterative decode of JSON strings, escapes, literals (`repr`, an open literal at the end) with caps of
+  64 steps, depth 32, 4,000,000 characters of readings, 2,000,000 per field and 20,000 strings per document; a capped
+  field is `not_checked` (held, never 'none'), the same in the oracle;
+- the text without its `> ` quote markers and each quoted block (`fqw`, 16 characters or more), Hermes's f-string
+  summary quote spans, Hermes's generic prune line (W's first 40 characters), a truncated preview cut per line, a `repr`
+  or JSON escape cut in half.
+
+Relations: `identical`, `contains`, `part_of`, `cut` (W's beginning cut short), `restated`, `not_checked`. `generic-v1`
+and a 16-character minimum (O-D4): a generic piece is neither demanded nor allowed as a carrier. A readable row outside
+every group that carries W (another case, a summary, a quote, an encoded copy) is held on its own (`carries the withheld
+text`); a conversation title carrying it is hidden for good; imported and promoted memory items carrying it are
+quarantined. The withhold preview lists the carriers (`carrier_rows`) and counts the titles.
+
+**D3 states and B6 (rebuild R4).** A hold's evidence is one or more of `none`, `cut`, `part_of`, `contains`,
+`identical`, `restated`, `same_uid`, `same_call`, `same_time`, `reused_row`, `stale`, `orphan`, `not_in_backup`,
+`not_checked`, `later_withhold`, `other_not_compared` and `uncertain`:
+- `none` needs every withheld text in hand: `brain_tombstones.compared` records the withholds a 'none' was computed
+  against, and a hold is `one_click` only while every admin's withhold now is among them (`review.eligible_now`);
+- `later_withhold` (N-A, `identity.mark_later_withhold`): a withhold that came later (from the page, a decisions file or
+  a restore's removals-only file) makes every earlier 'none' stale at once and reopens its decision backup;
+- `other_not_compared`: compared with its own withheld text, not with every other one;
+- one-click release (`review.one_click_eligible`) only for exactly `none`, a user or assistant row, a text read in its
+  plain form (`brain_tombstones.form`: never a tool row, a summary, a wrapped or encoded text, nor a row never read
+  here), and no uncertain link;
+- any other per-row release needs the typed word `RELEASE` checked on the server (an untyped request gets 400; a
+  malformed body 422); the client's dialog only follows the server's verdict (RECON-49);
+- a release's trust (`brain_withhold_exemptions.trusted`: typed, or checked 'none' with every text) must come from a
+  release that covers the stored content (`releases_covering_stored`, `exempt_covers`; the 6725 / F1 class); a row
+  released for its group is compared with every other withheld text in hand and held again for the first one whose
+  group did not release it (N-B).
+
+**Costs (accepted for privacy; for the owner's decision, pending).** The full stored-row scan runs at every withhold,
+import and Settle, and the withhold preview scans every row too (round 3 measured about 112 s per 100,000 rows on its
+code; the rebuild has not measured its own). `groups.build` reads every archive row's role, call, time and uid at each
+withhold, import, repair and preview. "None needs every text": once JARVIS deletes a withheld conversation for good, its
+holds need a keep or a typed release before the export, and a test copy's later 'none' never lifts live's
+`later_withhold` (a typed per-row release on live).
+
+**Residuals of the rebuild (open; see RELEASE_NOTES_0.6.2.md section 7 and `docs/rebuild-062/progress/R5.md`).** 269 of
+900 fresh oracle seeds fail in at least one arm on the rebuilt code; the privacy-relevant classes are B7-restore (pending
+group and carrier holds readable after a restore, the removals-only file and a re-import; round 3's 13825 class) and
+A5(b) (group rows held on the test copy readable on live, 13010, not root-caused); others fail closed (A3-nib-second:
+rows of the first withhold's group labelled 'not in this backup' after a second withhold) or are not root-caused (B5,
+B1 durability). Hermes's FTS5 highlight snippet (`>>>`/`<<<`) still breaks matching (round-3 derived F1, not fixed);
+the decode cap over-holds ordinary nested reads (F2). The release-without-trust pattern in `archive._withheld_keys`,
+`later.load_family_readable`, the importer's `_readable_uids` and the preview lists is unchanged (entry 446). C7 is
+named in the plan only and is not built.
+
+**Pending owner decisions (not implemented; shapes documented).** Groups-paths B, D and N3 (the parent side of O-D1,
+including Hermes v16 tags); N3 / R5b (middle pieces of W); the same-uid twins 13426, 13532 and 13754; releases N2 (a
+row released before a later withhold stays readable); 13639 (record W's absorbed set at withhold time); 13621 (a
+lineage no backup held); a reopened parent and its copied-marker child held both ways; the costs above.
+
 ## 3. API (`backend/app/api/brain.py`, `backend/app/brain/review.py`)
 
 **Router and errors:**
@@ -893,10 +999,10 @@ per case, are `tests/integration/test_brain_withhold_identity.py` and
 | `GET /sessions/{id}` | operator | `limit ≤ 500, offset` → `{session, messages, total, hidden}`. `hidden` = messages outside the scope. |
 | `GET /messages/{id}/promoted` | admin | `{message, count, items:[{id, status, deleted}]}`: every memory item promoted from the message (what a withhold empties); `items` lists those in the admin's scope |
 | `POST /messages/{id}/withhold` | admin | 409 while an import, a rollback, a rescan or another admin's withhold, keep, release, purge or redaction holds the lock (the message names them all). Optional body `{include_identical: false, hide_title: null}`. Content `''`, `withheld`, flags note, admin tombstone (its stone, 2.9), and every other stored row of the same JARVIS message withheld too (2.9: members, and holds for the same uid with other text); identical text elsewhere only with `include_identical`; the title hidden with `hide_title` (default: when it is the conversation's first user message); its rollback copies blanked (also under older row ids); every promoted item emptied (below); quotes removed; session derived fields recomputed → `{message, session, copies:{items, versions_blanked}, answers_scrubbed, rollback_copies_blanked, also_withheld, held_for_review, identical_withheld, keys_tombstoned, title_hidden}`, `archive.message_withheld` (the same keys), `memory.source_withheld` per emptied item. All or nothing |
-| `GET /messages/{id}/withhold-preview` | admin | read-only: `same_message_rows`, `held_rows`, `identical_text_rows` (ids, positions, roles, times, states; rows outside the scope counted in one total, `rows_outside_your_scope`, never per list), `rowless_copies` (a count, including rows of the message an import deleted, kept only as rollback copies), `items_with_this_text` (imported items in the scope whose text contains the message's, 32+ characters: `[{id, title}]`, to purge by hand), `first_user_message`. Never text |
-| `GET /holds` | admin | every withheld row whose stone is pending, in the scope, with its evidence and never its text: `{message, session, title (null when hidden), position, role, at, content_chars, state, rule, withheld_message:{id, position, role, at, content_chars}, compare, evidence, relations (plan 4.6 codes), confirm_required, preselected, decided_on (12 hex), group: settle\|later\|other, frozen, neighbours}` and `status: {unsettled_decisions, unreviewed_settle_holds, later_backup_holds, held_for_review, frozen_conversations, legacy_lock, tripwire: {run, inside_family, outside_family}\|null}` (global counts). `withheld_message` is described only when it is in the admin's scope; otherwise `{id: null, position: null, role, at: null, content_chars: null}` (an admin without the sensitive-data permission learns nothing of a Credit Repair or restricted row) |
+| `GET /messages/{id}/withhold-preview` | admin | read-only: `same_message_rows`, `held_rows`, `identical_text_rows` (ids, positions, roles, times, states; rows outside the scope counted in one total, `rows_outside_your_scope`, never per list), `rowless_copies` (a count, including rows of the message an import deleted, kept only as rollback copies), `items_with_this_text` (imported items in the scope whose text contains the message's, 32+ characters: `[{id, title}]`, to purge by hand), `first_user_message`. Option C (2.10): `carrier_rows` (carriers outside the group, scope-filtered like the other lists, with their relation codes), `titles_with_this_text` (a count), `group: {conversations, uncertain, how: {<link kind>: n}, rows}` (rebuild R6: the group the withhold would hold, read only, `groups.closure_for` seeded as the withhold seeds it; conversations outside the admin's scope are left out of every count, RECON-48), `decision_backup`. Never text |
+| `GET /holds` | admin | every withheld row whose stone is pending, in the scope, with its evidence and never its text: `{message, session, title (null when hidden), position, role, at, content_chars, state, rule, withheld_message:{id, position, role, at, content_chars}, compare, evidence, relations (plan 4.6 codes; option C adds cut, not_checked, uncertain, later_withhold, other_not_compared), confirm_required, preselected, decided_on (12 hex), group: settle\|later\|uncertain\|other, frozen, neighbours, one_click (the server's verdict, `review.eligible_now`), later_withhold, form (plain\|summary\|wrapped\|encoded\|tool\|''), uncertain, joined (how its conversation joined its withheld message's group, a 2.10 link kind; '' when that group does not hold it), joined_state (member\|uncertain\|'')}` and `status: {unsettled_decisions, unreviewed_settle_holds, later_backup_holds, held_for_review, frozen_conversations, legacy_lock, tripwire: {run, inside_family, outside_family}\|null, group_conversations, uncertain_conversations, group_rows_held, group_rows_readable, uncertain_waiting}` (global counts; `uncertain_waiting` is what the decisions export refuses on). `withheld_message` is described only when it is in the admin's scope; otherwise `{id: null, position: null, role, at: null, content_chars: null}` (an admin without the sensitive-data permission learns nothing of a Credit Repair or restricted row) |
 | `POST /holds/{id}/keep` | admin | 409 during an import. The stone becomes `kept` (permanent) → `archive.hold_kept {message, session, anchor, rule}` |
-| `POST /holds/{id}/release` | admin | 409 during an import. 400 when a certain stone names its JARVIS row ("it is the same message as a withheld one: it cannot be released"). Deletes the pending stone, writes the exemption, sets the release marker; its text comes back at the next import of a backup holding it; promoted copies emptied meanwhile stay empty → `archive.hold_released {message, session, anchor, rule}` |
+| `POST /holds/{id}/release` | admin | 409 during an import. 400 when a certain stone names its JARVIS row ("it is the same message as a withheld one: it cannot be released"). Body `{confirm}`: 400 without `confirm: "RELEASE"` when the hold is related to the withheld text or uncertain, and (B6, rebuild R4) whenever the server does not find it one-click eligible now (2.10); the word is checked on the server, never a client flag. `POST /sessions/{id}/holds/release-unrelated` releases only the holds `eligible_now` finds, and is refused (400) for an uncertain conversation or while a hold of it says `not_in_backup`. Deletes the pending stone, writes the exemption, sets the release marker; its text comes back at the next import of a backup holding it; promoted copies emptied meanwhile stay empty → `archive.hold_released {message, session, anchor, rule}` |
 | `POST /messages/{id}/promote` | operator | `{kind, title, agent?}` → a pending item: origin `promoted`, `import_run_id NULL`, `source_ref = "JARVIS session <source id> · message <position>"`, sensitivity = the highest of the message and its session → `memory.promoted`. A withheld message, or one with an admin's withhold tombstone → 400; since 0.6.2 also a row that is the same JARVIS message as a withheld one (its key has a stone, its JARVIS row is a stone's binding, or its uid is a stone's uid with an equal or unknown role and no release of that group names it) → 400 "this message is the same JARVIS message as one an admin withheld: it cannot be promoted". A readable row with identical text that the admin saw stays promotable. The message's row is locked: a withhold of it waits for the promote and then empties the new item, or the promote waits for the withhold and is refused. |
 | `GET /conflicts` | operator | `status` → `{conflicts, total}`. A conflict's `existing` and `incoming` never carry a version's `source_sha256` (review 3, readers); a redaction of the version a `source_changed` conflict copied blanks its hash and title in the stored conflict too |
 | `POST /conflicts/{id}/resolve` | operator (`instruction`, `source_changed` and `workflow`: admin) | `{resolution, note?}` → `memory.conflict_resolved`; see the resolution rules below |
@@ -1134,7 +1240,13 @@ all ticked (held with the message); unticking one sends its id in `leave_readabl
 "Hide the conversation title" (ticked for the first user message); the imported memory
 items that contain the text, as links. The request is `{leave_readable, hide_title}`. When
 the preview cannot be loaded, the withhold still works (the server holds every matching
-row and decides the title).
+row and decides the title). Option C (rebuild R6): the group in words from `group` (how many
+other conversations the admin may open are in it, how each joined, their readable rows, all held
+with the message; how many only an uncertain link holds: held, never one-click, the export waits;
+without `group` it still says the whole group is held); the carriers outside the group, one line
+per row with its relation words (each held on its own); how many titles carry the text (hidden);
+and, under the title box, that every group conversation's title is hidden by membership whatever
+the box says.
 
 **Held for review (admins, Review tab, plan 9.2-9.4):** the "Finish decisions needed"
 banner (unsettled decisions, Settle holds waiting) and the legacy-lock banner (also on the
@@ -1146,7 +1258,25 @@ importing this conversation"), and "Other held messages". Each row: its evidence
 relation chips (never its text), what its rule means, **Keep withheld**, and **Release**
 with the confirmation "Its text comes back at the next import; promoted copies stay
 empty."; a row with any relation other than "none" is released only after typing
-`RELEASE` (sent as `confirm`). Chips:
+`RELEASE` (sent as `confirm`). Option C (rebuild R6, RECON-49): a fourth group, "Uncertain link to
+a withheld conversation" (by conversation, never a one-click release), and a hold whose group the
+dashboard does not know is shown under "Other held messages", never dropped; a switch between
+this view and the group view ("By withheld message and conversation": one section per withheld
+message the hold names, one shared section for those the admin may not open, then per
+conversation with how it joined and an "uncertain link" chip, and the counts of rows,
+conversations and uncertain links); per row the relation chips including the option C codes, the
+form chip, "one-click release" or "release needs RELEASE", and a note for each state (uncertain,
+later withhold, not compared with every other text, not read in full, a cut beginning). The plain
+confirmation is shown only when the server's `one_click` is true, `confirm_required` is not, the
+relations are exactly "none" and neither `uncertain` nor `later_withhold` is set; otherwise the
+typed dialog says why (related, uncertain, not compared with every text, or not a one-click row).
+"Release this conversation's rows with no relation" is offered only when some hold of the
+conversation is one-click and none is uncertain or says not_in_backup, later_withhold,
+other_not_compared or not_checked; otherwise the panel says why. The counters add the groups'
+conversations, uncertain conversations, uncertain rows waiting (the export waits), group rows
+held and group rows readable without a release (marked when above 0); a counter the server does
+not send reads "not reported", never 0; the banner adds the uncertain rows waiting and readable
+group rows. Chips:
 `withheld_by_admin.review` pending ("held for review") and kept, `guard` ("withheld by
 the database guard"), released, `title_withheld` ("title hidden by an admin"),
 `purged_before`.

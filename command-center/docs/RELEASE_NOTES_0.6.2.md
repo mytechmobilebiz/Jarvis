@@ -9,9 +9,20 @@ owner's path; there is no separate 0.6.0 or 0.6.1 guide: an installation of a
 withdrawn 0.6.x is covered by that guide's notes, section 4 below) · verdict:
 `releases/GO_NO_GO_0.6.2.md`
 
-> **Status: pending its verdict.** 0.6.2 replaces 0.6.0 and 0.6.1, which are
-> NO-GO for installation and for any JARVIS import (security notice of
-> 2026-10-20). Do not install 0.6.2 until `releases/GO_NO_GO_0.6.2.md` says GO.
+> **Status: NO-GO.** 0.6.2 replaces 0.6.0 and 0.6.1, which are NO-GO for
+> installation and for any JARVIS import (security notice of 2026-10-20). Do
+> not install 0.6.2 and do not import JARVIS data with it until
+> `releases/GO_NO_GO_0.6.2.md` says GO.
+>
+> **Option C, rebuilt (section 2A).** 0.6.2 holds a withheld message with its
+> whole conversation group ("option C"). The option C code of review rounds 1
+> to 3 was lost when the cloud container was replaced on 2026-11-18; it has
+> been rebuilt from the last saved snapshot and from the surviving reports, on
+> the branch `wip/brain-062-optionC`. The rebuild is unreviewed work in
+> progress, not a release: review round 3 did not pass, the rebuild has open
+> failures of its own (section 7), and the remaining release steps (section 6)
+> have not run. The tests show the listed properties on the scenarios tested;
+> they do not show that no leak remains.
 
 0.6.2 is a JARVIS Brain security release. In 0.6.0 and 0.6.1, the text of a
 JARVIS message that an admin withheld came back when a later JARVIS backup was
@@ -374,6 +385,65 @@ applies again and `system.restore_carried` with counts, and keeps the audit
 entries made after the backup. No entry holds a title, text, note or search
 query.
 
+## 2A. Option C: a withheld message is held with its conversation group (rebuilt; NO-GO)
+
+Everything in section 2 still applies; option C widens what a withhold holds.
+Developer details: `JARVIS_BRAIN_SPEC.md` section 2.10.
+
+- **The group.** A withheld message's group is its conversation and every
+  conversation JARVIS made from it or that copied it: compression
+  continuations, branches, resets and rotations (both ways); delegated
+  sub-agents and child conversations with no marker (from the parent down
+  only); and conversations with no parent that hold copies of the group's
+  history. Every stored row of every group conversation is held for your
+  review, and so is every new row a later backup brings into one. The group is
+  recorded for good: a rollback, a restore or a re-import keeps it, and the
+  decisions file carries it.
+- **Uncertain links.** When a conversation's parent cannot be found, or it has
+  two, its link to the group is uncertain. Its rows are held, never released
+  in one click (each release needs `RELEASE`), and the decisions export waits
+  until each is kept or released.
+- **Titles.** The title of every conversation in a group is hidden, whatever
+  the title box in the withhold dialog says, and stays hidden after a
+  rollback, a restore or a re-import. A title outside the group that carries
+  the withheld text is hidden too.
+- **Copies outside the group.** With the withheld text in hand (at the
+  withhold, every import and Settle), every stored row is compared, in every
+  field, after folding case and width (including Turkish i and invisible
+  characters), decoding JSON, escapes and literals, and reading quote markers,
+  Hermes's summaries, its prune line and cut previews. A row that carries the
+  text (16 characters or more; a generic phrase never counts) is held on its
+  own; memory items that carry it are quarantined. A text too deeply nested or
+  encoded to read in full is held ("not read in full").
+- **Rollback copies.** The older text of a group row, kept for a rollback,
+  loses its text; a rollback never brings it back.
+- **Evidence and releases.** A hold's evidence can now also say "the
+  beginning of the withheld text, cut short", "not read in full", "uncertain
+  link", "a later withhold: not compared with its text yet" and "not compared
+  with every other withheld text". "No relation" needs every withheld text in
+  hand: a later withhold (from the page, a decisions file or a restore) makes
+  earlier "no relation" holds stale at once. One click releases only rows the
+  server finds have exactly no relation to every withheld text, are a plain
+  user or assistant text and have no uncertain link; every other release needs
+  you to type `RELEASE`, and the server checks the word. A released row is
+  compared with every other withheld text and held again if it relates to one.
+- **Dashboard.** The withhold dialog says how many other conversations are in
+  the group, how each joined, how many rows are held with them and how many
+  links are uncertain; it lists the copies outside the group and the titles
+  that carry the text. "Held for review" adds the group **Uncertain link to a
+  withheld conversation**, a view **By withheld message and conversation**, a
+  note on every hold that was not compared with every withheld text, a
+  "one-click release" or "release needs RELEASE" mark per row, and the groups'
+  counters (conversations, uncertain conversations, uncertain rows the export
+  waits on, rows held with their conversation, rows readable without a
+  release).
+- **Costs (for your decision).** Every withhold, import and Settle reads every
+  stored row (review round 3 measured about 112 seconds per 100,000 rows on
+  its code; the rebuild has not been measured), and the withhold dialog's
+  preview reads every row too. "No relation needs every text": once JARVIS
+  deletes a withheld conversation for good, its holds need a keep or a typed
+  release before the export.
+
 ## 3. The contract, and the defaults
 
 **What 0.6.2 promises** (the review attacks this, and only this). The
@@ -391,7 +461,9 @@ finished with Settle; a later backup is any other file.
 
 **Out of contract** (section 7, for your sign-off): paraphrases; verbatim
 copies in conversations with no recorded link; edits JARVIS makes inside a
-withheld conversation.
+withheld conversation. With option C (section 2A) a "family" above is the
+withheld message's whole group, and a verbatim copy outside the group is held
+on its own when the withheld text is in hand.
 
 **Your answers to the owner questions, and the defaults 0.6.2 is built with.**
 Each default is the fail-closed choice; an answer only switches an option.
@@ -405,10 +477,11 @@ Each default is the fail-closed choice; an answer only switches an option.
 | Q5 Every hold Settle found is reviewed before the export | Yes: live then applies only your own decisions; on the test copy matching rows stay hidden until you review them |
 | Q6 Nothing computed from a withheld text is ever stored | Yes. A released row's text comes back at the next import of a backup holding it. When JARVIS deleted the withheld message itself, the one-click release is not offered for that conversation: review row by row, or stop importing it |
 | Q7 Edits, prunes and deletions JARVIS makes inside a withheld conversation are not copied | Accepted: the Command Center keeps what it had and never brings text back |
-| Q8 Outside withheld conversations | (a) a "Replying to" quote of a withheld message is held for review; (b) any other row that contains a withheld text is listed to admins by location (tripwire), never hidden |
+| Q8 Outside withheld conversations | (a) a "Replying to" quote of a withheld message is held for review; (b) option C: any other stored row that carries a withheld text (in any field, in another case or form) is held on its own for review when the text is in hand; the tripwire still lists readable matches to admins by location |
 
 **Also unchanged defaults:** hide the conversation title when the withheld
-message is its first user message (your choice in the dialog); holds never
+message is its first user message (your choice in the dialog; with option C
+every group conversation's title is hidden whatever you choose, section 2A); holds never
 expire; purges of items that came back are quarantined for an admin, never
 purged automatically; purge fingerprints are keyed from the database
 password (no new setting); restores apply again every withhold, purge,
@@ -494,8 +567,48 @@ Synthetic data only, never real JARVIS data.
 | End-to-end, operations (`testing/brain-check.sh`) | TODO |
 | Speed: migration and import at the size of your backup (about 50,000 messages) | TODO (the migration alone: about 3 s on synthetic data) |
 | Upgrade tests from the package (0.5.0, 0.6.0 and 0.6.1 → 0.6.2, going back) and the guide run | in `releases/GO_NO_GO_0.6.2.md` |
+| Option C rebuild (R1 to R6), backend, oracle and dashboard | Work in progress, unreviewed: each step's runs, mutation checks and seed results are in `docs/rebuild-062/progress/`. The six environment-dependent tests (`test_gate` ×4, `test_release_version`, the `test_brain_ops` package test) have not run in their required environment and are not counted as passed |
+| Fresh oracle seeds 13000 to 13899 on the rebuilt code (second-withhold arm, both live-history arms) | **269 of 900 fail in at least one arm** (section 7) |
+| Run 12 (2,000 scenarios), packaging and the CRLF fix, upgrade tests, the Windows simulation, brain-check | not run |
 
 ## 7. Known limitations and what stays open
+
+**Option C as rebuilt: open failures (0.6.2 stays NO-GO).**
+- **Fresh oracle seeds:** 269 of 900 fail in at least one arm. The
+  privacy-relevant classes found so far: after a restore, the removals-only
+  file and a re-import, rows held with their group or as copies can become
+  readable (12 seeds; review round 3's 13825 class); rows of a group held on
+  the test copy can be readable on live (seed 13010, cause not found). Other
+  classes fail closed (rows of the first withhold's group labelled "not in
+  this backup" after a second withhold, so they are held but described
+  wrongly) or have no cause found yet (durability of stored rows across a
+  later import; a check that a new readable row equals a stored one).
+- **Known leak, not fixed:** Hermes's search snippet marks the matched words
+  with `>>>` and `<<<`, which stops the match against the withheld text (review
+  round 3, derived F1: 56 to 180 characters of it can stay readable).
+- **Over-holding:** an ordinary nested search read can reach the decoding
+  limit and is then held as "not read in full".
+- **Releases without their trust** are still read in four places
+  (`archive._withheld_keys`, `later.load_family_readable`, the importer's
+  `_readable_uids`, the withhold preview lists); low impact as far as review
+  round 3 could see, not changed.
+- **The database guard** keeps a group row withheld unless a release of that
+  exact row for that group names it, but does not read whether that release is
+  trusted.
+- **Your decisions, pending (not built):** the parent side of uncertain and
+  child links (groups-paths B, D and N3, including Hermes v16's orphan tags);
+  middle pieces of a withheld text (N3, R5b); same-message-id twins across two
+  withholds (13426, 13532, 13754); a row released before a later withhold
+  arrives stays readable (releases N2); recording what the withheld message
+  covers at the moment it is withheld (13639); a conversation link that no
+  backup ever held (13621); a reopened parent and its copied-marker child held
+  both ways; and the costs in section 2A.
+
+Some residual risks below were written before option C: a delegated
+sub-agent's conversation is now in its parent's group (section 2A), and
+JARVIS's session search output and verbatim copies in other conversations are
+held on their own when the withheld text is in hand; paraphrases and summaries
+in other words stay out of contract.
 
 **Residual risks (for your sign-off).** No design closes these; they are
 outside the contract of section 3.

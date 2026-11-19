@@ -16,10 +16,12 @@ network and volumes, so it does not touch XAMPP or other Docker projects
 > memory items can then read it (viewers cannot), and the verification
 > commands still report success. 0.6.0 has the same defect.
 >
-> **0.6.2 corrects it and is pending its verdict**
+> **0.6.2 is meant to correct it, and is NO-GO**
 > (`releases/GO_NO_GO_0.6.2.md`; what changed:
-> [RELEASE_NOTES_0.6.2.md](RELEASE_NOTES_0.6.2.md)). Until that verdict says
-> GO:
+> [RELEASE_NOTES_0.6.2.md](RELEASE_NOTES_0.6.2.md)). Its conversation-level
+> holding ("option C") was rebuilt after the original code was lost; the
+> rebuild is unreviewed work in progress, with open failures, and no package
+> of it exists. Until a verdict says GO:
 >
 > - Do not install 0.6.0, 0.6.1 or 0.6.2, and do not import JARVIS data with
 >   any 0.6.x release.
@@ -496,8 +498,18 @@ imports **that same file** and replays them word for word.
   continuations and branches that equal, contain, restate or quote the
   message, each with what links it; untick a row to leave it readable (your
   decision is recorded). It hides the conversation's title when this is its
-  first user message (untick to keep it), and lists the memory items that
-  contain the text, for you to purge.
+  first user message (with option C the title is hidden whatever you choose,
+  below), and lists the memory items that contain the text, for you to purge.
+
+  With option C it also says which conversation group the message is held
+  with: how many other conversations (continuations, branches, resets,
+  delegated sub-agents, child conversations, conversations that copied its
+  history), how many of their rows, and how many are in it only by an
+  uncertain link. Every stored row of the group is held for your review, and
+  every group conversation's title is hidden whatever the title box says. It
+  lists the rows outside the group that carry the text in another form (each
+  held on its own) and how many titles carry it (hidden). Withholding takes
+  longer than before: every stored row is read.
 - **Finish your decisions (Settle)** once you have withheld what you want. It
   goes through every conversation family that holds a withhold on this backup,
   also the sessions a `-Sample` import skipped, with the withheld text in
@@ -517,6 +529,21 @@ imports **that same file** and replays them word for word.
   text is, contains, restates or quotes the withheld text, or has any other
   relation to it, is released only after you type `RELEASE`. The export
   refuses while one of these rows waits for you.
+
+  With option C: the group **Uncertain link to a withheld conversation**
+  lists the rows of conversations whose parent was not found or which have
+  two; keep each one or release it by typing `RELEASE` (no one-click release),
+  and the export refuses until none waits. Every row says "one-click release"
+  or "release needs RELEASE"; only rows the server finds have no relation to
+  any withheld text (and are a plain user or assistant text) are released
+  without typing. A row marked "a later withhold" or "not compared with every
+  other withheld text" was not compared with every text: run Settle on a
+  backup that holds them all, or review it with `RELEASE`. The switch **By
+  withheld message and conversation** shows the same rows per withheld
+  message and conversation, with how each conversation joined the group. The
+  Overview's "Withhold decisions" adds the groups' counters. **Rows of group
+  conversations readable without a release** should be 0; if it stays above 0
+  after an import or Settle, do not export the decisions and report it.
 - **Export** what you decided: the memory items (approved, rejected,
   archived, deleted, your edits), every withhold with the JARVIS row it names
   and the backup it was decided on, every hold you kept or released, the rows
@@ -656,10 +683,11 @@ withheld (a conversation and its continuations and branches, a "family"):
   withheld conversation.
 - **After importing**, the Review tab's group **New in a later backup** lists
   the held rows by conversation. Per row: **Keep withheld** or **Release**
-  (type `RELEASE` when it has any relation to the withheld text). Per
+  (type `RELEASE` unless the row says "one-click release"). Per
   conversation: **Release this conversation's rows with no relation** (offered
   only when the backup held every withheld text of that conversation, so the
-  comparison could be made; a withheld text counts as held only as its own
+  comparison could be made, no row of it is uncertain or was not compared with
+  a later withheld text, and the server finds at least one row it may release; a withheld text counts as held only as its own
   message or an unchanged copy of it, so when JARVIS merged it into another
   message or into a summary the rows show "nothing to compare" and are
   released one at a time), or **Stop importing this conversation** (later
