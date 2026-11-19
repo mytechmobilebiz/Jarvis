@@ -91,3 +91,23 @@ def test_s4_family_row_short_w_words_contains_is_admitted(tmp_path):
 
 def test_s4_short_w_words_contains_outside_the_family_is_still_a_violation(tmp_path):
     assert _short(tmp_path, ["contains"], in_family=False)
+
+
+def test_s4_family_row_generic_w_identical_value_is_admitted_not_on_a_carrier_hold(tmp_path):
+    """13880: a generic withheld text ('Sounds good.') as a value of a family row's session_search read: the family
+    reading shows 'identical'; a carrier reading drops it (O-D4), so a carrier hold showing it is still reported."""
+    w = k.world(tmp_path)
+    a, c = w.session(), w.session()
+    r1, _ = w.row(a, "user", SHORT)
+    x, _ = w.row(c, "tool", json.dumps({"mode": "read", "messages": [{"role": "user", "content": SHORT}]}))
+    snap = w.sim.backup("d")
+    rows = k.cc_rows(snap, withheld={(a, r1), (c, x)})
+    out = []
+    for via in ("new in a later backup", o.CARRIER_VIA):
+        run = k.run_of(w, snap)
+        wh = k.withhold(run, rows, a, r1)
+        rx = next(r for r in rows if r["source_message_id"] == str(x))
+        st = k.state(rows, [k.stone(rx, via=via, anchor=wh.key, relations=["identical"])])
+        o.check_evidence(run, "A3", [k.hold(rx, ["identical"])], st, snap, "self-test")
+        out.append(run.problems)
+    assert not out[0] and out[1]

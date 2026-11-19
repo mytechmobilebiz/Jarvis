@@ -1120,7 +1120,7 @@ def check_evidence(run: Run, prop: str, holds: list[dict[str, Any]], st: dict[st
                     computed |= dem
                     allowed |= alw
                     if not in_group and family_part_of(r, w, comps, stone):
-                        allowed |= relations_c(version_fields(v), view, group=True)[1] & {"part_of", "contains"}
+                        allowed |= relations_c(version_fields(v), view, group=True)[1]
                 allowed |= computed
                 allowed_all |= allowed
                 done.append((view, computed))
@@ -1195,11 +1195,13 @@ def family_part_of(row: dict[str, Any], w: Withhold, comps: dict[str, set[str]],
     """D-46 (rebuild S4, RECON-63): a hold of a row of this decision's family (plan 5.1, i22's family: the sessions
     its stones bind and their copy links) outside the ground-truth group, held by the family's own rules (Settle's
     'found when finishing decisions', a later backup's 'new in a later backup'; never a per-row carrier hold), may show
-    'part_of' where a value of it is part of the withheld text, and 'contains' where a withheld text of fewer than 16
-    characters of words appears as a word sequence in it (13880): the product computes those holds with i22's family
-    rules (identity.family_relations, as i22's oracle admitted for every family hold: deviation 274), now read per
-    value. Admitted only (never demanded); a carrier hold, a row outside the family and a relation no value gives are
-    still reported (test_oracle_family_part_of_s4.py)."""
+    what the family's readings give (the group reading): 'part_of' where a value of it is part of the withheld text,
+    'contains' where a withheld text of fewer than 16 characters of words appears as a word sequence in it, and
+    'identical' / 'contains' of a generic withheld text, which a carrier reading drops (O-D4; 13880: W 'Sounds good.'
+    restated, a session_search read's value): the product computes those holds with i22's family rules
+    (identity.family_relations, as i22's oracle admitted for every family hold: deviation 274), now read per value.
+    Admitted only (never demanded); a carrier hold, a row outside the family and a relation no value gives are still
+    reported (test_oracle_family_part_of_s4.py)."""
     return row.get("sid") in comps.get(w.key, set()) and (stone.get("via") or "") != CARRIER_VIA
 
 
