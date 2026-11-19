@@ -1139,10 +1139,6 @@ async def release_hold(session: AsyncSession, message: ArchiveMessage, sess: Arc
     if identity.needs_confirmation(relations) and not confirmed and not typed:
         # plan 4.6: a hold whose text is, holds or quotes the withheld text is released only on a typed confirmation
         raise BrainError(CONFIRM_NEEDED)
-    checked = await _eligible_now(session, stone, message, sess, uncertain=uncertain)
-    if not (confirmed or typed or checked):
-        # B6 (rebuild R4): a per-row release of anything one click could not release needs the typed word
-        raise BrainError(TYPED_NEEDED)
     here = identity.exact_of_row(message, sess.source_session_id)
     stones = [identity._stone(r) for r in (await session.scalars(select(BrainTombstone).where(
         BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.source_session_id == here.session,
@@ -1150,6 +1146,10 @@ async def release_hold(session: AsyncSession, message: ArchiveMessage, sess: Arc
     exact_stones = [st for st in stones if identity.same_row(identity.exact_of_stone(st), here)]
     if any(st.certain for st in exact_stones):
         raise BrainError("it is the same message as a withheld one: it cannot be released")
+    checked = await _eligible_now(session, stone, message, sess, uncertain=uncertain)
+    if not (confirmed or typed or checked):
+        # B6 (rebuild R4): a per-row release of anything one click could not release needs the typed word
+        raise BrainError(TYPED_NEEDED)
     anchor = stone.anchor_key or stone.source_key
     # Every hold of this exact JARVIS row in this group (a key adoption can leave the old key's hold binding it too).
     gone = sorted({message.source_key} | {st.key for st in exact_stones if st.group == anchor})

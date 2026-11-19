@@ -42,6 +42,8 @@ EVIDENCE = {"message", "session", "title", "position", "role", "at", "content_ch
             "relations", "confirm_required", "preselected", "decided_on",
             # plan 9.2, 9.3: the Review tab's group (settle, later, other) and whether importing was stopped
             "group", "frozen",
+            # rebuild R4 (D-35): whether one click may release it now, a later withhold's mark, the form it was read in
+            "one_click", "later_withhold", "form",
             # option C (rebuild R1, D-8): whether an uncertain link holds its conversation (never one-click)
             "uncertain"}
 
@@ -90,7 +92,8 @@ async def test_holds_list_shows_evidence_and_no_text(client, fx):
     assert set(hold) == EVIDENCE and r.json()["total"] == 1
     assert (hold["message"], hold["session"], hold["role"], hold["state"]) == (stub.id, stub.session_id, "tool", "live")
     assert (hold["rule"], hold["compare"]) == (identity.UID_HOLD, "other text")
-    assert identity.SAME_UID in hold["relations"] and not hold["confirm_required"]
+    # rebuild R4 (B6, D-35): a 'same message id' tool row is no one-click row: its release needs the typed word
+    assert identity.SAME_UID in hold["relations"] and hold["confirm_required"] and not hold["one_click"]
     # option C (rebuild R1, D-8): the conversation is in the withhold's group: its title is hidden by membership
     assert hold["content_chars"] == len(STUB) and hold["title"] is None
     assert hold["withheld_message"] == {"id": full.id, "position": full.position, "role": "tool",
@@ -158,7 +161,9 @@ async def test_release_restores_text_at_next_import_and_audits(client, fx):
     full, stub = await held_stub(client, fx, mark)
     anchor = (await stones())[stub.source_key].anchor_key
     await as_(client, "admin")
-    r = await client.post("/api/brain/holds/%d/release" % stub.id)
+    # rebuild R4 (B6, D-35): a 'same message id' hold is no one-click row: its release needs the typed word
+    assert (await client.post("/api/brain/holds/%d/release" % stub.id)).status_code == 400
+    r = await client.post("/api/brain/holds/%d/release" % stub.id, json={"confirm": identity.CONFIRM_WORD})
     assert r.status_code == 200 and r.json()["released"] is True, r.text
     [released] = [a for a in await audit_of("archive.hold_released") if a.detail.get("message") == stub.id]  # D-7
     assert released.detail == {"message": stub.id, "session": stub.session_id, "anchor": anchor,

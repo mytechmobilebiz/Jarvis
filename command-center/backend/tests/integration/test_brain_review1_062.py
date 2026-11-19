@@ -363,7 +363,9 @@ async def test_r22_restore_keeps_the_admins_group_and_a_release(client, fx, rest
     await as_(client, "admin")
     assert (await client.post("/api/brain/messages/%d/withhold" % orig.id)).status_code == 200
     [stub] = await message_of(child, stub_row)
-    assert (await client.post("/api/brain/holds/%d/release" % stub.id)).status_code == 200
+    # rebuild R4 (B6, D-35): no one-click row: the typed word
+    assert (await client.post("/api/brain/holds/%d/release" % stub.id,
+                              json={"confirm": identity.CONFIRM_WORD})).status_code == 200
     before = {k: (t.anchor_key, t.review) for k, t in (await stones()).items()}
     out = await restore_point.restore(await restore_point.export())
     after = {k: (t.anchor_key, t.review) for k, t in (await stones()).items()}
