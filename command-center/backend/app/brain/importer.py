@@ -961,14 +961,15 @@ class Processor:
                     self._later_texts[group] = text
         verified = dict(self.w_texts)
         all_roots = {st.key for st in self.ids.by_key.values() if st.anchor == "" and st.certain}
+        found_of = {g: self._w_candidates(g) for g in roots if g in self.ids.by_key and g not in verified}
         for group in roots:
             st = self.ids.by_key.get(group)
             if st is None or group in verified:
                 continue
-            found = self._w_candidates(group)
+            found = found_of.get(group) or []
             if found:
                 self.w_candidates[group] = [t for t, _ in found]
-            text = self._w_unverified_text(group, found, verified, all_roots)
+            text = self._w_unverified_text(group, found, verified, found_of)
             if text:
                 # S7 (RECON-68): compared (its relations shown, its carriers held), never 'none' against it
                 self.w_texts[group] = text
@@ -1866,18 +1867,33 @@ class Processor:
 
     def _w_candidates(self, group: str) -> list[tuple[str, bool]]:
         """Stabilisation S7 (RECON-68): for a decision this backup holds no verified text of (_w_text: W's own row, its
-        tool result, a copy of one of those), the texts a member's row holds that an earlier rule took as the withheld
-        text and RECON-62 / the 'same message id' rule refuse: a member whose kept hold said 'identical' (its text, or
-        one of its values, was a withheld text), a pending hold whose evidence said so, and a member by W's uid ('same
-        message id': W's message as JARVIS keeps it now, perhaps a piece of it or more), and a member by a copy rule at
-        W's own time and role with another uid (a gateway branch's copy of W). (text, whether it may stand in for W's
-        text: a kept 'identical' member or such a copy, read as authored words, absorbing nothing W did not.) In memory only; a carrier of any of
-        them is held (review.hold_carriers): W's words never become readable because W's own row is gone."""
+        tool result, a copy of one of those), the texts that members' rows hold which an earlier rule took as the
+        withheld text and RECON-62 / the 'same message id' rule refuse: a member whose kept hold said 'identical' (its
+        text, or one of its values, was a withheld text), a pending hold whose evidence said so, a member by W's uid
+        ('same message id': W's message as JARVIS keeps it now, perhaps a piece of it or more), and a member by a copy
+        rule at W's own time and role with another uid (a gateway branch's copy of W); each read from its own row, or
+        from a row of the family with its copy identity (the same uid, time, role and call) when its row moved. (text,
+        whether it may stand in for W's text: a kept 'identical' member read as authored words, or such a copy,
+        absorbing nothing W did not.) In memory only; a carrier of any of them is held (review.hold_carriers): W's
+        words never become readable because W's own row is gone."""
         own = self.ids.by_key.get(group)
         if own is None:
             return []
         out: list[tuple[str, bool]] = []
-        seen: set[str] = set()
+        family: list[tuple[str, src.SourceMessage]] | None = None
+
+        def moved(x: identity.Stone) -> list[src.SourceMessage]:
+            nonlocal family
+            if not x.uid or x.at is None:
+                return []
+            if family is None:
+                sessions = self._source_sessions()
+                family = [(sid, r) for sid in sorted(self._family_of_groups([group])) if sid in sessions
+                          for r in self.src.backup.messages(sid)]
+            want = (x.uid, x.role, x.tool_call_id, x.at)
+            return [r for sid, r in family if (lambda h: (h.uid, h.role, h.tool_call_id, h.at))(
+                identity.exact_of_source(sid, r)) == want]
+
         for x in sorted(self.ids.groups.get(group, ()), key=lambda x: x.key):
             if x is own or not x.session or not x.row:
                 continue
@@ -1889,33 +1905,42 @@ class Processor:
             if not identical and not copy_at_w and not (x.certain and x.via == "same message id"):
                 continue  # a pending hold whose evidence said 'identical' is a candidate for carriers too
             row = self._bound_row(x.session, x.row)
-            if row is None or identity.is_placeholder(row.content) or not identity.flat(row.content or "") \
-                    or not identity.same_row(identity.exact_of_stone(x), identity.exact_of_source(x.session, row)):
-                continue
-            stand_in = ((identical or copy_at_w) and x.certain and not row.tool_calls_raw and identity.text_form(row.content) == identity.PLAIN_FORM
-                        and not self._absorbs_more(group, row) and not self._is_piece(group, row))
-            f = identity.fold(row.content)
-            if f in seen:
-                out = [(t, s or (stand_in and identity.fold(t) == f)) for t, s in out]
-                continue
-            seen.add(f)
-            out.append((row.content, stand_in))
+            if row is not None and identity.same_row(identity.exact_of_stone(x),
+                                                     identity.exact_of_source(x.session, row)):
+                rows = [row]
+            else:
+                rows = moved(x)
+            for row in rows:
+                if identity.is_placeholder(row.content) or not identity.flat(row.content or ""):
+                    continue
+                # a kept 'identical' member only as authored words (a JSON read or a quote is 'identical' by one of
+                # its values: 13409); a copy at W's time and role holds W's row as JARVIS copied it, whatever its form
+                stand_in = (x.certain and (copy_at_w or (identical and not row.tool_calls_raw
+                                                         and identity.text_form(row.content) == identity.PLAIN_FORM))
+                            and not self._absorbs_more(group, row) and not self._is_piece(group, row))
+                f = identity.fold(row.content)
+                if any(identity.fold(t) == f for t, _ in out):
+                    out = [(t, s or (stand_in and identity.fold(t) == f)) for t, s in out]
+                    continue
+                out.append((row.content, stand_in))
         return out
 
     @staticmethod
     def _w_unverified_text(group: str, found: list[tuple[str, bool]], verified: dict[str, str],
-                           roots: set[str]) -> str | None:
-        """S7 (RECON-68): the stand-in text of a decision with no verified text, only when it cannot be another withheld
-        text: exactly one stand-in (under fold), every other admin's withheld text verified in hand, and the stand-in
-        identical to none of them (a kept 'identical' hold may have been identical to another withheld text). None
-        otherwise (the decision stays 'not in this backup'; its candidates' carriers are still held)."""
+                           others: dict[str, list[tuple[str, bool]]]) -> str | None:
+        """S7 (RECON-68): the stand-in text of a decision with no verified text: exactly one stand-in (under fold),
+        identical to no other decision's verified text and to no other decision's stand-in (a kept 'identical' hold may
+        have been identical to another withheld text). None otherwise (the decision stays 'not in this backup'; its
+        candidates' carriers are still held). A stand-in never gives 'none' (the caller), so a wrong one can only show
+        relations to a text the admin's review kept as identical to a withheld text, never free a row."""
         stand = {identity.fold(t): t for t, s in found if s}
-        if len(stand) != 1 or not (roots - {group}) <= set(verified):
+        if len(stand) != 1:
             return None
         text = next(iter(stand.values()))
-        for g, t in verified.items():
-            if g != group and t is not None and identity.IDENTICAL_REL in identity.text_relations(text, t):
-                return None
+        theirs = [t for g, t in verified.items() if g != group and t is not None]
+        theirs += [t for g, ts in others.items() if g != group for t, s in ts if s]
+        if any(identity.IDENTICAL_REL in identity.text_relations(text, t) for t in theirs):
+            return None
         return text
 
     def _decision(self, group: str) -> later.Decision | None:

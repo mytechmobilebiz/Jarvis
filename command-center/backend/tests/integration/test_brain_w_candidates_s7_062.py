@@ -201,6 +201,33 @@ async def test_s7_a_gateway_copy_of_w_at_its_time_stands_in_when_w_is_gone(clien
     assert await readable_with(mark) == 0
 
 
+async def test_s7_a_moved_copy_of_w_is_read_by_its_copy_identity(client, fx):
+    """F1 (13622): the gateway branch's copy of W (fresh uid, W's time) later lives on only in a CLI branch of the branch
+    (the same uid, time and role: its copy identity), its own row gone with W's. The stand-in is read from that copy:
+    a new row there with W's words shows 'identical', and a read outside every group carrying them is held."""
+    db = fx["db"]
+    mark = "zqs7mv07"
+    rows = conversation(db, "s7_m", T, [("user", "Please compare the vendor review and keep it short."),
+                                        ("assistant", secret(mark))])
+    bj.gateway_branch(db, "s7_m", "s7_mb", T + 600)
+    await run(fx)
+    await withhold(client, (await message_of("s7_m", rows[1]))[0].id)
+    await bj.settle(fx, keep=False)
+    bj.cli_branch(db, "s7_mb", "s7_mc", T + 1200)  # the copy's uid, time and role again (never imported before)
+    bj.change(db, "DELETE FROM messages WHERE session_id IN (?, ?)", "s7_m", "s7_mb")
+    bj.add_row(db, "s7_mc", "user", "Book the hotel near the river front, please.", T + DAY)
+    same = bj.add_row(db, "s7_mc", "assistant", secret(mark), T + DAY + 5)
+    bj.add_session(db, "s7_r", started=T + 3 * DAY)
+    read = bj.add_row(db, "s7_r", "tool", search_read("s7_mc", secret(mark)), T + 3 * DAY + 2,
+                      tool_call_id="call_s7mv", tool_name="session_search")
+    await run(fx)
+    hs = (await holds(client)).get((await message_of("s7_mc", same))[-1].id) or {}
+    assert hs and identity.IDENTICAL_REL in (hs.get("relations") or []), hs
+    assert "none" not in (hs.get("relations") or []) and not hs.get("one_click"), hs
+    assert await state("s7_r", read) == "held"
+    assert await readable_with(mark) == 0
+
+
 async def test_s7_without_a_withheld_text_or_candidate_a_new_conversation_stays_readable_control(client, fx):
     """Control: W's conversation gone, no member holding its words; a new conversation's read of unrelated words stays
     readable (the change holds carriers of candidate texts only)."""
@@ -226,13 +253,14 @@ W2 = "Quick summary of the quarterly plan: on track, no blockers today."
 
 
 def test_s7_stand_in_only_when_it_cannot_be_another_withheld_text():
-    """RECON-68: one stand-in, every other withheld text verified, none identical to it: the stand-in; otherwise none
-    (a kept 'identical' hold may have been identical to another withheld text, or to one not in hand)."""
+    """RECON-68: one stand-in, identical to no other decision's verified text or stand-in: the stand-in; otherwise none
+    (a kept 'identical' hold may have been identical to another withheld text)."""
     pick = Processor._w_unverified_text
-    roots = {"w1", "w2"}
-    assert pick("w2", [(W2, True)], {"w1": W1}, roots) == W2
-    assert pick("w2", [(W2, True)], {}, roots) is None  # w1 not verified here: W2's text could be w1's
-    assert pick("w2", [(W1.upper(), True)], {"w1": W1}, roots) is None  # identical (under fold) to w1's text
-    assert pick("w2", [(W2, True), (W1 + " Thanks.", True)], {"w1": W1}, roots) is None  # two stand-ins
-    assert pick("w2", [(W2, False)], {"w1": W1}, roots) is None  # a candidate for carriers only
-    assert pick("w2", [(W2, True), (W2.lower(), True)], {"w1": W1}, {"w1", "w2"}) in (W2, W2.lower())
+    assert pick("w2", [(W2, True)], {"w1": W1}, {}) == W2
+    assert pick("w2", [(W2, True)], {}, {}) == W2  # w1 not in hand at all: never 'none' anyway (the caller)
+    assert pick("w2", [(W1.upper(), True)], {"w1": W1}, {}) is None  # identical (under fold) to w1's text
+    assert pick("w2", [(W1, True)], {}, {"w1": [(W1, True)], "w2": [(W1, True)]}) is None  # w1's stand-in too
+    assert pick("w2", [(W2, True)], {}, {"w1": [(W1, True)], "w2": [(W2, True)]}) == W2
+    assert pick("w2", [(W2, True), (W1 + " Thanks.", True)], {"w1": W1}, {}) is None  # two stand-ins
+    assert pick("w2", [(W2, False)], {"w1": W1}, {}) is None  # a candidate for carriers only
+    assert pick("w2", [(W2, True), (W2.lower(), True)], {"w1": W1}, {}) in (W2, W2.lower())
