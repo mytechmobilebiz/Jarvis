@@ -1,0 +1,106 @@
+{
+ "P:test_oracle_carriers_r2.py::test_decode_cap_is_the_products_and_fails_closed_the_same_way": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "6 failed in 0.25s"
+ },
+ "P:test_oracle_carriers_r2.py::test_fwords_a_short_withheld_text_is_identical_as_a_quoted_block_without_its_markers": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "6 failed in 0.25s"
+ },
+ "P:test_oracle_carriers_r2.py::test_ignorables_are_the_products": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "6 failed in 0.25s"
+ },
+ "P:test_oracle_carriers_r2.py::test_oci_the_oracle_demands_a_carrier_in_another_case_or_form": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "6 failed in 0.25s"
+ },
+ "P:test_oracle_carriers_r2.py::test_od4_the_oracle_neither_demands_nor_allows_a_generic_piece_and_demands_anything_more": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "6 failed in 0.25s"
+ },
+ "P:test_oracle_carriers_r2.py::test_p1_the_oracle_demands_ws_first_40_characters_in_the_generic_prune_line": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "6 failed in 0.25s"
+ },
+ "P:test_oracle_derived3.py": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F",
+   "F",
+   "F",
+   "F"
+  ],
+  "summary": "5 failed in 0.20s"
+ },
+ "P:test_oracle_released_c3.py": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F",
+   "F",
+   "F"
+  ],
+  "summary": "4 failed in 0.10s"
+ },
+ "P:test_oracle_releases_r2.py::test_later_withhold_is_an_undecided_state_for_the_oracle": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "3 failed in 0.17s"
+ },
+ "P:test_oracle_releases_r2.py::test_na_none_must_hold_against_every_withheld_text_in_hand": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "3 failed in 0.17s"
+ },
+ "P:test_oracle_releases_r2.py::test_nb_a_released_row_of_a_withheld_conversation_carrying_another_withheld_text_is_a_leak": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "3 failed in 0.17s"
+ },
+ "P:test_oracle_seeds_r3.py": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F"
+  ],
+  "summary": "2 failed in 0.12s"
+ },
+ "P:test_oracle_spans_c3.py": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F"
+  ],
+  "summary": "6 failed in 0.16s"
+ }
+}

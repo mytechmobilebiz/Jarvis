@@ -1,0 +1,709 @@
+{
+ "I:test_brain_carriers_r2_062.py::test_oci_the_withhold_preview_reads_another_case": {
+  "collect_error": "ImportError: cannot import name 'BrainHiddenTitle' from 'app.models' (<i22>/command-center/backend/app/models.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.10s"
+ },
+ "I:test_brain_carriers_r2_062.py::test_p2_a_title_and_an_imported_memory_item_of_short_words_are_carriers_too": {
+  "collect_error": "ImportError: cannot import name 'BrainHiddenTitle' from 'app.models' (<i22>/command-center/backend/app/models.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.10s"
+ },
+ "I:test_brain_carriers_r2_062.py::test_skc_a_native_partial_reply_quote_of_a_long_w_is_held_wherever_it_is_found": {
+  "collect_error": "ImportError: cannot import name 'BrainHiddenTitle' from 'app.models' (<i22>/command-center/backend/app/models.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.10s"
+ },
+ "I:test_brain_derived3_062.py::test_derived3_13546_a_short_w_quoted_with_markers_stays_held_after_a_rollback": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "4 failed in 5.91s"
+ },
+ "I:test_brain_derived3_062.py::test_derived3_a_group_row_cut_in_a_prune_line_is_never_none": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "4 failed in 5.91s"
+ },
+ "I:test_brain_derived3_062.py::test_derived3_a_nested_session_search_read_is_held_outside_every_group_until_released": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "4 failed in 5.91s"
+ },
+ "I:test_brain_derived3_062.py::test_derived3_a_row_the_decode_cannot_read_in_full_is_held_as_not_checked": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "4 failed in 5.91s"
+ },
+ "I:test_brain_groups_d1_062.py::test_a_delegated_sub_agent_and_a_reset_join_and_their_links_are_recorded": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.11s"
+ },
+ "I:test_brain_groups_d1_062.py::test_d1_a_markerless_child_joins_from_the_parent_down_only": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.11s"
+ },
+ "I:test_brain_groups_d1_062.py::test_d1_child_and_uncertain_members_survive_a_restore_and_the_reimport": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.11s"
+ },
+ "I:test_brain_groups_d1_062.py::test_p2_the_startup_repair_blanks_a_copy_of_a_changed_then_deleted_group_row": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.11s"
+ },
+ "I:test_brain_groups_d1_062.py::test_skc_a_markerless_legacy_gateway_reset_joins_the_group_and_is_held": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.11s"
+ },
+ "I:test_brain_groups_d1_062.py::test_skc_d_the_older_text_of_a_group_row_changed_then_deleted_keeps_no_text_in_any_rollback_copy": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.11s"
+ },
+ "I:test_brain_groups_d1_062.py::test_uncertain_a_parent_that_does_not_resolve_is_held_never_one_click_and_the_export_waits": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.11s"
+ },
+ "I:test_brain_groups_d1_062.py::test_uncertain_conflicting_parents_one_unknown_is_held_one_in_the_group_joins": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.11s"
+ },
+ "I:test_brain_groups_d1_062.py::test_uncertain_hermes_relinked_a_child_to_another_known_conversation": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.11s"
+ },
+ "I:test_brain_groups_d1_062.py::test_uncertain_members_never_move_the_decision_to_another_backup": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.11s"
+ },
+ "I:test_brain_groups_inherited_062.py::test_a_rotation_that_inherited_delegate_from_is_one_conversation_with_its_sub_agent": {
+  "collect_error": "ImportError: cannot import name 'BrainWithheldSession' from 'app.models' (<i22>/command-center/backend/app/models.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.04s"
+ },
+ "I:test_brain_hold_r2_062.py::test_hgr_none_needs_every_withheld_text_in_hand": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.09s"
+ },
+ "I:test_brain_later_062.py::test_the_one_click_release_skips_a_hermes_summary_or_wrapped_text_and_releases_the_plain_row": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F",
+   "F"
+  ],
+  "summary": "4 failed in 6.74s"
+ },
+ "I:test_brain_later_062.py::test_the_one_click_release_skips_a_row_whose_form_was_never_read": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "4 failed in 6.74s"
+ },
+ "I:test_brain_mutation_closure_c_062.py::test_a_pending_hold_never_seeds_a_group": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.08s"
+ },
+ "I:test_brain_mutation_closure_c_062.py::test_a_reset_with_copied_looking_rows_never_joins_by_copied_history": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.08s"
+ },
+ "I:test_brain_mutation_closure_c_062.py::test_a_rolled_back_carrier_changed_in_place_comes_back_held_on_its_own": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.08s"
+ },
+ "I:test_brain_mutation_closure_c_062.py::test_r9_the_repair_blanks_a_rollback_copy_of_a_group_row_written_without_the_sweep": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.08s"
+ },
+ "I:test_brain_mutation_closure_c_062.py::test_title_trigger_hides_the_title_of_a_group_conversation_by_membership_alone": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.08s"
+ },
+ "I:test_brain_mutation_closure_c_062.py::test_trig_release_any_group_a_release_under_one_group_never_frees_a_row_of_two": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.08s"
+ },
+ "I:test_brain_mutation_closure_c_062.py::test_trig_release_not_exact_a_release_never_frees_another_message_at_its_row_id": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.08s"
+ },
+ "I:test_brain_mutation_closure_r2_062.py::test_an_orphaned_branch_with_one_copied_row_joins_its_group_by_provenance": {
+  "collect_error": "ImportError: cannot import name 'BrainWithheldSession' from 'app.models' (<i22>/command-center/backend/app/models.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.06s"
+ },
+ "I:test_brain_releases_r2_062.py::test_a_kept_hold_keeps_the_rule_that_held_it_through_a_restore": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "16 failed in 20.91s"
+ },
+ "I:test_brain_releases_r2_062.py::test_rel3_13465_a_later_row_identical_to_a_withheld_text_not_in_hand_is_never_none": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "16 failed in 20.91s"
+ },
+ "I:test_brain_releases_r2_062.py::test_rel3_6725_a_check_of_one_backups_content_marks_only_that_backups_release": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "16 failed in 20.91s"
+ },
+ "I:test_brain_releases_r2_062.py::test_rel3_6725_a_typed_release_never_makes_another_backups_release_trusted": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "16 failed in 20.91s"
+ },
+ "I:test_brain_releases_r2_062.py::test_rel3_a_later_withhold_makes_none_stale_at_once_and_the_export_waits": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "16 failed in 20.91s"
+ },
+ "I:test_brain_releases_r2_062.py::test_rel3_a_settle_without_the_later_text_keeps_the_evidence_stale": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "16 failed in 20.91s"
+ },
+ "I:test_brain_releases_r2_062.py::test_rel3_an_unchecked_file_release_frees_no_hold_and_a_trusted_one_does": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "16 failed in 20.91s"
+ },
+ "I:test_brain_releases_r2_062.py::test_rel3_hold_group_rows_compares_a_released_row_with_other_withheld_texts": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "16 failed in 20.91s"
+ },
+ "I:test_brain_releases_r2_062.py::test_rel3_settle_of_a_newer_backup_finishes_the_earlier_decision_again": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "16 failed in 20.91s"
+ },
+ "I:test_brain_releases_r2_062.py::test_rel3_settle_with_every_text_in_hand_computes_it_again": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "16 failed in 20.91s"
+ },
+ "I:test_brain_releases_r2_062.py::test_rel3_typed_release_after_a_later_withhold_is_held_again_by_the_next_import": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "16 failed in 20.91s"
+ },
+ "I:test_brain_releases_r2_062.py::test_seeds_r3_a_same_message_id_member_is_never_taken_as_the_withheld_text": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "16 failed in 20.91s"
+ },
+ "I:test_brain_releases_r2_062.py::test_skC_a_row_released_for_w1_that_carries_w2_is_held_when_w2_is_withheld": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "16 failed in 20.91s"
+ },
+ "I:test_brain_releases_r2_062.py::test_skc2_an_unchecked_release_never_stands_on_another_backups_typed_release": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F"
+  ],
+  "summary": "16 failed in 20.91s"
+ },
+ "I:test_brain_releases_r2_062.py::test_skc2_exempt_covers_never_takes_trust_from_another_backups_release": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "16 failed in 20.91s"
+ },
+ "I:test_brain_rollback_updates_062.py::test_a_rollback_never_restores_a_pruned_tool_row_that_echoed_the_withheld_text": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F"
+  ],
+  "summary": "2 failed in 4.23s"
+ },
+ "P:test_hermes_lineage.py": {
+  "collect_error": "",
+  "outcomes": [
+   "P",
+   "F",
+   "F",
+   "F"
+  ],
+  "summary": "3 failed, 1 passed in 2.68s"
+ },
+ "U:test_brain_carriers_r2_062.py::test_oci_a_short_withheld_text_in_another_case_is_ambiguous_not_none": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "42 failed in 0.42s"
+ },
+ "U:test_brain_carriers_r2_062.py::test_oci_every_relation_ignores_case_and_normalisation": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F"
+  ],
+  "summary": "42 failed in 0.42s"
+ },
+ "U:test_brain_carriers_r2_062.py::test_od4_a_generic_whole_withheld_text_is_no_carrier_but_its_group_still_compares_it": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "42 failed in 0.42s"
+ },
+ "U:test_brain_carriers_r2_062.py::test_od4_greeting_and_url_cases_hold_nothing_and_anything_more_is_held": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F"
+  ],
+  "summary": "42 failed in 0.42s"
+ },
+ "U:test_brain_carriers_r2_062.py::test_p1_a_whole_value_that_is_a_beginning_of_w_is_a_cut": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "42 failed in 0.42s"
+ },
+ "U:test_brain_carriers_r2_062.py::test_p1_hermes_generic_prune_line_keeping_ws_first_40_characters_is_a_cut": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F"
+  ],
+  "summary": "42 failed in 0.42s"
+ },
+ "U:test_brain_carriers_r2_062.py::test_p2_a_reply_quote_of_sixteen_characters_as_written_is_never_skipped_by_the_quick_filter": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "42 failed in 0.42s"
+ },
+ "U:test_brain_carriers_r2_062.py::test_p2_a_row_only_its_decode_reads_is_never_skipped": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "42 failed in 0.42s"
+ },
+ "U:test_brain_carriers_r2_062.py::test_p2_a_snapshot_of_earlier_turns_is_never_skipped_by_the_quick_filter": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "42 failed in 0.42s"
+ },
+ "U:test_brain_carriers_r2_062.py::test_p2_the_quick_filter_compares_every_form_of_the_withheld_text": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "42 failed in 0.42s"
+ },
+ "U:test_brain_carriers_r2_062.py::test_p2_the_quick_filter_keeps_a_cut_of_sixteen_characters_with_fewer_than_sixteen_of_skeleton": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "42 failed in 0.42s"
+ },
+ "U:test_brain_carriers_r2_062.py::test_p2_the_quick_filter_never_skips_a_row_the_comparison_relates": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F"
+  ],
+  "summary": "42 failed in 0.42s"
+ },
+ "U:test_brain_carriers_r2_062.py::test_p2_the_skeleton_drops_every_whitespace_and_combining_character": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "42 failed in 0.42s"
+ },
+ "U:test_brain_carriers_r2_062.py::test_skc_a_common_url_value_in_an_unrelated_search_result_is_no_carrier": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "42 failed in 0.42s"
+ },
+ "U:test_brain_carriers_r2_062.py::test_skc_a_json_value_only_json_loads_reads_back_is_a_carrier_and_evidence": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F",
+   "F"
+  ],
+  "summary": "42 failed in 0.42s"
+ },
+ "U:test_brain_derived3_062.py::test_13546_a_long_w_quoted_over_several_marked_lines_is_read_without_the_markers": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_13546_a_short_w_quoted_with_markers_in_a_session_search_result_is_identical": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_13546_control_short_words_inside_prose_outside_every_group_hold_nothing": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_m1_prev_a_preview_cut_inside_ws_escape_is_a_cut": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F",
+   "F",
+   "F",
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_n1_a_summary_quoting_unrelated_words_holds_nothing": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_n1_quoted_argument_of_a_summary_is_read_whole_across_apostrophes_and_lines": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F",
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_n1_vision_analyze_summary_with_an_apostrophe_and_a_line_break_is_a_cut": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_n2_a_capped_field_is_held_in_a_group_too_never_none": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_n2_a_chain_past_the_size_budget_is_not_checked": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_n2_a_field_over_the_size_limit_is_not_checked": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_n2_an_unrelated_nested_read_is_neither_related_nor_capped": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_n2_json_nested_past_the_parser_is_capped": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_n2_more_decode_steps_than_the_cap_is_not_checked": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_n2_nesting_past_the_depth_cap_is_not_checked": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_n2_w_nested_in_json_any_number_of_levels_is_read": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_n4_a_repr_literal_cut_inside_an_escape_reads_what_came_before": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F",
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_n4_execute_code_summary_cutting_a_repr_escape_in_half_is_a_cut": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_n5_fold_removes_the_default_ignorable_code_points": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_derived3_062.py::test_n5_invisible_formatting_never_hides_w": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F",
+   "F",
+   "F",
+   "F"
+  ],
+  "summary": "36 failed in 0.39s"
+ },
+ "U:test_brain_groups.py::test_a_delegated_sub_agent_joins_from_the_parent_down_only": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.06s"
+ },
+ "U:test_brain_groups.py::test_d1_a_markerless_child_joins_from_the_parent_down_only": {
+  "collect_error": "ImportError: cannot import name 'groups' from 'app.brain' (<i22>/command-center/backend/app/brain/__init__.py)",
+  "outcomes": [],
+  "summary": "1 error in 0.06s"
+ },
+ "U:test_brain_hold_r2.py::test_none_only_when_every_withheld_text_is_in_hand": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "2 failed in 0.06s"
+ },
+ "U:test_brain_hold_r2.py::test_the_new_hold_vias_and_the_state_are_known_codes": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "2 failed in 0.06s"
+ },
+ "U:test_brain_mutation_closure_c3_062.py::test_c3_a_piece_of_w_quoted_on_one_line_of_several_is_read_on_its_line": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "4 failed in 0.08s"
+ },
+ "U:test_brain_mutation_closure_c3_062.py::test_c3_control_a_summary_line_of_other_words_among_several_holds_nothing": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "4 failed in 0.08s"
+ },
+ "U:test_brain_mutation_closure_c3_062.py::test_c3_control_ordinary_nested_json_is_not_capped": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "4 failed in 0.08s"
+ },
+ "U:test_brain_mutation_closure_c3_062.py::test_c3_json_nested_past_the_parser_is_capped_and_fails_closed": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "4 failed in 0.08s"
+ },
+ "U:test_brain_mutation_closure_c_062.py::test_dec_escape_a_cut_json_text_carries_w_through_its_escapes_only": {
+  "collect_error": "AttributeError: module 'app.brain.identity' has no attribute 'LATER_WITHHOLD'. Did you mean: 'LATER_HOLD'?",
+  "outcomes": [],
+  "summary": "1 error in 0.08s"
+ },
+ "U:test_brain_mutation_closure_c_062.py::test_dec_json_a_short_w_as_a_whole_value_of_pretty_printed_ascii_json_is_identical": {
+  "collect_error": "AttributeError: module 'app.brain.identity' has no attribute 'LATER_WITHHOLD'. Did you mean: 'LATER_HOLD'?",
+  "outcomes": [],
+  "summary": "1 error in 0.08s"
+ },
+ "U:test_brain_mutation_closure_c_062.py::test_dec_repr_a_repr_literal_only_unrepr_reads_back_carries_w": {
+  "collect_error": "AttributeError: module 'app.brain.identity' has no attribute 'LATER_WITHHOLD'. Did you mean: 'LATER_HOLD'?",
+  "outcomes": [],
+  "summary": "1 error in 0.08s"
+ },
+ "U:test_brain_mutation_closure_c_062.py::test_oc_none_in_only_exactly_none_is_one_click_eligible": {
+  "collect_error": "AttributeError: module 'app.brain.identity' has no attribute 'LATER_WITHHOLD'. Did you mean: 'LATER_HOLD'?",
+  "outcomes": [],
+  "summary": "1 error in 0.08s"
+ },
+ "U:test_brain_mutation_closure_c_062.py::test_oc_plain_and_tool_row_only_a_plain_read_form_is_one_click_eligible": {
+  "collect_error": "AttributeError: module 'app.brain.identity' has no attribute 'LATER_WITHHOLD'. Did you mean: 'LATER_HOLD'?",
+  "outcomes": [],
+  "summary": "1 error in 0.08s"
+ },
+ "U:test_brain_mutation_closure_c_062.py::test_oc_role_only_user_and_assistant_rows_are_one_click_eligible": {
+  "collect_error": "AttributeError: module 'app.brain.identity' has no attribute 'LATER_WITHHOLD'. Did you mean: 'LATER_HOLD'?",
+  "outcomes": [],
+  "summary": "1 error in 0.08s"
+ },
+ "U:test_brain_releases_r2_062.py::test_carried_via_a_kept_hold_keeps_the_rule_that_held_it": {
+  "collect_error": "AttributeError: module 'app.brain.identity' has no attribute 'LATER_WITHHOLD'. Did you mean: 'LATER_HOLD'?",
+  "outcomes": [],
+  "summary": "1 error in 0.10s"
+ },
+ "U:test_brain_releases_r2_062.py::test_d3_states_that_were_not_compared_are_never_one_click": {
+  "collect_error": "AttributeError: module 'app.brain.identity' has no attribute 'LATER_WITHHOLD'. Did you mean: 'LATER_HOLD'?",
+  "outcomes": [],
+  "summary": "1 error in 0.10s"
+ },
+ "U:test_brain_releases_r2_062.py::test_eligible_now_compares_every_withheld_text_in_hand": {
+  "collect_error": "AttributeError: module 'app.brain.identity' has no attribute 'LATER_WITHHOLD'. Did you mean: 'LATER_HOLD'?",
+  "outcomes": [],
+  "summary": "1 error in 0.10s"
+ },
+ "U:test_brain_releases_r2_062.py::test_identities_released_takes_trust_from_the_covering_release_only": {
+  "collect_error": "AttributeError: module 'app.brain.identity' has no attribute 'LATER_WITHHOLD'. Did you mean: 'LATER_HOLD'?",
+  "outcomes": [],
+  "summary": "1 error in 0.10s"
+ },
+ "U:test_brain_releases_r2_062.py::test_keep_later_keeps_the_mark_until_every_text_was_in_hand": {
+  "collect_error": "AttributeError: module 'app.brain.identity' has no attribute 'LATER_WITHHOLD'. Did you mean: 'LATER_HOLD'?",
+  "outcomes": [],
+  "summary": "1 error in 0.10s"
+ },
+ "U:test_brain_releases_r2_062.py::test_none_every_none_needs_every_withheld_text_in_hand": {
+  "collect_error": "AttributeError: module 'app.brain.identity' has no attribute 'LATER_WITHHOLD'. Did you mean: 'LATER_HOLD'?",
+  "outcomes": [],
+  "summary": "1 error in 0.10s"
+ },
+ "U:test_brain_releases_r2_062.py::test_uncertain_is_never_one_click_eligible_and_never_eligible_now": {
+  "collect_error": "AttributeError: module 'app.brain.identity' has no attribute 'LATER_WITHHOLD'. Did you mean: 'LATER_HOLD'?",
+  "outcomes": [],
+  "summary": "1 error in 0.10s"
+ },
+ "U:test_brain_source_markers.py::test_a_fork_marker_counts_only_when_it_names_the_sessions_own_parent": {
+  "collect_error": "",
+  "outcomes": [
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F",
+   "F"
+  ],
+  "summary": "13 failed in 0.22s"
+ },
+ "U:test_brain_source_markers.py::test_two_parents_name_the_other_conversation_and_a_copied_marker_is_no_conflict": {
+  "collect_error": "",
+  "outcomes": [
+   "F"
+  ],
+  "summary": "13 failed in 0.22s"
+ }
+}
