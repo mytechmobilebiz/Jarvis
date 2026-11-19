@@ -8,13 +8,15 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
-from app.brain import identity
+from app.brain import groups as brain_groups
+from app.brain import identity, review
 from app.db import session_scope
 from app.models import ArchiveMessage
 
 from .. import brain_jarvis as bj
 from .test_brain_api import as_, client  # noqa: F401 - client is a fixture
 from .test_brain_derived3_062 import W, row_id, set_content, tool_row
+from .test_brain_hold_r2_062 import archive_id
 from .test_brain_later_062 import holds, state
 from .test_brain_withhold_identity import DAY, T, conversation, run, secret, withhold
 
@@ -84,3 +86,62 @@ async def test_s5_a_typed_release_of_an_uncertain_row_after_a_later_withhold_is_
     await run(fx)
     assert await state("s5u_q", qa[0]) == "held"
     assert await readable_with("zqs5ug") == []
+
+
+async def _crafted_none_every(client, fx) -> tuple[str, list[int], str, str]:
+    """Two admin withholds, W1 in P and W2 in Q; conversation C, unrelated to both, recorded in W1's group without the
+    sweep (as restore's removals-only file or older code records it): its rows are stored and readable."""
+    db = fx["db"]
+    w1_text = secret("zqs5n1")
+    pa = conversation(db, "s5n_p", T, [("user", "What is the deal worth?"), ("assistant", w1_text)])
+    qa = conversation(db, "s5n_q", T + DAY, [("user", "And the other deal?"), ("assistant", secret("zqs5n2"))])
+    ca = conversation(db, "s5n_c", T + 2 * DAY, [("user", "Book the train for Tuesday."), ("assistant", "Booked.")])
+    await run(fx)
+    w1 = await row_id("s5n_p", pa[1])
+    await withhold(client, w1)
+    await withhold(client, await row_id("s5n_q", qa[1]))
+    assert await state("s5n_c", ca[0]) == "readable"
+    async with session_scope() as s:
+        anchor = (await s.get(ArchiveMessage, w1)).source_key
+        await brain_groups.record(s, anchor, {"s5n_c": brain_groups.Member("child", brain_groups.MEMBER, "s5n_p")})
+        await s.commit()
+    return db, ca, anchor, w1_text
+
+
+async def _never_none_and_never_one_click(client, ca: list[int], want: str) -> None:
+    for r in ca:
+        assert await state("s5n_c", r) == "held"
+        h = (await holds(client))[await row_id("s5n_c", r)]
+        assert h["relations"] == [want] and not h["one_click"], h
+    r = await client.post("/api/brain/sessions/%d/holds/release-unrelated" % await archive_id("s5n_c"))
+    # offered and releasing nothing, or (a hold whose withheld text was not in hand) not offered at all
+    assert (r.status_code == 200 and r.json()["released"] == []) or (
+        r.status_code == 400 and want == identity.NOT_IN_BACKUP), r.text
+    assert {await state("s5n_c", r) for r in ca} == {"held"}
+
+
+async def test_s5_imp_stored_none_every_a_stored_group_row_the_import_sweep_holds_without_every_text_is_never_none(
+        client, fx):
+    """The rebuild's stand-in for the round-3 crafted-state test of c2:imp_stored_none_every_off (round-2
+    importer.py:3604; no natural input reaches it: group rows are held before a later backup could delete them, and
+    in the rebuild every import's start-up repair holds a readable group row first, test below). The crafted state
+    (_crafted_none_every) meets the import's own sweep (review.hold_group_rows, cause 'import') with the withheld
+    texts an import of a backup that holds W1 but not W2 has in hand: C's stored rows are held with their
+    conversation as 'other_not_compared' (W2 was not in hand), never 'none', and the one-click release skips them."""
+    _db, ca, anchor, w1_text = await _crafted_none_every(client, fx)
+    async with session_scope() as s:
+        await review.hold_group_rows(s, actor="system (import)", cause="import", texts={anchor: w1_text})
+        await s.commit()
+    await _never_none_and_never_one_click(client, ca, identity.OTHER_NOT_COMPARED)
+
+
+async def test_s5_imp_stored_none_every_the_import_of_a_backup_without_w2_holds_a_stored_group_row_first(client, fx):
+    """The same crafted state through a real import (JARVIS dropped Q; P grew, so W1 is in hand): the import's start-up
+    repair holds C's readable stored rows before it reads the backup ('not in this backup', no text in hand then);
+    never 'none', never one click."""
+    db, ca, _anchor, _w1 = await _crafted_none_every(client, fx)
+    bj.change(db, "DELETE FROM messages WHERE session_id = ?", "s5n_q")
+    bj.change(db, "DELETE FROM sessions WHERE id = ?", "s5n_q")
+    bj.add_row(db, "s5n_p", "user", "Thanks, that is all.", T + 10)
+    await run(fx)
+    await _never_none_and_never_one_click(client, ca, identity.NOT_IN_BACKUP)

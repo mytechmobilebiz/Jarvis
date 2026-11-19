@@ -23,6 +23,7 @@ GROUP_SKIP = (RV, "            if row.withheld:\n                continue\n     
               "                    BrainWithheldSession.source_session_id == sid).limit(1)):\n                continue\n"
               "            for anchor, rel in cands[int(row.id)]:")
 FOREIGN_OFF = (GR, "                if rel and not await identity.exempt_covers(s, other, sid, row):", "                if False:")
+DEC_JSON_OFF = (ID, "    if _JSON_DOC.match(text) and (text.lstrip()[:1] != '\"' or \"\\\\\" in text):", "    if False:")
 M = [
  ("r3:release_on_evidence_carrier_off", [(GR, "RELEASE_ON_EVIDENCE = frozenset({identity.GROUP_HOLD, identity.UNCERTAIN_HOLD, identity.COPY_HOLD,\n                                 identity.CARRIER_HOLD})", "RELEASE_ON_EVIDENCE = frozenset({identity.GROUP_HOLD, identity.UNCERTAIN_HOLD, identity.COPY_HOLD})")],
   [I5 + "::test_s5_a_release_of_a_carrier_hold_covers_the_content_it_was_compared_on"]),
@@ -54,6 +55,21 @@ M = [
  ("s5:oracle_copy_gone_name_off", [(CA, '"coalesce(sd.source_session_id, st.source_session_id, sg.source_session_id) "',
                                     '"coalesce(sd.source_session_id, st.source_session_id) "')],
   [ID1 + "::test_p2_the_oracle_names_the_conversation_of_a_copy_whose_row_was_deleted"]),
+ # m18:dec_json_off: each of the five rebuilt closing tests on its own
+] + [("m18:dec_json_off[%s]" % t.split("test_dec_json_")[1][:40], [DEC_JSON_OFF], [U5 + "::" + t]) for t in (
+    "test_dec_json_a_short_w_as_a_whole_value_of_a_compact_json_list_is_identical",
+    "test_dec_json_a_short_w_as_a_tool_call_argument_value_is_identical",
+    "test_dec_json_a_short_w_in_a_session_search_result_is_identical",
+    "test_dec_json_a_json_value_that_is_ws_beginning_is_a_cut_and_a_group_row_holding_it_is_never_none",
+    "test_dec_json_a_short_w_as_a_whole_value_is_identical_in_a_group_rows_evidence")] + [
+ ("cr2:quick_no_quote_bypass", [(ID, "        if len(f) > CANON_MAX_TEXT or _NEEDS_DECODE.search(f) or SNAPSHOT_LEAD.search(f) or _QUOTE_SHAPE.search(f):",
+                                 "        if len(f) > CANON_MAX_TEXT or _NEEDS_DECODE.search(f) or SNAPSHOT_LEAD.search(f):")],
+  [U5 + "::test_p2_a_cut_quoted_over_marked_lines_is_never_skipped_by_the_quick_filter"]),
+ ("c2:imp_stored_none_every_off", [(RV, "    all_in_hand = (await admin_anchors(session)) <= set(texts)",
+                                     "    all_in_hand = cause == \"import\" or (await admin_anchors(session)) <= set(texts)")],
+  [I5 + "::test_s5_imp_stored_none_every_a_stored_group_row_the_import_sweep_holds_without_every_text_is_never_none"]),
+ ("hgr:none_all_in_hand_off", [(RV, "    all_in_hand = (await admin_anchors(session)) <= set(texts)", "    all_in_hand = True")],
+  [I5 + "::test_s5_imp_stored_none_every_a_stored_group_row_the_import_sweep_holds_without_every_text_is_never_none"]),
 ]
 only = sys.argv[1:]
 db = os.environ.get("S5M_DB", "s5m")
