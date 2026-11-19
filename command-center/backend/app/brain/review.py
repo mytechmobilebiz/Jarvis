@@ -1186,7 +1186,16 @@ async def release_hold(session: AsyncSession, message: ArchiveMessage, sess: Arc
         raise BrainError(TYPED_NEEDED)
     anchor = stone.anchor_key or stone.source_key
     # Every hold of this exact JARVIS row in this group (a key adoption can leave the old key's hold binding it too).
-    gone = sorted({message.source_key} | {st.key for st in exact_stones if st.group == anchor})
+    twins = {st.key for st in exact_stones if st.group == anchor} - {message.source_key}
+    # rebuild S4 (RECON-61): a hold whose key is another stored message, still withheld, is that message's own hold:
+    # it stays for its own review (releasing this row removed it and left that message withheld with nothing to
+    # review: the round-3 replay seed 1, holds 34 and 35 refused 'not held for review'). Fail-closed: only a key no
+    # other withheld message carries (a key adoption's old key) goes with this release.
+    if twins:
+        twins -= set((await session.scalars(select(ArchiveMessage.source_key).where(
+            ArchiveMessage.source_key.in_(sorted(twins)), ArchiveMessage.id != message.id,
+            ArchiveMessage.withheld.is_(True)))).all())
+    gone = sorted({message.source_key} | twins)
     await session.execute(delete(BrainTombstone).where(
         BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.review == identity.PENDING,
         func.coalesce(func.nullif(BrainTombstone.anchor_key, ""), BrainTombstone.source_key) == anchor,
