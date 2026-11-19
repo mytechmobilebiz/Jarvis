@@ -1000,10 +1000,18 @@ def w_text_in(run: Run, w: Withhold, snap: hs.Snapshot, st: dict[str, Any] | Non
                 set(v.absorbed) - set(w.absorbed)):
             return v.content
     if w.uid:  # Hermes's prune placeholder is not the withheld text; its archived twin is (deviation 265)
+        piece = None
         for v in snap.rows.values():
             if v.uid == w.uid and (tkey(v.ts), v.role) == (tkey(w.at), w.role) and norm(v.content) != norm(hs.STUB) \
                     and not set(v.absorbed) - set(w.absorbed):  # a later fold of W holds more than W (deviation 275)
+                if set(w.absorbed) - set(v.absorbed) - {w.uid}:
+                    # D-48 (rebuild S4, 13626): a copy made before Hermes folded another message into W holds W's
+                    # first part only; a copy that holds W whole is W's text here, the piece only when none does
+                    piece = piece if piece is not None else v.content
+                    continue
                 return v.content
+        if piece is not None:
+            return piece
     rows, copies = set(), set()
     for s in (st or {}).get("stones", []):
         if s.get("review") == "pending" or w.key not in (s.get("source_key"), s.get("anchor_key")):

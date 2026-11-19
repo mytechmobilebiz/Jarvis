@@ -97,6 +97,9 @@ M = [
   [F5 + "::test_s4_not_in_backup_for_a_whole_withheld_text_is_still_a_violation"]),
  ("s4:fold_piece_nib_always", [(OR, '                        and ("not_in_backup" not in rep or w_piece(w, snap, wt))', "")],
   [F5 + "::test_s4_not_in_backup_for_a_whole_withheld_text_is_still_a_violation"]),
+ ("s4:w_text_piece_first", [(OR, "                    piece = piece if piece is not None else v.content\n                    continue",
+                              "                    return v.content")],
+  [F5 + "::test_s4_a_whole_copy_of_the_withheld_fold_is_its_text"]),
 ]
 only = sys.argv[1:]
 db = "r5m"
