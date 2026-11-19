@@ -1,0 +1,21 @@
+runs 168 failing runs before/after 166 23 class (B5/B1-d/B1-c) runs before/after 153 2
+A1                   before   6 after   0
+A3-nib               before   2 after   2
+A3-nib-second        before  18 after   0
+A3-other             before  15 after  12
+A4                   before   2 after   2
+A5                   before  23 after   1
+B1-changed           before  14 after   0
+B1-disappeared       before  27 after   0
+B2                   before   8 after   2
+B4                   before   4 after   4
+B5                   before 129 after   2
+B6                   before   1 after   0
+B7-restore           before   5 after   4
+O1                   before   6 after   0
+O11                  before   6 after   0
+O2-group-readable    before   6 after   0
+O3                   before   2 after   0
+O8                   before   6 after   0
+seeds failing after (any arm): 12 of 84
+13207 {'h0': ['B2', 'B5'], 'h1': ['B2', 'B5']}
