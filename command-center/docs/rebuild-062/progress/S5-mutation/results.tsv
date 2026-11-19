@@ -18,3 +18,21 @@ m18:dec_json_off[a_short_w_as_a_whole_value_is_identical_]	app/brain/identity.py
 cr2:quick_no_quote_bypass	app/brain/identity.py	CAUGHT	1 failed in 0.12s	tests/unit/test_brain_mutation_closure_s5_062.py::test_p2_a_cut_quoted_over_marked_lines_is_never_skipped_by_the_quick_filter
 c2:imp_stored_none_every_off	app/brain/review.py	CAUGHT	1 failed in 4.83s	tests/integration/test_brain_mutation_closure_s5_062.py::test_s5_imp_stored_none_every_a_stored_group_row_the_import_sweep_holds_without_every_text_is_never_none
 hgr:none_all_in_hand_off	app/brain/review.py	CAUGHT	1 failed in 4.79s	tests/integration/test_brain_mutation_closure_s5_062.py::test_s5_imp_stored_none_every_a_stored_group_row_the_import_sweep_holds_without_every_text_is_never_none
+r3:spans_off[hermes_lines]	app/brain/identity.py	CAUGHT	3 failed, 3 passed in 0.65s	tests/property/test_hermes_derived3_lines.py
+c3:spans_per_line_off[hermes_lines]	app/brain/identity.py	SURVIVED	6 passed in 0.76s	tests/property/test_hermes_derived3_lines.py
+m18:dec_repr_off[hermes_lines]	app/brain/identity.py	CAUGHT	3 failed, 3 passed in 0.73s	tests/property/test_hermes_derived3_lines.py
+m18:dec_escape_off[hermes_lines]	app/brain/identity.py	CAUGHT	3 failed, 3 passed in 0.67s	tests/property/test_hermes_derived3_lines.py
+sk3:unrepr_cut_keep[hermes_lines]	app/brain/identity.py	SURVIVED	6 passed in 0.73s	tests/property/test_hermes_derived3_lines.py
+sk3:open_literal_off[hermes_lines]	app/brain/identity.py	CAUGHT	3 failed, 3 passed in 0.77s	tests/property/test_hermes_derived3_lines.py
+sk3:cut_per_line_off[hermes_lines]	app/brain/identity.py	SURVIVED	6 passed in 1.03s	tests/property/test_hermes_derived3_lines.py
+r3:cut_off[hermes_lines]	app/brain/identity.py	CAUGHT	3 failed, 3 passed in 0.79s	tests/property/test_hermes_derived3_lines.py
+r3:lead_cut_off[hermes_lines]	app/brain/identity.py	SURVIVED	6 passed in 0.89s	tests/property/test_hermes_derived3_lines.py
+r3:spans_off[hermes_lines]	app/brain/identity.py	CAUGHT	3 failed, 4 passed in 0.94s	tests/property/test_hermes_derived3_lines.py
+c3:spans_per_line_off[hermes_lines]	app/brain/identity.py	SURVIVED	7 passed in 1.15s	tests/property/test_hermes_derived3_lines.py
+m18:dec_repr_off[hermes_lines]	app/brain/identity.py	CAUGHT	3 failed, 4 passed in 0.95s	tests/property/test_hermes_derived3_lines.py
+m18:dec_escape_off[hermes_lines]	app/brain/identity.py	CAUGHT	4 failed, 3 passed in 1.15s	tests/property/test_hermes_derived3_lines.py
+sk3:unrepr_cut_keep[hermes_lines]	app/brain/identity.py	CAUGHT	3 failed, 4 passed in 0.91s	tests/property/test_hermes_derived3_lines.py
+sk3:open_literal_off[hermes_lines]	app/brain/identity.py	CAUGHT	3 failed, 4 passed in 1.16s	tests/property/test_hermes_derived3_lines.py
+sk3:cut_per_line_off[hermes_lines]	app/brain/identity.py	SURVIVED	7 passed in 1.11s	tests/property/test_hermes_derived3_lines.py
+r3:cut_off[hermes_lines]	app/brain/identity.py	CAUGHT	4 failed, 3 passed in 0.96s	tests/property/test_hermes_derived3_lines.py
+r3:lead_cut_off[hermes_lines]	app/brain/identity.py	SURVIVED	7 passed in 1.31s	tests/property/test_hermes_derived3_lines.py

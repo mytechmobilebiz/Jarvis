@@ -24,6 +24,24 @@ GROUP_SKIP = (RV, "            if row.withheld:\n                continue\n     
               "            for anchor, rel in cands[int(row.id)]:")
 FOREIGN_OFF = (GR, "                if rel and not await identity.exempt_covers(s, other, sid, row):", "                if False:")
 DEC_JSON_OFF = (ID, "    if _JSON_DOC.match(text) and (text.lstrip()[:1] != '\"' or \"\\\\\" in text):", "    if False:")
+PH = "tests/property/test_hermes_derived3_lines.py"
+
+
+def _r3_mutants(*names):
+    """R3's mutants by name (its M list, read without running its loop)."""
+    import ast
+    tree = ast.parse(open(os.path.join(S, "..", "R3-mutation", "r3mut.py")).read())
+    env = {"os": os, "__file__": os.path.join(S, "..", "R3-mutation", "r3mut.py")}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and not any(isinstance(t, ast.Name) and t.id in ("only", "db", "env", "out")
+                                                    for t in node.targets):
+            exec(compile(ast.Module([node], []), "r3mut", "exec"), env)
+        elif isinstance(node, ast.Expr) and "M.append" in ast.unparse(node):
+            exec(compile(ast.Module([node], []), "r3mut", "exec"), env)
+    found = {n: (n, e, t) for n, e, t in env["M"]}
+    return [found[n] for n in names]
+
+
 M = [
  ("r3:release_on_evidence_carrier_off", [(GR, "RELEASE_ON_EVIDENCE = frozenset({identity.GROUP_HOLD, identity.UNCERTAIN_HOLD, identity.COPY_HOLD,\n                                 identity.CARRIER_HOLD})", "RELEASE_ON_EVIDENCE = frozenset({identity.GROUP_HOLD, identity.UNCERTAIN_HOLD, identity.COPY_HOLD})")],
   [I5 + "::test_s5_a_release_of_a_carrier_hold_covers_the_content_it_was_compared_on"]),
@@ -70,6 +88,10 @@ M = [
   [I5 + "::test_s5_imp_stored_none_every_a_stored_group_row_the_import_sweep_holds_without_every_text_is_never_none"]),
  ("hgr:none_all_in_hand_off", [(RV, "    all_in_hand = (await admin_anchors(session)) <= set(texts)", "    all_in_hand = True")],
   [I5 + "::test_s5_imp_stored_none_every_a_stored_group_row_the_import_sweep_holds_without_every_text_is_never_none"]),
+ # the N1 / N4 guards (R3's edits, progress/R3-mutation/r3mut.py) against the Hermes-generated lines
+] + [(n + "[hermes_lines]", e, [PH]) for n, e, _t in _r3_mutants(
+    "r3:spans_off", "c3:spans_per_line_off", "m18:dec_repr_off", "m18:dec_escape_off", "sk3:unrepr_cut_keep",
+    "sk3:open_literal_off", "sk3:cut_per_line_off", "r3:cut_off", "r3:lead_cut_off")] + [
 ]
 only = sys.argv[1:]
 db = os.environ.get("S5M_DB", "s5m")

@@ -1679,6 +1679,7 @@ def check_rollback_copies(run: Run, where: str, copies: list[dict[str, Any]] | N
         return
     keys = {r["source_key"]: r["sid"] for r in rows}
     unnamed = 0
+    of_group = sum(1 for c in copies if (c.get("sid") or keys.get(c.get("source_key"))) in group)
     for c in copies:
         fields = row_fields(c)
         if not fields or (norm(c.get("content")) == norm(hs.STUB) and len(fields) == 1):
@@ -1696,6 +1697,7 @@ def check_rollback_copies(run: Run, where: str, copies: list[dict[str, Any]] | N
             (c.get("content") or json.dumps(c.get("tool_calls"), default=str))[:60]))
     if unnamed:
         run.notes.append("%s: %d rollback copies with text name no stored conversation" % (where, unnamed))
+    run.notes.append("%s: rollback copies read %d, of group conversations %d" % (where, len(copies), of_group))
 
 
 ONE_CLICK_ROLES = ("user", "assistant")
