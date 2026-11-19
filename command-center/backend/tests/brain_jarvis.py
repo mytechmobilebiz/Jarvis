@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import re
 import os
 import shutil
 import sqlite3
@@ -314,6 +315,59 @@ async def stored_text(tables: tuple[str, ...] = BRAIN_TABLES) -> dict[str, str]:
 def planted_in(text: str, values: dict[str, str]) -> list[str]:
     """The names of the planted values found in text, as written or as they read inside JSON."""
     return sorted(k for k, v in values.items() if v in text or json.dumps(v)[1:-1] in text)
+
+
+# A whole JSON value that is a time the database or the clock wrote (to_jsonb of a timestamp column, an isoformat()
+# time in a flags or report object): it holds no planted value, only digits of the clock.
+CLOCK_VALUE = re.compile(r"\d{4}-\d\d-\d\d[T ]\d\d:\d\d:\d\d(\.\d{1,6})?([+-]\d\d:\d\d|Z)?")
+
+
+def planted_in_json(value: Any, values: dict[str, str]) -> set[str]:
+    """Stabilisation S7 (D-53): the planted values found in a stored row (to_jsonb), key by key and value by value, as
+    written or as they read inside JSON, except inside a whole value that is a clock time (CLOCK_VALUE): the 6-digit
+    planted PIN is also a possible microsecond part of every time an import writes (created_at, updated_at, a file's
+    modification time), so a chance match there is not the planted value. A time written into text ('at 2026-...')
+    is text and is searched as text."""
+    found: set[str] = set()
+
+    def leaf(sv: str) -> None:
+        if CLOCK_VALUE.fullmatch(sv):
+            return
+        found.update(planted_in(sv, values))
+
+    def walk(v: Any) -> None:
+        if isinstance(v, dict):
+            for k, x in v.items():
+                leaf(str(k))
+                walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+        elif isinstance(v, str):
+            leaf(v)
+        elif v is not None:
+            leaf(json.dumps(v))
+
+    walk(value)
+    return found
+
+
+async def planted_in_rows(tables: tuple[str, ...], values: dict[str, str]) -> dict[str, list[str]]:
+    """planted_in_json over every row of the given tables (all columns, the search vectors left out): table -> names
+    found (only tables with a finding)."""
+    from sqlalchemy import text
+
+    from app.db import session_scope
+
+    out: dict[str, list[str]] = {}
+    async with session_scope() as s:
+        for t in tables:
+            found: set[str] = set()
+            for (row,) in (await s.execute(text("SELECT (to_jsonb(x) - 'search') FROM %s x" % t))).all():
+                found |= planted_in_json(row, values)
+            if found:
+                out[t] = sorted(found)
+    return out
 
 
 async def planted_where(table: str, values: dict[str, str], width: int = 40) -> list[str]:
