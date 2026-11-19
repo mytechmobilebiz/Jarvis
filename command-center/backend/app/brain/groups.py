@@ -570,6 +570,8 @@ async def list_unlisted(s: AsyncSession, anchor: str, members: dict[str, Member]
                    ~select(BrainTombstone.source_key).where(
                        BrainTombstone.source_key == ArchiveMessage.source_key).exists())
             .order_by(ArchiveMessage.id))).all():
+        if await _release_waits(s, anchor, sid, row):
+            continue  # an admin released this exact row for this group: it waits for its text (RECON-52)
         uncertain = members[sid].uncertain
         relations = (identity.UNCERTAIN_REL,) if uncertain else (identity.NOT_IN_BACKUP,)
         await identity.put_stone(s, replace(identity.binding_of(
@@ -582,6 +584,27 @@ async def list_unlisted(s: AsyncSession, anchor: str, members: dict[str, Member]
         n += 1
     await s.flush()
     return n
+
+
+async def _release_waits(s: AsyncSession, anchor: str, sid: str, row: ArchiveMessage) -> bool:
+    """Stabilisation S1 (RECON-52): a withheld row an admin released for this group (its flag says so, and a trusted
+    release of this exact JARVIS row for this group exists) is not an unlisted row: the admin decided it, and it
+    stays without its text until an import of a backup that holds the content the release covers brings it back
+    (the release branch; the sweep after that import compares it with every withheld text in hand, N-B). It is
+    never listed again as a hold of its own ('not in this backup', which asked the admin again and kept the export
+    and the one-click release waiting)."""
+    flag = (row.flags or {}).get("withheld_by_admin") or {}
+    if not row.withheld or not flag.get("released_at"):
+        return False
+    here = identity.exact_of_row(row, sid)
+    for e in (await s.scalars(select(BrainWithholdExemption).where(
+            BrainWithholdExemption.anchor_key == anchor, BrainWithholdExemption.source_session_id == here.session,
+            BrainWithholdExemption.source_row_id == here.row, BrainWithholdExemption.kind == "release"))).all():
+        b = identity.Binding(e.role or "", e.tool_call_id or "", e.source_at, e.source_uid or "", e.decided_on or "",
+                             bool(e.trusted))
+        if b.covers(here) and b.trusted:
+            return True
+    return False
 
 
 async def _released(s: AsyncSession, anchor: str, sid: str, row: ArchiveMessage) -> bool:

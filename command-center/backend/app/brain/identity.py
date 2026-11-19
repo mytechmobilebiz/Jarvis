@@ -1999,14 +1999,28 @@ async def matches_withheld(s: AsyncSession, message: ArchiveMessage, sess: Archi
     return False
 
 
+ALREADY_IMPORTED = "already imported"  # the importer's record of a stored row found unchanged (same source row)
+
+
 async def stored_backup(s: AsyncSession, row: Any, cache: dict[int, str] | None = None) -> str:
     """The JARVIS backup (SHA-256) a stored row's content came from: the newest import run that stored or rewrote it
-    (its import records), else the run that created it ('' unknown)."""
+    (its import records), else the run that created it ('' unknown).
+
+    Stabilisation S1 (RECON-51): for a readable row, also the newest run that found it 'already imported' from the
+    very same source row (its fingerprint equal: the importer's unchanged path), since that backup holds the very
+    content stored. A hold of such a row is then decided on the newest backup that holds its content, and a release
+    decided on that backup covers it (a release decided on an earlier backup whose content a later one repeats).
+    Never for a withheld row: a withheld row is 'already imported' whatever its source row's text became."""
     if cache is not None and row.id in cache:
         return cache[row.id]
+    withheld = getattr(row, "withheld", None)
+    if withheld is None and isinstance(row, Mapping):
+        withheld = row.get("withheld")
+    same_text = (and_(ImportRecord.action == "duplicate", ImportRecord.reason == ALREADY_IMPORTED)
+                 if withheld is False else literal(False))
     run_id = await s.scalar(select(func.max(ImportRecord.run_id)).where(
         ImportRecord.target_table == "archive_messages", ImportRecord.target_id == row.id,
-        ImportRecord.action.in_(("imported", "updated", "withheld")))) or row.import_run_id
+        or_(ImportRecord.action.in_(("imported", "updated", "withheld")), same_text))) or row.import_run_id
     sha = run_sha256(await s.scalar(select(ImportRun.source).where(ImportRun.id == run_id))) if run_id else ""
     if cache is not None:
         cache[row.id] = sha
