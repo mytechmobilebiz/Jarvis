@@ -1796,6 +1796,7 @@ class Processor:
                                 and (x.via in same_text or identity.IDENTICAL_REL in x.relations)),
                                key=lambda x: (x.via not in same_text, x.key))
         cands = _of_w(own, cands)
+        piece: src.SourceMessage | None = None  # RECON-64: a row holding a piece of the withheld fold, if no whole one
         for st in cands:
             if not st.session or not st.row:
                 continue
@@ -1803,32 +1804,37 @@ class Processor:
             if row is not None and not identity.is_placeholder(row.content) and not self._absorbs_more(group, row) \
                     and identity.same_row(
                     identity.exact_of_stone(st), identity.exact_of_source(st.session, row)):
-                self._note_piece(group, row)
+                if self._is_piece(group, row):
+                    piece = piece or row
+                    continue
                 return row.content  # a row JARVIS pruned in place holds a placeholder, not the text (deviation 264)
         copies = {(st.uid, st.role, st.tool_call_id, st.at) for st in cands
                   if st.uid and st.at is not None and st.via not in identity.FOLD_VIAS}
-        if not copies:
-            return None
-        sessions = self._source_sessions()
-        first = [own.session] if own.session else []
-        for sid in first + sorted(self._family_of_groups([group]) - set(first)):
-            if sid not in sessions:
-                continue
-            for row in self.src.backup.messages(sid):
-                here = identity.exact_of_source(sid, row)
-                if (here.uid, here.role, here.tool_call_id, here.at) in copies and not identity.is_placeholder(
-                        row.content) and not self._absorbs_more(group, row):
-                    self._note_piece(group, row)
-                    return row.content
+        if copies:
+            sessions = self._source_sessions()
+            first = [own.session] if own.session else []
+            for sid in first + sorted(self._family_of_groups([group]) - set(first)):
+                if sid not in sessions:
+                    continue
+                for row in self.src.backup.messages(sid):
+                    here = identity.exact_of_source(sid, row)
+                    if (here.uid, here.role, here.tool_call_id, here.at) in copies and not identity.is_placeholder(
+                            row.content) and not self._absorbs_more(group, row):
+                        if self._is_piece(group, row):
+                            piece = piece or row
+                            continue
+                        return row.content
+        if piece is not None:
+            self._w_piece.add(group)
+            return piece.content
         return None
 
-    def _note_piece(self, group: str, row: src.SourceMessage) -> None:
-        """Rebuild S4 (RECON-64): the row found as the withheld text absorbed fewer messages than the withheld row had
-        when it was stored (a withheld fold: this backup's copy of it lost a message it had folded in): its text is a
-        piece of what the admin withheld. It is still compared (every relation to that piece is shown, carriers too),
-        but 'none' is never said against it: the rest of the withheld text is not in this backup."""
-        if set(self._w_absorbed.get(group, set())) - set(row.absorbed):
-            self._w_piece.add(group)
+    def _is_piece(self, group: str, row: src.SourceMessage) -> bool:
+        """Rebuild S4 (RECON-64): the row absorbed fewer messages than the withheld row had when it was stored (a
+        withheld fold: this copy of it lost, or never had, a message folded in): its text is a piece of what the admin
+        withheld. A copy holding the whole fold is the withheld text when the backup has one; else the piece is still
+        compared (every relation to it is shown, carriers too), but 'none' is never said against it."""
+        return bool(set(self._w_absorbed.get(group, set())) - set(row.absorbed))
 
     def _decision(self, group: str) -> later.Decision | None:
         if group not in self._decisions:

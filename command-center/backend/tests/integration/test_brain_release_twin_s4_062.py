@@ -208,3 +208,27 @@ async def test_s4_a_message_the_withheld_fold_absorbed_is_never_none_when_the_fo
     assert h, "the folded request, back as a row of its own, is held"
     assert "none" not in (h.get("relations") or []) and not h.get("one_click"), h
     assert "not_in_backup" in (h.get("relations") or []), h
+
+
+async def test_s4_a_whole_copy_of_the_withheld_fold_is_its_text_before_a_piece(client, fx):
+    """RECON-64 (13536 after D-48): the withheld fold's own row now holds its first request only, but a CLI branch
+    copied the whole fold (its uid and time): the copy is the withheld text, so the folded request, back as a row of
+    its own, is shown as part of it ('part of'), not only 'not in this backup'."""
+    db = fx["db"]
+    first = "Please look again at the hosting migration before lunch."
+    second = "Please look again at the landing page copy with the usual care."
+    rows = conversation(db, "s4_wg", T, [("user", "Hello there, one more thing for today."), ("user", first),
+                                         ("user", second), ("assistant", "On it, both points are noted.")])
+    bj.fold(db, "s4_wg", rows[1], [rows[2]])
+    await run(fx)
+    await withhold(client, (await message_of("s4_wg", rows[1]))[0].id)
+    copies = bj.cli_branch(db, "s4_wg", "s4_wgb", T + 1800)  # the whole fold, with its uid and time
+    bj.change(db, "UPDATE messages SET absorbed_message_uids = (SELECT absorbed_message_uids FROM messages WHERE id = ?) "
+                  "WHERE id = ?", rows[1], copies[1])  # Hermes copies the row's absorbed uids with it
+    await run(fx)  # the branch joins the group
+    bj.change(db, "UPDATE messages SET content = ?, absorbed_message_uids = '[]' WHERE id = ?", first, rows[1])
+    new = bj.add_row(db, "s4_wg", "user", second, T + 3600)
+    await run(fx)
+    h = (await holds(client)).get((await message_of("s4_wg", new))[-1].id) or {}
+    assert h and "none" not in (h.get("relations") or []) and not h.get("one_click"), h
+    assert "part_of" in (h.get("relations") or []), h

@@ -1,0 +1,30 @@
+runs 82 failing runs before/after 82 26 class (A3-other/A3-none/A3-nib/B6/A4/B4) runs before/after 81 24
+A1                   before   2 after   0
+A3-nib               before   2 after   6
+A3-nib-second        before  12 after   0
+A3-none              before   4 after   0
+A3-other             before  55 after   4
+A4                   before  12 after  12
+A5                   before   9 after   3
+B1-disappeared       before   4 after   0
+B2                   before   4 after   0
+B4                   before   4 after   4
+B5                   before  17 after   0
+B6                   before  17 after   0
+O1                   before   2 after   0
+O11                  before   2 after   0
+O2-group-readable    before   2 after   0
+O8                   before   4 after   0
+seeds failing after (any arm): 14 of 41
+13091 {'h0': ['A4'], 'h1': ['A4', 'A5']}
+13300 {'h0': ['A3-nib', 'A3-other'], 'h1': ['A3-nib', 'A3-other']}
+13345 {'h0': ['A4'], 'h1': ['A4']}
+13376 {'h0': ['A4'], 'h1': ['A4']}
+13517 {'h0': ['B4'], 'h1': ['B4']}
+13536 {'h0': ['A3-nib'], 'h1': ['A3-nib']}
+13556 {'h0': ['A3-nib'], 'h1': ['A3-nib']}
+13658 {'h0': ['B4'], 'h1': ['B4']}
+13805 {'h0': ['A4'], 'h1': ['A4']}
+13880 {'h0': ['A3-other'], 'h1': ['A3-other']}
+13885 {'h0': ['A4'], 'h1': ['A4']}
+13887 {'h0': ['A4'], 'h1': ['A4']}

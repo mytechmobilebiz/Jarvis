@@ -1,0 +1,783 @@
+.FF.F...F......F..FFF                                                    [100%]
+=================================== FAILURES ===================================
+______________________________ test_oracle[13517] ______________________________
+
+seed = 13517
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-843/test_oracle_13517_0')
+client = <httpx.AsyncClient object at 0x7f793b13b890>
+restore = <tests.property.test_oracle_properties._Restore object at 0x7f793b13bed0>
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    async def test_oracle(seed, tmp_path, client, restore):
+        run = await scenario.run_seed(seed, tmp_path, client, restore)
+        _record(seed, run)
+>       assert not run.problems, "\n".join(run.problems + ["--- notes"] + run.notes + ["--- Hermes log"] + run.sim.log)
+E       AssertionError: B4 seed 13517: live vs a plain import of the same backups: 61 rows outside the family differ from a plain import: jarvis:message:20261108_000056_ba1f32:52 (20261108_000056_ba1f32) (True, 'e3b0c44298fc1c14') vs plain (False, '6d440fe29aeaa62b'); jarvis:message:20261108_000056_ba1f32:53 (20261108_000056_ba1f32) (True, 'e3b0c44298fc1c14') vs plain (False, 'e3b0c44298fc1c14'); jarvis:message:20261108_000056_ba1f32:55 (20261108_000056_ba1f32) (True, 'e3b0c44298fc1c14') vs plain (False, '98085d895837074f'); jarvis:message:20261108_000056_ba1f32:56 (20261108_000056_ba1f32) (True, 'e3b0c44298fc1c14') vs plain (False, '49b38ae4b2034e5f'); jarvis:message:20261108_000056_ba1f32:57 (20261108_000056_ba1f32) (True, 'e3b0c44298fc1c14') vs plain (False, '91d3d9150403bb8e')
+E         --- notes
+E         arms: live_history=1 second_withhold=1
+E         check_c test copy after Settle: group 3, recorded 3 (uncertain 0), carrier holds 0
+E         check_c test copy after the review: group 3, recorded 3 (uncertain 0), carrier holds 0
+E         check_c test copy after the second withhold: group 3, recorded 3 (uncertain 0), carrier holds 0
+E         check_c test copy after the second review: group 3, recorded 3 (uncertain 0), carrier holds 0
+E         check_c live after the decisions import: group 3, recorded 3 (uncertain 0), carrier holds 0
+E         check_c later backup 5: group 5, recorded 5 (uncertain 0), carrier holds 0
+E         check_c later backup X: group 5, recorded 5 (uncertain 0), carrier holds 1
+E         D-45: 1 family conversation(s) bound only by per-row carrier holds: 20261107_000049_463890
+E         B6 exercised in 20261102_000014_a0fea1: 200, 1 rows released
+E         B6 exercised in 20261107_000049_463890: 200, 0 rows released
+E         B6 exercised in 20261109_000063_c2d3e9: 200, 2 rows released
+E         B6 exercised in 20261110_000070_948176: 200, 0 rows released
+E         B6 exercised in 20261114_000098_75bd62: 200, 7 rows released
+E         B6 exercised in 20261116_000112_77a26e: 200, 4 rows released
+E         check_c later backup X after the review and the next import: group 6, recorded 11 (uncertain 0), carrier holds 1
+E         rollback of the X run refused: later import runs depend on run 7: roll them back first, newest first
+E         check_c live at the end: group 6, recorded 11 (uncertain 0), carrier holds 1
+E         --- Hermes log
+E         session 20261101_000007_0c22c0 cli parent=None cfg=[]
+E         append 20261101_000007_0c22c0 {'user': 1, 'call': 2, 'tool': 3, 'answer': 4}
+E         append 20261101_000007_0c22c0 {'user': 5, 'answer': 6}
+E         session 20261102_000014_a0fea1 telegram parent=None cfg=[]
+E         append 20261102_000014_a0fea1 {'user': 7, 'answer': 8}
+E         append 20261102_000014_a0fea1 {'user': 9, 'call': 10, 'tool': 11, 'answer': 12}
+E         session 20261103_000021_f001be discord parent=None cfg=[]
+E         append 20261103_000021_f001be {'user': 13, 'call': 14, 'tool': 15, 'answer': 16}
+E         append 20261103_000021_f001be {'user': 17, 'answer': 18}
+E         append 20261103_000021_f001be {'user': 19, 'call': 20, 'tool': 21, 'answer': 22}
+E         append 20261103_000021_f001be {'user': 23, 'answer': 24}
+E         session 20261104_000028_0b1999 cli parent=None cfg=[]
+E         append 20261104_000028_0b1999 {'user': 25, 'answer': 26}
+E         backup 0 tc0 sha 27571d99691d rows 26
+E         session 20261105_000035_5e5190 discord parent=20261103_000021_f001be cfg=['_branched_from']
+E         gateway_branch 20261103_000021_f001be -> 20261105_000035_5e5190
+E         session 20261106_000042_fecca1 cli parent=20261104_000028_0b1999 cfg=['_branched_from']
+E         gateway_branch 20261104_000028_0b1999 -> 20261106_000042_fecca1
+E         backup 1 tc2 sha b388294c98db rows 40
+E         cli_retry 20261104_000028_0b1999 (row 25) -> {'user': 41, 'answer': 42}
+E         append 20261103_000021_f001be {'user': 43, 'answer': 44}
+E         append 20261104_000028_0b1999 {'user': 45, 'answer': 46}
+E         session 20261107_000049_463890 discord parent=20261103_000021_f001be cfg=[]
+E         legacy_reset 20261103_000021_f001be -> 20261107_000049_463890
+E         append 20261107_000049_463890 {'user': 47, 'answer': 48}
+E         backup 2 tc6 sha 7c6ab6cb0f37 rows 48
+E         fold 20261101_000007_0c22c0 -> 50
+E         session 20261108_000056_ba1f32 discord parent=20261105_000035_5e5190 cfg=['_compressed_from']
+E         rotate 20261105_000035_5e5190 -> 20261108_000056_ba1f32 head 2 tail 3 donor True marker True rows [52, 53, 54, 55, 56, 57]
+E         replace 20261101_000007_0c22c0 archive_dropped=False drop_last=False kept 3
+E         append 20261107_000049_463890 {'user': 61, 'answer': 62}
+E         session 20261109_000063_c2d3e9 telegram parent=20261102_000014_a0fea1 cfg=['_compressed_from']
+E         rotate 20261102_000014_a0fea1 -> 20261109_000063_c2d3e9 head 1 tail 4 donor True marker True rows [63, 64, 65, 66, 67, 68]
+E         session 20261110_000070_948176 telegram parent=20261109_000063_c2d3e9 cfg=['_branched_from']
+E         gateway_branch 20261109_000063_c2d3e9 -> 20261110_000070_948176
+E         session 20261111_000077_e7cbde cli parent=20261104_000028_0b1999 cfg=['_compressed_from']
+E         rotate 20261104_000028_0b1999 -> 20261111_000077_e7cbde head 1 tail 4 donor True marker True rows [75, 76, 77, 78, 79]
+E         session 20261112_000084_7e0566 cli parent=20261103_000021_f001be cfg=['_branched_from']
+E         cli_branch 20261103_000021_f001be -> 20261112_000084_7e0566
+E         cli_retry 20261106_000042_fecca1 (row 39) -> {'user': 94, 'answer': 95}
+E         backup 3 tc15 sha 2bf09602319a rows 86
+E         append 20261108_000056_ba1f32 {'user': 96, 'call': 97, 'tool': 98, 'answer': 99}
+E         append 20261103_000021_f001be {'user': 100, 'call': 101, 'tool': 102, 'answer': 103}
+E         session 20261113_000091_fce0d1 cli parent=20261112_000084_7e0566 cfg=['_compressed_from']
+E         rotate 20261112_000084_7e0566 -> 20261113_000091_fce0d1 head 2 tail 3 donor True marker True rows [104, 105, 106, 107, 108, 109]
+E         backup 4 decision sha 96d73b01257c rows 100
+E         WITHHOLD cc 65 = 20261109_000063_c2d3e9:68 'Finished the hosting migration; the notes are in t'
+E         WITHHOLD cc 60 = 20261109_000063_c2d3e9:63 'ok'
+E         session 20261114_000098_75bd62 cli parent=20261110_000070_948176 cfg=['_branched_from']
+E         cli_branch 20261110_000070_948176 -> 20261114_000098_75bd62
+E         session 20261115_000105_4566d4 telegram parent=None cfg=[]
+E         append 20261115_000105_4566d4 {'user': 116, 'answer': 117}
+E         append 20261114_000098_75bd62 {'user': 118, 'call': 119, 'tool': 120, 'answer': 121}
+E         session 20261116_000112_77a26e cli parent=20261114_000098_75bd62 cfg=['_reset_from']
+E         reset 20261114_000098_75bd62 -> 20261116_000112_77a26e
+E         append 20261116_000112_77a26e {'user': 122, 'call': 123, 'tool': 124, 'answer': 125}
+E         prune 20261102_000014_a0fea1 8 -> twin 126
+E         backup 5 x4 sha d2e543fa0404 rows 117
+E         prune 20261112_000084_7e0566 82 -> twin 127
+E         session_search 20261107_000049_463890 reads 20261102_000014_a0fea1 {'call': 128, 'tool': 129, 'answer': 130}
+E         session 20261117_000119_5a7722 whatsapp parent=None cfg=[]
+E         append 20261117_000119_5a7722 {'user': 131, 'answer': 132}
+E         append 20261114_000098_75bd62 {'user': 133, 'call': 134, 'tool': 135, 'answer': 136}
+E         compact 20261101_000007_0c22c0 head 2 tail 1 restate None -> [137, 138, 139, 140]
+E         append 20261114_000098_75bd62 {'user': 141, 'answer': 142}
+E         fold 20261110_000070_948176 -> 144
+E         append 20261116_000112_77a26e {'user': 148, 'answer': 149}
+E         append 20261109_000063_c2d3e9 {'user': 150, 'answer': 151}
+E         backup 6 later sha aac79e95fdf7 rows 142
+E       assert not ["B4 seed 13517: live vs a plain import of the same backups: 61 rows outside the family differ from a plain import: ja...ge:20261108_000056_ba1f32:57 (20261108_000056_ba1f32) (True, 'e3b0c44298fc1c14') vs plain (False, '91d3d9150403bb8e')"]
+E        +  where ["B4 seed 13517: live vs a plain import of the same backups: 61 rows outside the family differ from a plain import: ja...ge:20261108_000056_ba1f32:57 (20261108_000056_ba1f32) (True, 'e3b0c44298fc1c14') vs plain (False, '91d3d9150403bb8e')"] = Run(seed=13517, sim=<tests.property.hermes_sim.Sim object at 0x7f793b13b750>, profile='/tmp/pytest-of-root/pytest-843/...000063_c2d3e9:66', 'jarvis:message:20261108_000056_ba1f32:52', 'jarvis:message:uid:d11afdb099894590b4788a7e86ba0e32'}}).problems
+
+tests/property/test_oracle_properties.py:113: AssertionError
+______________________________ test_oracle[13536] ______________________________
+
+seed = 13536
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-843/test_oracle_13536_0')
+client = <httpx.AsyncClient object at 0x7f793b13ae90>
+restore = <tests.property.test_oracle_properties._Restore object at 0x7f793ae59f90>
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    async def test_oracle(seed, tmp_path, client, restore):
+        run = await scenario.run_seed(seed, tmp_path, client, restore)
+        _record(seed, run)
+>       assert not run.problems, "\n".join(run.problems + ["--- notes"] + run.notes + ["--- Hermes log"] + run.sim.log)
+E       AssertionError: C3-evidence seed 13536: holds of the later backup: hold 76 (20261106_000042_41bc42:81 assistant) evidence ['not_in_backup'] ['not_in_backup', 'the withheld text is not in this backup', 'nothing to compare'] does not match the recomputation (computed []; held 'Done, the backup schedule is ready and the open points are listed at the end.' vs withheld 'Please look again at the hosting migration before lunch.\n\nPlease look again at the landing') [anchor jarvis:message:20261106_000042_41bc42:53, via 'new in a later backup', own ['20261106_000042_41bc42:53']]
+E         C3-evidence seed 13536: holds of the later backup: hold 77 (20261106_000042_41bc42:107 assistant) evidence ['not_in_backup'] ['not_in_backup', 'the withheld text is not in this backup', 'nothing to compare'] does not match the recomputation (computed []; held '[CONTEXT COMPACTION] Summary of earlier turns: the work so far is recorded above.' vs withheld 'Please look again at the hosting migration before lunch.\n\nPlease look again at the landing') [anchor jarvis:message:20261106_000042_41bc42:53, via 'new in a later backup', own ['20261106_000042_41bc42:53']]
+E         C3-evidence seed 13536: holds of the later backup: hold 78 (20261106_000042_41bc42:108 assistant) evidence ['not_in_backup'] ['not_in_backup', 'the withheld text is not in this backup', 'nothing to compare'] does not match the recomputation (computed []; held '[Old tool output cleared to save context space]' vs withheld 'Please look again at the hosting migration before lunch.\n\nPlease look again at the landing') [anchor jarvis:message:20261106_000042_41bc42:53, via 'new in a later backup', own ['20261106_000042_41bc42:53']]
+E         C3-evidence seed 13536: holds of the later backup: hold 79 (20261106_000042_41bc42:109 user) evidence ['not_in_backup'] ['not_in_backup', 'the withheld text is not in this backup', 'nothing to compare'] does not match the recomputation (computed ['part_of']; held 'Please look again at the landing page copy with the usual care.' vs withheld 'Please look again at the hosting migration before lunch.\n\nPlease look again at the landing') [anchor jarvis:message:20261106_000042_41bc42:53, via 'new in a later backup', own ['20261106_000042_41bc42:53']]
+E         C3-evidence seed 13536: holds of the later backup: hold 80 (20261106_000042_41bc42:110 assistant) evidence ['not_in_backup'] ['not_in_backup', 'the withheld text is not in this backup', 'nothing to compare'] does not match the recomputation (computed []; held 'Quick summary of the landing page copy: on track, no blockers today.' vs withheld 'Please look again at the hosting migration before lunch.\n\nPlease look again at the landing') [anchor jarvis:message:20261106_000042_41bc42:53, via 'new in a later backup', own ['20261106_000042_41bc42:53']]
+E         --- notes
+E         arms: live_history=1 second_withhold=1
+E         check_c test copy after Settle: group 5, recorded 5 (uncertain 0), carrier holds 0
+E         check_c test copy after the review: group 5, recorded 5 (uncertain 0), carrier holds 0
+E         check_c test copy after the second withhold: group 5, recorded 5 (uncertain 0), carrier holds 0
+E         check_c test copy after the second review: group 5, recorded 5 (uncertain 0), carrier holds 0
+E         check_c live after the decisions import: group 5, recorded 5 (uncertain 0), carrier holds 0
+E         check_c later backup X: group 7, recorded 7 (uncertain 0), carrier holds 0
+E         B6 exercised in 20261103_000021_1a417e: 200, 0 rows released
+E         B6 exercised in 20261105_000035_8cd7ca: 200, 0 rows released
+E         B6 exercised in 20261106_000042_41bc42: 400, 0 rows released
+E         B6 exercised in 20261107_000049_9914d1: 200, 0 rows released
+E         B6 exercised in 20261109_000063_503d94: 200, 0 rows released
+E         check_c later backup X after the review and the next import: group 7, recorded 7 (uncertain 0), carrier holds 0
+E         rollback of the X run refused: later import runs depend on run 3: roll them back first, newest first
+E         check_c live at the end: group 7, recorded 7 (uncertain 0), carrier holds 0
+E         --- Hermes log
+E         session 20261101_000007_2831a4 discord parent=None cfg=[]
+E         append 20261101_000007_2831a4 {'user': 1, 'call': 2, 'tool': 3, 'answer': 4}
+E         append 20261101_000007_2831a4 {'user': 5, 'answer': 6}
+E         append 20261101_000007_2831a4 {'user': 7, 'answer': 8}
+E         session 20261102_000014_a50fe9 whatsapp parent=None cfg=[]
+E         append 20261102_000014_a50fe9 {'user': 9, 'answer': 10}
+E         append 20261102_000014_a50fe9 {'user': 11, 'answer': 12}
+E         append 20261102_000014_a50fe9 {'user': 13, 'answer': 14}
+E         session 20261103_000021_1a417e telegram parent=None cfg=[]
+E         append 20261103_000021_1a417e {'user': 15, 'answer': 16}
+E         append 20261103_000021_1a417e {'user': 17, 'answer': 18}
+E         append 20261103_000021_1a417e {'user': 19, 'call': 20, 'tool': 21, 'answer': 22}
+E         append 20261103_000021_1a417e {'user': 23, 'answer': 24}
+E         append 20261103_000021_1a417e {'user': 25, 'answer': 26}
+E         prune 20261102_000014_a50fe9 10 -> twin 27
+E         session 20261104_000028_c3bd6a telegram parent=20261103_000021_1a417e cfg=['_compressed_from']
+E         rotate 20261103_000021_1a417e -> 20261104_000028_c3bd6a head 1 tail 1 donor True marker True rows [28, 29, 30]
+E         replace 20261102_000014_a50fe9 archive_dropped=True drop_last=True kept 4
+E         backfill slice -> 0 rows (through 3)
+E         append 20261104_000028_c3bd6a {'user': 31, 'answer': 32}
+E         append 20261102_000014_a50fe9 {'user': 33, 'answer': 34}
+E         backup 0 tc7 sha 7fee78aac2df rows 34
+E         session 20261105_000035_8cd7ca whatsapp parent=20261102_000014_a50fe9 cfg=['_compressed_from']
+E         rotate 20261102_000014_a50fe9 -> 20261105_000035_8cd7ca head 0 tail 4 donor True marker True rows [35, 36, 37, 38, 39]
+E         append 20261101_000007_2831a4 {'user': 40, 'answer': 41}
+E         append 20261105_000035_8cd7ca {'user': 42, 'answer': 43}
+E         fold 20261104_000028_c3bd6a -> 45
+E         append 20261105_000035_8cd7ca {'user': 47, 'call': 48, 'tool': 49, 'answer': 50}
+E         session 20261106_000042_41bc42 telegram parent=20261104_000028_c3bd6a cfg=['_compressed_from']
+E         rotate 20261104_000028_c3bd6a -> 20261106_000042_41bc42 head 0 tail 3 donor True marker True rows [51, 52, 53, 54]
+E         append 20261101_000007_2831a4 {'user': 55, 'call': 56, 'tool': 57, 'answer': 58}
+E         prune 20261103_000021_1a417e 24 -> twin 59
+E         fold 20261106_000042_41bc42 -> None
+E         append 20261105_000035_8cd7ca {'user': 60, 'call': 61, 'tool': 62, 'answer': 63}
+E         append 20261105_000035_8cd7ca {'user': 64, 'answer': 65}
+E         backup 1 decision sha 1bc42d3cb60c rows 65
+E         WITHHOLD cc 42 = 20261104_000028_c3bd6a:46 'Finished the support backlog; the notes are in the'
+E         WITHHOLD cc 11 = 20261102_000014_a50fe9:11 'Please finish the quarterly plan when you have a m'
+E         WITHHOLD cc 62 = 20261106_000042_41bc42:53 'Please look again at the hosting migration before '
+E         gateway_retry 20261106_000042_41bc42 (row 53) -> {'user': 68, 'answer': 69}
+E         session 20261107_000049_9914d1 subagent parent=20261105_000035_8cd7ca cfg=['_delegate_from']
+E         delegate 20261105_000035_8cd7ca -> 20261107_000049_9914d1 {'call': 70, 'goal': 71, 'answer': 72, 'result': 73}
+E         gateway_retry 20261107_000049_9914d1 (row 71) -> {'user': 74, 'answer': 75}
+E         append 20261106_000042_41bc42 {'user': 76, 'answer': 77}
+E         session 20261108_000056_522b29 cli parent=None cfg=[]
+E         append 20261108_000056_522b29 {'user': 78, 'answer': 79}
+E         prune 20261103_000021_1a417e 16 -> twin 80
+E         prune 20261106_000042_41bc42 69 -> twin 81
+E         fold 20261105_000035_8cd7ca -> 86
+E         append 20261105_000035_8cd7ca {'user': 100, 'call': 101, 'tool': 102, 'answer': 103}
+E         compact 20261106_000042_41bc42 head 3 tail 4 restate row -> [104, 105, 106, 107, 108, 109, 110]
+E         session 20261109_000063_503d94 whatsapp parent=20261105_000035_8cd7ca cfg=['_compressed_from']
+E         rotate 20261105_000035_8cd7ca -> 20261109_000063_503d94 head 0 tail 2 donor True marker True rows [111, 112, 113]
+E         append 20261107_000049_9914d1 {'user': 114, 'answer': 115}
+E         append 20261107_000049_9914d1 {'user': 116, 'answer': 117}
+E         backup 2 later sha 2b304e8df0af rows 111
+E       assert not ["C3-evidence seed 13536: holds of the later backup: hold 76 (20261106_000042_41bc42:81 assistant) evidence ['not_in_b...g') [anchor jarvis:message:20261106_000042_41bc42:53, via 'new in a later backup', own ['20261106_000042_41bc42:53']]"]
+E        +  where ["C3-evidence seed 13536: holds of the later backup: hold 76 (20261106_000042_41bc42:81 assistant) evidence ['not_in_b...g') [anchor jarvis:message:20261106_000042_41bc42:53, via 'new in a later backup', own ['20261106_000042_41bc42:53']]"] = Run(seed=13536, sim=<tests.property.hermes_sim.Sim object at 0x7f793ae58410>, profile='/tmp/pytest-of-root/pytest-843/...0c044f791a69c85c', 'jarvis:message:uid:fc15dfb24f040c89cc470e259b793e58', 'jarvis:message:20261104_000028_c3bd6a:46'}}).problems
+
+tests/property/test_oracle_properties.py:113: AssertionError
+______________________________ test_oracle[13556] ______________________________
+
+seed = 13556
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-843/test_oracle_13556_0')
+client = <httpx.AsyncClient object at 0x7f793a3c1ba0>
+restore = <tests.property.test_oracle_properties._Restore object at 0x7f793a3c1cd0>
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    async def test_oracle(seed, tmp_path, client, restore):
+        run = await scenario.run_seed(seed, tmp_path, client, restore)
+        _record(seed, run)
+>       assert not run.problems, "\n".join(run.problems + ["--- notes"] + run.notes + ["--- Hermes log"] + run.sim.log)
+E       AssertionError: C3-evidence seed 13556: holds of the later backup: hold 51 (20261108_000056_d081d1:67 user) evidence ['not_in_backup'] ['not_in_backup', 'the withheld text is not in this backup', 'nothing to compare'] does not match the recomputation (computed []; held 'Please finish the hosting migration for the team meeting.' vs withheld 'Please archive the quarterly plan with the usual care.') [anchor jarvis:message:uid:384e63651c012881b61baa51dc04de3a, via 'new in a later backup', own ['20261101_000007_9f56e8:1']]
+E         C3-evidence seed 13556: holds of the later backup: hold 52 (20261108_000056_d081d1:68 assistant) evidence ['not_in_backup'] ['not_in_backup', 'the withheld text is not in this backup', 'nothing to compare'] does not match the recomputation (computed []; held 'Finished the pricing table; the notes are in the shared folder now.' vs withheld 'Please archive the quarterly plan with the usual care.') [anchor jarvis:message:uid:384e63651c012881b61baa51dc04de3a, via 'new in a later backup', own ['20261101_000007_9f56e8:1']]
+E         C3-evidence seed 13556: holds of the later backup: hold 53 (20261108_000056_d081d1:70 user) evidence ['not_in_backup'] ['not_in_backup', 'the withheld text is not in this backup', 'nothing to compare'] does not match the recomputation (computed []; held 'Please summarise the hosting migration so we can close it out.' vs withheld 'Please archive the quarterly plan with the usual care.') [anchor jarvis:message:uid:384e63651c012881b61baa51dc04de3a, via 'new in a later backup', own ['20261101_000007_9f56e8:1']]
+E         C3-evidence seed 13556: holds of the later backup: hold 54 (20261108_000056_d081d1:71 assistant) evidence ['not_in_backup'] ['not_in_backup', 'the withheld text is not in this backup', 'nothing to compare'] does not match the recomputation (computed []; held '' vs withheld 'Please archive the quarterly plan with the usual care.') [anchor jarvis:message:uid:384e63651c012881b61baa51dc04de3a, via 'new in a later backup', own ['20261101_000007_9f56e8:1']]
+E         C3-evidence seed 13556: holds of the later backup: hold 55 (20261108_000056_d081d1:72 tool) evidence ['not_in_backup'] ['not_in_backup', 'the withheld text is not in this backup', 'nothing to compare'] does not match the recomputation (computed []; held 'Read file for the quarterly plan: plain text, several paragraphs, nothing unusual in it.' vs withheld 'Please archive the quarterly plan with the usual care.') [anchor jarvis:message:uid:384e63651c012881b61baa51dc04de3a, via 'new in a later backup', own ['20261101_000007_9f56e8:1']]
+E         C3-evidence seed 13556: holds of the later backup: hold 56 (20261108_000056_d081d1:73 assistant) evidence ['not_in_backup'] ['not_in_backup', 'the withheld text is not in this backup', 'nothing to compare'] does not match the recomputation (computed []; held 'Thanks, that is all.' vs withheld 'Please archive the quarterly plan with the usual care.') [anchor jarvis:message:uid:384e63651c012881b61baa51dc04de3a, via 'new in a later backup', own ['20261101_000007_9f56e8:1']]
+E         C3-evidence seed 13556: holds of the later backup: hold 49 (20261107_000049_a734ec:64 user) evidence ['not_in_backup'] ['not_in_backup', 'the withheld text is not in this backup', 'nothing to compare'] does not match the recomputation (computed ['contains', 'identical']; held 'Please archive the quarterly plan with the usual care.' vs withheld 'Please archive the quarterly plan with the usual care.') [anchor jarvis:message:uid:384e63651c012881b61baa51dc04de3a, via 'new in a later backup', own ['20261101_000007_9f56e8:1']]
+E         C3-evidence seed 13556: holds of the later backup: hold 50 (20261107_000049_a734ec:65 assistant) evidence ['not_in_backup'] ['not_in_backup', 'the withheld text is not in this backup', 'nothing to compare'] does not match the recomputation (computed []; held 'I went through the quarterly plan and nothing looks out of place.' vs withheld 'Please archive the quarterly plan with the usual care.') [anchor jarvis:message:uid:384e63651c012881b61baa51dc04de3a, via 'new in a later backup', own ['20261101_000007_9f56e8:1']]
+E         C3-evidence seed 13556: holds of the later backup: hold 47 (20261103_000021_2a4d4c:66 assistant) evidence ['not_in_backup'] ['not_in_backup', 'the withheld text is not in this backup', 'nothing to compare'] does not match the recomputation (computed []; held '' vs withheld 'Please archive the quarterly plan with the usual care.') [anchor jarvis:message:uid:384e63651c012881b61baa51dc04de3a, via 'new in a later backup', own ['20261101_000007_9f56e8:1']]
+E         C3-evidence seed 13556: holds of the later backup: hold 48 (20261103_000021_2a4d4c:69 tool) evidence ['not_in_backup'] ['not_in_backup', 'the withheld text is not in this backup', 'nothing to compare'] does not match the recomputation (computed []; held 'Finished the pricing table; the notes are in the shared folder now.' vs withheld 'Please archive the quarterly plan with the usual care.') [anchor jarvis:message:uid:384e63651c012881b61baa51dc04de3a, via 'new in a later backup', own ['20261101_000007_9f56e8:1']]
+E         --- notes
+E         arms: live_history=1 second_withhold=1
+E         check_c test copy after Settle: group 1, recorded 1 (uncertain 0), carrier holds 0
+E         check_c test copy after the review: group 1, recorded 1 (uncertain 0), carrier holds 0
+E         check_c test copy after the second withhold: group 3, recorded 3 (uncertain 0), carrier holds 0
+E         check_c test copy after the second review: group 3, recorded 3 (uncertain 0), carrier holds 0
+E         check_c live after the decisions import: group 3, recorded 3 (uncertain 0), carrier holds 0
+E         check_c later backup 2: group 3, recorded 3 (uncertain 0), carrier holds 2
+E         D-45: 1 family conversation(s) bound only by per-row carrier holds: 20261105_000035_2e418f
+E         check_c later backup 3: group 5, recorded 5 (uncertain 0), carrier holds 2
+E         D-45: 1 family conversation(s) bound only by per-row carrier holds: 20261105_000035_2e418f
+E         check_c later backup X: group 6, recorded 6 (uncertain 0), carrier holds 2
+E         D-45: 1 family conversation(s) bound only by per-row carrier holds: 20261105_000035_2e418f
+E         B6 exercised in 20261102_000014_37f4ef: 400, 0 rows released
+E         B6 exercised in 20261103_000021_2a4d4c: 400, 0 rows released
+E         B6 exercised in 20261105_000035_2e418f: 200, 0 rows released
+E         B6 exercised in 20261106_000042_6865bc: 400, 0 rows released
+E         B6 exercised in 20261107_000049_a734ec: 400, 0 rows released
+E         B6 exercised in 20261108_000056_d081d1: 400, 0 rows released
+E         check_c later backup X after the review and the next import: group 7, recorded 7 (uncertain 0), carrier holds 2
+E         rollback of the X run refused: later import runs depend on run 5: roll them back first, newest first
+E         check_c live at the end: group 7, recorded 7 (uncertain 0), carrier holds 2
+E         --- Hermes log
+E         session 20261101_000007_9f56e8 cli parent=None cfg=[]
+E         append 20261101_000007_9f56e8 {'user': 1, 'call': 2, 'tool': 3, 'answer': 4}
+E         append 20261101_000007_9f56e8 {'user': 5, 'answer': 6}
+E         append 20261101_000007_9f56e8 {'user': 7, 'answer': 8}
+E         session 20261102_000014_37f4ef discord parent=None cfg=[]
+E         append 20261102_000014_37f4ef {'user': 9, 'answer': 10}
+E         append 20261102_000014_37f4ef {'user': 11, 'answer': 12}
+E         append 20261102_000014_37f4ef {'user': 13, 'call': 14, 'tool': 15, 'answer': 16}
+E         append 20261102_000014_37f4ef {'user': 17, 'answer': 18}
+E         undo 20261101_000007_9f56e8 [7, 8]
+E         backup 0 tc0 sha 555ec1f0d648 rows 18
+E         session 20261103_000021_2a4d4c cli parent=20261101_000007_9f56e8 cfg=['_compressed_from']
+E         rotate 20261101_000007_9f56e8 -> 20261103_000021_2a4d4c head 2 tail 1 donor False marker True rows [19, 20, 21, 22]
+E         append 20261102_000014_37f4ef {'user': 23, 'call': 24, 'tool': 25, 'answer': 26}
+E         session_search 20261102_000014_37f4ef reads 20261103_000021_2a4d4c {'call': 27, 'tool': 28, 'answer': 29}
+E         append 20261102_000014_37f4ef {'user': 30, 'answer': 31}
+E         session 20261104_000028_81c3b7 discord parent=20261102_000014_37f4ef cfg=['_compressed_from']
+E         rotate 20261102_000014_37f4ef -> 20261104_000028_81c3b7 head 2 tail 3 donor True marker True rows [32, 33, 34, 35, 36, 37]
+E         compact 20261104_000028_81c3b7 head 2 tail 3 restate carrier -> [38, 39, 40, 41, 42, 43]
+E         delete 20261104_000028_81c3b7
+E         session 20261105_000035_2e418f cli parent=None cfg=[]
+E         append 20261105_000035_2e418f {'user': 44, 'answer': 45}
+E         backup 1 decision sha d9b594f4be54 rows 33
+E         WITHHOLD cc 19 = 20261102_000014_37f4ef:25 'Read file for the content calendar: plain text, se'
+E         WITHHOLD cc 1 = 20261101_000007_9f56e8:1 'Please archive the quarterly plan with the usual c'
+E         session_search 20261105_000035_2e418f reads 20261103_000021_2a4d4c {'call': 46, 'tool': 47, 'answer': 48}
+E         backup 2 x0 sha 101592745d95 rows 36
+E         session 20261106_000042_6865bc subagent parent=20261103_000021_2a4d4c cfg=['_delegate_from']
+E         delegate 20261103_000021_2a4d4c -> 20261106_000042_6865bc {'call': 49, 'goal': 50, 'answer': 51, 'result': 52}
+E         compact 20261106_000042_6865bc head 3 tail 1 restate None -> [53, 54, 55]
+E         session 20261107_000049_a734ec subagent parent=20261106_000042_6865bc cfg=['_compressed_from']
+E         rotate 20261106_000042_6865bc -> 20261107_000049_a734ec head 1 tail 4 donor True marker True rows [56, 57, 58, 59]
+E         append 20261103_000021_2a4d4c {'user': 60, 'call': 61, 'tool': 62, 'answer': 63}
+E         delete 20261101_000007_9f56e8
+E         backup 3 x5 sha 390fb6a5b98c rows 43
+E         gateway_retry 20261107_000049_a734ec (row 56) -> {'user': 64, 'answer': 65}
+E         fold 20261105_000035_2e418f -> None
+E         session 20261108_000056_d081d1 subagent parent=20261103_000021_2a4d4c cfg=['_delegate_from']
+E         delegate 20261103_000021_2a4d4c -> 20261108_000056_d081d1 {'call': 66, 'goal': 67, 'answer': 68, 'result': 69}
+E         append 20261108_000056_d081d1 {'user': 70, 'call': 71, 'tool': 72, 'answer': 73}
+E         backup 4 later sha 1cda3e881f64 rows 49
+E       assert not ["C3-evidence seed 13556: holds of the later backup: hold 51 (20261108_000056_d081d1:67 user) evidence ['not_in_backup...vis:message:uid:384e63651c012881b61baa51dc04de3a, via 'new in a later backup', own ['20261101_000007_9f56e8:1']]", ...]
+E        +  where ["C3-evidence seed 13556: holds of the later backup: hold 51 (20261108_000056_d081d1:67 user) evidence ['not_in_backup...vis:message:uid:384e63651c012881b61baa51dc04de3a, via 'new in a later backup', own ['20261101_000007_9f56e8:1']]", ...] = Run(seed=13556, sim=<tests.property.hermes_sim.Sim object at 0x7f793b36f5c0>, profile='/tmp/pytest-of-root/pytest-843/...62e1b', 'jarvis:message:uid:70b9c4e24c24205f7d721b018fb893eb', 'jarvis:message:uid:839aa3322b56c1ee01987fc54ce1e205'}}).problems
+
+tests/property/test_oracle_properties.py:113: AssertionError
+______________________________ test_oracle[13658] ______________________________
+
+seed = 13658
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-843/test_oracle_13658_0')
+client = <httpx.AsyncClient object at 0x7f793b200650>
+restore = <tests.property.test_oracle_properties._Restore object at 0x7f793bc6bb50>
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    async def test_oracle(seed, tmp_path, client, restore):
+        run = await scenario.run_seed(seed, tmp_path, client, restore)
+        _record(seed, run)
+>       assert not run.problems, "\n".join(run.problems + ["--- notes"] + run.notes + ["--- Hermes log"] + run.sim.log)
+E       AssertionError: B4 seed 13658: live vs a plain import of the same backups: 21 rows outside the family differ from a plain import: jarvis:message:20261107_000049_6b41d5:116 (20261107_000049_6b41d5) (True, 'e3b0c44298fc1c14') vs plain (False, '486974058353a64b'); jarvis:message:20261107_000049_6b41d5:117 (20261107_000049_6b41d5) (True, 'e3b0c44298fc1c14') vs plain (False, '1bdae3bc5373d7c3'); jarvis:message:20261107_000049_6b41d5:66 (20261107_000049_6b41d5) (True, 'e3b0c44298fc1c14') vs plain (False, '3185d2b97ecda8c2'); jarvis:message:20261107_000049_6b41d5:67 (20261107_000049_6b41d5) (True, 'e3b0c44298fc1c14') vs plain (False, 'e3b0c44298fc1c14'); jarvis:message:20261107_000049_6b41d5:69 (20261107_000049_6b41d5) (True, 'e3b0c44298fc1c14') vs plain (False, 'd528644abb0e2c8b')
+E         --- notes
+E         arms: live_history=1 second_withhold=1
+E         check_c test copy after Settle: group 2, recorded 2 (uncertain 0), carrier holds 0
+E         check_c test copy after the review: group 2, recorded 2 (uncertain 0), carrier holds 0
+E         check_c test copy after the second withhold: group 3, recorded 3 (uncertain 0), carrier holds 0
+E         check_c test copy after the second review: group 3, recorded 3 (uncertain 0), carrier holds 0
+E         check_c live after the decisions import: group 3, recorded 3 (uncertain 0), carrier holds 0
+E         check_c later backup X: group 7, recorded 7 (uncertain 0), carrier holds 1
+E         D-45: 1 family conversation(s) bound only by per-row carrier holds: 20261105_000035_ebf776
+E         B6 exercised in 20261104_000028_60aedd: 200, 2 rows released
+E         B6 exercised in 20261105_000035_ebf776: 200, 0 rows released
+E         B6 exercised in 20261106_000042_f14a99: 200, 1 rows released
+E         B6 exercised in 20261108_000056_405c79: 200, 7 rows released
+E         B6 exercised in 20261109_000063_34cab4: 200, 4 rows released
+E         B6 exercised in 20261112_000084_0ca9a9: 200, 2 rows released
+E         check_c later backup X after the review and the next import: group 9, recorded 11 (uncertain 0), carrier holds 1
+E         rollback of the X run refused: later import runs depend on run 3: roll them back first, newest first
+E         check_c live at the end: group 9, recorded 11 (uncertain 0), carrier holds 1
+E         --- Hermes log
+E         session 20261101_000007_27c9c8 discord parent=None cfg=[]
+E         append 20261101_000007_27c9c8 {'user': 1, 'call': 2, 'tool': 3, 'answer': 4}
+E         append 20261101_000007_27c9c8 {'user': 5, 'answer': 6}
+E         append 20261101_000007_27c9c8 {'user': 7, 'answer': 8}
+E         session 20261102_000014_96138f cli parent=None cfg=[]
+E         append 20261102_000014_96138f {'user': 9, 'call': 10, 'tool': 11, 'answer': 12}
+E         append 20261102_000014_96138f {'user': 13, 'call': 14, 'tool': 15, 'answer': 16}
+E         session 20261103_000021_011421 cli parent=None cfg=[]
+E         append 20261103_000021_011421 {'user': 17, 'call': 18, 'tool': 19, 'answer': 20}
+E         append 20261103_000021_011421 {'user': 21, 'call': 22, 'tool': 23, 'answer': 24}
+E         backfill slice -> 0 rows (through 2)
+E         append 20261103_000021_011421 {'user': 25, 'answer': 26}
+E         append 20261103_000021_011421 {'user': 27, 'call': 28, 'tool': 29, 'answer': 30}
+E         session_search 20261102_000014_96138f reads 20261101_000007_27c9c8 {'call': 31, 'tool': 32, 'answer': 33}
+E         compact 20261103_000021_011421 head 2 tail 3 restate None -> [34, 35, 36, 37, 38, 39]
+E         append 20261101_000007_27c9c8 {'user': 40, 'call': 41, 'tool': 42, 'answer': 43}
+E         backup 0 tc5 sha a4a9eb632393 rows 43
+E         session 20261104_000028_60aedd cli parent=20261102_000014_96138f cfg=['_compressed_from']
+E         rotate 20261102_000014_96138f -> 20261104_000028_60aedd head 0 tail 3 donor False marker True rows [44, 45, 46, 47]
+E         session_search 20261104_000028_60aedd reads 20261102_000014_96138f {'call': 48, 'tool': 49, 'answer': 50}
+E         append 20261103_000021_011421 {'user': 51, 'call': 52, 'tool': 53, 'answer': 54}
+E         session 20261105_000035_ebf776 discord parent=20261101_000007_27c9c8 cfg=[]
+E         legacy_reset 20261101_000007_27c9c8 -> 20261105_000035_ebf776
+E         append 20261105_000035_ebf776 {'user': 55, 'answer': 56}
+E         append 20261101_000007_27c9c8 {'user': 57, 'answer': 58}
+E         backup 1 decision sha e966970f3f40 rows 58
+E         WITHHOLD cc 15 = 20261102_000014_96138f:11 'Fetched page for the backup schedule: section head'
+E         WITHHOLD cc 37 = 20261103_000021_011421:38 'Search results for the newsletter draft: the first'
+E         session 20261106_000042_f14a99 cli parent=20261104_000028_60aedd cfg=['_branched_from']
+E         cli_branch 20261104_000028_60aedd -> 20261106_000042_f14a99
+E         session 20261107_000049_6b41d5 discord parent=20261101_000007_27c9c8 cfg=['_compressed_from']
+E         rotate 20261101_000007_27c9c8 -> 20261107_000049_6b41d5 head 2 tail 2 donor True marker True rows [66, 67, 68, 69, 70]
+E         session_search 20261105_000035_ebf776 reads 20261104_000028_60aedd {'call': 71, 'tool': 72, 'answer': 73}
+E         prune 20261106_000042_f14a99 65 -> twin 74
+E         session 20261108_000056_405c79 cli parent=20261103_000021_011421 cfg=['_branched_from']
+E         gateway_branch 20261103_000021_011421 -> 20261108_000056_405c79
+E         append 20261105_000035_ebf776 {'user': 85, 'call': 86, 'tool': 87, 'answer': 88}
+E         prune 20261108_000056_405c79 84 -> twin 89
+E         session 20261109_000063_34cab4 cli parent=20261103_000021_011421 cfg=['_compressed_from']
+E         rotate 20261103_000021_011421 -> 20261109_000063_34cab4 head 1 tail 1 donor True marker True rows [90, 91, 92]
+E         session 20261110_000070_ead4f2 subagent parent=20261105_000035_ebf776 cfg=['_delegate_from']
+E         delegate 20261105_000035_ebf776 -> 20261110_000070_ead4f2 {'call': 93, 'goal': 94, 'answer': 95, 'result': 96}
+E         append 20261109_000063_34cab4 {'user': 97, 'call': 98, 'tool': 99, 'answer': 100}
+E         session 20261111_000077_ab40b4 cli parent=None cfg=[]
+E         append 20261111_000077_ab40b4 {'user': 101, 'answer': 102}
+E         gateway_retry 20261108_000056_405c79 (row 81) -> {'user': 109, 'answer': 110}
+E         append 20261108_000056_405c79 {'user': 111, 'call': 112, 'tool': 113, 'answer': 114}
+E         fold 20261107_000049_6b41d5 -> 116
+E         append 20261104_000028_60aedd {'user': 118, 'call': 119, 'tool': 120, 'answer': 121}
+E         session 20261112_000084_0ca9a9 subagent parent=20261108_000056_405c79 cfg=['_delegate_from']
+E         delegate 20261108_000056_405c79 -> 20261112_000084_0ca9a9 {'call': 122, 'goal': 123, 'answer': 124, 'result': 125}
+E         backup 2 later sha 02addab1b7ea rows 115
+E       assert not ["B4 seed 13658: live vs a plain import of the same backups: 21 rows outside the family differ from a plain import: ja...ge:20261107_000049_6b41d5:69 (20261107_000049_6b41d5) (True, 'e3b0c44298fc1c14') vs plain (False, 'd528644abb0e2c8b')"]
+E        +  where ["B4 seed 13658: live vs a plain import of the same backups: 21 rows outside the family differ from a plain import: ja...ge:20261107_000049_6b41d5:69 (20261107_000049_6b41d5) (True, 'e3b0c44298fc1c14') vs plain (False, 'd528644abb0e2c8b')"] = Run(seed=13658, sim=<tests.property.hermes_sim.Sim object at 0x7f793901cd60>, profile='/tmp/pytest-of-root/pytest-843/...b7ed6', 'jarvis:message:uid:5ffb645f994b5f40f21336e03e1fbeea', 'jarvis:message:uid:aec4b053cabbed77d4ddf9844682f38b'}}).problems
+
+tests/property/test_oracle_properties.py:113: AssertionError
+______________________________ test_oracle[13805] ______________________________
+
+seed = 13805
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-843/test_oracle_13805_0')
+client = <httpx.AsyncClient object at 0x7f79392699d0>
+restore = <tests.property.test_oracle_properties._Restore object at 0x7f793a4a2690>
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    async def test_oracle(seed, tmp_path, client, restore):
+        run = await scenario.run_seed(seed, tmp_path, client, restore)
+        _record(seed, run)
+>       assert not run.problems, "\n".join(run.problems + ["--- notes"] + run.notes + ["--- Hermes log"] + run.sim.log)
+E       AssertionError: A4 seed 13805: test copy vs a no-withhold import: 1 rows outside the family differ from a plain import: jarvis:message:20261102_000014_aa5066:7 (20261102_000014_aa5066) (True, 'e3b0c44298fc1c14') vs plain (False, 'c8b5c8c2406bcd28')
+E         --- notes
+E         arms: live_history=1 second_withhold=1
+E         withhold of 36 refused: 400 {"detail":"this message is already withheld"}
+E         check_c test copy after Settle: group 4, recorded 4 (uncertain 0), carrier holds 1
+E         check_c test copy after the review: group 4, recorded 4 (uncertain 0), carrier holds 0
+E         check_c test copy after the second withhold: group 4, recorded 4 (uncertain 0), carrier holds 0
+E         check_c test copy after the second review: group 4, recorded 4 (uncertain 0), carrier holds 0
+E         check_c live after the decisions import: group 4, recorded 4 (uncertain 0), carrier holds 0
+E         check_c later backup 2: group 4, recorded 4 (uncertain 0), carrier holds 0
+E         check_c later backup 3: group 4, recorded 4 (uncertain 0), carrier holds 0
+E         check_c later backup 4: group 4, recorded 4 (uncertain 0), carrier holds 0
+E         check_c later backup 5: group 5, recorded 5 (uncertain 0), carrier holds 0
+E         check_c later backup X: group 5, recorded 5 (uncertain 0), carrier holds 0
+E         B6 exercised in 20261104_000028_8ee1c2: 400, 0 rows released
+E         B6 exercised in 20261105_000035_e9298d: 200, 8 rows released
+E         B6 exercised in 20261106_000042_eabc5e: 200, 2 rows released
+E         B6 exercised in 20261108_000056_a51c60: 200, 8 rows released
+E         check_c later backup X after the review and the next import: group 5, recorded 5 (uncertain 0), carrier holds 0
+E         rollback of the X run refused: later import runs depend on run 7: roll them back first, newest first
+E         check_c live at the end: group 5, recorded 5 (uncertain 0), carrier holds 0
+E         A5: 1 rows differ exactly as the plain imports do (no decision involved): jarvis:message:20261102_000014_aa5066:7: released on the test copy, waiting for a text the decision backup no longer holds; live shows the released text (S2, RECON-57)
+E         --- Hermes log
+E         session 20261101_000007_42c597 whatsapp parent=None cfg=[]
+E         append 20261101_000007_42c597 {'user': 1, 'answer': 2}
+E         append 20261101_000007_42c597 {'user': 3, 'answer': 4}
+E         session 20261102_000014_aa5066 discord parent=None cfg=[]
+E         append 20261102_000014_aa5066 {'user': 5, 'call': 6, 'tool': 7, 'answer': 8}
+E         append 20261102_000014_aa5066 {'user': 9, 'call': 10, 'tool': 11, 'answer': 12}
+E         append 20261102_000014_aa5066 {'user': 13, 'answer': 14}
+E         append 20261102_000014_aa5066 {'user': 15, 'answer': 16}
+E         append 20261101_000007_42c597 {'user': 17, 'answer': 18}
+E         append 20261102_000014_aa5066 {'user': 19, 'answer': 20}
+E         compact 20261101_000007_42c597 head 2 tail 0 restate None -> [21, 22, 23]
+E         session 20261103_000021_5b2f0c discord parent=None cfg=[]
+E         append 20261103_000021_5b2f0c {'user': 24, 'call': 25, 'tool': 26, 'answer': 27}
+E         prune 20261103_000021_5b2f0c 26 -> twin 28
+E         append 20261103_000021_5b2f0c {'user': 29, 'answer': 30}
+E         session 20261104_000028_8ee1c2 whatsapp parent=20261101_000007_42c597 cfg=['_branched_from']
+E         gateway_branch 20261101_000007_42c597 -> 20261104_000028_8ee1c2
+E         compact 20261101_000007_42c597 head 0 tail 0 restate None -> [34]
+E         backup 0 tc7 sha 9c0918ace30e rows 34
+E         append 20261103_000021_5b2f0c {'user': 35, 'answer': 36}
+E         delete 20261104_000028_8ee1c2
+E         append 20261103_000021_5b2f0c {'user': 37, 'call': 38, 'tool': 39, 'answer': 40}
+E         gateway_retry 20261102_000014_aa5066 (row 19) -> {'user': 53, 'answer': 54}
+E         append 20261101_000007_42c597 {'user': 55, 'call': 56, 'tool': 57, 'answer': 58}
+E         append 20261103_000021_5b2f0c {'user': 59, 'answer': 60}
+E         session 20261105_000035_e9298d whatsapp parent=20261101_000007_42c597 cfg=['_compressed_from']
+E         rotate 20261101_000007_42c597 -> 20261105_000035_e9298d head 2 tail 2 donor True marker True rows [61, 62, 63, 64, 65]
+E         append 20261103_000021_5b2f0c {'user': 66, 'call': 67, 'tool': 68, 'answer': 69}
+E         append 20261103_000021_5b2f0c {'user': 70, 'call': 71, 'tool': 72, 'answer': 73}
+E         session 20261106_000042_eabc5e whatsapp parent=20261105_000035_e9298d cfg=[]
+E         legacy_reset 20261105_000035_e9298d -> 20261106_000042_eabc5e
+E         append 20261106_000042_eabc5e {'user': 74, 'call': 75, 'tool': 76, 'answer': 77}
+E         append 20261105_000035_e9298d {'user': 78, 'call': 79, 'tool': 80, 'answer': 81}
+E         append 20261105_000035_e9298d {'user': 82, 'answer': 83}
+E         append 20261102_000014_aa5066 {'user': 84, 'call': 85, 'tool': 86, 'answer': 87}
+E         session 20261107_000049_e00b71 subagent parent=20261103_000021_5b2f0c cfg=['_delegate_from']
+E         delegate 20261103_000021_5b2f0c -> 20261107_000049_e00b71 {'call': 88, 'goal': 89, 'answer': 90, 'result': 91}
+E         backup 1 decision sha 7726b5fe6eb6 rows 74
+E         WITHHOLD cc 80 = 20261105_000035_e9298d:80 'Search results for the partner agreement: the firs'
+E         WITHHOLD cc 7 = 20261101_000007_42c597:21 'Please compare the backup schedule so we can close'
+E         compact 20261105_000035_e9298d head 0 tail 2 restate None -> [92, 93, 94]
+E         append 20261106_000042_eabc5e {'user': 95, 'call': 96, 'tool': 97, 'answer': 98}
+E         append 20261105_000035_e9298d {'user': 99, 'answer': 100}
+E         compact 20261105_000035_e9298d head 2 tail 2 restate row -> [101, 102, 103, 104, 105]
+E         backup 2 x3 sha 9d8d061abaf1 rows 88
+E         append 20261105_000035_e9298d {'user': 106, 'call': 107, 'tool': 108, 'answer': 109}
+E         backup 3 x4 sha 421c4b3b9cca rows 92
+E         compact 20261105_000035_e9298d head 2 tail 0 restate None -> [110, 111, 112]
+E         gateway_retry 20261105_000035_e9298d (row 111) -> {'user': 114, 'answer': 115}
+E         backup 4 x6 sha 701ca7c27050 rows 95
+E         session 20261108_000056_a51c60 whatsapp parent=20261105_000035_e9298d cfg=['_compressed_from']
+E         rotate 20261105_000035_e9298d -> 20261108_000056_a51c60 head 2 tail 4 donor True marker True rows [116, 117, 118, 119]
+E         compact 20261108_000056_a51c60 head 1 tail 2 restate None -> [120, 121, 122, 123]
+E         backup 5 x8 sha 0d0cadbaa66a rows 103
+E         upgrade to uids
+E         undo 20261108_000056_a51c60 []
+E         append 20261108_000056_a51c60 {'user': 124, 'answer': 125}
+E         append 20261108_000056_a51c60 {'user': 126, 'answer': 127}
+E         append 20261108_000056_a51c60 {'user': 128, 'answer': 129}
+E         backup 6 later sha 1442881b5060 rows 109
+E       assert not ["A4 seed 13805: test copy vs a no-withhold import: 1 rows outside the family differ from a plain import: jarvis:message:20261102_000014_aa5066:7 (20261102_000014_aa5066) (True, 'e3b0c44298fc1c14') vs plain (False, 'c8b5c8c2406bcd28')"]
+E        +  where ["A4 seed 13805: test copy vs a no-withhold import: 1 rows outside the family differ from a plain import: jarvis:message:20261102_000014_aa5066:7 (20261102_000014_aa5066) (True, 'e3b0c44298fc1c14') vs plain (False, 'c8b5c8c2406bcd28')"] = Run(seed=13805, sim=<tests.property.hermes_sim.Sim object at 0x7f793ba4e190>, profile='/tmp/pytest-of-root/pytest-843/...age:20261102_000014_aa5066:7', 'jarvis:message:20261102_000014_aa5066:11', 'jarvis:message:20261101_000007_42c597:2'}}).problems
+
+tests/property/test_oracle_properties.py:113: AssertionError
+______________________________ test_oracle[13880] ______________________________
+
+seed = 13880
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-843/test_oracle_13880_0')
+client = <httpx.AsyncClient object at 0x7f793a4831d0>
+restore = <tests.property.test_oracle_properties._Restore object at 0x7f7938c497b0>
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    async def test_oracle(seed, tmp_path, client, restore):
+        run = await scenario.run_seed(seed, tmp_path, client, restore)
+        _record(seed, run)
+>       assert not run.problems, "\n".join(run.problems + ["--- notes"] + run.notes + ["--- Hermes log"] + run.sim.log)
+E       AssertionError: C3-evidence seed 13880: holds of the later backup: hold 102 (20261102_000014_322e0b:130 tool) evidence ['contains', 'identical'] ['identical', 'contains', 'identical text; contains the withheld text'] does not match the recomputation (computed []; held '{"success": true, "mode": "read", "session_id": "20261104_000028_15dd66", "link": "@sessio' vs withheld '[STILL IN PROGRESS — this is the active request, restated after the compaction boundary be') [anchor jarvis:message:20261104_000028_15dd66:59, via 'new in a later backup', own ['20261104_000028_15dd66:59']]
+E         --- notes
+E         arms: live_history=1 second_withhold=1
+E         withhold of 45 refused: 400 {"detail":"this message is already withheld"}
+E         check_c test copy after Settle: group 3, recorded 3 (uncertain 0), carrier holds 0
+E         check_c test copy after the review: group 3, recorded 7 (uncertain 0), carrier holds 0
+E         check_c test copy after the second withhold: group 3, recorded 7 (uncertain 0), carrier holds 0
+E         check_c test copy after the second review: group 3, recorded 7 (uncertain 0), carrier holds 0
+E         check_c live after the decisions import: group 3, recorded 7 (uncertain 0), carrier holds 0
+E         check_c later backup 2: group 3, recorded 8 (uncertain 0), carrier holds 0
+E         check_c later backup 3: group 3, recorded 8 (uncertain 0), carrier holds 0
+E         check_c later backup X: group 3, recorded 8 (uncertain 0), carrier holds 0
+E         B6 exercised in 20261102_000014_322e0b: 400, 0 rows released
+E         B6 exercised in 20261103_000021_8980c8: 400, 0 rows released
+E         B6 exercised in 20261104_000028_15dd66: 200, 3 rows released
+E         B6 exercised in 20261105_000035_abd975: 400, 0 rows released
+E         B6 exercised in 20261106_000042_6d7135: 200, 5 rows released
+E         B6 exercised in 20261107_000049_00dff1: 400, 0 rows released
+E         B6 exercised in 20261108_000056_1c62ef: 400, 0 rows released
+E         B6 exercised in 20261110_000070_762756: 200, 5 rows released
+E         check_c later backup X after the review and the next import: group 8, recorded 8 (uncertain 0), carrier holds 0
+E         rollback of the X run refused: later import runs depend on run 5: roll them back first, newest first
+E         check_c live at the end: group 8, recorded 8 (uncertain 0), carrier holds 0
+E         --- Hermes log
+E         session 20261101_000007_80b512 discord parent=None cfg=[]
+E         append 20261101_000007_80b512 {'user': 1, 'answer': 2}
+E         append 20261101_000007_80b512 {'user': 3, 'answer': 4}
+E         append 20261101_000007_80b512 {'user': 5, 'answer': 6}
+E         session 20261102_000014_322e0b telegram parent=None cfg=[]
+E         append 20261102_000014_322e0b {'user': 7, 'answer': 8}
+E         append 20261102_000014_322e0b {'user': 9, 'answer': 10}
+E         session 20261103_000021_8980c8 telegram parent=None cfg=[]
+E         append 20261103_000021_8980c8 {'user': 11, 'call': 12, 'tool': 13, 'answer': 14}
+E         append 20261103_000021_8980c8 {'user': 15, 'answer': 16}
+E         session 20261104_000028_15dd66 telegram parent=20261103_000021_8980c8 cfg=['_branched_from']
+E         gateway_branch 20261103_000021_8980c8 -> 20261104_000028_15dd66
+E         session 20261105_000035_abd975 telegram parent=20261102_000014_322e0b cfg=[]
+E         legacy_reset 20261102_000014_322e0b -> 20261105_000035_abd975
+E         append 20261105_000035_abd975 {'user': 23, 'answer': 24}
+E         session 20261106_000042_6d7135 cli parent=20261103_000021_8980c8 cfg=['_branched_from']
+E         cli_branch 20261103_000021_8980c8 -> 20261106_000042_6d7135
+E         backup 0 tc2 sha 6ede06bf860f rows 30
+E         append 20261102_000014_322e0b {'user': 31, 'answer': 32}
+E         undo 20261104_000028_15dd66 [21, 22]
+E         cli_retry 20261103_000021_8980c8 (row 15) -> {'user': 33, 'answer': 34}
+E         session_search 20261104_000028_15dd66 reads 20261102_000014_322e0b {'call': 35, 'tool': 36, 'answer': 37}
+E         session 20261107_000049_00dff1 telegram parent=20261105_000035_abd975 cfg=['_compressed_from']
+E         rotate 20261105_000035_abd975 -> 20261107_000049_00dff1 head 0 tail 2 donor False marker True rows [38, 39, 40]
+E         append 20261102_000014_322e0b {'user': 41, 'call': 42, 'tool': 43, 'answer': 44}
+E         undo 20261106_000042_6d7135 [29, 30]
+E         append 20261101_000007_80b512 {'user': 45, 'answer': 46}
+E         undo 20261106_000042_6d7135 [25, 26, 27, 28]
+E         gateway_retry 20261103_000021_8980c8 (row 33) -> {'user': 51, 'answer': 52}
+E         fold 20261104_000028_15dd66 -> None
+E         compact 20261103_000021_8980c8 head 1 tail 1 restate None -> [53, 54, 55]
+E         compact 20261104_000028_15dd66 head 0 tail 2 restate row -> [56, 57, 58, 59]
+E         gateway_retry 20261102_000014_322e0b (row 41) -> {'user': 66, 'answer': 67}
+E         session 20261108_000056_1c62ef cli parent=20261102_000014_322e0b cfg=['_branched_from']
+E         cli_branch 20261102_000014_322e0b -> 20261108_000056_1c62ef
+E         append 20261107_000049_00dff1 {'user': 76, 'answer': 77}
+E         backup 1 decision sha 0d94fe720069 rows 61
+E         WITHHOLD cc 52 = 20261104_000028_15dd66:59 '[STILL IN PROGRESS — this is the active request, r'
+E         WITHHOLD cc 47 = 20261103_000021_8980c8:55 'Quick summary of the pricing table: on track, no b'
+E         append 20261107_000049_00dff1 {'user': 78, 'answer': 79}
+E         append 20261108_000056_1c62ef {'user': 80, 'answer': 81}
+E         append 20261103_000021_8980c8 {'user': 82, 'answer': 83}
+E         cli_retry 20261104_000028_15dd66 (row 59) -> {'user': 84, 'answer': 85}
+E         append 20261102_000014_322e0b {'user': 86, 'call': 87, 'tool': 88, 'answer': 89}
+E         compact 20261103_000021_8980c8 head 0 tail 2 restate None -> [90, 91, 92]
+E         session 20261109_000063_3e7a96 cli parent=None cfg=[]
+E         append 20261109_000063_3e7a96 {'user': 93, 'call': 94, 'tool': 95, 'answer': 96}
+E         compact 20261108_000056_1c62ef head 2 tail 0 restate None -> [97, 98, 99]
+E         append 20261106_000042_6d7135 {'user': 100, 'answer': 101}
+E         session 20261110_000070_762756 cli parent=20261107_000049_00dff1 cfg=['_branched_from']
+E         cli_branch 20261107_000049_00dff1 -> 20261110_000070_762756
+E         append 20261107_000049_00dff1 {'user': 109, 'call': 110, 'tool': 111, 'answer': 112}
+E         compact 20261108_000056_1c62ef head 0 tail 1 restate None -> [113, 114]
+E         backup 2 x11 sha 7536ae085469 rows 98
+E         compact 20261106_000042_6d7135 head 3 tail 2 restate carrier -> [115, 116, 117]
+E         backup 3 x12 sha 2b4d75e6d9fc rows 101
+E         append 20261104_000028_15dd66 {'user': 118, 'call': 119, 'tool': 120, 'answer': 121}
+E         prune 20261103_000021_8980c8 92 -> twin 122
+E         append 20261107_000049_00dff1 {'user': 123, 'answer': 124}
+E         append 20261106_000042_6d7135 {'user': 125, 'answer': 126}
+E         append 20261108_000056_1c62ef {'user': 127, 'answer': 128}
+E         session_search 20261102_000014_322e0b reads 20261104_000028_15dd66 {'call': 129, 'tool': 130, 'answer': 131}
+E         backup 4 later sha 1c0664cd13df rows 115
+E       assert not ["C3-evidence seed 13880: holds of the later backup: hold 102 (20261102_000014_322e0b:130 tool) evidence ['contains', ...e') [anchor jarvis:message:20261104_000028_15dd66:59, via 'new in a later backup', own ['20261104_000028_15dd66:59']]"]
+E        +  where ["C3-evidence seed 13880: holds of the later backup: hold 102 (20261102_000014_322e0b:130 tool) evidence ['contains', ...e') [anchor jarvis:message:20261104_000028_15dd66:59, via 'new in a later backup', own ['20261104_000028_15dd66:59']]"] = Run(seed=13880, sim=<tests.property.hermes_sim.Sim object at 0x7f793ba4e8b0>, profile='/tmp/pytest-of-root/pytest-843/...e:20261101_000007_80b512:45', 'jarvis:message:20261103_000021_8980c8:50', 'jarvis:message:20261103_000021_8980c8:48'}}).problems
+
+tests/property/test_oracle_properties.py:113: AssertionError
+______________________________ test_oracle[13885] ______________________________
+
+seed = 13885
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-843/test_oracle_13885_0')
+client = <httpx.AsyncClient object at 0x7f7938dca210>
+restore = <tests.property.test_oracle_properties._Restore object at 0x7f79392e3430>
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    async def test_oracle(seed, tmp_path, client, restore):
+        run = await scenario.run_seed(seed, tmp_path, client, restore)
+        _record(seed, run)
+>       assert not run.problems, "\n".join(run.problems + ["--- notes"] + run.notes + ["--- Hermes log"] + run.sim.log)
+E       AssertionError: A4 seed 13885: test copy vs a no-withhold import: 1 rows outside the family differ from a plain import: jarvis:message:uid:2c67432751187e701555cbdcbdfe6b2a (20261104_000028_446ac1) (True, 'e3b0c44298fc1c14') vs plain (False, 'c8d0e4d1b3a453b6')
+E         --- notes
+E         arms: live_history=1 second_withhold=1
+E         withhold of 62 refused: 400 {"detail":"this message is already withheld"}
+E         check_c test copy after Settle: group 1, recorded 1 (uncertain 0), carrier holds 1
+E         check_c test copy after the review: group 1, recorded 1 (uncertain 0), carrier holds 0
+E         check_c test copy after the second withhold: group 1, recorded 1 (uncertain 0), carrier holds 0
+E         check_c test copy after the second review: group 1, recorded 1 (uncertain 0), carrier holds 0
+E         check_c live after the decisions import: group 1, recorded 1 (uncertain 0), carrier holds 0
+E         check_c later backup 6: group 2, recorded 2 (uncertain 0), carrier holds 0
+E         check_c later backup 7: group 2, recorded 2 (uncertain 0), carrier holds 0
+E         check_c later backup 8: group 2, recorded 2 (uncertain 0), carrier holds 0
+E         check_c later backup X: group 3, recorded 3 (uncertain 0), carrier holds 2
+E         D-45: 1 family conversation(s) bound only by per-row carrier holds: 20261108_000056_1c9b9f
+E         B6 exercised in 20261108_000056_1c9b9f: 200, 0 rows released
+E         B6 exercised in 20261111_000077_8e3bd9: 200, 3 rows released
+E         B6 exercised in 20261113_000091_e6c39c: 200, 0 rows released
+E         check_c later backup X after the review and the next import: group 4, recorded 4 (uncertain 0), carrier holds 2
+E         rollback of the X run refused: later import runs depend on run 10: roll them back first, newest first
+E         check_c live at the end: group 4, recorded 4 (uncertain 0), carrier holds 2
+E         A5: 1 rows differ exactly as the plain imports do (no decision involved): jarvis:message:uid:2c67432751187e701555cbdcbdfe6b2a: released on the test copy, waiting for a text the decision backup no longer holds; live shows the released text (S2, RECON-57)
+E         --- Hermes log
+E         session 20261101_000007_63eef2 cli parent=None cfg=[]
+E         append 20261101_000007_63eef2 {'user': 1, 'answer': 2}
+E         append 20261101_000007_63eef2 {'user': 3, 'call': 4, 'tool': 5, 'answer': 6}
+E         append 20261101_000007_63eef2 {'user': 7, 'answer': 8}
+E         append 20261101_000007_63eef2 {'user': 9, 'call': 10, 'tool': 11, 'answer': 12}
+E         session 20261102_000014_da14f1 whatsapp parent=None cfg=[]
+E         append 20261102_000014_da14f1 {'user': 13, 'answer': 14}
+E         append 20261102_000014_da14f1 {'user': 15, 'answer': 16}
+E         append 20261102_000014_da14f1 {'user': 17, 'answer': 18}
+E         append 20261102_000014_da14f1 {'user': 19, 'answer': 20}
+E         session 20261103_000021_47c125 telegram parent=None cfg=[]
+E         append 20261103_000021_47c125 {'user': 21, 'answer': 22}
+E         append 20261103_000021_47c125 {'user': 23, 'call': 24, 'tool': 25, 'answer': 26}
+E         append 20261103_000021_47c125 {'user': 27, 'answer': 28}
+E         session 20261104_000028_446ac1 telegram parent=None cfg=[]
+E         append 20261104_000028_446ac1 {'user': 29, 'answer': 30}
+E         append 20261101_000007_63eef2 {'user': 31, 'call': 32, 'tool': 33, 'answer': 34}
+E         append 20261102_000014_da14f1 {'user': 35, 'answer': 36}
+E         session 20261105_000035_dea67f telegram parent=None cfg=[]
+E         append 20261105_000035_dea67f {'user': 37, 'answer': 38}
+E         append 20261104_000028_446ac1 {'user': 39, 'call': 40, 'tool': 41, 'answer': 42}
+E         backup 0 tc4 sha 8b6a5a7f8cba rows 42
+E         prune 20261101_000007_63eef2 8 -> twin 43
+E         backup 1 tc5 sha 9e3d51ca2c1f rows 43
+E         prune 20261101_000007_63eef2 6 -> twin 44
+E         session 20261106_000042_bc705a whatsapp parent=None cfg=[]
+E         append 20261106_000042_bc705a {'user': 45, 'answer': 46}
+E         session 20261107_000049_d89013 subagent parent=20261106_000042_bc705a cfg=['_delegate_from']
+E         delegate 20261106_000042_bc705a -> 20261107_000049_d89013 {'call': 47, 'goal': 48, 'answer': 49, 'result': 50}
+E         append 20261105_000035_dea67f {'user': 51, 'answer': 52}
+E         backup 2 tc9 sha f60a45240a52 rows 52
+E         gateway_retry 20261104_000028_446ac1 (row 39) -> {'user': 55, 'answer': 56}
+E         session 20261108_000056_1c9b9f telegram parent=None cfg=[]
+E         append 20261108_000056_1c9b9f {'user': 57, 'call': 58, 'tool': 59, 'answer': 60}
+E         session 20261109_000063_790d97 telegram parent=None cfg=[]
+E         append 20261109_000063_790d97 {'user': 61, 'call': 62, 'tool': 63, 'answer': 64}
+E         prune 20261107_000049_d89013 49 -> twin 65
+E         append 20261106_000042_bc705a {'user': 66, 'answer': 67}
+E         session 20261110_000070_9c72fc whatsapp parent=20261106_000042_bc705a cfg=['_compressed_from']
+E         rotate 20261106_000042_bc705a -> 20261110_000070_9c72fc head 1 tail 4 donor True marker True rows [68, 69, 70, 71, 72, 73]
+E         compact 20261108_000056_1c9b9f head 0 tail 4 restate None -> [74, 75, 76, 77, 78]
+E         backup 3 tc16 sha 984e8867cb6c rows 72
+E         compact 20261109_000063_790d97 head 2 tail 2 restate None -> [79, 80, 81, 82, 83]
+E         append 20261105_000035_dea67f {'user': 84, 'answer': 85}
+E         append 20261107_000049_d89013 {'user': 86, 'answer': 87}
+E         backfill slice -> 0 rows (through 4)
+E         backup 4 tc20 sha f5d429a8d5df rows 81
+E         backup 5 decision sha f5d429a8d5df rows 81
+E         WITHHOLD cc 78 = 20261109_000063_790d97:83 'Done, the pricing table is ready and the open poin'
+E         WITHHOLD cc 62 = 20261109_000063_790d97:61 'Please prepare the newsletter draft with the usual'
+E         session 20261111_000077_8e3bd9 telegram parent=20261109_000063_790d97 cfg=['_compressed_from']
+E         rotate 20261109_000063_790d97 -> 20261111_000077_8e3bd9 head 1 tail 3 donor True marker True rows [88, 89, 90, 91, 92]
+E         session 20261112_000084_925ccd discord parent=None cfg=[]
+E         append 20261112_000084_925ccd {'user': 93, 'call': 94, 'tool': 95, 'answer': 96}
+E         append 20261111_000077_8e3bd9 {'user': 97, 'call': 98, 'tool': 99, 'answer': 100}
+E         backup 6 x2 sha 82c5110d9df9 rows 94
+E         append 20261108_000056_1c9b9f {'user': 101, 'answer': 102}
+E         backfill slice -> 0 rows (through 8)
+E         backup 7 x4 sha c7248de34513 rows 96
+E         gateway_retry 20261111_000077_8e3bd9 (row 97) -> {'user': 108, 'answer': 109}
+E         append 20261107_000049_d89013 {'user': 110, 'call': 111, 'tool': 112, 'answer': 113}
+E         backup 8 x6 sha 7b6f60e60fb7 rows 98
+E         append 20261111_000077_8e3bd9 {'user': 114, 'answer': 115}
+E         compact 20261111_000077_8e3bd9 head 0 tail 3 restate None -> [116, 117, 118, 119]
+E         backfill slice -> 0 rows (through 12)
+E         backfill slice -> 0 rows (through 16)
+E         backfill slice -> 0 rows (through 20)
+E         prune 20261111_000077_8e3bd9 119 -> twin 120
+E         session 20261113_000091_e6c39c telegram parent=20261111_000077_8e3bd9 cfg=['_compressed_from']
+E         rotate 20261111_000077_8e3bd9 -> 20261113_000091_e6c39c head 1 tail 1 donor False marker True rows [121, 122, 123]
+E         session_search 20261108_000056_1c9b9f reads 20261109_000063_790d97 {'call': 124, 'tool': 125, 'answer': 126}
+E         backup 9 later sha dcdf01fa669a rows 111
+E       assert not ["A4 seed 13885: test copy vs a no-withhold import: 1 rows outside the family differ from a plain import: jarvis:messa...432751187e701555cbdcbdfe6b2a (20261104_000028_446ac1) (True, 'e3b0c44298fc1c14') vs plain (False, 'c8d0e4d1b3a453b6')"]
+E        +  where ["A4 seed 13885: test copy vs a no-withhold import: 1 rows outside the family differ from a plain import: jarvis:messa...432751187e701555cbdcbdfe6b2a (20261104_000028_446ac1) (True, 'e3b0c44298fc1c14') vs plain (False, 'c8d0e4d1b3a453b6')"] = Run(seed=13885, sim=<tests.property.hermes_sim.Sim object at 0x7f793ba4e190>, profile='/tmp/pytest-of-root/pytest-843/...46419', 'jarvis:message:uid:c7243f8311a67fe2840c61cef2611f15', 'jarvis:message:uid:02f4b83c0ce856cbba2df21d66b7e44f'}}).problems
+
+tests/property/test_oracle_properties.py:113: AssertionError
+______________________________ test_oracle[13887] ______________________________
+
+seed = 13887
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-843/test_oracle_13887_0')
+client = <httpx.AsyncClient object at 0x7f79390574d0>
+restore = <tests.property.test_oracle_properties._Restore object at 0x7f7938cba2b0>
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    async def test_oracle(seed, tmp_path, client, restore):
+        run = await scenario.run_seed(seed, tmp_path, client, restore)
+        _record(seed, run)
+>       assert not run.problems, "\n".join(run.problems + ["--- notes"] + run.notes + ["--- Hermes log"] + run.sim.log)
+E       AssertionError: A4 seed 13887: test copy vs a no-withhold import: 1 rows outside the family differ from a plain import: jarvis:message:uid:88e5d9cbc22cb94c08e51fae91cbeb4e (20261104_000028_3b8c61) (True, 'e3b0c44298fc1c14') vs plain (False, 'd6fa8460ebdfaa6e')
+E         --- notes
+E         arms: live_history=1 second_withhold=1
+E         withhold of 36 refused: 400 {"detail":"this message is already withheld"}
+E         check_c test copy after Settle: group 4, recorded 4 (uncertain 0), carrier holds 1
+E         check_c test copy after the review: group 4, recorded 4 (uncertain 0), carrier holds 0
+E         check_c test copy after the second withhold: group 5, recorded 5 (uncertain 0), carrier holds 0
+E         check_c test copy after the second review: group 5, recorded 5 (uncertain 0), carrier holds 0
+E         check_c live after the decisions import: group 5, recorded 5 (uncertain 0), carrier holds 0
+E         check_c later backup 3: group 6, recorded 6 (uncertain 0), carrier holds 0
+E         check_c later backup X: group 6, recorded 6 (uncertain 0), carrier holds 0
+E         B6 exercised in 20261103_000021_ac4cc1: 400, 0 rows released
+E         B6 exercised in 20261105_000035_4e6541: 400, 0 rows released
+E         B6 exercised in 20261106_000042_f41049: 200, 0 rows released
+E         B6 exercised in 20261108_000056_4b97ad: 200, 0 rows released
+E         check_c later backup X after the review and the next import: group 6, recorded 6 (uncertain 0), carrier holds 0
+E         rollback of the X run refused: later import runs depend on run 5: roll them back first, newest first
+E         check_c live at the end: group 6, recorded 6 (uncertain 0), carrier holds 0
+E         A5: 1 rows differ exactly as the plain imports do (no decision involved): jarvis:message:uid:88e5d9cbc22cb94c08e51fae91cbeb4e: released on the test copy, waiting for a text the decision backup no longer holds; live shows the released text (S2, RECON-57)
+E         --- Hermes log
+E         session 20261101_000007_32996a cli parent=None cfg=[]
+E         append 20261101_000007_32996a {'user': 1, 'answer': 2}
+E         append 20261101_000007_32996a {'user': 3, 'answer': 4}
+E         append 20261101_000007_32996a {'user': 5, 'answer': 6}
+E         session 20261102_000014_aae0c1 cli parent=None cfg=[]
+E         append 20261102_000014_aae0c1 {'user': 7, 'answer': 8}
+E         append 20261102_000014_aae0c1 {'user': 9, 'answer': 10}
+E         session 20261103_000021_ac4cc1 cli parent=None cfg=[]
+E         append 20261103_000021_ac4cc1 {'user': 11, 'call': 12, 'tool': 13, 'answer': 14}
+E         append 20261103_000021_ac4cc1 {'user': 15, 'call': 16, 'tool': 17, 'answer': 18}
+E         append 20261103_000021_ac4cc1 {'user': 19, 'answer': 20}
+E         append 20261103_000021_ac4cc1 {'user': 21, 'answer': 22}
+E         compact 20261103_000021_ac4cc1 head 1 tail 0 restate row -> [23, 24, 25]
+E         append 20261101_000007_32996a {'user': 26, 'answer': 27}
+E         session 20261104_000028_3b8c61 subagent parent=20261101_000007_32996a cfg=['_delegate_from']
+E         delegate 20261101_000007_32996a -> 20261104_000028_3b8c61 {'call': 28, 'goal': 29, 'answer': 30, 'result': 31}
+E         session 20261105_000035_4e6541 cli parent=20261102_000014_aae0c1 cfg=['_branched_from']
+E         gateway_branch 20261102_000014_aae0c1 -> 20261105_000035_4e6541
+E         checkpoint 0
+E         compact 20261105_000035_4e6541 head 2 tail 1 restate None -> [36, 37, 38, 39]
+E         backup 0 tc5 sha 8b17416c50d1 rows 39
+E         append 20261105_000035_4e6541 {'user': 40, 'answer': 41}
+E         undo 20261104_000028_3b8c61 [29, 30]
+E         append 20261102_000014_aae0c1 {'user': 42, 'answer': 43}
+E         delete 20261104_000028_3b8c61
+E         backup 1 tc9 sha 958a0e640392 rows 41
+E         session 20261106_000042_f41049 cli parent=20261102_000014_aae0c1 cfg=['_branched_from']
+E         cli_branch 20261102_000014_aae0c1 -> 20261106_000042_f41049
+E         session 20261107_000049_899939 cli parent=20261102_000014_aae0c1 cfg=['_compressed_from']
+E         rotate 20261102_000014_aae0c1 -> 20261107_000049_899939 head 0 tail 4 donor False marker True rows [50, 51, 52, 53, 54]
+E         compact 20261105_000035_4e6541 head 1 tail 0 restate row -> [55, 56, 57]
+E         backup 2 decision sha aaba1e7e5621 rows 55
+E         WITHHOLD cc 39 = 20261105_000035_4e6541:41 'Finished the quarterly plan; the notes are in the '
+E         WITHHOLD cc 21 = 20261103_000021_ac4cc1:17 'Fetched page for the quarterly plan: section headi'
+E         append 20261106_000042_f41049 {'user': 58, 'answer': 59}
+E         append 20261106_000042_f41049 {'user': 60, 'call': 61, 'tool': 62, 'answer': 63}
+E         session 20261108_000056_4b97ad cli parent=20261107_000049_899939 cfg=['_compressed_from']
+E         rotate 20261107_000049_899939 -> 20261108_000056_4b97ad head 2 tail 3 donor True marker True rows [64, 65, 66, 67, 68, 69]
+E         append 20261106_000042_f41049 {'user': 70, 'answer': 71}
+E         append 20261103_000021_ac4cc1 {'user': 72, 'answer': 73}
+E         replace 20261103_000021_ac4cc1 archive_dropped=False drop_last=True kept 3
+E         append 20261103_000021_ac4cc1 {'user': 77, 'call': 78, 'tool': 79, 'answer': 80}
+E         backup 3 x6 sha 100d32163f51 rows 61
+E         restore checkpoint 0
+E         backup 4 later sha 81c04abbecc2 rows 35
+E       assert not ["A4 seed 13887: test copy vs a no-withhold import: 1 rows outside the family differ from a plain import: jarvis:messa...d9cbc22cb94c08e51fae91cbeb4e (20261104_000028_3b8c61) (True, 'e3b0c44298fc1c14') vs plain (False, 'd6fa8460ebdfaa6e')"]
+E        +  where ["A4 seed 13887: test copy vs a no-withhold import: 1 rows outside the family differ from a plain import: jarvis:messa...d9cbc22cb94c08e51fae91cbeb4e (20261104_000028_3b8c61) (True, 'e3b0c44298fc1c14') vs plain (False, 'd6fa8460ebdfaa6e')"] = Run(seed=13887, sim=<tests.property.hermes_sim.Sim object at 0x7f793ba4e060>, profile='/tmp/pytest-of-root/pytest-843/...f36f3', 'jarvis:message:uid:69567fd9da61dac7fff0016520b983bc', 'jarvis:message:uid:d70ec658e2f08d8b67ccd5b0575cc6ef'}}).problems
+
+tests/property/test_oracle_properties.py:113: AssertionError
+=========================== short test summary info ============================
+FAILED tests/property/test_oracle_properties.py::test_oracle[13517] - Asserti...
+FAILED tests/property/test_oracle_properties.py::test_oracle[13536] - Asserti...
+FAILED tests/property/test_oracle_properties.py::test_oracle[13556] - Asserti...
+FAILED tests/property/test_oracle_properties.py::test_oracle[13658] - Asserti...
+FAILED tests/property/test_oracle_properties.py::test_oracle[13805] - Asserti...
+FAILED tests/property/test_oracle_properties.py::test_oracle[13880] - Asserti...
+FAILED tests/property/test_oracle_properties.py::test_oracle[13885] - Asserti...
+FAILED tests/property/test_oracle_properties.py::test_oracle[13887] - Asserti...
+8 failed, 13 passed, 380 deselected in 757.11s (0:12:37)
