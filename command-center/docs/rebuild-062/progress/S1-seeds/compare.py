@@ -20,7 +20,7 @@ for l in open(sys.argv[1]):
         before[int(p[0])] = ast.literal_eval(p[1])
 after = collections.defaultdict(dict)
 for f in sys.argv[2:]:
-    arm = 'h1' if re.search(r'h1[ab]?\.jsonl$', f) else 'h0'
+    arm = 'h1' if re.search(r'1[ab]?\.jsonl$', f) else 'h0'
     for l in open(f):
         d = json.loads(l)
         after[d['seed']][arm] = sorted({sig(p) for p in d['problems']})
