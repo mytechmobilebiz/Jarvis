@@ -1,0 +1,251 @@
+# 0.6.2 option C rebuild: reconstruction check (R7)
+
+Status: UNREVIEWED, NOT A RELEASE, NO-GO. These runs show the listed tests failing on i22 and passing on the rebuilt
+tree for the inputs they use; they do not show that no leak remains.
+
+## What was checked
+- **Items:** every fixed item the sources list in the round-2 report (sections 2 and 4), the round-3 report
+  (sections 2 and 4), the round-3 consolidation (closing tests, oracle changes 1 and 2, seeds), and every row of the
+  round-3 mutation closure matrix that survives in `sources/21-round3-consolidation-part1.md` (lines 156-230: 75 rows,
+  all CAUGHT or COMPENSATED). The other 83 of the matrix's 158 rows were cut off in the surviving log and are not in
+  the sources, so they cannot be checked here.
+- **Trees:**
+  - **i22**: a git worktree of `origin/wip/brain-062-unreviewed` at 28e9c3d (`/home/user/rebuild/r7-i22`, removed
+    afterwards) with the rebuilt `tests/` copied over it: i22's product, migrations and app, the rebuilt tests and
+    test helpers.
+  - **i22 oracle**: the oracle self-tests (`tests/property/test_oracle_*.py` except `test_oracle_properties.py`) ran on
+    a copy of i22 with its own `tests/property` helpers and only the self-test files (and `selftest_kit.py`) added, so
+    the oracle under test is i22's.
+  - **HEAD**: the rebuilt branch `wip/brain-062-optionC` (code at d93369a plus the R7 tests; no product file changed in
+    R7).
+- **How:** `progress/R7-check/check.py` (items in `progress/R7-check/items.py`) runs one pytest per test file and tree
+  with `-p no:randomly`, own databases, `HERMES_SRC` and `REQUIRE_HERMES_SRC=1`, and reads each test's outcome from
+  JUnit XML. An item counts as checked when every test named for it, controls aside, fails on i22 and every one passes
+  on HEAD. Raw results: `progress/R7-check/results-head.json`, `results-i22.json`, `results-i22-oracle.json`.
+- **"fails at import":** the test file cannot be imported on i22 because the name it needs does not exist there (for
+  example `app.brain.groups`, `identity.LATER_WITHHOLD`). On i22 that behaviour does not exist at all. The test does not
+  reach its assertions there, so this is weaker evidence than an assertion failure. Of the 116 test functions named,
+  38 fail at import on i22; 78 run there, and every case of 77 of them fails (the 78th is `test_hermes_lineage.py`,
+  3 of 4 failing). On HEAD all 116 functions (217 test cases with their parameters) pass.
+
+## Result
+- **119 items and matrix rows have tests that fail on i22 and pass on HEAD.** No named test fails on HEAD. On i22 the
+  only passing case is the one `test_hermes_lineage.py` check above; the five marked controls fail there too, because
+  their files need names i22 lacks (they are not counted either way).
+- **4 are checked by a lane, not per test:** the recorded seeds (property lane, HEAD only; the round-2/3 seed numbers do
+  not reproduce, R5) and the dashboard (Vitest, run on both trees).
+- **3 have no test**, listed below with the other gaps.
+
+## Tests added in R7 (each fails on i22 and passes on HEAD; mutant evidence on a scratch copy)
+| test | stands for | i22 | HEAD | mutant |
+|---|---|---|---|---|
+| `integration/test_brain_groups_d1_062.py::test_skc_a_markerless_legacy_gateway_reset_joins_the_group_and_is_held` | round-1 groups-paths P1 case A, `gd1:child_edge_off` (its round-2 name) | fails at import (no `groups`) | passes | `gd1:child_edge_off`: "1 failed" |
+| `integration/test_brain_releases_r2_062.py::test_rel3_hold_group_rows_compares_a_released_row_with_other_withheld_texts` | `rel3:hgr_foreign_off` (its round-3 name) | fails (assertion) | passes | `rel3:hgr_foreign_off` alone: "1 failed, 1 passed" (the skC test passes under it, as in R4; the row was COMPENSATED in R4, it is now caught on its own) |
+| `property/test_hermes_lineage.py` (4 tests) + `hermes_lineage_driver.py` | round-3 fix A against Hermes's own `_is_explicit_fork_child_row` on a 366-shape grid (the round-3 file was lost) | "3 failed, 1 passed" (the passing one is the "fork keeps its kind" check, which i22 also meets) | "4 passed" | fix A reverted to presence-only markers: "2 failed, 2 passed" |
+
+Shapes chosen for these tests: RECON-50. No existing test or assertion was changed (no D- entry).
+
+## Table
+Items first, then the matrix rows. `[control]`: a control test, not counted either way. Each test's outcome is per function; "passes (n)" counts its parameter cases.
+
+| item | test | i22 | HEAD | note |
+|---|---|---|---|---|
+| r2s2-01 (R2 s2) groups-paths P1 HIGH: markerless children A, B, C (O-D1) | `integration/test_brain_groups_d1_062.py::test_d1_a_markerless_child_joins_from_the_parent_down_only`<br>`integration/test_brain_groups_d1_062.py::test_skc_a_markerless_legacy_gateway_reset_joins_the_group_and_is_held`<br>`unit/test_brain_groups.py::test_d1_a_markerless_child_joins_from_the_parent_down_only` | fails at import (no `groups` in app.brain)<br>fails at import (no `groups` in app.brain)<br>fails at import (no `groups` in app.brain) | passes<br>passes<br>passes | the skeptic's own tests for B and C are not in the sources; case A by its round-2 name (added in R7) |
+| r2s2-02 (R2 s2) groups-paths P2 LOW: rollback copy at rest (case D) | `integration/test_brain_groups_d1_062.py::test_skc_d_the_older_text_of_a_group_row_changed_then_deleted_keeps_no_text_in_any_rollback_copy`<br>`integration/test_brain_groups_d1_062.py::test_p2_the_startup_repair_blanks_a_copy_of_a_changed_then_deleted_group_row`<br>`integration/test_brain_mutation_closure_c_062.py::test_r9_the_repair_blanks_a_rollback_copy_of_a_group_row_written_without_the_sweep` | fails at import (no `groups` in app.brain)<br>fails at import (no `groups` in app.brain)<br>fails at import (no `groups` in app.brain) | passes<br>passes<br>passes |  |
+| r2s2-03 (R2 s2) derived P2 HIGH: 64-word prefilter replaced by the full stored-row scan | `integration/test_brain_carriers_r2_062.py::test_skc_a_native_partial_reply_quote_of_a_long_w_is_held_wherever_it_is_found`<br>`integration/test_brain_carriers_r2_062.py::test_p2_a_title_and_an_imported_memory_item_of_short_words_are_carriers_too`<br>`unit/test_brain_carriers_r2_062.py::test_p2_the_quick_filter_never_skips_a_row_the_comparison_relates` | fails at import (no `BrainHiddenTitle` in app.models)<br>fails at import (no `BrainHiddenTitle` in app.models)<br>fails (7 of 7) | passes (2)<br>passes<br>passes (7) | the 15,928-comparison adversarial run is not reconstructed |
+| r2s2-04 (R2 s2) derived P1 MEDIUM-HIGH: 40-character prune line (W's beginning) | `unit/test_brain_carriers_r2_062.py::test_p1_hermes_generic_prune_line_keeping_ws_first_40_characters_is_a_cut`<br>`integration/test_brain_derived3_062.py::test_derived3_a_group_row_cut_in_a_prune_line_is_never_none` | fails (6 of 6)<br>fails (1 of 1) | passes (6)<br>passes | a middle piece (N3 / R5b) is pending an owner decision |
+| r2s2-05 (R2 s2) derived P3 / O-D4: 16 characters, generic-v1 | `unit/test_brain_carriers_r2_062.py::test_od4_greeting_and_url_cases_hold_nothing_and_anything_more_is_held`<br>`unit/test_brain_carriers_r2_062.py::test_skc_a_common_url_value_in_an_unrelated_search_result_is_no_carrier`<br>`unit/test_brain_carriers_r2_062.py::test_od4_a_generic_whole_withheld_text_is_no_carrier_but_its_group_still_compares_it` | fails (8 of 8)<br>fails (1 of 1)<br>fails (1 of 1) | passes (8)<br>passes<br>passes | the 11,565 random pieces run is not reconstructed |
+| r2s2-06 (R2 s2) releases N-A HIGH: stale 'none' after a later withhold | `integration/test_brain_releases_r2_062.py::test_rel3_a_later_withhold_makes_none_stale_at_once_and_the_export_waits`<br>`integration/test_brain_releases_r2_062.py::test_rel3_settle_of_a_newer_backup_finishes_the_earlier_decision_again`<br>`unit/test_brain_releases_r2_062.py::test_keep_later_keeps_the_mark_until_every_text_was_in_hand` | fails (1 of 1)<br>fails (1 of 1)<br>fails at import (no `LATER_WITHHOLD` in app.brain.identity) | passes<br>passes<br>passes |  |
+| r2s2-07 (R2 s2) releases N-B HIGH: a released row is held again for a later withhold it carries | `integration/test_brain_releases_r2_062.py::test_skC_a_row_released_for_w1_that_carries_w2_is_held_when_w2_is_withheld`<br>`integration/test_brain_releases_r2_062.py::test_rel3_typed_release_after_a_later_withhold_is_held_again_by_the_next_import`<br>`integration/test_brain_releases_r2_062.py::test_rel3_hold_group_rows_compares_a_released_row_with_other_withheld_texts` | fails (1 of 1)<br>fails (1 of 1)<br>fails (1 of 1) | passes<br>passes<br>passes |  |
+| r2s2-08 (R2 s2) N-C / O-CI: case-insensitive matching (fold) | `unit/test_brain_carriers_r2_062.py::test_oci_every_relation_ignores_case_and_normalisation`<br>`unit/test_brain_carriers_r2_062.py::test_oci_a_short_withheld_text_in_another_case_is_ambiguous_not_none`<br>`integration/test_brain_carriers_r2_062.py::test_oci_the_withhold_preview_reads_another_case` | fails (8 of 8)<br>fails (1 of 1)<br>fails at import (no `BrainHiddenTitle` in app.models) | passes (8)<br>passes<br>passes | open edge N5 was fixed in round 3 (r3s2-07) |
+| r2s2-09 (R2 s2) seed 6725: mark_exemptions matches decided_on and kind (marking side) | `integration/test_brain_releases_r2_062.py::test_rel3_6725_a_check_of_one_backups_content_marks_only_that_backups_release`<br>`integration/test_brain_releases_r2_062.py::test_rel3_6725_a_typed_release_never_makes_another_backups_release_trusted` | fails (1 of 1)<br>fails (1 of 1) | passes<br>passes | seed 6725 itself is not replayed (old seed numbers do not reproduce old scenarios, R5) |
+| r2s2-10 (R2 s2) dec_json_off gap now CAUGHT | `unit/test_brain_carriers_r2_062.py::test_skc_a_json_value_only_json_loads_reads_back_is_a_carrier_and_evidence`<br>`unit/test_brain_mutation_closure_c_062.py::test_dec_json_a_short_w_as_a_whole_value_of_pretty_printed_ascii_json_is_identical` | fails (3 of 3)<br>fails at import (no `LATER_WITHHOLD` in app.brain.identity) | passes (3)<br>passes | the sources name 7 closing tests; 2 are in the rebuilt tree |
+| r2s2-11 (R2 s2) seed 13465: second-withhold leak | `integration/test_brain_releases_r2_062.py::test_rel3_13465_a_later_row_identical_to_a_withheld_text_not_in_hand_is_never_none` | fails (1 of 1) | passes |  |
+| r2s4-01 (R2 s4) markerless children join from the parent down only | `integration/test_brain_groups_d1_062.py::test_d1_a_markerless_child_joins_from_the_parent_down_only`<br>`unit/test_brain_groups.py::test_a_delegated_sub_agent_joins_from_the_parent_down_only` | fails at import (no `groups` in app.brain)<br>fails at import (no `groups` in app.brain) | passes<br>passes | also r2s2-01 |
+| r2s4-02 (R2 s4) 'uncertain': a parent that does not resolve or conflicting parents; held, never one-click, the export waits | `integration/test_brain_groups_d1_062.py::test_uncertain_a_parent_that_does_not_resolve_is_held_never_one_click_and_the_export_waits`<br>`integration/test_brain_groups_d1_062.py::test_uncertain_conflicting_parents_one_unknown_is_held_one_in_the_group_joins`<br>`integration/test_brain_groups_d1_062.py::test_uncertain_members_never_move_the_decision_to_another_backup`<br>`integration/test_brain_groups_d1_062.py::test_d1_child_and_uncertain_members_survive_a_restore_and_the_reimport`<br>`unit/test_brain_releases_r2_062.py::test_uncertain_is_never_one_click_eligible_and_never_eligible_now` | fails at import (no `groups` in app.brain)<br>fails at import (no `groups` in app.brain)<br>fails at import (no `groups` in app.brain)<br>fails at import (no `groups` in app.brain)<br>fails at import (no `LATER_WITHHOLD` in app.brain.identity) | passes<br>passes<br>passes<br>passes<br>passes |  |
+| r2s4-03 (R2 s4) full stored-row scan (no 64-longest-words prefilter) | `integration/test_brain_carriers_r2_062.py::test_skc_a_native_partial_reply_quote_of_a_long_w_is_held_wherever_it_is_found` | fails at import (no `BrainHiddenTitle` in app.models) | passes (2) | also r2s2-03 |
+| r2s4-04 (R2 s4) fold: NFKC, casefold, Turkish i | `unit/test_brain_carriers_r2_062.py::test_oci_every_relation_ignores_case_and_normalisation` | fails (8 of 8) | passes (8) | Turkish cases are its [tr-*] parameters |
+| r2s4-05 (R2 s4) generic list generic-v1 (O-D4) | `unit/test_brain_carriers_r2_062.py::test_od4_greeting_and_url_cases_hold_nothing_and_anything_more_is_held` | fails (8 of 8) | passes (8) | also r2s2-05 |
+| r2s4-06 (R2 s4) Hermes's generic prune line counts as a cut | `unit/test_brain_carriers_r2_062.py::test_p1_hermes_generic_prune_line_keeping_ws_first_40_characters_is_a_cut`<br>`unit/test_brain_carriers_r2_062.py::test_p1_a_whole_value_that_is_a_beginning_of_w_is_a_cut` | fails (6 of 6)<br>fails (1 of 1) | passes (6)<br>passes |  |
+| r2s4-07 (R2 s4) hold states later_withhold and other_not_compared; 'none' needs every withheld text | `unit/test_brain_hold_r2.py::test_none_only_when_every_withheld_text_is_in_hand`<br>`unit/test_brain_hold_r2.py::test_the_new_hold_vias_and_the_state_are_known_codes`<br>`integration/test_brain_hold_r2_062.py::test_hgr_none_needs_every_withheld_text_in_hand`<br>`unit/test_brain_releases_r2_062.py::test_none_every_none_needs_every_withheld_text_in_hand`<br>`unit/test_brain_releases_r2_062.py::test_eligible_now_compares_every_withheld_text_in_hand`<br>`unit/test_brain_releases_r2_062.py::test_d3_states_that_were_not_compared_are_never_one_click` | fails (1 of 1)<br>fails (1 of 1)<br>fails at import (no `groups` in app.brain)<br>fails at import (no `LATER_WITHHOLD` in app.brain.identity)<br>fails at import (no `LATER_WITHHOLD` in app.brain.identity)<br>fails at import (no `LATER_WITHHOLD` in app.brain.identity) | passes<br>passes<br>passes<br>passes<br>passes<br>passes (6) |  |
+| r2s4-08 (R2 s4) released rows re-checked for later withholds | `integration/test_brain_releases_r2_062.py::test_skC_a_row_released_for_w1_that_carries_w2_is_held_when_w2_is_withheld` | fails (1 of 1) | passes | also r2s2-07 |
+| r2s4-09 (R2 s4) mark_exemptions matches decided_on and kind | `integration/test_brain_releases_r2_062.py::test_rel3_6725_a_check_of_one_backups_content_marks_only_that_backups_release` | fails (1 of 1) | passes | also r2s2-09 |
+| r2s4-10 (R2 s4) migration 0008: R9 repair, title trigger, group-row guard | `integration/test_brain_mutation_closure_c_062.py::test_r9_the_repair_blanks_a_rollback_copy_of_a_group_row_written_without_the_sweep`<br>`integration/test_brain_mutation_closure_c_062.py::test_title_trigger_hides_the_title_of_a_group_conversation_by_membership_alone`<br>`integration/test_brain_mutation_closure_c_062.py::test_trig_release_any_group_a_release_under_one_group_never_frees_a_row_of_two`<br>`integration/test_brain_mutation_closure_c_062.py::test_trig_release_not_exact_a_release_never_frees_another_message_at_its_row_id` | fails at import (no `groups` in app.brain)<br>fails at import (no `groups` in app.brain)<br>fails at import (no `groups` in app.brain)<br>fails at import (no `groups` in app.brain) | passes<br>passes<br>passes<br>passes |  |
+| r2s4-11 (R2 s4) oracle: second-withhold arm with recorded seeds | lane | see note | see note | R5 re-established 17 recorded seeds (fresh numbers; the round-2 numbers do not reproduce): property lane on HEAD only; i22's oracle has no second-withhold arm (n/a) |
+| r2s4-12 (R2 s4) oracle narrowings 13327, 13407, 13364 (each with a killed loosening mutant) | none | - | - | NOT RECONSTRUCTED as such: seed-specific narrowings whose scenarios no longer exist; R5's own narrowings have self-tests and 22 oracle mutants (progress/R5-mutation) |
+| r2s4-13 (R2 s4) dashboard (group view, uncertain, later-withhold, per-row typed release, counts) | vitest | see note | see note | Vitest `dashboard/src/test/brain-optionc.test.tsx` (R6), run in R7: i22 (the file copied into the i22 dashboard) "Tests 16 failed | 1 passed (17)" (the passing one is the plain-confirmation release control); HEAD "Tests 17 passed (17)" |
+| r3s2-01 (R3 s2) groups-paths A HIGH: inherited delegate marker; a fork marker counts only when it names the session's own parent | `unit/test_brain_source_markers.py::test_a_fork_marker_counts_only_when_it_names_the_sessions_own_parent`<br>`unit/test_brain_source_markers.py::test_two_parents_name_the_other_conversation_and_a_copied_marker_is_no_conflict`<br>`integration/test_brain_groups_inherited_062.py::test_a_rotation_that_inherited_delegate_from_is_one_conversation_with_its_sub_agent`<br>`property/test_hermes_lineage.py` | fails (12 of 12)<br>fails (1 of 1)<br>fails at import (no `BrainWithheldSession` in app.models)<br>fails (3 of 4) | passes (12)<br>passes<br>passes (2)<br>passes (4) | test_hermes_lineage.py added in R7 (its round-3 file was lost) |
+| r3s2-02 (R3 s2) releases F1 MEDIUM: trust taken only from releases covering the stored content | `integration/test_brain_releases_r2_062.py::test_skc2_exempt_covers_never_takes_trust_from_another_backups_release`<br>`integration/test_brain_releases_r2_062.py::test_skc2_an_unchecked_release_never_stands_on_another_backups_typed_release`<br>`integration/test_brain_releases_r2_062.py::test_rel3_an_unchecked_file_release_frees_no_hold_and_a_trusted_one_does`<br>`unit/test_brain_releases_r2_062.py::test_identities_released_takes_trust_from_the_covering_release_only` | fails (1 of 1)<br>fails (2 of 2)<br>fails (1 of 1)<br>fails at import (no `LATER_WITHHOLD` in app.brain.identity) | passes<br>passes (2)<br>passes<br>passes | round-3 file test_brain_release_trust_062.py (11 tests) lost; these stand for it |
+| r3s2-03 (R3 s2) seed 13546 MEDIUM: short quoted W read without its quote markers (product and oracle) | `unit/test_brain_derived3_062.py::test_13546_a_short_w_quoted_with_markers_in_a_session_search_result_is_identical`<br>`unit/test_brain_derived3_062.py::test_13546_a_long_w_quoted_over_several_marked_lines_is_read_without_the_markers`<br>`unit/test_brain_derived3_062.py::test_13546_control_short_words_inside_prose_outside_every_group_hold_nothing`<br>`integration/test_brain_derived3_062.py::test_derived3_13546_a_short_w_quoted_with_markers_stays_held_after_a_rollback`<br>`property/test_oracle_carriers_r2.py::test_fwords_a_short_withheld_text_is_identical_as_a_quoted_block_without_its_markers` | fails (1 of 1)<br>fails (1 of 1)<br>fails (1 of 1) [control]<br>fails (1 of 1)<br>fails (1 of 1) | passes<br>passes<br>passes<br>passes<br>passes |  |
+| r3s2-04 (R3 s2) derived N1 MEDIUM-HIGH: quoted f-string summaries (quote spans) | `unit/test_brain_derived3_062.py::test_n1_vision_analyze_summary_with_an_apostrophe_and_a_line_break_is_a_cut`<br>`unit/test_brain_derived3_062.py::test_n1_quoted_argument_of_a_summary_is_read_whole_across_apostrophes_and_lines`<br>`unit/test_brain_derived3_062.py::test_n1_a_summary_quoting_unrelated_words_holds_nothing` | fails (1 of 1)<br>fails (3 of 3)<br>fails (1 of 1) [control] | passes<br>passes (3)<br>passes | round-3 test_hermes_derived3_lines.py (Hermes-generated lines) lost and not reconstructed |
+| r3s2-05 (R3 s2) derived N2 MEDIUM-HIGH: nested JSON; iterative decode, caps 64/32/size, capped = not_checked | `unit/test_brain_derived3_062.py::test_n2_w_nested_in_json_any_number_of_levels_is_read`<br>`unit/test_brain_derived3_062.py::test_n2_an_unrelated_nested_read_is_neither_related_nor_capped`<br>`unit/test_brain_derived3_062.py::test_n2_nesting_past_the_depth_cap_is_not_checked`<br>`unit/test_brain_derived3_062.py::test_n2_a_chain_past_the_size_budget_is_not_checked`<br>`unit/test_brain_derived3_062.py::test_n2_more_decode_steps_than_the_cap_is_not_checked`<br>`unit/test_brain_derived3_062.py::test_n2_json_nested_past_the_parser_is_capped`<br>`unit/test_brain_derived3_062.py::test_n2_a_field_over_the_size_limit_is_not_checked`<br>`unit/test_brain_derived3_062.py::test_n2_a_capped_field_is_held_in_a_group_too_never_none`<br>`integration/test_brain_derived3_062.py::test_derived3_a_nested_session_search_read_is_held_outside_every_group_until_released`<br>`integration/test_brain_derived3_062.py::test_derived3_a_row_the_decode_cannot_read_in_full_is_held_as_not_checked` | fails (6 of 6)<br>fails (1 of 1) [control]<br>fails (1 of 1)<br>fails (1 of 1)<br>fails (1 of 1)<br>fails (1 of 1)<br>fails (1 of 1)<br>fails (1 of 1)<br>fails (1 of 1)<br>fails (1 of 1) | passes (6)<br>passes<br>passes<br>passes<br>passes<br>passes<br>passes<br>passes<br>passes<br>passes | F2 over-hold at the step cap is open (round 4) |
+| r3s2-06 (R3 s2) derived N4 LOW-MEDIUM: repr escape cut | `unit/test_brain_derived3_062.py::test_n4_execute_code_summary_cutting_a_repr_escape_in_half_is_a_cut`<br>`unit/test_brain_derived3_062.py::test_n4_a_repr_literal_cut_inside_an_escape_reads_what_came_before`<br>`unit/test_brain_derived3_062.py::test_m1_prev_a_preview_cut_inside_ws_escape_is_a_cut` | fails (1 of 1)<br>fails (3 of 3)<br>fails (5 of 5) | passes<br>passes (3)<br>passes (5) |  |
+| r3s2-07 (R3 s2) derived N5 LOW: fold removes default-ignorable code points | `unit/test_brain_derived3_062.py::test_n5_fold_removes_the_default_ignorable_code_points`<br>`unit/test_brain_derived3_062.py::test_n5_invisible_formatting_never_hides_w`<br>`property/test_oracle_carriers_r2.py::test_ignorables_are_the_products` | fails (1 of 1)<br>fails (5 of 5)<br>fails (1 of 1) | passes<br>passes (5)<br>passes |  |
+| r3s2-08 (R3 s2) seeds 13582 / 13590: _w_text never a same-message-id member | `integration/test_brain_releases_r2_062.py::test_seeds_r3_a_same_message_id_member_is_never_taken_as_the_withheld_text` | fails (1 of 1) | passes | round-3 file test_brain_seeds_r3_062.py lost; this stands for it |
+| r3s2-09 (R3 s2) seed 13560: oracle 'rekeyed' (the same archive row under its uid key) | `property/test_oracle_seeds_r3.py` | fails (2 of 2) | passes (2) | oracle-only fix |
+| r3s2-10 (R3 s2) seed 13500: the withhold seeds from groups.seeds | none | - | - | NOT RECONSTRUCTED: RECON-37 found no difference to build or test in the rebuilt withhold |
+| r3s2-11 (R3 s2) cr2:quick_no_snapshot no longer UNRESOLVED | `unit/test_brain_carriers_r2_062.py::test_p2_a_snapshot_of_earlier_turns_is_never_skipped_by_the_quick_filter` | fails (1 of 1) | passes | CAUGHT on its own in the rebuild (R3 driver), not only through an invariant |
+| r3s2-12 (R3 s2) c2:imp_stored_none_every_off no longer UNRESOLVED (crafted-state unit test) | `unit/test_brain_releases_r2_062.py::test_none_every_none_needs_every_withheld_text_in_hand`<br>`integration/test_brain_releases_r2_062.py::test_rel3_13465_a_later_row_identical_to_a_withheld_text_not_in_hand_is_never_none` | fails at import (no `LATER_WITHHOLD` in app.brain.identity)<br>fails (1 of 1) | passes<br>passes | the rebuilt importer has one 'none every' guard (settled_relations; rel3:imp_none_every_off); the round-3 crafted-state test (test_brain_mutation_closure_r3_062.py) is lost |
+| r3s4-01 (R3 s4) lineage: FORK_MARKERS and _markers() | `unit/test_brain_source_markers.py::test_a_fork_marker_counts_only_when_it_names_the_sessions_own_parent`<br>`property/test_hermes_lineage.py` | fails (12 of 12)<br>fails (3 of 4) | passes (12)<br>passes (4) | also r3s2-01 |
+| r3s4-02 (R3 s4) trust pairing: releases_covering_stored; group_rows loads trust | `integration/test_brain_releases_r2_062.py::test_skc2_exempt_covers_never_takes_trust_from_another_backups_release` | fails (1 of 1) | passes | also r3s2-02 |
+| r3s4-03 (R3 s4) seeds: _w_text; seeding from the withhold | `integration/test_brain_releases_r2_062.py::test_seeds_r3_a_same_message_id_member_is_never_taken_as_the_withheld_text` | fails (1 of 1) | passes | seeding from groups.seeds: see r3s2-10 |
+| r3s4-04 (R3 s4) oracle fwords | `property/test_oracle_carriers_r2.py::test_fwords_a_short_withheld_text_is_identical_as_a_quoted_block_without_its_markers` | fails (1 of 1) | passes |  |
+| r3s4-05 (R3 s4) oracle kept_carrier | `property/test_oracle_derived3.py` | fails (5 of 5) | passes (5) |  |
+| r3s4-06 (R3 s4) oracle rekeyed | `property/test_oracle_seeds_r3.py` | fails (2 of 2) | passes (2) | also r3s2-09 |
+| r3s4-07 (R3 s4) oracle quote_spans / span_relations | `property/test_oracle_spans_c3.py` | fails (6 of 6) | passes (6) | also c-03 |
+| r3s4-08 (R3 s4) oracle cc_redacted_of | `property/test_oracle_released_c3.py` | fails (4 of 4) | passes (4) | also c-04 |
+| r3s4-09 (R3 s4) oracle decode cap, the same as the product's | `property/test_oracle_carriers_r2.py::test_decode_cap_is_the_products_and_fails_closed_the_same_way`<br>`unit/test_brain_mutation_closure_c3_062.py::test_c3_json_nested_past_the_parser_is_capped_and_fails_closed` | fails (1 of 1)<br>fails (1 of 1) | passes<br>passes |  |
+| r3s4-10 (R3 s4) 10 new recorded seeds (94 in all) | lane | see note | see note | round-3 numbers do not reproduce; R5's 17 recorded seeds (property lane, HEAD only) |
+| c-01 (R3 cons) c3:recursion_open / c3:oracle_recursion_open: JSON nested past the parser capped, fails closed in product and oracle | `unit/test_brain_mutation_closure_c3_062.py::test_c3_json_nested_past_the_parser_is_capped_and_fails_closed`<br>`unit/test_brain_mutation_closure_c3_062.py::test_c3_control_ordinary_nested_json_is_not_capped` | fails (1 of 1)<br>fails (1 of 1) [control] | passes<br>passes | the control passes on both trees by design |
+| c-02 (R3 cons) c3:spans_per_line_off: a piece of W quoted on one line of several | `unit/test_brain_mutation_closure_c3_062.py::test_c3_a_piece_of_w_quoted_on_one_line_of_several_is_read_on_its_line`<br>`unit/test_brain_mutation_closure_c3_062.py::test_c3_control_a_summary_line_of_other_words_among_several_holds_nothing` | fails (1 of 1)<br>fails (1 of 1) [control] | passes<br>passes | the control passes on both trees by design |
+| c-03 (R3 cons) oracle change 1: quote_spans admitted, never demanded (13154, 13774) | `property/test_oracle_spans_c3.py` | fails (6 of 6) | passes (6) |  |
+| c-04 (R3 cons) oracle change 2: cc_redacted_of in released_ok (13763, 13863, 13879) | `property/test_oracle_released_c3.py` | fails (4 of 4) | passes (4) |  |
+| c-05 (R3 cons) ROUND3_SEEDS += 13154 13774 13763 13863 13879 | lane | see note | see note | the seed numbers do not reproduce (R5); recorded seeds re-established |
+
+| matrix row | test | i22 | HEAD | note |
+|---|---|---|---|---|
+| m18:trig_release_any_group | `integration/test_brain_mutation_closure_c_062.py::test_trig_release_any_group_a_release_under_one_group_never_frees_a_row_of_two` | fails at import (no `groups` in app.brain) | passes |  |
+| m18:trig_release_not_exact | `integration/test_brain_mutation_closure_c_062.py::test_trig_release_not_exact_a_release_never_frees_another_message_at_its_row_id` | fails at import (no `groups` in app.brain) | passes |  |
+| m18:r9_off | `integration/test_brain_mutation_closure_c_062.py::test_r9_the_repair_blanks_a_rollback_copy_of_a_group_row_written_without_the_sweep` | fails at import (no `groups` in app.brain) | passes |  |
+| m18:title_trig_groups | `integration/test_brain_mutation_closure_c_062.py::test_title_trigger_hides_the_title_of_a_group_conversation_by_membership_alone` | fails at import (no `groups` in app.brain) | passes |  |
+| m18:seed_pending_too | `integration/test_brain_mutation_closure_c_062.py::test_a_pending_hold_never_seeds_a_group` | fails at import (no `groups` in app.brain) | passes | impact O |
+| m18:j8_always_two | `integration/test_brain_mutation_closure_r2_062.py::test_an_orphaned_branch_with_one_copied_row_joins_its_group_by_provenance` | fails at import (no `BrainWithheldSession` in app.models) | passes |  |
+| m18:j8_reset_copies | `integration/test_brain_mutation_closure_c_062.py::test_a_reset_with_copied_looking_rows_never_joins_by_copied_history` | fails at import (no `groups` in app.brain) | passes | impact O |
+| m18:v_f8_rollback_scope | `integration/test_brain_mutation_closure_c_062.py::test_a_rolled_back_carrier_changed_in_place_comes_back_held_on_its_own` | fails at import (no `groups` in app.brain) | passes |  |
+| m18:oc_role | `unit/test_brain_mutation_closure_c_062.py::test_oc_role_only_user_and_assistant_rows_are_one_click_eligible` | fails at import (no `LATER_WITHHOLD` in app.brain.identity) | passes (5) |  |
+| m18:oc_none_in | `unit/test_brain_mutation_closure_c_062.py::test_oc_none_in_only_exactly_none_is_one_click_eligible` | fails at import (no `LATER_WITHHOLD` in app.brain.identity) | passes (7) |  |
+| m18:dec_json_off | `unit/test_brain_carriers_r2_062.py::test_skc_a_json_value_only_json_loads_reads_back_is_a_carrier_and_evidence` | fails (3 of 3) | passes (3) |  |
+| m18:dec_escape_off | `unit/test_brain_mutation_closure_c_062.py::test_dec_escape_a_cut_json_text_carries_w_through_its_escapes_only` | fails at import (no `LATER_WITHHOLD` in app.brain.identity) | passes |  |
+| m18:dec_repr_off | `unit/test_brain_mutation_closure_c_062.py::test_dec_repr_a_repr_literal_only_unrepr_reads_back_carries_w` | fails at import (no `LATER_WITHHOLD` in app.brain.identity) | passes (3) |  |
+| m18:dec_nfkc_off | `unit/test_brain_carriers_r2_062.py::test_oci_every_relation_ignores_case_and_normalisation` | fails (8 of 8) | passes (8) | COMPENSATED in the source (double with cr2:ci_nfkc_off); the test is the double's killer; not mutated in the rebuild drivers |
+| m18:oc_plain | `integration/test_brain_later_062.py::test_the_one_click_release_skips_a_row_whose_form_was_never_read`<br>`unit/test_brain_mutation_closure_c_062.py::test_oc_plain_and_tool_row_only_a_plain_read_form_is_one_click_eligible` | fails (1 of 1)<br>fails at import (no `LATER_WITHHOLD` in app.brain.identity) | passes<br>passes (6) |  |
+| m18:oc_tool_row | `integration/test_brain_later_062.py::test_the_one_click_release_skips_a_hermes_summary_or_wrapped_text_and_releases_the_plain_row` | fails (3 of 3) | passes (3) |  |
+| m18:hgr_updated_copies_off | `integration/test_brain_rollback_updates_062.py::test_a_rollback_never_restores_a_pruned_tool_row_that_echoed_the_withheld_text` | fails (2 of 2) | passes (2) |  |
+| m18:carried_via | `integration/test_brain_releases_r2_062.py::test_a_kept_hold_keeps_the_rule_that_held_it_through_a_restore`<br>`unit/test_brain_releases_r2_062.py::test_carried_via_a_kept_hold_keeps_the_rule_that_held_it` | fails (1 of 1)<br>fails at import (no `LATER_WITHHOLD` in app.brain.identity) | passes<br>passes (3) | source file test_brain_oracle_s3_062.py lost; the same name is in test_brain_releases_r2_062.py |
+| gd1:child_edge_off | `integration/test_brain_groups_d1_062.py::test_skc_a_markerless_legacy_gateway_reset_joins_the_group_and_is_held`<br>`integration/test_brain_groups_d1_062.py::test_d1_a_markerless_child_joins_from_the_parent_down_only` | fails at import (no `groups` in app.brain)<br>fails at import (no `groups` in app.brain) | passes<br>passes | source-named test added in R7 |
+| gd1:child_both_ways | `integration/test_brain_groups_d1_062.py::test_d1_a_markerless_child_joins_from_the_parent_down_only` | fails at import (no `groups` in app.brain) | passes | impact O |
+| gd1:uncertain_off | `integration/test_brain_groups_d1_062.py::test_d1_child_and_uncertain_members_survive_a_restore_and_the_reimport` | fails at import (no `groups` in app.brain) | passes |  |
+| gd1:uncertain_no_spread | `integration/test_brain_groups_d1_062.py::test_uncertain_conflicting_parents_one_unknown_is_held_one_in_the_group_joins` | fails at import (no `groups` in app.brain) | passes |  |
+| gd1:link_parents_off | `integration/test_brain_groups_d1_062.py::test_uncertain_conflicting_parents_one_unknown_is_held_one_in_the_group_joins`<br>`integration/test_brain_groups_d1_062.py::test_uncertain_hermes_relinked_a_child_to_another_known_conversation` | fails at import (no `groups` in app.brain)<br>fails at import (no `groups` in app.brain) | passes<br>passes |  |
+| gd1:marker_links_off | `integration/test_brain_groups_d1_062.py::test_uncertain_conflicting_parents_one_unknown_is_held_one_in_the_group_joins`<br>`integration/test_brain_groups_d1_062.py::test_a_delegated_sub_agent_and_a_reset_join_and_their_links_are_recorded` | fails at import (no `groups` in app.brain)<br>fails at import (no `groups` in app.brain) | passes<br>passes |  |
+| gd1:one_click_uncertain_off | `integration/test_brain_groups_d1_062.py::test_uncertain_a_parent_that_does_not_resolve_is_held_never_one_click_and_the_export_waits` | fails at import (no `groups` in app.brain) | passes |  |
+| gd1:eligible_now_uncertain_off | `unit/test_brain_releases_r2_062.py::test_uncertain_is_never_one_click_eligible_and_never_eligible_now` | fails at import (no `LATER_WITHHOLD` in app.brain.identity) | passes | the source names an integration test; the rebuilt one of that name is a unit test; the guard switched off in R7: "1 failed" |
+| gd1:release_unrelated_uncertain_off | `integration/test_brain_groups_d1_062.py::test_uncertain_a_parent_that_does_not_resolve_is_held_never_one_click_and_the_export_waits` | fails at import (no `groups` in app.brain) | passes |  |
+| gd1:holds_display_off | `integration/test_brain_groups_d1_062.py::test_uncertain_a_parent_that_does_not_resolve_is_held_never_one_click_and_the_export_waits` | fails at import (no `groups` in app.brain) | passes |  |
+| gd1:export_gate_off | `integration/test_brain_groups_d1_062.py::test_uncertain_a_parent_that_does_not_resolve_is_held_never_one_click_and_the_export_waits` | fails at import (no `groups` in app.brain) | passes |  |
+| gd1:definite_off | `integration/test_brain_groups_d1_062.py::test_uncertain_members_never_move_the_decision_to_another_backup` | fails at import (no `groups` in app.brain) | passes | impact O |
+| gd1:r9_copy_session_off | `integration/test_brain_groups_d1_062.py::test_p2_the_startup_repair_blanks_a_copy_of_a_changed_then_deleted_group_row` | fails at import (no `groups` in app.brain) | passes |  |
+| gd1:updated_copies_gone_off | `integration/test_brain_groups_d1_062.py::test_skc_d_the_older_text_of_a_group_row_changed_then_deleted_keeps_no_text_in_any_rollback_copy` | fails at import (no `groups` in app.brain) | passes |  |
+| gd1:p2_both_off | `integration/test_brain_groups_d1_062.py::test_skc_d_the_older_text_of_a_group_row_changed_then_deleted_keeps_no_text_in_any_rollback_copy` | fails at import (no `groups` in app.brain) | passes | double of r9_copy_session_off and updated_copies_gone_off |
+| gd1:oracle_rollback_records_off | none | - | - | NOT RECONSTRUCTED: the rebuilt oracle never reads import_records (rollback copies at rest), so there is no oracle behaviour for test_p2_the_oracle_names_the_conversation_of_a_copy_whose_row_was_deleted (impact O) |
+| cr2:ci_casefold_off | `unit/test_brain_carriers_r2_062.py::test_oci_every_relation_ignores_case_and_normalisation` | fails (8 of 8) | passes (8) |  |
+| cr2:ci_turkish_off | `unit/test_brain_carriers_r2_062.py::test_oci_every_relation_ignores_case_and_normalisation` | fails (8 of 8) | passes (8) |  |
+| cr2:ci_nfkc_off | `unit/test_brain_carriers_r2_062.py::test_oci_every_relation_ignores_case_and_normalisation` | fails (8 of 8) | passes (8) |  |
+| cr2:ci_wordseq_off | `unit/test_brain_carriers_r2_062.py::test_oci_a_short_withheld_text_in_another_case_is_ambiguous_not_none` | fails (1 of 1) | passes |  |
+| cr2:generic_off | `unit/test_brain_carriers_r2_062.py::test_skc_a_common_url_value_in_an_unrelated_search_result_is_no_carrier` | fails (1 of 1) | passes | impact O |
+| cr2:generic_overbroad | `unit/test_brain_carriers_r2_062.py::test_od4_greeting_and_url_cases_hold_nothing_and_anything_more_is_held` | fails (8 of 8) | passes (8) |  |
+| cr2:prune_off | `unit/test_brain_carriers_r2_062.py::test_p1_hermes_generic_prune_line_keeping_ws_first_40_characters_is_a_cut` | fails (6 of 6) | passes (6) |  |
+| cr2:scan_longest64 | `integration/test_brain_carriers_r2_062.py::test_skc_a_native_partial_reply_quote_of_a_long_w_is_held_wherever_it_is_found` | fails at import (no `BrainHiddenTitle` in app.models) | passes (2) |  |
+| cr2:titles_longest64 | `integration/test_brain_carriers_r2_062.py::test_p2_a_title_and_an_imported_memory_item_of_short_words_are_carriers_too` | fails at import (no `BrainHiddenTitle` in app.models) | passes |  |
+| cr2:items_longest64 | `integration/test_brain_carriers_r2_062.py::test_p2_a_title_and_an_imported_memory_item_of_short_words_are_carriers_too` | fails at import (no `BrainHiddenTitle` in app.models) | passes |  |
+| cr2:quick_forms_one | `unit/test_brain_carriers_r2_062.py::test_p2_the_quick_filter_compares_every_form_of_the_withheld_text` | fails (1 of 1) | passes | COMPENSATED in the source; CAUGHT on its own in the rebuild (R3 driver) |
+| cr2:quick_keep_gt | `unit/test_brain_carriers_r2_062.py::test_p2_the_skeleton_drops_every_whitespace_and_combining_character` | fails (1 of 1) | passes |  |
+| cr2:quick_keep_marks | `unit/test_brain_carriers_r2_062.py::test_p2_the_skeleton_drops_every_whitespace_and_combining_character` | fails (1 of 1) | passes |  |
+| cr2:quick_q8 | `unit/test_brain_carriers_r2_062.py::test_p2_the_quick_filter_never_skips_a_row_the_comparison_relates`<br>`unit/test_brain_carriers_r2_062.py::test_p2_the_quick_filter_keeps_a_cut_of_sixteen_characters_with_fewer_than_sixteen_of_skeleton` | fails (7 of 7)<br>fails (1 of 1) | passes (7)<br>passes |  |
+| cr2:quick_no_decode | `unit/test_brain_carriers_r2_062.py::test_p2_the_quick_filter_never_skips_a_row_the_comparison_relates`<br>`unit/test_brain_carriers_r2_062.py::test_p2_a_row_only_its_decode_reads_is_never_skipped` | fails (7 of 7)<br>fails (1 of 1) | passes (7)<br>passes |  |
+| cr2:quick_no_snapshot | `unit/test_brain_carriers_r2_062.py::test_p2_a_snapshot_of_earlier_turns_is_never_skipped_by_the_quick_filter` | fails (1 of 1) | passes | COMPENSATED (invariant) in the source; CAUGHT on its own in the rebuild (R3 driver) |
+| cr2:quick_no_quote_bypass | `unit/test_brain_carriers_r2_062.py::test_p2_a_reply_quote_of_sixteen_characters_as_written_is_never_skipped_by_the_quick_filter` | fails (1 of 1) | passes | COMPENSATED in the rebuild (R3: double with quick_no_decode CAUGHT) |
+| cr2:preview_narrow | `integration/test_brain_carriers_r2_062.py::test_oci_the_withhold_preview_reads_another_case` | fails at import (no `BrainHiddenTitle` in app.models) | passes | impact O |
+| cr2:preview_items_case | `integration/test_brain_carriers_r2_062.py::test_oci_the_withhold_preview_reads_another_case` | fails at import (no `BrainHiddenTitle` in app.models) | passes | impact O |
+| cr2:preview_title_case | `integration/test_brain_carriers_r2_062.py::test_oci_the_withhold_preview_reads_another_case` | fails at import (no `BrainHiddenTitle` in app.models) | passes | impact O |
+| cr2:oracle_fold_off | `property/test_oracle_carriers_r2.py::test_oci_the_oracle_demands_a_carrier_in_another_case_or_form` | fails (1 of 1) | passes | impact O |
+| cr2:oracle_generic_off | `property/test_oracle_carriers_r2.py::test_od4_the_oracle_neither_demands_nor_allows_a_generic_piece_and_demands_anything_more` | fails (1 of 1) | passes | impact O |
+| cr2:oracle_prune_off | `property/test_oracle_carriers_r2.py::test_p1_the_oracle_demands_ws_first_40_characters_in_the_generic_prune_line` | fails (1 of 1) | passes | impact O |
+| rel3:mark_off | `integration/test_brain_releases_r2_062.py::test_rel3_a_later_withhold_makes_none_stale_at_once_and_the_export_waits` | fails (1 of 1) | passes |  |
+| rel3:reopen_off | `integration/test_brain_releases_r2_062.py::test_rel3_settle_of_a_newer_backup_finishes_the_earlier_decision_again` | fails (1 of 1) | passes |  |
+| rel3:keep_later_off | `unit/test_brain_releases_r2_062.py::test_keep_later_keeps_the_mark_until_every_text_was_in_hand` | fails at import (no `LATER_WITHHOLD` in app.brain.identity) | passes |  |
+| rel3:all_in_hand_true | `integration/test_brain_releases_r2_062.py::test_rel3_a_settle_without_the_later_text_keeps_the_evidence_stale` | fails (1 of 1) | passes |  |
+| rel3:all_in_hand_false | `integration/test_brain_releases_r2_062.py::test_rel3_settle_with_every_text_in_hand_computes_it_again` | fails (1 of 1) | passes | impact O |
+| rel3:eligible_own_only | `unit/test_brain_releases_r2_062.py::test_eligible_now_compares_every_withheld_text_in_hand` | fails at import (no `LATER_WITHHOLD` in app.brain.identity) | passes |  |
+| rel3:hc_group_skip | `integration/test_brain_releases_r2_062.py::test_skC_a_row_released_for_w1_that_carries_w2_is_held_when_w2_is_withheld` | fails (1 of 1) | passes | not mutated as such in the rebuild drivers (R4 ran hgr_foreign_off+hc_carriers_off) |
+| rel3:hgr_foreign_off | `integration/test_brain_releases_r2_062.py::test_rel3_hold_group_rows_compares_a_released_row_with_other_withheld_texts` | fails (1 of 1) | passes | source-named test added in R7: the single mutant now fails it (R4 had it COMPENSATED) |
+| rel3:imp_carriers_group_skip | `integration/test_brain_releases_r2_062.py::test_rel3_typed_release_after_a_later_withhold_is_held_again_by_the_next_import` | fails (1 of 1) | passes | not mutated in the rebuild drivers |
+| rel3:flip_any_anchor | `integration/test_brain_releases_r2_062.py::test_rel3_typed_release_after_a_later_withhold_is_held_again_by_the_next_import` | fails (1 of 1) | passes | not mutated in the rebuild drivers |
+| rel3:mark_any_backup | `integration/test_brain_releases_r2_062.py::test_rel3_6725_a_typed_release_never_makes_another_backups_release_trusted` | fails (1 of 1) | passes |  |
+| rel3:imp_mark_any_backup | `integration/test_brain_releases_r2_062.py::test_rel3_6725_a_check_of_one_backups_content_marks_only_that_backups_release` | fails (1 of 1) | passes | not mutated in the rebuild drivers |
+| rel3:hgr_mark_any_backup | `integration/test_brain_releases_r2_062.py::test_rel3_6725_a_check_of_one_backups_content_marks_only_that_backups_release` | fails (1 of 1) | passes | not mutated in the rebuild drivers |
+| rel3:oracle_nb_off | `property/test_oracle_releases_r2.py::test_nb_a_released_row_of_a_withheld_conversation_carrying_another_withheld_text_is_a_leak` | fails (1 of 1) | passes | impact O |
+| rel3:oracle_na_own_only | `property/test_oracle_releases_r2.py::test_na_none_must_hold_against_every_withheld_text_in_hand` | fails (1 of 1) | passes | impact O |
+| rel3:oracle_later_unread | `property/test_oracle_releases_r2.py::test_later_withhold_is_an_undecided_state_for_the_oracle` | fails (1 of 1) | passes | impact O |
+| rel3:none_every_off | `integration/test_brain_releases_r2_062.py::test_rel3_13465_a_later_row_identical_to_a_withheld_text_not_in_hand_is_never_none`<br>`unit/test_brain_releases_r2_062.py::test_none_every_none_needs_every_withheld_text_in_hand` | fails (1 of 1)<br>fails at import (no `LATER_WITHHOLD` in app.brain.identity) | passes<br>passes |  |
+| rel3:imp_none_every_off | `integration/test_brain_releases_r2_062.py::test_rel3_13465_a_later_row_identical_to_a_withheld_text_not_in_hand_is_never_none` | fails (1 of 1) | passes |  |
+
+
+## Items with no test, or not reconstructed
+**Behaviour missing (not built in R7: this step adds no product or oracle behaviour):**
+- **`gd1:oracle_rollback_records_off`** (cc_adapter.py:439, impact O) and its test
+  `test_p2_the_oracle_names_the_conversation_of_a_copy_whose_row_was_deleted`: the rebuilt oracle never reads
+  `import_records`, so it does not check rollback copies at rest (round-1 P2 case D) at all. The product side is
+  tested (r2s2-02). Open for round 4 (RECON-50).
+- **Seed 13500, "the withhold seeds from groups.seeds"** (r3s2-10): RECON-37 found no difference to build or test in
+  the rebuilt withhold; there is no test for it.
+- **Oracle narrowings 13327, 13407 and 13364** (r2s4-12): narrowings for round-2 seed scenarios that the rebuilt
+  simulator does not reproduce. R5's own narrowings have self-tests and 22 killed oracle mutants instead.
+
+**Tests or evidence lost and not rebuilt (the behaviour is covered by other tests above):**
+- `tests/integration/test_brain_release_trust_062.py` (11 tests, round 3 step 1): stands in `test_brain_releases_r2_062.py`
+  (`test_skc2_*`, `test_rel3_an_unchecked_file_release_frees_no_hold_and_a_trusted_one_does`).
+- `tests/integration/test_brain_seeds_r3_062.py` (3) and `tests/integration/test_brain_mutation_closure_r3_062.py` (8,
+  among them the crafted-state test of `c2:imp_stored_none_every_off`): the rebuilt importer has one "none every" guard
+  (`identity.settled_relations`), tested by `test_none_every_none_needs_every_withheld_text_in_hand` and the 13465 test.
+- `tests/property/test_hermes_derived3_lines.py` (6) and `hermes_lean_gen.py`: N1/N4 checked on lines that Hermes
+  itself generates. Only hand-written Hermes-shaped lines are tested now (`test_n1_*`, `test_n4_*`, `test_m1_*`).
+- `test_brain_resolve_c_062` (round-2 lane g15: the product's state list): no file of that name; the state codes are
+  pinned by `unit/test_brain_hold_r2.py::test_the_new_hold_vias_and_the_state_are_known_codes` and
+  `unit/test_brain_releases_r2_062.py::test_d3_states_that_were_not_compared_are_never_one_click`.
+- Of the 7 closing tests for `dec_json_off`, 2 are in the tree.
+- Not rerun: the large adversarial runs (15,928 filter comparisons, 11,565 random pieces, the derived skeptic's 214
+  Hermes texts, 64 realistic and 4,000 random unrelated texts).
+- The skeptics' adversarial files (`test_skC_*`, `test_skc2_*_adv.py`, `test_skc3_*`) were evidence, not suite files. The
+  round-3 ones are for open or owner-pending items, so they are not fixed items.
+
+**Matrix guards that the rebuild's mutation drivers (progress/R1..R5-mutation) never switched off.** Their tests fail on
+i22 and pass on HEAD, but it is not shown that the rebuilt guard is the one the test catches:
+- `gd1:eligible_now_uncertain_off`: switched off in R7 (`review.eligible_now` passing `uncertain=False`):
+  `unit/test_brain_releases_r2_062.py::test_uncertain_is_never_one_click_eligible_and_never_eligible_now` "1 failed".
+- `m18:dec_nfkc_off`: the rebuilt decode has no NFKC step of its own (NFKC is applied by `identity.fold` to every
+  reading, `cr2:ci_nfkc_off`, CAUGHT in R3); nothing separate to switch off.
+- `rel3:imp_mark_any_backup`, `rel3:hgr_mark_any_backup`: the rebuild checks the backup in `identity.mark_exemptions`
+  only (`rel3:mark_any_backup`, CAUGHT in R4); its two callers pass the backup of the content they checked.
+- `rel3:hc_group_skip`: `review.hold_carriers` has no group skip to switch on; R4's double
+  `rel3:hgr_foreign_off+hc_carriers_off` is caught by the skC test.
+- `rel3:imp_carriers_group_skip`, `rel3:flip_any_anchor`, `gd1:p2_both_off` (a double): not mutated (open).
+
+**Different class in the rebuild than in the source matrix:**
+- `cr2:quick_forms_one` and `cr2:quick_no_snapshot` were COMPENSATED in the source; R3's driver caught each on its own.
+- `cr2:quick_no_quote_bypass` was CAUGHT in the source; it is COMPENSATED in the rebuild (R3).
+- `rel3:hgr_foreign_off` was CAUGHT in the source and COMPENSATED in R4; it is caught on its own by the R7 test.
+- `r3:release_on_evidence_carrier_off` (R3's own guard) still SURVIVED; it is not a source matrix row.
+
+**Not in the sources:** the 83 matrix rows after line 230.
+
+**Open test gaps from round 3, not fixed items:** `unrepr_cut_keep`, `open_literal_off`, `cut_per_line_off` (derived
+skeptic) and `sk3_graph_marker_edges_off` (groups skeptic). R3's driver ran `sk3:cut_per_line_off` (COMPENSATED: the
+double with `r3:truncated_mark_off` is caught); the others were not checked here.
+
+## Full lanes on HEAD (code at da99d35; the R7 tests included)
+Run in parallel, each with its own databases (`r7a`, `r7b`, `r7c`, `r7u`, `r7p`, each with `_cr`), `-p no:randomly`.
+The shard file lists are in `progress/R7-check/shards.txt` (every file of tests/integration, once).
+
+| Lane | Summary line | Not counted as passed |
+|---|---|---|
+| integration A (non-brain agents, api, approvals_050, commercial, honesty_050; brain agents..exploits) | "1 failed, 311 passed, 2 skipped in 1137.55s (0:18:57)" | `test_approvals_050.py::test_every_ad_finding_says_it_is_sample_data` (`assert ([])`: date-dependent, as in the round-3 report; outside the brain) |
+| integration B (instance_settings_api, repairs; brain groups..review1) | "286 passed in 895.32s (0:14:55)" | |
+| integration C (schema, security, ssh, stats, workflows; brain review2..withhold_overreach) | "372 passed, 7 skipped in 1173.38s (0:19:33)" | 7 skipped: 6 `test_restore_ps1`-backed and 1 `test_brain_review2_062.py:1710`, all need PowerShell |
+| tests/unit | "781 passed, 18 skipped in 40.17s" | the 6 environment-dependent tests (`test_gate` x4, `test_release_version`, the `test_brain_ops` package test) ran here and are never counted as passed; 18 skipped need PowerShell |
+| tests/property (`HERMES_SRC`, `REQUIRE_HERMES_SRC=1`, `ORACLE_SEEDS=0`; the 17 recorded seeds included) | "1 failed, 134 passed, 1 skipped in 614.89s (0:10:14)" | `test_oracle_properties.py::test_rv3_bug_seed_replayed_exactly[1]` (R2's own open failure, as in R4-R6; fails closed); the skip is the empty fresh-seed parameter set at `ORACLE_SEEDS=0` |
+| dashboard, `brain-optionc.test.tsx` only | i22 "Tests 16 failed \| 1 passed (17)"; HEAD "Tests 17 passed (17)" | the full Vitest suite was not rerun (no dashboard file changed in R7) |
+
+A first property run without `ORACLE_SEEDS=0` (the default 200 fresh seeds from 6200) was stopped at 21% after 15
+failures in `test_oracle_properties.py`. It is not counted and was not triaged; R5 records that 269 of 900 fresh seeds
+fail on this code.
