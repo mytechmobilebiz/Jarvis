@@ -568,3 +568,50 @@ async def test_a_rollback_puts_back_the_uids_a_fold_absorbed(client, fx):
     await imp.rollback(folded["run_id"], actor=ADMIN[0], confirm=True)
     [back] = await message_of("lt14", ids[0])
     assert (back.content, list(back.absorbed_uids or [])) == ("Please send the agenda.", [])
+
+
+# --- rebuild R4 (m18:oc_plain, m18:oc_tool_row): one click frees only a plain user or assistant text read here ------
+
+FORM_ROWS = {
+    "summary": ("assistant", "[CONTEXT COMPACTION] Summary of the earlier turns: the user booked a train."),
+    "wrapped": ("user", '[Replying to: "the train leaves at nine"]\n\nThanks, noted.'),
+    "nesting_mask": ("assistant", '{"result": {"inner": "{\\"note\\": \\"the train leaves at nine\\"}"}}'),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(FORM_ROWS))
+async def test_the_one_click_release_skips_a_hermes_summary_or_wrapped_text_and_releases_the_plain_row(
+        client, fx, shape):
+    """Every other row of the withheld conversation is held with it, 'none' against the one withheld text; the
+    one-click release frees the plain question and leaves the summary, wrapped or encoded row held (a per-row release
+    with the typed word)."""
+    db = fx["db"]
+    role, body = FORM_ROWS[shape]
+    pa = conversation(db, "fm_p", T, [("user", "Book the train for Monday."), (role, body),
+                                      ("assistant", secret("zqform"))])
+    await run(fx)
+    await withhold(client, (await message_of("fm_p", pa[2]))[0].id)
+    listed = await holds(client)
+    plain, other = (await message_of("fm_p", pa[0]))[0].id, (await message_of("fm_p", pa[1]))[0].id
+    assert listed[plain]["relations"] == listed[other]["relations"] == [identity.NO_RELATION]
+    assert listed[plain]["one_click"] and not listed[other]["one_click"] and listed[other]["confirm_required"]
+    released = await release_unrelated(client)
+    assert plain in released and other not in released
+    assert await state("fm_p", pa[1]) == "held"
+
+
+async def test_the_one_click_release_skips_a_row_whose_form_was_never_read(client, fx):
+    """A 'none' hold whose text was never read here (no form recorded: an older hold, a file's) is never released in
+    one click; the plain one beside it is."""
+    db = fx["db"]
+    pa = conversation(db, "fn_p", T, [("user", "Book the train for Monday."), ("user", "And a seat by the window."),
+                                      ("assistant", secret("zqfnr"))])
+    await run(fx)
+    await withhold(client, (await message_of("fn_p", pa[2]))[0].id)
+    unread = (await message_of("fn_p", pa[1]))[0]
+    async with session_scope() as s:
+        await s.execute(text("UPDATE brain_tombstones SET form = '' WHERE source_key = :k"), {"k": unread.source_key})
+        await s.commit()
+    released = await release_unrelated(client)
+    assert (await message_of("fn_p", pa[0]))[0].id in released and unread.id not in released
+    assert await state("fn_p", pa[1]) == "held"

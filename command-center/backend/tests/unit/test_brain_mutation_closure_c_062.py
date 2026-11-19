@@ -53,3 +53,32 @@ def test_dec_json_a_short_w_as_a_whole_value_of_pretty_printed_ascii_json_is_ide
     w = "Ja, Möwe geht."
     text = json.dumps({"replies": [w, "other"]}, ensure_ascii=True, indent=2)
     assert I.IDENTICAL_REL in I.carrier_relations([text], w)
+
+
+# --- rebuild R4: the one-click guards (m18:oc_role, m18:oc_none_in, m18:oc_plain, m18:oc_tool_row) ---------------
+
+from app.brain import identity, review  # noqa: E402
+
+
+@pytest.mark.parametrize("role,ok", [("system", False), ("tool", False), ("", False), ("user", True),
+                                     ("assistant", True)])
+def test_oc_role_only_user_and_assistant_rows_are_one_click_eligible(role, ok):
+    assert review.one_click_eligible([identity.NO_RELATION], role=role, form=identity.PLAIN_FORM,
+                                     uncertain=False) is ok
+
+
+@pytest.mark.parametrize("relations,ok", [
+    ((identity.NO_RELATION,), True), ((identity.NO_RELATION, identity.SAME_TIME_REL), False),
+    ((identity.CONTAINS,), False), ((identity.SAME_UID,), False), ((identity.STALE,), False),
+    ((identity.LATER_WITHHOLD,), False), ((), False)], ids=["related", "none_and_time", "contains", "uid", "stale",
+                                                             "later", "empty"])
+def test_oc_none_in_only_exactly_none_is_one_click_eligible(relations, ok):
+    if relations == (identity.NO_RELATION,):
+        relations = list(relations)
+    assert review.one_click_eligible(relations, role="user", form=identity.PLAIN_FORM, uncertain=False) is ok
+
+
+@pytest.mark.parametrize("form", ["", identity.SUMMARY_FORM, identity.WRAPPED_FORM, identity.ENCODED_FORM,
+                                  identity.TOOL_FORM, "other"])
+def test_oc_plain_and_tool_row_only_a_plain_read_form_is_one_click_eligible(form):
+    assert not review.one_click_eligible([identity.NO_RELATION], role="assistant", form=form, uncertain=False)
