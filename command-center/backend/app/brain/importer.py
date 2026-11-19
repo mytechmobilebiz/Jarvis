@@ -819,6 +819,7 @@ class Processor:
         self.all_in_hand = False  # rebuild R4: every admin's withheld text in hand (prepare_identity)
         self._marks: list[tuple[str, identity.Exact, set[str]]] = []  # untrusted releases this import checked
         self._w_absorbed: dict[str, set[str]] = {}
+        self._w_piece: set[str] = set()
         self.tripwire = later.Tripwire.from_tally(tally.d.get("tripwire"))
         self._tripwire_keys: dict[str, bool] = {}
         self.frozen: set[str] = set()  # JARVIS sessions an admin stopped importing (plan 5.3)
@@ -935,6 +936,7 @@ class Processor:
         self.w_texts = {}
         roots = sorted({g for gs in self._decision_roots.values() for g in gs})
         self._w_absorbed = {}  # the uids the withheld row itself had absorbed (a withheld fold), per decision
+        self._w_piece = set()  # decisions whose text in hand is a piece of the withheld fold (RECON-64)
         for i in range(0, len(roots), 1000):
             for key, absorbed in (await self.s.execute(select(ArchiveMessage.source_key, ArchiveMessage.absorbed_uids)
                                                        .where(ArchiveMessage.source_key.in_(roots[i:i + 1000])))).all():
@@ -952,7 +954,7 @@ class Processor:
         # rebuild R4 (D3): every admin's withheld text in hand ('none' needs them all; a later withhold's mark stays
         # until then)
         self.all_in_hand = {st.key for st in self.ids.by_key.values() if st.anchor == "" and st.certain} <= set(
-            k for k, v in self.w_texts.items() if v is not None)
+            k for k, v in self.w_texts.items() if v is not None) and not self._w_piece  # RECON-64
         if self.settle_scope is not None:
             from . import settle as settle_engine
 
@@ -1712,7 +1714,8 @@ class Processor:
                       - {identity.NOT_IN_BACKUP} if d is not None else set())
         return identity.group_relations(identity.source_fields(m), texts.get(anchor),
                                         [t for g, t in sorted(texts.items()) if g != anchor],
-                                        all_in_hand=roots <= set(texts), uncertain=uncertain, structural=structural)
+                                        all_in_hand=roots <= set(texts) and not (roots & self._w_piece),
+                                        uncertain=uncertain, structural=structural)
 
     def _newer_hold(self, stone: identity.Stone) -> bool:
         """Stabilisation S1 (RECON-54): a pending hold decided on a newer backup's content than this backup's (an
@@ -1800,6 +1803,7 @@ class Processor:
             if row is not None and not identity.is_placeholder(row.content) and not self._absorbs_more(group, row) \
                     and identity.same_row(
                     identity.exact_of_stone(st), identity.exact_of_source(st.session, row)):
+                self._note_piece(group, row)
                 return row.content  # a row JARVIS pruned in place holds a placeholder, not the text (deviation 264)
         copies = {(st.uid, st.role, st.tool_call_id, st.at) for st in cands
                   if st.uid and st.at is not None and st.via not in identity.FOLD_VIAS}
@@ -1814,12 +1818,23 @@ class Processor:
                 here = identity.exact_of_source(sid, row)
                 if (here.uid, here.role, here.tool_call_id, here.at) in copies and not identity.is_placeholder(
                         row.content) and not self._absorbs_more(group, row):
+                    self._note_piece(group, row)
                     return row.content
         return None
 
+    def _note_piece(self, group: str, row: src.SourceMessage) -> None:
+        """Rebuild S4 (RECON-64): the row found as the withheld text absorbed fewer messages than the withheld row had
+        when it was stored (a withheld fold: this backup's copy of it lost a message it had folded in): its text is a
+        piece of what the admin withheld. It is still compared (every relation to that piece is shown, carriers too),
+        but 'none' is never said against it: the rest of the withheld text is not in this backup."""
+        if set(self._w_absorbed.get(group, set())) - set(row.absorbed):
+            self._w_piece.add(group)
+
     def _decision(self, group: str) -> later.Decision | None:
         if group not in self._decisions:
-            self._decisions[group] = later.decision_of(self.ids, group, self.w_texts.get(group), self.backup_sha)
+            self._decisions[group] = later.decision_of(self.ids, group, self.w_texts.get(group), self.backup_sha,
+                                                       self._w_absorbed.get(group, ()),
+                                                       piece=group in self._w_piece)
         return self._decisions[group]
 
     def later_rows(self, ss: src.SourceSession, msgs: list[src.SourceMessage], plans: list[MessagePlan],

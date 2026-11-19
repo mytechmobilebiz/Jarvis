@@ -182,3 +182,29 @@ async def test_s4_w_text_is_never_a_kept_row_identical_by_one_of_its_values(clie
     h = (await holds(client)).get((await message_of("s4_wj", new))[-1].id) or {}
     assert h, "the new row with W1's words is held"
     assert "none" not in (h.get("relations") or []) and not h.get("one_click"), h
+
+
+# --- RECON-64: a piece of a withheld fold is not the withheld text ------------------------------------------------------
+
+
+async def test_s4_a_message_the_withheld_fold_absorbed_is_never_none_when_the_fold_is_split_again(client, fx):
+    """RECON-64 (13536): the admin withheld a fold (Hermes merged a request into the next one); a later backup holds
+    the withheld row with only its own first request again and the folded request as a new row of its own. That row
+    is part of what the admin withheld: held, never 'none' (one click), and the decision's other rows say 'not in this
+    backup' rather than 'none' (the rest of the withheld text is not here)."""
+    db = fx["db"]
+    first = "Please look again at the hosting migration before lunch."
+    second = "Please look again at the landing page copy with the usual care."
+    rows = conversation(db, "s4_wf", T, [("user", "Hello there, one more thing for today."), ("user", first),
+                                         ("user", second), ("assistant", "On it, both points are noted.")])
+    bj.fold(db, "s4_wf", rows[1], [rows[2]])  # the fold keeps row 2 (the first request) and absorbs row 3
+    await run(fx)
+    w = (await message_of("s4_wf", rows[1]))[0]
+    await withhold(client, w.id)
+    bj.change(db, "UPDATE messages SET content = ?, absorbed_message_uids = '[]' WHERE id = ?", first, rows[1])
+    new = bj.add_row(db, "s4_wf", "user", second, T + 3600)
+    await run(fx)
+    h = (await holds(client)).get((await message_of("s4_wf", new))[-1].id) or {}
+    assert h, "the folded request, back as a row of its own, is held"
+    assert "none" not in (h.get("relations") or []) and not h.get("one_click"), h
+    assert "not_in_backup" in (h.get("relations") or []), h

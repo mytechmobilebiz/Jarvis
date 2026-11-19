@@ -13,6 +13,8 @@ CA, RE, DE, SE, SP, RC, GC = (P + f for f in ("test_oracle_carriers_r2.py", "tes
                                                "test_oracle_spans_c3.py", "test_oracle_released_c3.py",
                                                "test_oracle_groups_c.py"))
 F3 = P + "test_oracle_family_s3.py"
+F4 = P + "test_oracle_family_part_of_s4.py"
+F5 = P + "test_oracle_fold_piece_s4.py"
 M = [
  ("cr2:oracle_fold_off", [(OR, '    return unicodedata.normalize("NFKC", t).translate(_IGN)\n', '    return text or ""\n')],
   [CA + "::test_oci_the_oracle_demands_a_carrier_in_another_case_or_form"]),
@@ -81,6 +83,20 @@ M = [
  ("s3:b5_carrier_leak_off", [(OR, '            if norm(r.get("content")) and run.leaks(versions_for(run.sim, r)):',
                               "            if False:")],
   [F3 + "::test_s3_b5_still_reports_a_withheld_conversations_new_row_a_linked_or_kept_carrier_and_a_leak"]),
+ ("s4:family_part_of_carrier_too", [(OR, '    return row.get("sid") in comps.get(w.key, set()) and (stone.get("via") or "") != CARRIER_VIA',
+                                    '    return row.get("sid") in comps.get(w.key, set())')],
+  [F4 + "::test_s4_family_row_part_of_on_a_carrier_hold_is_still_a_violation"]),
+ ("s4:family_part_of_any_row", [(OR, '    return row.get("sid") in comps.get(w.key, set()) and (stone.get("via") or "") != CARRIER_VIA',
+                                '    return (stone.get("via") or "") != CARRIER_VIA')],
+  [F4 + "::test_s4_part_of_outside_the_family_is_still_a_violation"]),
+ ("s4:family_part_of_any_relation", [(OR, '                        allowed |= relations_c(version_fields(v), view, group=True)[1] & {"part_of"}',
+                                     '                        allowed |= {"part_of"}')],
+  [F4 + "::test_s4_part_of_no_value_gives_is_still_a_violation"]),
+ ("s4:fold_piece_any_w", [(OR, "    if wt is None or not w.absorbed:\n        return False", "    if wt is None:\n        return False"),
+                          (OR, "            return bool(set(w.absorbed) - set(v.absorbed) - {w.uid})", "            return True")],
+  [F5 + "::test_s4_not_in_backup_for_a_whole_withheld_text_is_still_a_violation"]),
+ ("s4:fold_piece_nib_always", [(OR, '                        and ("not_in_backup" not in rep or w_piece(w, snap, wt))', "")],
+  [F5 + "::test_s4_not_in_backup_for_a_whole_withheld_text_is_still_a_violation"]),
 ]
 only = sys.argv[1:]
 db = "r5m"

@@ -48,3 +48,8 @@ s3:carrier_only_links_off	tests/property/oracle.py	CAUGHT	1 failed in 0.54s	test
 s3:b1_carrier_withheld_too	tests/property/oracle.py	CAUGHT	1 failed in 0.39s	tests/property/test_oracle_family_s3.py::test_s3_b1_still_reports_a_family_row_gone_a_held_carrier_readable_and_a_carrier_conversation_leak
 s3:b1_carrier_leak_off	tests/property/oracle.py	CAUGHT	1 failed in 0.39s	tests/property/test_oracle_family_s3.py::test_s3_b1_still_reports_a_family_row_gone_a_held_carrier_readable_and_a_carrier_conversation_leak
 s3:b5_carrier_leak_off	tests/property/oracle.py	CAUGHT	1 failed in 0.52s	tests/property/test_oracle_family_s3.py::test_s3_b5_still_reports_a_withheld_conversations_new_row_a_linked_or_kept_carrier_and_a_leak
+s4:family_part_of_carrier_too	tests/property/oracle.py	CAUGHT	1 failed in 0.28s	tests/property/test_oracle_family_part_of_s4.py::test_s4_family_row_part_of_on_a_carrier_hold_is_still_a_violation
+s4:family_part_of_any_row	tests/property/oracle.py	CAUGHT	1 failed in 0.27s	tests/property/test_oracle_family_part_of_s4.py::test_s4_part_of_outside_the_family_is_still_a_violation
+s4:family_part_of_any_relation	tests/property/oracle.py	CAUGHT	1 failed in 0.35s	tests/property/test_oracle_family_part_of_s4.py::test_s4_part_of_no_value_gives_is_still_a_violation
+s4:fold_piece_any_w	tests/property/oracle.py	CAUGHT	1 failed in 0.32s	tests/property/test_oracle_fold_piece_s4.py::test_s4_not_in_backup_for_a_whole_withheld_text_is_still_a_violation
+s4:fold_piece_nib_always	tests/property/oracle.py	CAUGHT	1 failed in 0.36s	tests/property/test_oracle_fold_piece_s4.py::test_s4_not_in_backup_for_a_whole_withheld_text_is_still_a_violation

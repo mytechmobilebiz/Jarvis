@@ -1033,6 +1033,24 @@ def w_text_in(run: Run, w: Withhold, snap: hs.Snapshot, st: dict[str, Any] | Non
     return None
 
 
+def w_piece(w: Withhold, snap: hs.Snapshot, wt: str | None) -> bool:
+    """D-47 (rebuild S4, RECON-64): the withheld row as this backup holds it (its own row, or its uid copy) absorbed
+    fewer messages than when it was withheld (a withheld fold whose copy here lost a message it had folded in): the
+    text in hand is a piece of what the admin withheld. A hold may then say 'not in this backup' for it (the rest of
+    the withheld text is not here); its relations to the piece are admitted as before, and 'none' is still judged
+    against the text as withheld (O5)."""
+    if wt is None or not w.absorbed:
+        return False
+    for (sid, row), v in snap.rows.items():
+        if norm(v.content) != norm(wt):
+            continue
+        own = (sid, row, v.role, tkey(v.ts)) == (w.sid, int(w.row), w.role, tkey(w.at))
+        copy = bool(w.uid) and v.uid == w.uid and (tkey(v.ts), v.role) == (tkey(w.at), w.role)
+        if own or copy:
+            return bool(set(w.absorbed) - set(v.absorbed) - {w.uid})
+    return False
+
+
 def w_text_present(run: Run, w: Withhold, snap: hs.Snapshot, st: dict[str, Any] | None = None) -> bool:
     return w_text_in(run, w, snap, st) is not None
 
@@ -1091,6 +1109,8 @@ def check_evidence(run: Run, prop: str, holds: list[dict[str, Any]], st: dict[st
                     dem, alw = relations_c(version_fields(v), view, group=in_group, carrier=not in_group)
                     computed |= dem
                     allowed |= alw
+                    if not in_group and family_part_of(r, w, comps, stone):
+                        allowed |= relations_c(version_fields(v), view, group=True)[1] & {"part_of"}
                 allowed |= computed
                 allowed_all |= allowed
                 done.append((view, computed))
@@ -1111,7 +1131,7 @@ def check_evidence(run: Run, prop: str, holds: list[dict[str, Any]], st: dict[st
                         or (bool(rep_text) and rep_text <= allowed_all)
                 else:
                     honest = rep_text <= allowed_all and (not computed or bool(rep_text & computed)) \
-                        and "not_in_backup" not in rep
+                        and ("not_in_backup" not in rep or w_piece(w, snap, wt))
                 if honest:
                     ok = True
                 why.append("%scomputed %s; held %r vs withheld %r" % ("W absent, " if wt is None else "",
@@ -1137,6 +1157,17 @@ def check_evidence(run: Run, prop: str, holds: list[dict[str, Any]], st: dict[st
                           "via %r, own %s]" % (
                 where, rid, r["sid"], r.get("source_message_id"), r.get("role"), sorted(rep), raw[:3],
                 "; ".join(why), anchor, stone.get("via"), ["%s:%s" % (w.sid, w.row) for w in own]))
+
+
+def family_part_of(row: dict[str, Any], w: Withhold, comps: dict[str, set[str]], stone: dict[str, Any]) -> bool:
+    """D-46 (rebuild S4, RECON-63): a hold of a row of this decision's family (plan 5.1, i22's family: the sessions
+    its stones bind and their copy links) outside the ground-truth group, held by the family's own rules (Settle's
+    'found when finishing decisions', a later backup's 'new in a later backup'; never a per-row carrier hold), may show
+    'part_of' where a value of it is part of the withheld text: the product computes those holds with i22's family
+    rule (identity.family_relations, as i22's oracle admitted for every family hold: deviation 274), now read per
+    value. Admitted only (never demanded); a carrier hold, a row outside the family and a 'part_of' no value gives
+    are still reported (test_oracle_family_part_of_s4.py)."""
+    return row.get("sid") in comps.get(w.key, set()) and (stone.get("via") or "") != CARRIER_VIA
 
 
 def fam_ws_sids(run: Run, ws: list[Withhold]) -> set[str]:

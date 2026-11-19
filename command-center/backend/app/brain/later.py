@@ -243,9 +243,16 @@ class Decision:
     uids: set[str] = field(default_factory=set)
     calls: set[str] = field(default_factory=set)
     later: bool = True
+    # rebuild S4 (RECON-64): the uids of the messages the withheld row had absorbed when it was stored (a withheld
+    # fold); a row carrying one of them is a message folded into the withheld text: never 'none'
+    absorbed: set[str] = field(default_factory=set)
+    # rebuild S4 (RECON-64): w_text is a piece of the withheld fold (this backup's copy of the withheld row absorbed
+    # fewer messages): compared, but never 'none' against it
+    piece: bool = False
 
 
-def decision_of(ids: identity.Identities, group: str, w_text: str | None, backup_sha: str) -> Decision | None:
+def decision_of(ids: identity.Identities, group: str, w_text: str | None, backup_sha: str,
+                absorbed: Iterable[str] = (), *, piece: bool = False) -> Decision | None:
     own = ids.by_key.get(group)
     if own is None:
         return None
@@ -253,7 +260,8 @@ def decision_of(ids: identity.Identities, group: str, w_text: str | None, backup
     return Decision(group, own, w_text,
                     uids={st.uid for st in certain if st.uid and st.via not in identity.FOLD_VIAS},
                     calls={st.tool_call_id for st in certain if st.tool_call_id},
-                    later=own.decided_on != backup_sha)
+                    later=own.decided_on != backup_sha,
+                    absorbed={u for u in absorbed if u and u != own.uid}, piece=piece and w_text is not None)
 
 
 def relations(m: src.SourceMessage, here: identity.Exact, d: Decision) -> set[str]:
@@ -268,14 +276,18 @@ def relations(m: src.SourceMessage, here: identity.Exact, d: Decision) -> set[st
         rel.add(identity.SAME_UID)
     if here.tool_call_id and here.tool_call_id in d.calls and not same_words:
         rel.add(identity.SAME_CALL)
+    if here.uid and here.uid in d.absorbed and not same_words:
+        # RECON-64 (13536): a message the withheld fold absorbed, back as a row of its own (its uid): part of what the
+        # admin withheld, whatever the backup's own copy of the withheld row holds now
+        rel.add(identity.SAME_UID)
     if own.at is not None and here.at == own.at and here.role == own.role \
             and (here.session, here.row) != (own.session, own.row):
         rel.add(identity.SAME_TIME_REL)
     if own.session and own.row and (here.session, here.row) == (own.session, own.row) \
             and not identity.same_row(identity.exact_of_stone(own), here):
         rel.add(identity.REUSED_ROW)
-    if d.w_text is None:
-        rel.add(identity.NOT_IN_BACKUP)
+    if d.w_text is None or (d.piece and not rel & set(identity.TEXT_RELATIONS)):
+        rel.add(identity.NOT_IN_BACKUP)  # RECON-64: a piece of the withheld text is not the withheld text
     return rel
 
 
