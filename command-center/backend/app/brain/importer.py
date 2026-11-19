@@ -721,6 +721,8 @@ class MessagePlan:
 
 
 W_SAME_TEXT_VIAS = ("same tool call",)
+# the copy rules _w_text reads a member's row by (a copy of W's row only when _of_w says so: RECON-62)
+W_COPY_VIAS = ("key", "same JARVIS row", "duplicate", "copied by JARVIS", "the original JARVIS copied")
 
 
 def _of_w(own: identity.Stone, cands: list[identity.Stone]) -> list[identity.Stone]:
@@ -820,6 +822,11 @@ class Processor:
         self._marks: list[tuple[str, identity.Exact, set[str]]] = []  # untrusted releases this import checked
         self._w_absorbed: dict[str, set[str]] = {}
         self._w_piece: set[str] = set()
+        # stabilisation S7 (RECON-68): decisions whose text in hand is unverified (a kept 'identical' member's text, no
+        # other withheld text it could be), and per decision without a verified text the texts a refused member holds
+        # (carriers of them are held: review.hold_carriers)
+        self._w_unverified: set[str] = set()
+        self.w_candidates: dict[str, list[str]] = {}
         self.tripwire = later.Tripwire.from_tally(tally.d.get("tripwire"))
         self._tripwire_keys: dict[str, bool] = {}
         self.frozen: set[str] = set()  # JARVIS sessions an admin stopped importing (plan 5.3)
@@ -937,6 +944,8 @@ class Processor:
         roots = sorted({g for gs in self._decision_roots.values() for g in gs})
         self._w_absorbed = {}  # the uids the withheld row itself had absorbed (a withheld fold), per decision
         self._w_piece = set()  # decisions whose text in hand is a piece of the withheld fold (RECON-64)
+        self._w_unverified = set()
+        self.w_candidates = {}
         for i in range(0, len(roots), 1000):
             for key, absorbed in (await self.s.execute(select(ArchiveMessage.source_key, ArchiveMessage.absorbed_uids)
                                                        .where(ArchiveMessage.source_key.in_(roots[i:i + 1000])))).all():
@@ -950,18 +959,36 @@ class Processor:
                 self.w_texts[group] = text  # the tripwire's (plan 5.5): in memory only
                 if st.decided_on != self.backup_sha:
                     self._later_texts[group] = text
+        verified = dict(self.w_texts)
+        all_roots = {st.key for st in self.ids.by_key.values() if st.anchor == "" and st.certain}
+        for group in roots:
+            st = self.ids.by_key.get(group)
+            if st is None or group in verified:
+                continue
+            found = self._w_candidates(group)
+            if found:
+                self.w_candidates[group] = [t for t, _ in found]
+            text = self._w_unverified_text(group, found, verified, all_roots)
+            if text:
+                # S7 (RECON-68): compared (its relations shown, its carriers held), never 'none' against it
+                self.w_texts[group] = text
+                self._w_unverified.add(group)
+                if st.decided_on != self.backup_sha:
+                    self._later_texts[group] = text
         self.tripwire.texts = max(self.tripwire.texts, len(self.w_texts))
         # rebuild R4 (D3): every admin's withheld text in hand ('none' needs them all; a later withhold's mark stays
         # until then)
-        self.all_in_hand = {st.key for st in self.ids.by_key.values() if st.anchor == "" and st.certain} <= set(
-            k for k, v in self.w_texts.items() if v is not None) and not self._w_piece  # RECON-64
+        self.all_in_hand = all_roots <= set(
+            k for k, v in self.w_texts.items() if v is not None) and not self._w_piece \
+            and not self._w_unverified  # RECON-64, RECON-68
         if self.settle_scope is not None:
             from . import settle as settle_engine
 
             sessions = self._source_sessions()
             self.settle_engine = settle_engine.Engine(
                 self.src.backup, sessions, self.ids, self.settle_scope.groups, self.settle_scope.family,
-                stored=lambda m: not self.exclusion(m), families=self.settle_scope.families, w_texts=self.w_texts)
+                stored=lambda m: not self.exclusion(m), families=self.settle_scope.families,
+                w_texts=verified)  # S7 (RECON-68): Settle compares verified texts only ('not in this backup')
             self.settle_engine.decide()
 
     # Decide once, replay exactly (0.6.2 plan 3.2) ------------------------------------------------------------------
@@ -1714,7 +1741,8 @@ class Processor:
                       - {identity.NOT_IN_BACKUP} if d is not None else set())
         return identity.group_relations(identity.source_fields(m), texts.get(anchor),
                                         [t for g, t in sorted(texts.items()) if g != anchor],
-                                        all_in_hand=roots <= set(texts) and not (roots & self._w_piece),
+                                        all_in_hand=roots <= set(texts) and not (roots & self._w_piece)
+                                        and not (roots & self._w_unverified),
                                         uncertain=uncertain, structural=structural)
 
     def _newer_hold(self, stone: identity.Stone) -> bool:
@@ -1836,11 +1864,66 @@ class Processor:
         compared (every relation to it is shown, carriers too), but 'none' is never said against it."""
         return bool(set(self._w_absorbed.get(group, set())) - set(row.absorbed))
 
+    def _w_candidates(self, group: str) -> list[tuple[str, bool]]:
+        """Stabilisation S7 (RECON-68): for a decision this backup holds no verified text of (_w_text: W's own row, its
+        tool result, a copy of one of those), the texts a member's row holds that an earlier rule took as the withheld
+        text and RECON-62 / the 'same message id' rule refuse: a member whose kept hold said 'identical' (its text, or
+        one of its values, was a withheld text), a pending hold whose evidence said so, and a member by W's uid ('same
+        message id': W's message as JARVIS keeps it now, perhaps a piece of it or more), and a member by a copy rule at
+        W's own time and role with another uid (a gateway branch's copy of W). (text, whether it may stand in for W's
+        text: a kept 'identical' member or such a copy, read as authored words, absorbing nothing W did not.) In memory only; a carrier of any of
+        them is held (review.hold_carriers): W's words never become readable because W's own row is gone."""
+        own = self.ids.by_key.get(group)
+        if own is None:
+            return []
+        out: list[tuple[str, bool]] = []
+        seen: set[str] = set()
+        for x in sorted(self.ids.groups.get(group, ()), key=lambda x: x.key):
+            if x is own or not x.session or not x.row:
+                continue
+            identical = identity.IDENTICAL_REL in x.relations
+            # a member by a copy rule at W's own time and role whose uid is another (a gateway branch copies W with a
+            # fresh uid and W's time; RECON-62's copy test refuses another uid): W's words as JARVIS copied them
+            copy_at_w = (x.certain and x.via in W_COPY_VIAS and x.role == own.role and x.at is not None
+                         and own.at is not None and x.at == own.at)
+            if not identical and not copy_at_w and not (x.certain and x.via == "same message id"):
+                continue  # a pending hold whose evidence said 'identical' is a candidate for carriers too
+            row = self._bound_row(x.session, x.row)
+            if row is None or identity.is_placeholder(row.content) or not identity.flat(row.content or "") \
+                    or not identity.same_row(identity.exact_of_stone(x), identity.exact_of_source(x.session, row)):
+                continue
+            stand_in = ((identical or copy_at_w) and x.certain and not row.tool_calls_raw and identity.text_form(row.content) == identity.PLAIN_FORM
+                        and not self._absorbs_more(group, row) and not self._is_piece(group, row))
+            f = identity.fold(row.content)
+            if f in seen:
+                out = [(t, s or (stand_in and identity.fold(t) == f)) for t, s in out]
+                continue
+            seen.add(f)
+            out.append((row.content, stand_in))
+        return out
+
+    @staticmethod
+    def _w_unverified_text(group: str, found: list[tuple[str, bool]], verified: dict[str, str],
+                           roots: set[str]) -> str | None:
+        """S7 (RECON-68): the stand-in text of a decision with no verified text, only when it cannot be another withheld
+        text: exactly one stand-in (under fold), every other admin's withheld text verified in hand, and the stand-in
+        identical to none of them (a kept 'identical' hold may have been identical to another withheld text). None
+        otherwise (the decision stays 'not in this backup'; its candidates' carriers are still held)."""
+        stand = {identity.fold(t): t for t, s in found if s}
+        if len(stand) != 1 or not (roots - {group}) <= set(verified):
+            return None
+        text = next(iter(stand.values()))
+        for g, t in verified.items():
+            if g != group and t is not None and identity.IDENTICAL_REL in identity.text_relations(text, t):
+                return None
+        return text
+
     def _decision(self, group: str) -> later.Decision | None:
         if group not in self._decisions:
             self._decisions[group] = later.decision_of(self.ids, group, self.w_texts.get(group), self.backup_sha,
                                                        self._w_absorbed.get(group, ()),
-                                                       piece=group in self._w_piece)
+                                                       piece=group in self._w_piece,
+                                                       unverified=group in self._w_unverified)
         return self._decisions[group]
 
     def later_rows(self, ss: src.SourceSession, msgs: list[src.SourceMessage], plans: list[MessagePlan],
@@ -2637,8 +2720,9 @@ class Processor:
             return False
         if mt.review == identity.PENDING:
             rel = set(self.relations.get(first.key, ()) or mt.stone.relations)
-            if not rel & {*identity.TEXT_RELATIONS, identity.NOT_IN_BACKUP}:
-                return False
+            if not rel & {*identity.TEXT_RELATIONS, identity.NOT_IN_BACKUP} and not (
+                    identity.OTHER_NOT_COMPARED in rel and mt.group in self._w_unverified):
+                return False  # S7 (RECON-68): an unverified text in hand counts as 'nothing to compare' here
         return any(st.title_hidden and not st.anchor and st.certain for st in self.ids.groups.get(mt.group, ()))
 
     async def load_stored(self, ss: src.SourceSession, sess_id: int | None) -> None:
@@ -3647,7 +3731,8 @@ async def _execute(run_id: int, sources: Sources, selection: Selection, checkpoi
             # anywhere whose older text relates to a withheld text) lose the text
             from . import review
             swept = await review.hold_group_rows(s, actor=actor, cause="settle" if settle is not None else "import",
-                                                 texts=dict(proc.w_texts))
+                                                 texts=dict(proc.w_texts), unverified=set(proc._w_unverified),
+                                                 candidates={g: list(v) for g, v in proc.w_candidates.items()})
             for k, v in swept.items():
                 tally.d[k] = int(tally.d.get(k) or 0) + v
             report = tally.report(selection, work.totals, discovery, await missing_from_source(s, sources))

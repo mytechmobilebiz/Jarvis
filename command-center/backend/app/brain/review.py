@@ -579,7 +579,8 @@ async def admin_anchors(session: AsyncSession) -> set[str]:
 
 
 async def hold_group_rows(session: AsyncSession, *, actor: str, cause: str, texts: dict[str, str | None] | None = None,
-                          anchors: Iterable[str] | None = None, ip: str = "") -> dict[str, int]:
+                          anchors: Iterable[str] | None = None, ip: str = "", unverified: Iterable[str] = (),
+                          candidates: dict[str, list[str]] | None = None) -> dict[str, int]:
     """The central sweep of option C (rebuild R2), run by a withhold, every import and Settle, decisions-apply (live
     and restore's removals-only file), a rollback, the legacy reset and the start-up repair: every readable row of a
     conversation a recorded group holds is held (groups.hold_uncertain for an uncertain link, groups.hold_group for a
@@ -588,7 +589,10 @@ async def hold_group_rows(session: AsyncSession, *, actor: str, cause: str, text
     conversation lose their text (hold_updated_copies: rows changed in place, also one later deleted; and
     hold_deleted_copies), and, with withheld texts in hand (texts: anchor -> text, in memory only), so do the rollback
     copies anywhere whose older text relates to one of them, each marked so a rollback puts its row back as a hold of
-    its own (importer.rollback_run). Counts only."""
+    its own (importer.rollback_run). Counts only. Stabilisation S7 (RECON-68): `unverified` names the texts that stand
+    in for a withheld text no verified copy of is here (compared, never counted as in hand: 'none' never follows from
+    them); `candidates` (anchor -> texts a refused member holds, for a withheld text not verified here) are compared
+    for carriers only."""
     from .groups import hold_group, hold_uncertain, recorded
 
     texts = {k: v for k, v in (texts or {}).items() if k and v is not None}
@@ -596,7 +600,7 @@ async def hold_group_rows(session: AsyncSession, *, actor: str, cause: str, text
     await session.flush()
     out["uncertain_rows_held"] = await hold_uncertain(session, actor=actor, cause=cause)
     found = await recorded(session, anchors)
-    all_in_hand = (await admin_anchors(session)) <= set(texts)
+    all_in_hand = (await admin_anchors(session)) <= set(texts) - set(unverified)  # S7 (RECON-68)
     held: list[ArchiveMessage] = []
     for anchor in sorted(found):
         held += await hold_group(session, anchor, found[anchor], texts=texts, all_in_hand=all_in_hand, actor=actor)
@@ -604,7 +608,12 @@ async def hold_group_rows(session: AsyncSession, *, actor: str, cause: str, text
     if texts:
         # rebuild R3: carriers of a withheld text in hand outside the groups (and rows released for one withheld text
         # that carry another), titles and memory items, held per row
-        for k, v in (await hold_carriers(session, texts, actor=actor, cause=cause, ip=ip)).items():
+        for k, v in (await hold_carriers(session, texts, actor=actor, cause=cause, ip=ip,
+                                         candidates=candidates)).items():
+            out[k] = out.get(k, 0) + v
+    elif candidates:
+        for k, v in (await hold_carriers(session, {}, actor=actor, cause=cause, ip=ip,
+                                         candidates=candidates)).items():
             out[k] = out.get(k, 0) + v
     # Rows the database guard held with their conversation (0008: any code wrote them readable) still owe their copies.
     guarded = list((await session.execute(select(
@@ -713,7 +722,7 @@ SCAN_CHUNK = 2000
 
 
 async def hold_carriers(session: AsyncSession, texts: dict[str, str | None], *, actor: str, cause: str,
-                        ip: str = "") -> dict[str, int]:
+                        ip: str = "", candidates: dict[str, list[str]] | None = None) -> dict[str, int]:
     """Carriers of a withheld text in hand (texts: anchor -> text, in memory only), held per row (option C, rebuild
     R3): a full scan of every readable stored row (no prefilter by the withheld text's longest words; only the quick
     filter that never skips a row a reading could relate: identity.quick_related), wherever it is, compared over every
@@ -723,23 +732,31 @@ async def hold_carriers(session: AsyncSession, texts: dict[str, str | None], *, 
     exact row and its content for that withhold (identity.exempt_covers): a row released for one withheld text is held
     for another it carries. What copied it goes (archive.withhold_copies). Conversation titles that carry a withheld
     text are hidden for good (brain_hidden_titles, and their rollback copies), and imported or promoted memory items
-    that carry one are quarantined (admin only, never in a prompt). Counts only."""
-    texts = {a: w for a, w in (texts or {}).items() if a and w and identity.wform(w) is not None}
+    that carry one are quarantined (admin only, never in a prompt). Counts only.
+
+    Stabilisation S7 (RECON-68): `candidates` (anchor -> texts) are, for a withheld text this backup holds no verified
+    copy of, the texts of members an earlier rule took as it (a kept 'identical' hold, a row with W's uid): compared
+    the same way, so a carrier of the withheld words is held although W's own row is gone (fail-closed: a candidate
+    that is not W's text holds more, never less)."""
+    pairs: list[tuple[str, str]] = sorted({(a, w) for a, w in (texts or {}).items()
+                                           if a and w and identity.wform(w) is not None}
+                                          | {(a, w) for a, ws in (candidates or {}).items() for w in ws
+                                             if a and w and identity.wform(w) is not None})
     out = {"carrier_rows_held": 0, "carrier_titles_hidden": 0, "carrier_items_held": 0}
-    if not texts:
+    if not pairs:
         return out
     await session.flush()
-    quicks = {a: identity.quick_of(w) for a, w in texts.items()}
-    anchors = sorted(texts)
+    quicks = [(a, w, identity.quick_of(w)) for a, w in pairs]
+    anchors = sorted({a for a, _ in pairs})
 
     def carries(fields: list[str]) -> list[tuple[str, tuple[str, ...]]]:
-        found = []
-        for a in anchors:
-            if fields and identity.quick_related(fields, quicks[a]):
-                rel = identity.carrier_relations(fields, texts[a])
+        found: dict[str, set[str]] = {}
+        for a, w, q in quicks:
+            if fields and identity.quick_related(fields, q):
+                rel = identity.carrier_relations(fields, w)
                 if rel:
-                    found.append((a, tuple(identity.relation_order(rel))))
-        return found
+                    found.setdefault(a, set()).update(rel)
+        return [(a, tuple(identity.relation_order(found[a]))) for a in anchors if a in found]
 
     cands: dict[int, list[tuple[str, tuple[str, ...]]]] = {}
     last = 0
@@ -792,8 +809,7 @@ async def hold_carriers(session: AsyncSession, texts: dict[str, str | None], *, 
         title = identity.title_base(sess.title)
         while title.endswith("…"):
             title = title[:-1].rstrip()
-        for anchor in anchors:
-            w = texts[anchor]
+        for anchor, w in pairs:
             wf = identity.wform(w)
             if wf is None or wf.generic or not title:
                 continue

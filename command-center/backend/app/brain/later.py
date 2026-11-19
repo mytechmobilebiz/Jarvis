@@ -249,10 +249,14 @@ class Decision:
     # rebuild S4 (RECON-64): w_text is a piece of the withheld fold (this backup's copy of the withheld row absorbed
     # fewer messages): compared, but never 'none' against it
     piece: bool = False
+    # stabilisation S7 (RECON-68): w_text is not W's own row or a copy of it but the text of a member whose kept hold
+    # said 'identical' (importer.Processor._w_unverified): compared, its relations shown, never 'none' ('not compared
+    # with every withheld text' when nothing relates)
+    unverified: bool = False
 
 
 def decision_of(ids: identity.Identities, group: str, w_text: str | None, backup_sha: str,
-                absorbed: Iterable[str] = (), *, piece: bool = False) -> Decision | None:
+                absorbed: Iterable[str] = (), *, piece: bool = False, unverified: bool = False) -> Decision | None:
     own = ids.by_key.get(group)
     if own is None:
         return None
@@ -261,7 +265,8 @@ def decision_of(ids: identity.Identities, group: str, w_text: str | None, backup
                     uids={st.uid for st in certain if st.uid and st.via not in identity.FOLD_VIAS},
                     calls={st.tool_call_id for st in certain if st.tool_call_id},
                     later=own.decided_on != backup_sha,
-                    absorbed={u for u in absorbed if u and u != own.uid}, piece=piece and w_text is not None)
+                    absorbed={u for u in absorbed if u and u != own.uid}, piece=piece and w_text is not None,
+                    unverified=unverified and w_text is not None)
 
 
 def relations(m: src.SourceMessage, here: identity.Exact, d: Decision) -> set[str]:
@@ -288,6 +293,8 @@ def relations(m: src.SourceMessage, here: identity.Exact, d: Decision) -> set[st
         rel.add(identity.REUSED_ROW)
     if d.w_text is None or (d.piece and not rel & set(identity.TEXT_RELATIONS)):
         rel.add(identity.NOT_IN_BACKUP)  # RECON-64: a piece of the withheld text is not the withheld text
+    elif d.unverified and not rel & set(identity.TEXT_RELATIONS):
+        rel.add(identity.OTHER_NOT_COMPARED)  # S7 (RECON-68): an unverified text in hand never gives 'none'
     return rel
 
 
