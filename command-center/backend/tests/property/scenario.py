@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import random
+import re
 from typing import Any
 
 from . import cc_adapter as cc
@@ -47,6 +48,59 @@ def _sync_step(run: Run, label: str, fn: Any, *args: Any) -> Any:
             run.notes.append("BINDING (lenient, skipped): %s: %s" % (label, exc))
             return None
         raise
+
+
+WAITING = re.compile(r"no decision waits on this JARVIS backup; \d+ decision\(s\) wait on another one \(([^)]*)\)")
+WAITING_LINE = re.compile(r"^decisions waiting on another JARVIS backup \((.*)\): \d+$", re.M)
+
+
+def waiting_backups(run: Run, answer: str, tried: hs.Snapshot) -> list[hs.Snapshot]:
+    """The backups Settle's answer names (stabilisation S2, RECON-56): a refusal 'no decision waits on this JARVIS
+    backup; N decision(s) wait on another one (<label or SHA-256 prefix>: N, ...)', or a finished run's lines
+    'decisions waiting on another JARVIS backup (<label>): N'. Each name resolved to a backup this test copy imported
+    (newest first), never the one just settled; [] when the answer names none or a name does not resolve (a refusal
+    then fails the scenario as before: BINDING)."""
+    found = WAITING.search(answer or "")
+    names = [p.rsplit(":", 1)[0].strip() for p in found.group(1).split(", ")] if found else \
+        WAITING_LINE.findall(answer or "")
+    out: list[hs.Snapshot] = []
+    for name in names:
+        snap = next((x for x in reversed(run.imported) if x is not tried and name and (
+            x.sha256.startswith(name) or os.path.basename(x.path) == name)), None)
+        if snap is None:
+            return []
+        if snap not in out:
+            out.append(snap)
+    return out
+
+
+async def settle_decisions(run: Run, decision: hs.Snapshot) -> hs.Snapshot:
+    """Settle (plan 4.1) as the admin runs it: on the decision backup; when the Command Center answers that the
+    decision waits on another backup (RECON-12: a decision is taken on the newest backup that wrote its group's
+    conversations; a withheld row the decision backup no longer holds, 13165), on the backup it names, as its
+    answer says. Returns the backup Settle finished the decisions on (the checks that follow read that one)."""
+    try:
+        answer = await _async(cc.settle, decision.path, run.profile, run.content)
+    except cc.Binding as exc:
+        others = waiting_backups(run, str(exc), decision)
+        if not others:
+            if cc.LENIENT:
+                run.notes.append("BINDING (lenient, skipped): settle: %s" % exc)
+                return decision
+            raise
+    else:
+        # finished here; a decision of the same run may still wait on another backup (a later withhold reopened an
+        # earlier decision taken on an older backup: N-A)
+        for snap in waiting_backups(run, answer or "", decision):
+            run.notes.append("settle: a decision waits on backup %s (%s), settled there too (RECON-56)" % (
+                snap.n, snap.sha256[:12]))
+            await _step(run, "settle", _async(cc.settle, snap.path, run.profile, run.content))
+        return decision
+    for snap in others:
+        run.notes.append("settle: the decisions wait on backup %s (%s), settled there (RECON-56)" % (snap.n,
+                                                                                                snap.sha256[:12]))
+        await _step(run, "settle", _async(cc.settle, snap.path, run.profile, run.content))
+    return others[0]
 
 
 async def withhold_some(run: Run, snap: hs.Snapshot, *, short_ok: bool = False, once: bool = False) -> int:
@@ -126,14 +180,14 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
     await withhold_some(run, decision)
     if not run.withholds:
         return run
-    await _step(run, "settle", _async(cc.settle, decision.path, profile, content))
+    settled = await settle_decisions(run, decision)
     st = await state()
     holds = await run.api.holds()
     listed = {h.get("message") for h in holds}
     fam_a = o.family(run, decision, st["rows"], st["stones"])
     o.check_certain_derive(run, "A2", st, listed, fam_a, "test copy after Settle")
-    o.check_evidence(run, "A3", holds, st, decision, "test copy after Settle")
-    await check_c(run, "test copy after Settle", decision, holds=holds)
+    o.check_evidence(run, "A3", holds, st, settled, "test copy after Settle")
+    await check_c(run, "test copy after Settle", settled, holds=holds)
     await o.scripted_review(run, holds, st, "test copy")
     o.check_released_blank(run, "A1", await state(), "test copy after the review")
     # the documented next import (DEPLOY_WINDOWS, RELEASE_NOTES section 4: a released row's text comes back at the
@@ -149,14 +203,14 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
         # the second-withhold arm: another message withheld on the test copy after the review (a text of fewer than
         # 16 characters may be chosen), Settle, checks, review and the next import again
         if await withhold_some(run, decision, short_ok=rng.random() < 0.3, once=True):
-            await _step(run, "settle", _async(cc.settle, decision.path, profile, content))
+            settled = await settle_decisions(run, decision)
             st = await state()
             holds = await run.api.holds()
             fam_a = o.family(run, decision, st["rows"], st["stones"])
             o.check_certain_derive(run, "A2", st, {h.get("message") for h in holds}, fam_a,
                                    "test copy after the second withhold")
-            o.check_evidence(run, "A3", holds, st, decision, "test copy after the second withhold")
-            await check_c(run, "test copy after the second withhold", decision, holds=holds)
+            o.check_evidence(run, "A3", holds, st, settled, "test copy after the second withhold")
+            await check_c(run, "test copy after the second withhold", settled, holds=holds)
             await o.scripted_review(run, holds, st, "test copy, second withhold")
             o.check_released_blank(run, "A1", await state(), "test copy after the second review")
             await run.import_(decision)
