@@ -42,7 +42,9 @@ RV3_BUG_SEEDS = (1, 9, 16, 18, 22, 28, 33, 44, 45, 47, 49, 51, 56, 59, 66, 73, 8
                  342, 344, 349)
 SEEDS = list(range(SEED_BASE, SEED_BASE + N_SEEDS))
 # rebuild R5: the recorded seeds (progress/R5.md says what each one covers or found)
-RECORDED_SEEDS: tuple[int, ...] = ()
+# (each passed in both live-history arms of the fresh runs; what it covers: progress/R5.md)
+RECORDED_SEEDS: tuple[int, ...] = (13001, 13003, 13004, 13005, 13006, 13007, 13015, 13025, 13050, 13051, 13088, 13110,
+                                   13125, 13140, 13158, 13176, 13370)
 if os.environ.get("ORACLE_RECORDED", "1") != "1":
     RECORDED_SEEDS = ()
 if os.environ.get("ORACLE_RV3_SEEDS", "1") != "1":

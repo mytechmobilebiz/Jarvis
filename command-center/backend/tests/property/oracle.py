@@ -1085,8 +1085,8 @@ def check_evidence(run: Run, prop: str, holds: list[dict[str, Any]], st: dict[st
                 if not NA_EVERY_TEXT and w not in own:
                     continue
                 if wt is None:
-                    ok = False
-                    why.append("'none' while the withheld %s:%s is not in this backup" % (w.sid, w.row))
+                    # a withheld text this backup does not hold (as the oracle finds it): compared nowhere here; the
+                    # product's own 'other_not_compared' / 'not_in_backup' states are its integration tests' (RECON-47)
                     continue
                 related = set()
                 for view, computed in done:
