@@ -29,6 +29,18 @@ async def check_c(run: Run, where: str, snap: hs.Snapshot, *, holds: list | None
     return o.check_c(run, where, st, gs, snap, holds if holds is not None else await run.api.holds())
 
 
+async def carrier_only(run: Run, snap: hs.Snapshot, st: dict[str, Any], fam: set[str], grp: set[str]) -> set[str]:
+    """Rebuild S3 (D-45): the family's conversations only option C's pending per-row carrier holds bind (no group
+    conversation, the ground truth's or recorded by the Command Center). B1 and B5 do not demand i22's family promise
+    of their readable rows; B2 and every other check keep the whole family. Noted per run, never silent."""
+    gs = await o.groups_state()
+    out = o.carrier_only_sids(run, snap, st["rows"], st["stones"], fam, set(grp) | gs["members"])
+    if out:
+        run.notes.append("D-45: %d family conversation(s) bound only by per-row carrier holds: %s" % (
+            len(out), " ".join(sorted(out))))
+    return out
+
+
 async def _step(run: Run, label: str, coro: Any) -> Any:
     """A Command Center entry point; a missing one fails the seed (BINDING), or is noted under ORACLE_LENIENT=1."""
     try:
@@ -268,7 +280,8 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
             post = await state()
             fam = o.family(run, snap, post["rows"], post["stones"])
             grp = await check_c(run, "later backup %s" % snap.n, snap)
-            o.check_stored_unchanged(run, "B1", pre, post, fam, "later backup %s" % snap.n, snap, grp)
+            c_only = await carrier_only(run, snap, post, fam, grp)
+            o.check_stored_unchanged(run, "B1", pre, post, fam, "later backup %s" % snap.n, snap, grp, c_only)
             o.check_no_readable_leak(run, "B2", post, fam, snap, "later backup %s" % snap.n)
     later = sim.backup("later")
     pre = await state()
@@ -279,10 +292,11 @@ async def run_seed(seed: int, tmp: Any, client: Any, restore: Any = None) -> Run
     listed = {h.get("message") for h in holds}
     fam = o.family(run, later, post["rows"], post["stones"])
     grp = await check_c(run, "later backup X", later, holds=holds)
-    o.check_stored_unchanged(run, "B1", pre, post, fam, "later backup X", later, grp)
+    c_only = await carrier_only(run, later, post, fam, grp)
+    o.check_stored_unchanged(run, "B1", pre, post, fam, "later backup X", later, grp, c_only)
     o.check_no_readable_leak(run, "B2", post, fam, later, "later backup X")
     o.check_new_certain(run, "B3", pre, post, listed, fam, "later backup X")
-    o.check_safe_copies(run, "B5", pre, post, fam, "later backup X")
+    o.check_safe_copies(run, "B5", pre, post, fam, "later backup X", c_only)
     o.check_evidence(run, "C3-evidence", [h for h in holds if h.get("message") in
                                           {r["id"] for r in post["rows"] if r["source_key"] not in o.by_key(pre)}],
                      post, later, "holds of the later backup")
@@ -432,10 +446,11 @@ async def run_replay(seed: int, tmp: Any, client: Any) -> Run:
                 listed = {h.get("message") for h in holds}
                 fam = o.family(run, snap, post["rows"], post["stones"])
                 where = "rv3 replay, after %s" % ev.line
-                o.check_stored_unchanged(run, "RV3-B1", pre, post, fam, where)
+                c_only = await carrier_only(run, snap, post, fam, o.truth_group(run, snap, post))
+                o.check_stored_unchanged(run, "RV3-B1", pre, post, fam, where, carrier_only=c_only)
                 o.check_no_readable_leak(run, "RV3-B2", post, fam, snap, where)
                 o.check_new_certain(run, "RV3-B3", pre, post, listed, fam, where)
-                o.check_safe_copies(run, "RV3-B5", pre, post, fam, where)
+                o.check_safe_copies(run, "RV3-B5", pre, post, fam, where, c_only)
         elif ev.kind == "withhold":
             rows = [r for r in (await state())["rows"] if r["sid"] == ev.sid
                     and str(r.get("source_message_id")) == str(ev.row)]

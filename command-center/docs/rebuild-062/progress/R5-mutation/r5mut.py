@@ -12,6 +12,7 @@ CA, RE, DE, SE, SP, RC, GC = (P + f for f in ("test_oracle_carriers_r2.py", "tes
                                                "test_oracle_derived3.py", "test_oracle_seeds_r3.py",
                                                "test_oracle_spans_c3.py", "test_oracle_released_c3.py",
                                                "test_oracle_groups_c.py"))
+F3 = P + "test_oracle_family_s3.py"
 M = [
  ("cr2:oracle_fold_off", [(OR, '    return unicodedata.normalize("NFKC", t).translate(_IGN)\n', '    return text or ""\n')],
   [CA + "::test_oci_the_oracle_demands_a_carrier_in_another_case_or_form"]),
@@ -63,6 +64,23 @@ M = [
   [GC + "::test_o1_a_group_conversation_not_recorded_is_reported"]),
  ("r5:o11_group_title_off", [(OR, '        if sid in group:\n            run.bad("O11"', '        if False:\n            run.bad("O11"')],
   [GC + "::test_o11_a_group_conversations_title_is_hidden"]),
+ # rebuild S3 (D-45): the carrier-only narrowing of B1 and B5
+ ("s3:carrier_only_kept_too", [(OR, '    return stone.get("via") == CARRIER_VIA and stone.get("review") == "pending"',
+                                '    return stone.get("via") == CARRIER_VIA')],
+  [F3 + "::test_s3_b5_still_reports_a_withheld_conversations_new_row_a_linked_or_kept_carrier_and_a_leak"]),
+ ("s3:carrier_only_group_too", [(OR, "    return set(fam) - i22 - set(group)", "    return set(fam) - i22")],
+  [F3 + "::test_s3_a_conversation_only_a_pending_carrier_hold_binds_is_carrier_only"]),
+ ("s3:carrier_only_links_off", [(OR, "    i22 = family(run, current, stored, [s for s in stones if not per_row_carrier(s)])",
+                                 "    i22 = {w.sid for w in run.withholds}")],
+  [F3 + "::test_s3_b5_still_reports_a_withheld_conversations_new_row_a_linked_or_kept_carrier_and_a_leak"]),
+ ("s3:b1_carrier_withheld_too", [(OR, '        if (ra["sid"] in carrier_only and ra["sid"] not in group and not ra.get("withheld")',
+                                  '        if (ra["sid"] in carrier_only and ra["sid"] not in group')],
+  [F3 + "::test_s3_b1_still_reports_a_family_row_gone_a_held_carrier_readable_and_a_carrier_conversation_leak"]),
+ ("s3:b1_carrier_leak_off", [(OR, "                    and run.leaks(versions_for(run.sim, rb)):", "                    and False:")],
+  [F3 + "::test_s3_b1_still_reports_a_family_row_gone_a_held_carrier_readable_and_a_carrier_conversation_leak"]),
+ ("s3:b5_carrier_leak_off", [(OR, '            if norm(r.get("content")) and run.leaks(versions_for(run.sim, r)):',
+                              "            if False:")],
+  [F3 + "::test_s3_b5_still_reports_a_withheld_conversations_new_row_a_linked_or_kept_carrier_and_a_leak"]),
 ]
 only = sys.argv[1:]
 db = "r5m"

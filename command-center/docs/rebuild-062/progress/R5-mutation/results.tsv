@@ -42,3 +42,9 @@ gd1:oracle_child_edge_off	tests/property/oracle.py	CAUGHT	2 failed in 0.28s	test
 gd1:oracle_child_both_ways	tests/property/oracle.py	CAUGHT	1 failed in 0.28s	tests/property/test_oracle_groups_c.py::test_o1_down_only_kinds_join_from_the_parent_down_only
 r5:o1_recorded_off	tests/property/oracle.py	CAUGHT	1 failed in 0.30s	tests/property/test_oracle_groups_c.py::test_o1_a_group_conversation_not_recorded_is_reported
 r5:o11_group_title_off	tests/property/oracle.py	CAUGHT	1 failed in 0.26s	tests/property/test_oracle_groups_c.py::test_o11_a_group_conversations_title_is_hidden
+s3:carrier_only_kept_too	tests/property/oracle.py	CAUGHT	1 failed in 0.41s	tests/property/test_oracle_family_s3.py::test_s3_b5_still_reports_a_withheld_conversations_new_row_a_linked_or_kept_carrier_and_a_leak
+s3:carrier_only_group_too	tests/property/oracle.py	CAUGHT	1 failed in 0.46s	tests/property/test_oracle_family_s3.py::test_s3_a_conversation_only_a_pending_carrier_hold_binds_is_carrier_only
+s3:carrier_only_links_off	tests/property/oracle.py	CAUGHT	1 failed in 0.54s	tests/property/test_oracle_family_s3.py::test_s3_b5_still_reports_a_withheld_conversations_new_row_a_linked_or_kept_carrier_and_a_leak
+s3:b1_carrier_withheld_too	tests/property/oracle.py	CAUGHT	1 failed in 0.39s	tests/property/test_oracle_family_s3.py::test_s3_b1_still_reports_a_family_row_gone_a_held_carrier_readable_and_a_carrier_conversation_leak
+s3:b1_carrier_leak_off	tests/property/oracle.py	CAUGHT	1 failed in 0.39s	tests/property/test_oracle_family_s3.py::test_s3_b1_still_reports_a_family_row_gone_a_held_carrier_readable_and_a_carrier_conversation_leak
+s3:b5_carrier_leak_off	tests/property/oracle.py	CAUGHT	1 failed in 0.52s	tests/property/test_oracle_family_s3.py::test_s3_b5_still_reports_a_withheld_conversations_new_row_a_linked_or_kept_carrier_and_a_leak

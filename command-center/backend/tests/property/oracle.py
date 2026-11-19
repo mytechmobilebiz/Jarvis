@@ -782,6 +782,21 @@ def family(run: Run, current: hs.Snapshot, stored: list[dict[str, Any]], stones:
             return fam
 
 
+def per_row_carrier(stone: dict[str, Any]) -> bool:
+    """Option C (RECON-27): a pending carrier hold, held per row on its own (i22 made no such stone: D-26)."""
+    return stone.get("via") == CARRIER_VIA and stone.get("review") == "pending"
+
+
+def carrier_only_sids(run: Run, current: hs.Snapshot, stored: list[dict[str, Any]], stones: list[dict[str, Any]],
+                      fam: set[str], group: set[str] = frozenset()) -> set[str]:
+    """Rebuild S3 (RECON-58, D-45): the conversations of the family `fam` that are in it only because option C's
+    pending per-row carrier holds bind them: i22's family computed without those stones (every stone i22 made, every
+    link, uid and copied history still counts) does not reach them, and they are no group conversation (the ground
+    truth's or the Command Center's own) either."""
+    i22 = family(run, current, stored, [s for s in stones if not per_row_carrier(s)])
+    return set(fam) - i22 - set(group)
+
+
 def decision_family(run: Run, w: Withhold, current: hs.Snapshot, st: dict[str, Any]) -> set[str]:
     """The family (5.1) of one decision: family() started from this withhold and its own group's stones only."""
     proxy = copy.copy(run)
@@ -1237,14 +1252,28 @@ def compare_outside(run: Run, prop: str, mine: dict[str, Any], plain: dict[str, 
 
 
 def check_stored_unchanged(run: Run, prop: str, pre: dict[str, Any], post: dict[str, Any], fam: set[str],
-                           where: str, snap: hs.Snapshot | None = None, group: set[str] = frozenset()) -> None:
+                           where: str, snap: hs.Snapshot | None = None, group: set[str] = frozenset(),
+                           carrier_only: set[str] = frozenset()) -> None:
     """B1 over i22's family; option C (rebuild R5) adds the group's conversations for every check but the
-    disappearance of a row (Hermes rewinds rows of any conversation; i22 promised to keep only the family's)."""
+    disappearance of a row (Hermes rewinds rows of any conversation; i22 promised to keep only the family's).
+
+    `carrier_only` (rebuild S3, D-45): conversations of `fam` that only option C's pending per-row carrier holds bind
+    (carrier_only_sids: no group conversation, no stone i22 made, no link, uid or copied history of i22's family).
+    i22 made no stone there, so i22's promise never covered their readable rows: those follow a plain import
+    (RECON-27, carriers outside the groups are held per row) and are reported only when their new text carries a
+    withheld message's words (ground truth). Every withheld stored row there is still checked as a family row."""
     a, b = by_key(pre), by_key(post)
     for k, ra in a.items():
         if ra["sid"] not in fam and ra["sid"] not in group:
             continue
         rb = b.get(k)
+        if (ra["sid"] in carrier_only and ra["sid"] not in group and not ra.get("withheld")
+                and not released_pending(ra, pre)):
+            if rb is not None and not rb.get("withheld") and norm(rb.get("content")) != norm(ra.get("content")) \
+                    and run.leaks(versions_for(run.sim, rb)):
+                run.bad(prop, "%s: stored row %s (%s) of a conversation a carrier hold binds changed to a text "
+                              "carrying withheld words: %r" % (where, k, ra["sid"], (rb.get("content") or "")[:40]))
+            continue
         if rb is None and REKEYED:
             rb = rekeyed(ra, post, snap)  # round 3 (13560): the same archive row under its uid key
         if rb is None and ra["sid"] not in fam:
@@ -1315,15 +1344,24 @@ def check_new_certain(run: Run, prop: str, pre: dict[str, Any], post: dict[str, 
 
 
 def check_safe_copies(run: Run, prop: str, pre: dict[str, Any], post: dict[str, Any], fam: set[str],
-                      where: str) -> None:
+                      where: str, carrier_only: set[str] = frozenset()) -> None:
+    """B5. `carrier_only` (rebuild S3, D-45): a new readable row of a conversation only option C's pending per-row
+    carrier holds bind (no stone i22 made: i22's family never held it) follows a plain import; it is reported when
+    it carries a withheld message's words (ground truth). Its rows are not safe copies of the family's either."""
     before = by_key(pre)
     readable = set()
     for r in pre["rows"]:
-        if r["sid"] in fam and not r.get("withheld"):
+        if r["sid"] in fam and r["sid"] not in carrier_only and not r.get("withheld"):
             readable.add((r.get("role"), r.get("tool_call_id") or "", tkey(epoch(r.get("at")) or 0.0),
                           norm(r.get("content"))))
     for r in post["rows"]:
         if r["sid"] not in fam or r.get("withheld") or r["source_key"] in before:
+            continue
+        if r["sid"] in carrier_only:
+            if norm(r.get("content")) and run.leaks(versions_for(run.sim, r)):
+                run.bad(prop, "%s: new row %s (%s:%s %s) of a conversation a carrier hold binds is readable and "
+                              "carries withheld words: %r" % (where, r["id"], r["sid"], r.get("source_message_id"),
+                                                             r.get("role"), (r.get("content") or "")[:60]))
             continue
         k = (r.get("role"), r.get("tool_call_id") or "", tkey(epoch(r.get("at")) or 0.0), norm(r.get("content")))
         if k not in readable:
