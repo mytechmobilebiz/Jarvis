@@ -378,3 +378,27 @@ async def test_skc_d_the_older_text_of_a_group_row_changed_then_deleted_keeps_no
     await withhold(client, (await message_of("sd_p", pa[1]))[0].id)
     assert (await group())["sd_c"] == ("child", "member")
     assert await copies_with(mark) == 0
+
+
+async def test_skc_a_markerless_legacy_gateway_reset_joins_the_group_and_is_held(client, fx):
+    """Round 1 groups-paths P1 (HIGH, case A), gd1:child_edge_off (rebuild R7: the round-2 name, its test not in the
+    rebuilt tree before): an older gateway's reset wrote the new session with parent_session_id only (no _reset_from
+    marker, no row copied) and ended the parent 'new_session'. W in the parent: the markerless child joins its group
+    ('child', from the parent down only), every one of its rows is held with its conversation, and its title is hidden
+    by membership; an unrelated conversation stays readable."""
+    db = fx["db"]
+    pa = conversation(db, "lgr_p", T, [("user", "What is the deal worth?"), ("assistant", secret("zqlgr"))],
+                      end_reason="new_session", source="telegram", title="Deal value")
+    ca = conversation(db, "lgr_c", T + DAY, [("user", "New topic: the follow-up mail."), ("assistant", "Here it is.")],
+                      parent="lgr_p", source="telegram", title="Follow-up mail")
+    ua = conversation(db, "lgr_u", T + 2 * DAY, [("user", "Book the train."), ("assistant", "Booked.")], title="Train")
+    await run(fx)
+    assert {await state("lgr_c", r) for r in ca} == {"readable"}
+    await withhold(client, (await message_of("lgr_p", pa[1]))[0].id)
+    found = await group()
+    assert found["lgr_p"] == ("withheld_here", "member") and found["lgr_c"] == ("child", "member")
+    assert {await state("lgr_c", r) for r in ca} == {"held"}
+    assert await title("lgr_c") == ""
+    assert "lgr_u" not in found and {await state("lgr_u", r) for r in ua} == {"readable"}
+    await run(fx)  # the next import keeps them held
+    assert {await state("lgr_c", r) for r in ca} == {"held"}

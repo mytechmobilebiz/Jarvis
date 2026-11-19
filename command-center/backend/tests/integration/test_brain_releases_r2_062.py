@@ -217,6 +217,36 @@ async def test_skC_a_row_released_for_w1_that_carries_w2_is_held_when_w2_is_with
     assert await state("rl_p", pa[0]) == "held"
 
 
+async def test_rel3_hold_group_rows_compares_a_released_row_with_other_withheld_texts(client, fx, monkeypatch):
+    """rel3:hgr_foreign_off (rebuild R7: the round-3 name, its test not in the rebuilt tree before). The central sweep's
+    own N-B check (groups.hold_group, from review.hold_group_rows): X in W1's conversation repeats W2; released in one
+    click for W1 while W2 was not withheld, X is readable; withholding W2 holds X again for W2 by the group sweep alone,
+    with the stored-row carriers scan (review.hold_carriers, which would also hold it) switched off for that withhold."""
+    db = fx["db"]
+    w2 = secret("zqrelf")
+    pa = conversation(db, "rl_p", T, [("user", "Forward this: %s" % w2), ("assistant", secret("zqrelg"))])
+    qa = add_q(db, w2)
+    await run(fx)
+    await withhold(client, await row_id("rl_p", pa[1]))
+    x = await row_id("rl_p", pa[0])
+    assert x in await one_click(client, "rl_p")
+    await run(fx)
+    assert await state("rl_p", pa[0]) == "readable"
+
+    async def no_carriers_scan(*args, **kwargs) -> dict[str, int]:
+        return {}
+
+    monkeypatch.setattr(review, "hold_carriers", no_carriers_scan)
+    await withhold(client, await row_id("rl_q", qa[1]))
+    assert await state("rl_p", pa[0]) == "held"
+    st = await stone_of("rl_p", pa[0])
+    assert st.via == identity.CARRIER_HOLD and st.review == identity.PENDING
+    assert st.anchor_key == (await stone_of("rl_q", qa[1])).source_key  # held for W2, the withheld text it carries
+    monkeypatch.undo()
+    await run(fx)
+    assert await state("rl_p", pa[0]) == "held"
+
+
 async def test_rel3_typed_release_after_a_later_withhold_is_held_again_by_the_next_import(client, fx):
     """X (held with W1's conversation, 'none' then) carries W2: after the later withhold it says 'later_withhold'; an
     admin's typed release of X under W1's group never frees it from W2: the next import holds it again (for W2)."""
