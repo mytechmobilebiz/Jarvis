@@ -572,10 +572,10 @@ async def list_unlisted(s: AsyncSession, anchor: str, members: dict[str, Member]
                    ~select(BrainTombstone.source_key).where(
                        BrainTombstone.source_key == ArchiveMessage.source_key).exists())
             .order_by(ArchiveMessage.id))).all():
-        waits, seen_on = await _release_waits(s, anchor, sid, row)
+        uncertain = members[sid].uncertain
+        waits, seen_on = await _release_waits(s, anchor, sid, row, uncertain=uncertain)
         if waits:
             continue  # an admin released this exact row for this group: it waits for its text (RECON-52)
-        uncertain = members[sid].uncertain
         relations = (identity.UNCERTAIN_REL,) if uncertain else (identity.NOT_IN_BACKUP,)
         # decided on the newest backup that held this row (S2, RECON-55; it was '': a release then took the newest
         # backup of the conversation, which may not hold the row, and covered a content no one had seen)
@@ -592,7 +592,8 @@ async def list_unlisted(s: AsyncSession, anchor: str, members: dict[str, Member]
     return n
 
 
-async def _release_waits(s: AsyncSession, anchor: str, sid: str, row: ArchiveMessage) -> tuple[bool, str]:
+async def _release_waits(s: AsyncSession, anchor: str, sid: str, row: ArchiveMessage, *, uncertain: bool = False
+                         ) -> tuple[bool, str]:
     """Stabilisation S1 (RECON-52): a withheld row an admin released for this group (its flag says so, and a trusted
     release of this exact JARVIS row for this group exists) is not an unlisted row: the admin decided it, and it
     stays without its text until an import of a backup that holds the content the release covers brings it back
@@ -623,6 +624,14 @@ async def _release_waits(s: AsyncSession, anchor: str, sid: str, row: ArchiveMes
             .order_by(ImportRun.id.desc()).limit(1))).first()
         if seen is None:
             return True, ""
+        if uncertain and not await _held_since(s, row, since):
+            # S3 (RECON-59): a row of an uncertain conversation the admin released one by one with the typed word
+            # (O-D1, B6) waits for its text while no import run since the release held the row (no backup since
+            # held it: JARVIS dropped, compacted or renumbered it, or the run has read nothing yet). Listed again it
+            # asked the admin a second time for a row they decided, with nothing new to compare, and kept the export
+            # waiting for good (13075, 13159). It stays withheld meanwhile; a backup holding it again lists it as
+            # before (below) when its text does not come back.
+            return True, ""
         # S2 (RECON-55): listed again, decided on the newest backup whose import held this stored row (it recorded
         # the row), never on a backup that does not hold it (a stale stored row JARVIS dropped, compacted or
         # renumbered since: a release of that hold covered a content no one compared, and no import of that backup
@@ -632,6 +641,14 @@ async def _release_waits(s: AsyncSession, anchor: str, sid: str, row: ArchiveMes
         seen_on = seen_on or (identity.run_sha256(seen[1]) if seen[0] == "running"
                               else await identity.newest_holding_backup(s, row))
     return False, seen_on
+
+
+async def _held_since(s: AsyncSession, row: ArchiveMessage, since: Any) -> bool:
+    """Whether an import run started after `since` (not rolled back) held this stored row (recorded it: S2's
+    identity.run_holds_row, RECON-55)."""
+    return bool(await s.scalar(select(ImportRecord.id).join(ImportRun, ImportRun.id == ImportRecord.run_id).where(
+        ImportRun.status != "rolled_back", ImportRun.started_at > since,
+        ImportRecord.target_table == "archive_messages", ImportRecord.target_id == row.id).limit(1)))
 
 
 async def _released(s: AsyncSession, anchor: str, sid: str, row: ArchiveMessage) -> bool:

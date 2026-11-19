@@ -910,7 +910,22 @@ CREATE OR REPLACE FUNCTION brain_withhold_pending() RETURNS jsonb LANGUAGE sql S
                                       OR (m.withheld AND EXISTS (
                                           SELECT 1 FROM brain_tombstones t
                                            WHERE t.source_key = m.source_key AND t.reason = 'withheld by an admin'
-                                             AND t.review = 'pending')))),
+                                             AND t.review = 'pending'
+                                             -- S3 (RECON-60): a pending hold of ANOTHER group (a row of two groups)
+                                             -- on a row this uncertain group's admin released (trusted, that exact
+                                             -- row) is that other group's hold, which travels in the file as a hold;
+                                             -- this group's own pending hold always waits
+                                             AND (coalesce(nullif(t.anchor_key, ''), t.source_key) = w.anchor_key
+                                                  OR NOT EXISTS (
+                                                      SELECT 1 FROM brain_withhold_exemptions e
+                                                       WHERE e.anchor_key = w.anchor_key
+                                                         AND e.source_session_id = w.source_session_id
+                                                         AND e.source_row_id = m.source_message_id
+                                                         AND e.kind = 'release' AND e.trusted
+                                                         AND brain_exact(e.role, e.tool_call_id, e.source_at,
+                                                                         e.source_uid, m.role, m.tool_call_id, m.at,
+                                                                         brain_row_uid(m.source_uid, m.source_key))))
+                                          )))),
         -- rebuild R2: readable rows of a group conversation no release of each group holding it covers (the sweep,
         -- R10 and the database guard hold them: 0 after any of them), and the rows held with their conversation that
         -- wait for an admin (pending)
