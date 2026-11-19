@@ -1,0 +1,66 @@
+seed runs 1800, seeds 900, failing seeds 53, failing runs 80
+A3-nib                 29 runs  15 seeds  e.g. 13138h0 13138h1 13185h0 13185h1 13300h0 13300h1 13340h0 13340h1 13360h0 13360h1
+A5                     25 runs  25 seeds  e.g. 13010h1 13024h1 13062h1 13078h1 13091h1 13098h1 13159h1 13201h1 13219h1 13233h1
+B7-restore             11 runs   6 seeds  e.g. 13000h0 13000h1 13325h0 13325h1 13550h1 13775h0 13775h1 13800h0 13800h1 13825h0
+A3-other                7 runs   4 seeds  e.g. 13138h0 13138h1 13185h0 13185h1 13300h0 13300h1 13539h0
+B2                      4 runs   2 seeds  e.g. 13207h0 13207h1 13457h0 13457h1
+O2-group-readable       4 runs   2 seeds  e.g. 13315h0 13315h1 13418h0 13418h1
+O3                      4 runs   2 seeds  e.g. 13457h0 13457h1 13756h0 13756h1
+B4                      4 runs   2 seeds  e.g. 13517h0 13517h1 13658h0 13658h1
+B5                      2 runs   1 seeds  e.g. 13207h0 13207h1
+A1                      2 runs   1 seeds  e.g. 13324h0 13324h1
+failing now, passing in both arms in R5 (final oracle rerun or first run): 14 [13024, 13138, 13185, 13340, 13360, 13364, 13457, 13466, 13476, 13621, 13756, 13846, 13890, 13893]
+R5 failing seeds now passing in both arms: 229
+13000 {'h0': ['B7-restore'], 'h1': ['B7-restore']} | R5: {'h0': ['B1-changed', 'B7-restore'], 'h1': ['B1-changed', 'B7-restore']}
+13010 {'h0': [], 'h1': ['A5']} | R5: {'h0': ['A3-nib-second', 'A5'], 'h1': ['A3-nib-second', 'A5']}
+13024 {'h0': [], 'h1': ['A5']} | R5: {}
+13062 {'h0': [], 'h1': ['A5']} | R5: {'h0': ['A3-nib-second', 'A3-other'], 'h1': ['A3-nib-second', 'A3-other', 'A5']}
+13078 {'h0': [], 'h1': ['A5']} | R5: {'h0': [], 'h1': ['A5']}
+13091 {'h0': [], 'h1': ['A5']} | R5: {'h0': ['A4'], 'h1': ['A4', 'A5']}
+13098 {'h0': [], 'h1': ['A5']} | R5: {'h0': ['A5', 'O2-group-readable'], 'h1': ['A5']}
+13138 {'h0': ['A3-nib', 'A3-other'], 'h1': ['A3-nib', 'A3-other']} | R5: {}
+13159 {'h0': [], 'h1': ['A5']} | R5: {'h0': ['A1', 'A5', 'B1-disappeared', 'B2', 'B5', 'O1', 'O11', 'O2-group-readable', 'O8'], 'h1': ['A1', 'A5', 'B1-disappeared', 'B2', 'B5', 'O1', 'O11', 'O2-group-readable', 'O8']}
+13185 {'h0': ['A3-nib', 'A3-other'], 'h1': ['A3-nib', 'A3-other']} | R5: {}
+13201 {'h0': [], 'h1': ['A5']} | R5: {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13207 {'h0': ['B2', 'B5'], 'h1': ['B2', 'B5']} | R5: {'h0': ['B2', 'B5'], 'h1': ['B2', 'B5']}
+13219 {'h0': [], 'h1': ['A5']} | R5: {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13233 {'h0': [], 'h1': ['A5']} | R5: {'h0': [], 'h1': ['A5']}
+13235 {'h0': [], 'h1': ['A5']} | R5: {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13256 {'h0': [], 'h1': ['A5']} | R5: {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13300 {'h0': ['A3-nib', 'A3-other'], 'h1': ['A3-nib', 'A3-other']} | R5: {'h0': ['A3-nib', 'A3-other', 'B5'], 'h1': ['A3-nib', 'A3-other', 'B5']}
+13315 {'h0': ['O2-group-readable'], 'h1': ['O2-group-readable']} | R5: {'h0': ['O2-group-readable'], 'h1': ['O2-group-readable']}
+13324 {'h0': ['A1', 'A5'], 'h1': ['A1']} | R5: {'h0': ['A1', 'A5'], 'h1': ['A1', 'A5', 'B2']}
+13325 {'h0': ['B7-restore'], 'h1': ['B7-restore']} | R5: {'h0': ['B7-restore'], 'h1': ['B7-restore']}
+13340 {'h0': ['A3-nib'], 'h1': ['A3-nib']} | R5: {}
+13360 {'h0': ['A3-nib'], 'h1': ['A3-nib']} | R5: {}
+13364 {'h0': ['A3-nib'], 'h1': ['A3-nib']} | R5: {}
+13418 {'h0': ['O2-group-readable'], 'h1': ['O2-group-readable']} | R5: {'h0': ['O2-group-readable'], 'h1': ['O2-group-readable']}
+13449 {'h0': [], 'h1': ['A5']} | R5: {'h0': [], 'h1': ['A5']}
+13450 {'h0': [], 'h1': ['A5']} | R5: {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13457 {'h0': ['B2', 'O3'], 'h1': ['B2', 'O3']} | R5: {}
+13466 {'h0': [], 'h1': ['A5']} | R5: {}
+13468 {'h0': [], 'h1': ['A5']} | R5: {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13476 {'h0': ['A3-nib'], 'h1': ['A3-nib']} | R5: {}
+13517 {'h0': ['B4'], 'h1': ['B4']} | R5: {'h0': ['B4', 'B5'], 'h1': ['B4', 'B5']}
+13530 {'h0': [], 'h1': ['A5']} | R5: {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13539 {'h0': ['A3-nib', 'A3-other'], 'h1': []} | R5: {'h0': [], 'h1': ['B5']}
+13550 {'h0': [], 'h1': ['B7-restore']} | R5: {'h0': [], 'h1': ['B7-restore']}
+13556 {'h0': ['A3-nib'], 'h1': ['A3-nib']} | R5: {'h0': ['A3-other'], 'h1': ['A3-other']}
+13584 {'h0': ['A3-nib'], 'h1': ['A3-nib']} | R5: {'h0': ['B1-changed'], 'h1': ['B1-changed']}
+13621 {'h0': ['A3-nib'], 'h1': ['A3-nib']} | R5: {}
+13622 {'h0': ['A3-nib'], 'h1': ['A3-nib']} | R5: {'h0': ['A3-nib-second', 'B5'], 'h1': ['A3-nib-second']}
+13626 {'h0': ['A5'], 'h1': []} | R5: {'h0': ['A3-none', 'A5'], 'h1': ['A3-none']}
+13658 {'h0': ['B4'], 'h1': ['B4']} | R5: {'h0': ['A3-other', 'B4', 'B5'], 'h1': ['A3-other', 'B4', 'B5']}
+13659 {'h0': [], 'h1': ['A5']} | R5: {'h0': [], 'h1': ['A5']}
+13687 {'h0': ['A5'], 'h1': []} | R5: {'h0': ['A5'], 'h1': []}
+13689 {'h0': [], 'h1': ['A5']} | R5: {'h0': ['A3-nib-second'], 'h1': ['A3-nib-second', 'A5']}
+13706 {'h0': [], 'h1': ['A5']} | R5: {'h0': [], 'h1': ['A5']}
+13756 {'h0': ['O3'], 'h1': ['O3']} | R5: {}
+13773 {'h0': ['A5'], 'h1': []} | R5: {'h0': ['A5'], 'h1': []}
+13775 {'h0': ['B7-restore'], 'h1': ['B7-restore']} | R5: {'h0': ['B1-disappeared', 'B7-restore'], 'h1': ['A5', 'B1-disappeared', 'B5']}
+13800 {'h0': ['B7-restore'], 'h1': ['B7-restore']} | R5: {'h0': ['B7-restore'], 'h1': ['B7-restore']}
+13825 {'h0': ['B7-restore'], 'h1': ['B7-restore']} | R5: {'h0': ['B7-restore'], 'h1': ['B7-restore']}
+13846 {'h0': ['A3-nib'], 'h1': ['A3-nib']} | R5: {}
+13859 {'h0': [], 'h1': ['A5']} | R5: {'h0': [], 'h1': ['A5']}
+13890 {'h0': ['A3-nib'], 'h1': ['A3-nib']} | R5: {}
+13893 {'h0': ['A3-nib'], 'h1': ['A3-nib']} | R5: {}
