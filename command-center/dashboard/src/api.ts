@@ -747,6 +747,26 @@ export interface WithholdPreview {
   first_user_message: boolean;
   /** The JARVIS backup this decision is taken on; Settle on that backup finishes it (null: no import names it). */
   decision_backup?: DecisionBackup | null;
+  /** Option C (rebuild R3): stored rows outside the group that carry the text in another form (another case, a summary,
+   * a quote, an encoded copy): each is held on its own at the withhold. */
+  carrier_rows?: WithholdRow[];
+  /** Conversations whose title carries the text: hidden at the withhold (a count). */
+  titles_with_this_text?: number;
+  /** Option C (rebuild R6): the conversation group the withhold would hold, in counts. Conversations outside the
+   * admin's scope are left out of every count. */
+  group?: WithholdGroup;
+}
+
+/** The withhold preview's group (rebuild R6, RECON-48): counts and link kinds only. */
+export interface WithholdGroup {
+  /** The other conversations of the group the admin may open (every stored row of each is held with the message). */
+  conversations: number;
+  /** Of them, those only an uncertain link holds: held, never one-click, the decisions export waits. */
+  uncertain: number;
+  /** How each joined (continuation, branch, reset, delegated, child, linked, shared_uid, copied_rows, provenance). */
+  how: Record<string, number>;
+  /** Their readable stored rows, held with their conversation. */
+  rows: number;
 }
 
 /** POST /api/brain/messages/{id}/withhold: what was withheld (0.6.2 adds the same-message and held rows). */
@@ -789,10 +809,25 @@ export interface BrainHold {
   preselected?: boolean;
   /** The start of the SHA-256 of the JARVIS backup the hold was found in. */
   decided_on?: string;
-  /** settle: found when finishing decisions; later: new in a later backup; other: held at the withhold or by a decisions file. */
-  group?: "settle" | "later" | "other";
+  /** settle: found when finishing decisions; later: new in a later backup; uncertain: held with a conversation an uncertain
+   * link puts in a withheld group; other: held at the withhold or by a decisions file. A value the dashboard does not
+   * know is shown under "other" (never dropped). */
+  group?: "settle" | "later" | "uncertain" | "other" | string;
   /** An admin stopped importing this conversation: later backups leave it out. */
   frozen?: boolean;
+  /** Rebuild R4 (D3, B6): the server's verdict that one click may release it now (exactly 'none' against every withheld
+   * text there is, a plain user or assistant text, no uncertain link). Missing or false: a release needs RELEASE. */
+  one_click?: boolean;
+  /** A later withhold made its 'none' stale: not compared with that text yet. */
+  later_withhold?: boolean;
+  /** The form its text was read in: plain, summary, wrapped, encoded, tool; "" never read here. */
+  form?: string;
+  /** Option C (O-D1): an uncertain link puts its conversation in a withheld group (never one-click). */
+  uncertain?: boolean;
+  /** Rebuild R6: how its conversation joined its withheld message's group ("" when that group does not hold it). */
+  joined?: string;
+  /** "member" or "uncertain" in that group ("" when that group does not hold it). */
+  joined_state?: string;
   /** Ids of the readable messages before and after it. */
   neighbours: number[];
 }
@@ -812,6 +847,15 @@ export interface DecisionStatus {
   legacy_lock: boolean;
   /** The newest import's tripwire: rows held inside withheld conversations, readable rows outside them that hold a withheld text. */
   tripwire: { run: number | null; inside_family: number; outside_family: number } | null;
+  /** Option C: conversations of withheld groups, and those an uncertain link holds. */
+  group_conversations?: number;
+  uncertain_conversations?: number;
+  /** Rows held with their conversation that wait for an admin. */
+  group_rows_held?: number;
+  /** Rows of group conversations readable without a release (0 after a sweep). */
+  group_rows_readable?: number;
+  /** Rows of uncertain conversations waiting for an admin: the decisions export waits on them. */
+  uncertain_waiting?: number;
 }
 
 export interface BrainSearchHit {

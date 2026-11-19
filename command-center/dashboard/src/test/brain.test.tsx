@@ -718,8 +718,11 @@ describe("JARVIS Brain: held for review (0.6.2)", () => {
     expect(RELEASE_CONFIRM).toBe("Its text comes back at the next import; promoted copies stay empty.");
     expect(within(confirm).getByText(holdRuleText("same text"))).toBeInTheDocument();
     expect(calls.some((c) => c.path.endsWith("/release"))).toBe(false);
+    // rebuild R6 (D-42): a hold without the server's one-click verdict needs the typed word (fail closed)
+    expect(within(confirm).getByRole("button", { name: "Release" })).toBeDisabled();
+    fireEvent.change(within(confirm).getByRole("textbox"), { target: { value: "RELEASE" } });
     fireEvent.click(within(confirm).getByRole("button", { name: "Release" }));
-    await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.path === "/api/brain/holds/142/release")).toBe(true));
+    await waitFor(() => expect(calls.find((c) => c.method === "POST" && c.path === "/api/brain/holds/142/release")?.body).toEqual({ confirm: "RELEASE" }));
   });
 
   it("shows the API's refusal when a release is refused", async () => {
@@ -729,6 +732,7 @@ describe("JARVIS Brain: held for review (0.6.2)", () => {
     const card = (await screen.findByRole("heading", { name: "Held for review" })).closest(".card") as HTMLElement;
     fireEvent.click(await within(card).findByRole("button", { name: "Release message #7 (Assistant)" }));
     const confirm = await screen.findByRole("dialog", { name: "Release message #7" });
+    fireEvent.change(within(confirm).getByRole("textbox"), { target: { value: "RELEASE" } }); // D-42
     fireEvent.click(within(confirm).getByRole("button", { name: "Release" }));
     expect(await within(confirm).findByText(/it cannot be released/)).toBeInTheDocument();
   });
@@ -1250,10 +1254,12 @@ describe("JARVIS Brain: finishing decisions and later backups (0.6.2 plan 9)", (
   const settleIndependent = { ...base, message: 202, position: 4, rule: "found when finishing decisions", group: "settle", relations: ["restated"],
     compare: "the withheld text restated", evidence: "the withheld text restated after a compaction", confirm_required: true, preselected: true };
   const laterNone = { ...base, message: 301, session: 21, title: "Telegram chat", position: 40, rule: "new in a later backup", group: "later",
-    relations: ["none"], compare: "other text", evidence: "no relation to the withheld text was found", confirm_required: false, preselected: false };
-  const laterTime = { ...laterNone, message: 302, position: 41, relations: ["same_time"], evidence: "the same time and role" };
+    relations: ["none"], compare: "other text", evidence: "no relation to the withheld text was found", confirm_required: false, preselected: false,
+    // rebuild R6 (D-42): the server's one-click verdict (R4), which the dashboard now requires before a plain release
+    one_click: true, form: "plain" };
+  const laterTime = { ...laterNone, message: 302, position: 41, relations: ["same_time"], evidence: "the same time and role", one_click: false };
   const laterBlind = { ...laterNone, message: 401, session: 22, title: null, position: 2, relations: ["not_in_backup"], compare: "nothing to compare",
-    evidence: "the withheld text is not in this backup" };
+    evidence: "the withheld text is not in this backup", one_click: false };
   const status = { unsettled_decisions: 2, unreviewed_settle_holds: 2, later_backup_holds: 3, held_for_review: 5, frozen_conversations: 0, legacy_lock: false,
     tripwire: { run: 9, inside_family: 3, outside_family: 1 } };
   function routes9(over: Record<string, unknown> = {}) {
@@ -1380,11 +1386,16 @@ describe("JARVIS Brain: finishing decisions and later backups (0.6.2 plan 9)", (
   });
 
   it("puts the rules in plain functions", () => {
-    expect(releaseNeedsTyping({ relations: ["none"] })).toBe(false);
-    expect(releaseNeedsTyping({ relations: [] })).toBe(false);
+    // rebuild R6 (D-42): no typing only on the server's one-click verdict; without it, the typed word (fail closed)
+    expect(releaseNeedsTyping({ relations: ["none"], one_click: true })).toBe(false);
+    expect(releaseNeedsTyping({ relations: ["none"] })).toBe(true);
+    expect(releaseNeedsTyping({ relations: [] })).toBe(true);
+    expect(releaseNeedsTyping({ relations: [], one_click: true })).toBe(true);
     expect(releaseNeedsTyping({ relations: ["same_time"] })).toBe(true);
     expect(releaseNeedsTyping({ relations: ["none"], confirm_required: true })).toBe(true);
-    expect(canReleaseUnrelated([{ relations: ["none"] }, { relations: ["same_uid"] }])).toBe(true);
+    expect(releaseNeedsTyping({ relations: ["none"], confirm_required: true, one_click: true })).toBe(true);
+    expect(canReleaseUnrelated([{ relations: ["none"], one_click: true }, { relations: ["same_uid"] }])).toBe(true);
+    expect(canReleaseUnrelated([{ relations: ["none"] }, { relations: ["same_uid"] }])).toBe(false);
     expect(canReleaseUnrelated([{ relations: ["none"] }, { relations: ["not_in_backup"] }])).toBe(false);
     expect(canReleaseUnrelated([{ relations: ["contains"] }])).toBe(false);
     expect(finishDecisionsText({ unsettled_decisions: 0, unreviewed_settle_holds: 0 })).toEqual([]);

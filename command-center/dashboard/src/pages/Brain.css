@@ -681,3 +681,20 @@
 .br-decision-backup {
   font-weight: 500;
 }
+/* rebuild R6 (option C): the holds panel's view switch, a hold's state notes, the withhold dialog's group and carriers */
+.br-view-switch {
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+.br-hold-note {
+  border-left: 3px solid var(--warn-text);
+  padding-left: 8px;
+}
+.br-preview-group,
+.br-preview-carriers {
+  margin: 8px 0;
+}
+.br-count-bad {
+  color: var(--bad-text);
+  font-weight: 600;
+}
