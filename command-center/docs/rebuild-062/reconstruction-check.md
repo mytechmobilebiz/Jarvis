@@ -246,3 +246,24 @@ The shard file lists are in `progress/R7-check/shards.txt` (every file of tests/
 A first property run without `ORACLE_SEEDS=0` (the default 200 fresh seeds from 6200) was stopped at 21% after 15
 failures in `test_oracle_properties.py`. It is not counted and was not triaged; R5 records that 269 of 900 fresh seeds
 fail on this code.
+
+
+## S5 update (2026-11-19): the R7 gaps closed without new product behaviour
+No product file changed. Tests, oracle and mutant evidence (progress/S5.md, progress/S5-mutation/results.tsv; RECON-66,
+RECON-67, D-51):
+
+| gap | now | evidence |
+|---|---|---|
+| gd1:oracle_rollback_records_off | `cc_adapter.rollback_copies` + `oracle.check_rollback_copies` (O2 at rest) | integration test fails on 443080c (no `rollback_copies`), self-tests "5 failed, 1 passed" there; 6 oracle mutants CAUGHT |
+| dec_json_off closing tests (5 missing) | `unit/test_brain_mutation_closure_s5_062.py::test_dec_json_*` | each "1 failed" under m18:dec_json_off |
+| test_hermes_derived3_lines.py + hermes_lean_gen.py | rebuilt stand-in (7 tests, Hermes's own summary and persisted-output lines) | R3's N1/N4 mutants: 6 of 9 CAUGHT on this file (the other 3 caught or compensated elsewhere, R3) |
+| crafted-state test of c2:imp_stored_none_every_off | `integration/test_brain_mutation_closure_s5_062.py::test_s5_imp_stored_none_every_*` (2) | c2:imp_stored_none_every_off and hgr:none_all_in_hand_off CAUGHT |
+| rel3:imp_carriers_group_skip | mutated (hold_carriers skips group rows) | source test SURVIVES (COMPENSATED, double CAUGHT); the S5 uncertain-row test CAUGHT alone |
+| rel3:flip_any_anchor | mutated (`_row_exemptions` without its group filter) | CAUGHT by the source's test |
+| gd1:p2_both_off | mutated (the double) | "2 failed" |
+| r3:release_on_evidence_carrier_off | `test_s5_a_release_of_a_carrier_hold_covers_the_content_it_was_compared_on` | CAUGHT |
+| cr2:quick_no_quote_bypass | `test_p2_a_cut_quoted_over_marked_lines_is_never_skipped_by_the_quick_filter` | CAUGHT alone |
+| oracle narrowings 13327/13407/13364 | not reconstructable (no rule in the sources) | - |
+
+The new tests were not run on i22 itself; the tests closing mutants pass on 443080c as on HEAD (no product change), so
+their evidence is the mutant, not a failure on an earlier tree.
