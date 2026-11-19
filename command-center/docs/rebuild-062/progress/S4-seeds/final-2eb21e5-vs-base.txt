@@ -1,0 +1,15 @@
+runs 82 failing runs before/after 78 11 class (A3-other/A3-none/A3-nib/B6/A4/B4) runs before/after 78 8
+A3-nib               before   2 after   4
+A3-none              before   4 after   0
+A3-other             before  52 after   2
+A4                   before  12 after   0
+A5                   before   3 after   3
+B2                   before   2 after   0
+B4                   before   4 after   4
+B6                   before  16 after   0
+O8                   before   2 after   0
+seeds failing after (any arm): 7 of 41
+13300 {'h0': ['A3-nib', 'A3-other'], 'h1': ['A3-nib', 'A3-other']}
+13517 {'h0': ['B4'], 'h1': ['B4']}
+13556 {'h0': ['A3-nib'], 'h1': ['A3-nib']}
+13658 {'h0': ['B4'], 'h1': ['B4']}
