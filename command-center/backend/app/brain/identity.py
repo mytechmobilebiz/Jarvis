@@ -2055,6 +2055,28 @@ async def content_backups(s: AsyncSession, row: Any) -> set[str]:
     return {sha for sha in await _run_shas(s, [run_id, *seen]) if sha}
 
 
+async def newest_holding_backup(s: AsyncSession, row: Any) -> str:
+    """Stabilisation S2 (RECON-55): the JARVIS backup (SHA-256) of the newest import run (not rolled back) whose
+    backup held this stored row (the run recorded it: import_records names the row), else stored_backup ('' unknown).
+    A row JARVIS has since dropped, compacted away or renumbered (a stale stored row) is held by an older backup
+    only: a hold of it with no text to compare is decided on that backup, never on a newer one that does not hold it
+    (RECON-20: a release covers the content it was decided on)."""
+    sha = run_sha256(await s.scalar(select(ImportRun.source).where(
+        ImportRun.status != "rolled_back",
+        select(ImportRecord.id).where(ImportRecord.run_id == ImportRun.id,
+                                      ImportRecord.target_table == "archive_messages",
+                                      ImportRecord.target_id == row.id).exists())
+        .order_by(ImportRun.id.desc()).limit(1)))
+    return sha or await stored_backup(s, row)
+
+
+async def run_holds_row(s: AsyncSession, run_id: int, row_id: int) -> bool:
+    """Whether this import run's backup held the stored row (the run recorded it: S2, RECON-55)."""
+    return bool(await s.scalar(select(ImportRecord.id).where(
+        ImportRecord.run_id == run_id, ImportRecord.target_table == "archive_messages",
+        ImportRecord.target_id == row_id).limit(1)))
+
+
 async def release_covers_stored(s: AsyncSession, bindings: Iterable[Binding], row: Any,
                                 cache: dict[int, str] | None = None) -> bool:
     """Whether one of these releases (each already matching the row's exact identity) covers the stored row's

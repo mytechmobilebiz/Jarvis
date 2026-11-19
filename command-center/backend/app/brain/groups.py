@@ -49,6 +49,7 @@ from ..models import (
     BrainTombstone,
     BrainWithheldSession,
     BrainWithholdExemption,
+    ImportRecord,
     ImportRun,
 )
 from . import identity
@@ -576,9 +577,12 @@ async def list_unlisted(s: AsyncSession, anchor: str, members: dict[str, Member]
             continue  # an admin released this exact row for this group: it waits for its text (RECON-52)
         uncertain = members[sid].uncertain
         relations = (identity.UNCERTAIN_REL,) if uncertain else (identity.NOT_IN_BACKUP,)
+        # decided on the newest backup that held this row (S2, RECON-55; it was '': a release then took the newest
+        # backup of the conversation, which may not hold the row, and covered a content no one had seen)
         await identity.put_stone(s, replace(identity.binding_of(
             row, sid, anchor=anchor, via=identity.UNCERTAIN_HOLD if uncertain else identity.GROUP_HOLD,
-            review=identity.PENDING, after_run=after, decided_on=seen_on), relations=relations), actor=actor)
+            review=identity.PENDING, after_run=after,
+            decided_on=seen_on or await identity.newest_holding_backup(s, row)), relations=relations), actor=actor)
         flag = dict((row.flags or {}).get("withheld_by_admin") or {})
         flag.update(note=identity.NOTE, via=identity.UNCERTAIN_HOLD if uncertain else identity.GROUP_HOLD,
                     review=identity.PENDING)
@@ -614,12 +618,19 @@ async def _release_waits(s: AsyncSession, anchor: str, sid: str, row: ArchiveMes
         since = e.decided_at or identity.when(flag.get("released_at"))
         if since is None:
             continue  # when it was released is not known: listed again (as before)
-        seen = await s.scalar(select(ImportRun.source).where(ImportRun.status != "rolled_back",
-                                                             ImportRun.started_at > since)
-                              .order_by(ImportRun.id.desc()).limit(1))
+        seen = (await s.execute(select(ImportRun.status, ImportRun.source).where(
+            ImportRun.status != "rolled_back", ImportRun.started_at > since)
+            .order_by(ImportRun.id.desc()).limit(1))).first()
         if seen is None:
             return True, ""
-        seen_on = seen_on or identity.run_sha256(seen)
+        # S2 (RECON-55): listed again, decided on the newest backup whose import held this stored row (it recorded
+        # the row), never on a backup that does not hold it (a stale stored row JARVIS dropped, compacted or
+        # renumbered since: a release of that hold covered a content no one compared, and no import of that backup
+        # could bring its text back). The running import's own start-up sweep (it has read nothing yet) decides it
+        # on that import's backup, fail-closed (RECON-54), and the import decides it again at its end when its backup
+        # did not hold the row (Processor.redecide_unheld)
+        seen_on = seen_on or (identity.run_sha256(seen[1]) if seen[0] == "running"
+                              else await identity.newest_holding_backup(s, row))
     return False, seen_on
 
 

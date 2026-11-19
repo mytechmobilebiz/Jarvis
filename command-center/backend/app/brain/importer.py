@@ -2130,6 +2130,33 @@ class Processor:
 
     # Settle: the decision backup decided once (plan 4) -----------------------------------------------------------
 
+    async def redecide_unheld(self) -> int:
+        """Stabilisation S2 (RECON-55): a hold whose evidence was computed on one backup's content (a group, uncertain,
+        copy or carrier hold: RECON-20), decided on this backup, of a stored row this backup does not hold (this run
+        recorded no record of it: JARVIS dropped, compacted or renumbered it since, or gave its key to another row) is
+        decided again on the newest backup that held the row (identity.newest_holding_backup). Settle's finish
+        decides every stone of its decisions on this backup, and the start-up sweep lists a released row again on the
+        running import's backup before it read anything; decided on a backup that does not hold the row, the
+        admin's release of it covered a content no one compared, and no import of that backup could ever bring its
+        text back (it was listed again, 'not in this backup', for good). A row this backup holds keeps this backup.
+        How many holds were decided again."""
+        if not self.write or not self.backup_sha or self.run_id is None:
+            return 0
+        n = 0
+        for key in (await self.s.scalars(select(BrainTombstone.source_key).where(
+                BrainTombstone.reason == WITHHELD_BY_ADMIN, BrainTombstone.review == identity.PENDING,
+                BrainTombstone.decided_on == self.backup_sha,
+                BrainTombstone.via.in_(sorted(brain_groups.RELEASE_ON_EVIDENCE))))).all():
+            row = await self.s.scalar(select(ArchiveMessage).where(ArchiveMessage.source_key == key).limit(1))
+            if row is None or await identity.run_holds_row(self.s, self.run_id, row.id):
+                continue
+            found = await identity.newest_holding_backup(self.s, row)
+            if found and found != self.backup_sha:
+                await self.s.execute(update(BrainTombstone).where(BrainTombstone.source_key == key)
+                                     .values(decided_on=found))
+                n += 1
+        return n
+
     async def finish_settle(self) -> dict[str, int]:
         """The end of a Settle run (plan 4.3, 4.4): the stale stored rows of each family at its withheld row's role and
         time that this backup no longer holds (a renumbered or deleted copy: rv3-res-7) are held with their evidence;
@@ -3569,6 +3596,9 @@ async def _execute(run_id: int, sources: Sources, selection: Selection, checkpoi
                 await audit.record(s, actor, "brain.decisions_settled", "import_run", run_id, {
                     "run": run_id, "decisions": len(settle.groups), "sessions": len(settle.family),
                     **tally.d["settle"]})
+            redecided = await proc.redecide_unheld()  # S2 (RECON-55)
+            if redecided:
+                tally.d["holds_decided_on_the_backup_holding_the_row"] = redecided
             # option C (O-D1; rebuild R2): the central sweep, with the withheld texts this backup holds in hand: every
             # row of a group conversation is held (an uncertain link's too), and the rollback copies of them (or
             # anywhere whose older text relates to a withheld text) lose the text
