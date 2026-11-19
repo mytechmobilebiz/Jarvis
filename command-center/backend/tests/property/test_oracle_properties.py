@@ -9,7 +9,14 @@ between the test copy's history and later backups on live.
 ORACLE_OUT=<file> appends one JSON line per seed (problems, notes, the Hermes log). ORACLE_LENIENT=1 notes a missing
 Command Center entry point instead of failing on it. A docker restore round trip (pg_dump / pg_restore in cc-test-pg)
 runs every ORACLE_RESTORE_EVERY-th seed (default 25) when docker is reachable; REQUIRE_DOCKER_TESTS=1 makes a missing
-docker a failure. Synthetic data only."""
+docker a failure. Synthetic data only.
+
+Option C (rebuild R5): the oracle checks O1-O11 too (oracle.py), in two arms: ORACLE_LIVE_HISTORY=0/1 (live imported the
+test copy's earlier backups before the decisions file, or not) and ORACLE_SECOND_WITHHOLD=0/1 (a second withhold on the
+test copy after its review); unset, each arm is drawn per seed. RECORDED_SEEDS (ORACLE_RECORDED=0 leaves them out) are
+the seeds of the fresh R5 runs (13000-13899, second-withhold arm, both live-history arms) recorded as regressions and as
+coverage of option C's shapes; each runs in the second-withhold arm and in the live-history arm the environment names
+(the release gate runs both). Old seed numbers do not reproduce old scenarios (the simulator gained operations)."""
 
 from __future__ import annotations
 
@@ -34,6 +41,10 @@ RV3_BUG_SEEDS = (1, 9, 16, 18, 22, 28, 33, 44, 45, 47, 49, 51, 56, 59, 66, 73, 8
                  143, 152, 164, 167, 176, 218, 232, 247, 248, 252, 253, 261, 271, 272, 279, 298, 309, 321, 322, 333,
                  342, 344, 349)
 SEEDS = list(range(SEED_BASE, SEED_BASE + N_SEEDS))
+# rebuild R5: the recorded seeds (progress/R5.md says what each one covers or found)
+RECORDED_SEEDS: tuple[int, ...] = ()
+if os.environ.get("ORACLE_RECORDED", "1") != "1":
+    RECORDED_SEEDS = ()
 if os.environ.get("ORACLE_RV3_SEEDS", "1") != "1":
     RV3_BUG_SEEDS = ()
 OWN_DB = os.environ["TEST_DATABASE_URL"].rsplit("/", 1)[1]
@@ -104,5 +115,15 @@ async def test_oracle(seed, tmp_path, client, restore):
 async def test_rv3_bug_seed_replayed_exactly(seed, tmp_path, client):
     """Every seed that found a bug in round 3, its exact Hermes history and admin actions (rv3_replays.json)."""
     run = await scenario.run_replay(seed, tmp_path, client)
+    _record(seed, run)
+    assert not run.problems, "\n".join(run.problems + ["--- notes"] + run.notes + ["--- Hermes log"] + run.sim.log)
+
+
+@pytest.mark.parametrize("seed", RECORDED_SEEDS)
+async def test_oracle_recorded(seed, tmp_path, client, restore, monkeypatch):
+    """A recorded seed of the R5 runs, in the second-withhold arm (the live-history arm from the environment)."""
+    if os.environ.get("ORACLE_SECOND_WITHHOLD") not in ("0", "1"):
+        monkeypatch.setenv("ORACLE_SECOND_WITHHOLD", "1")
+    run = await scenario.run_seed(seed, tmp_path, client, restore)
     _record(seed, run)
     assert not run.problems, "\n".join(run.problems + ["--- notes"] + run.notes + ["--- Hermes log"] + run.sim.log)
